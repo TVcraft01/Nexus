@@ -1,0 +1,72 @@
+[
+  {
+    "id": "unit_converter",
+    "name": "Unit Converter",
+    "description": "Convert length, weight, temperature, speed, volume.",
+    "capabilities": [],
+    "version": "1.0.0",
+    "file": "unit_converter.py",
+    "author": "Nexus Core",
+    "verified": true
+  },
+  {
+    "id": "system_info",
+    "name": "System Info",
+    "description": "RAM, CPU, disk, battery, IP, uptime.",
+    "capabilities": ["system_info"],
+    "version": "1.0.0",
+    "file": "system_info.py",
+    "author": "Nexus Core",
+    "verified": true
+  },
+  {
+    "id": "random_tools",
+    "name": "Random & Chance",
+    "description": "Dice, coin flip, passwords, UUID, shuffle, 8-ball.",
+    "capabilities": [],
+    "version": "1.0.0",
+    "file": "random_tools.py",
+    "author": "Nexus Core",
+    "verified": true
+  },
+  {
+    "id": "text_tools",
+    "name": "Text Tools",
+    "description": "Word count, case, reverse, morse, hash, base64.",
+    "capabilities": [],
+    "version": "1.0.0",
+    "file": "text_tools.py",
+    "author": "Nexus Core",
+    "verified": true
+  },
+  {
+    "id": "countdown",
+    "name": "Dates & Countdown",
+    "description": "Days until a date, age calculator, day of week.",
+    "capabilities": [],
+    "version": "1.0.0",
+    "file": "countdown.py",
+    "author": "Nexus Core",
+    "verified": true
+  },
+  {
+    "id": "launcher",
+    "name": "Launcher",
+    "description": "Open apps, websites, folders by name.",
+    "capabilities": ["files_read"],
+    "version": "1.0.0",
+    "file": "launcher.py",
+    "author": "Nexus Core",
+    "verified": true
+  },
+  {
+    "id": "pomodoro",
+    "name": "Pomodoro",
+    "description": "Focus sessions with automatic break reminders.",
+    "capabilities": ["notifications"],
+    "version": "1.0.0",
+    "file": "pomodoro.py",
+    "author": "Nexus Core",
+    "verified": true
+  }
+]
