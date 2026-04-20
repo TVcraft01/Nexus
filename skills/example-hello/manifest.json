@@ -1,0 +1,15 @@
+{
+  "id": "example-hello",
+  "name": "Hello World Skill",
+  "version": "1.0.0",
+  "description": "Minimal example skill — copy this folder to build your own",
+  "author": "TVcraft01",
+  "platform": ["any"],
+  "min_ram_mb": 0,
+  "permissions": [],
+  "entry": "main.py",
+  "triggers": ["hello", "say hi"],
+  "sandboxed": true,
+  "auto_remove_days": 0,
+  "community_verified": false
+}
