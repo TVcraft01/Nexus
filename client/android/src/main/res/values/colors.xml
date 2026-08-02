@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="nexus_primary">#0A84FF</color>
+    <color name="nexus_on_primary">#FFFFFF</color>
+    <color name="nexus_secondary">#5E5CE6</color>
+    <color name="nexus_background">#0B0F19</color>
+    <color name="nexus_surface">#151B2B</color>
+    <color name="nexus_error">#FF453A</color>
+    <color name="nexus_success">#32D74B</color>
+    <color name="nexus_warning">#FF9F0A</color>
+    <color name="ic_launcher_background">#0B0F19</color>
+</resources>

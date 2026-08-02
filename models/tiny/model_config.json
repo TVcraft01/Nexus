@@ -1,0 +1,36 @@
+{
+    "recommended_models": {
+        "tiny": {
+            "name": "Qwen2.5-1.5B-Instruct",
+            "size_gb": 1.5,
+            "max_ram_mb": 4096,
+            "description": "Ultra-lightweight model for IoT and phones"
+        },
+        "small": {
+            "name": "Llama-3.2-3B-Instruct",
+            "size_gb": 3.0,
+            "max_ram_mb": 8192,
+            "description": "Small model for tablets and low-resource devices"
+        },
+        "medium": {
+            "name": "Llama-3.1-8B-Instruct",
+            "size_gb": 8.0,
+            "max_ram_mb": 16384,
+            "description": "Balanced model for laptops and desktops"
+        },
+        "large": {
+            "name": "Qwen2.5-14B-Instruct",
+            "size_gb": 14.0,
+            "max_ram_mb": 32768,
+            "description": "Full-featured model for powerful desktops"
+        }
+    },
+    "vision_models": {
+        "object_detection": "yolov8n",
+        "zero_shot_classifier": "clip-vit-base-patch32"
+    },
+    "voice_models": {
+        "speech_to_text": "vosk-model-small-en-us-0.15",
+        "wake_word": "hey-nexus"
+    }
+}

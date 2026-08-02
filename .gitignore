@@ -1,0 +1,40 @@
+# Gitignore for Nexus project
+
+# Rust
+core/target/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environments
+venv/
+.venv/
+
+# Nexus data
+.nexus/
+*.nexus/
+node_id
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temp
+/tmp/
+*.tmp
