@@ -21,6 +21,8 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--hidden", action="store_true", help="Start with the window hidden in the system tray")
     parser.add_argument("--headless", action="store_true", help="Run the mesh service only (no GUI)")
+    parser.add_argument("--server", default=None, metavar="URL",
+                        help="Connect to a Nexus orchestrator server (e.g. http://localhost:9090)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -50,8 +52,29 @@ def main() -> None:
             service.stop()
         return
 
+    # Connect to Nexus server if --server was provided
+    api_client = None
+    if args.server:
+        from .api_client import NexusApiClient
+        api_client = NexusApiClient(base_url=args.server)
+        # Quick health check in background
+        import threading
+        def _check_connection():
+            try:
+                health = api_client.health()
+                logger = logging.getLogger(__name__)
+                if health.get("status") == "ok":
+                    logger.info("Connected to Nexus server at %s", args.server)
+                else:
+                    logger.warning("Server %s returned: %s", args.server, health)
+            except Exception as exc:
+                logger = logging.getLogger(__name__)
+                logger.warning("Could not connect to server %s: %s", args.server, exc)
+        threading.Thread(target=_check_connection, daemon=True).start()
+
     root = ctk.CTk()
-    app = NexusDesktopApp(root, service, start_hidden=args.hidden)
+    app = NexusDesktopApp(root, service, start_hidden=args.hidden,
+                          api_client=api_client)
     try:
         root.mainloop()
     finally:

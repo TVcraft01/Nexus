@@ -18,6 +18,17 @@ val NothingRed = Color(0xFFFF4433)
 val Success = Color(0xFF34C759)
 val Warning = Color(0xFFFF9500)
 
+// Extended Nexus palette (matches desktop + Android UI components)
+val NexusRed = NothingRed
+val NexusGreen = Success
+val NexusAmber = Warning
+val NexusPurple = Color(0xFF5B5BFF)
+val NexusTeal = Color(0xFF2A9D8F)
+val NexusBlue = Color(0xFF5B8CFF)
+val NexusCardDark = Gray700
+val NexusCardLight = Gray600
+val NexusNavBar = Gray800
+
 // Legacy names mapped to the new palette so existing screens keep working.
 val NexusPrimary = White
 val NexusOnPrimary = Black

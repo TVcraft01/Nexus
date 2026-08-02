@@ -9,7 +9,6 @@
 //! - Peer trust store for key management
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;

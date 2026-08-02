@@ -26,16 +26,16 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 
 # MQTT for universal device communication
-rumqttc = "0.24"
+rumqttc = { version = "0.24", optional = true }
 # WebSocket for external access
-tokio-tungstenite = "0.21"
-futures-util = "0.3"
+tokio-tungstenite = { version = "0.21", optional = true }
+futures-util = { version = "0.3", optional = true }
 
 # mDNS / Service discovery
-mdns-sd = "0.10"
+mdns-sd = { version = "0.10", optional = true }
 
 # FFI / Python bindings
-pyo3 = { version = "0.20", features = ["extension-module"] }
+pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
 
 # Logging
 log = "0.4"
@@ -55,14 +55,23 @@ base64 = "0.21"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 # Compression for message streaming
-flate2 = "1"
+flate2 = { version = "1", optional = true }
 
 [features]
 default = []
 mdns = ["mdns-sd"]
+mqtt = ["rumqttc", "futures-util"]
+websocket = ["tokio-tungstenite", "futures-util"]
 python-bindings = ["pyo3"]
+full = ["mdns", "mqtt", "websocket", "flate2"]
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+
+[package.metadata.maturin]
+name = "nexus_core._nexus_core"
+bindings = "pyo3"
+python-source = "."
+module-name = "nexus_core._nexus_core"

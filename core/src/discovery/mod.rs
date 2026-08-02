@@ -71,6 +71,8 @@ pub enum DeviceClass {
     Car,
     Server,
     Watch,
+    Embedded,
+    #[serde(other)]
     Unknown,
 }
 
@@ -89,6 +91,7 @@ pub struct CpuInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GpuInfo {
     pub model: String,
     pub vram_mb: Option<u64>,
@@ -96,7 +99,14 @@ pub struct GpuInfo {
     pub ml_capable: bool,
 }
 
+impl Default for GpuInfo {
+    fn default() -> Self {
+        Self { model: String::new(), vram_mb: None, ml_capable: false }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NetworkInterface {
     pub name: String,
     pub ip_address: String,
@@ -105,12 +115,20 @@ pub struct NetworkInterface {
     pub has_internet: bool,
 }
 
+impl Default for NetworkInterface {
+    fn default() -> Self {
+        Self { name: String::new(), ip_address: String::new(), mac_address: None, has_internet: false }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peripheral {
     pub peripheral_type: PeripheralType,
     pub name: String,
     pub available: bool,
 }
+
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -128,6 +146,7 @@ pub enum PeripheralType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AiCapabilities {
     /// Whether a local LLM is available
     pub local_llm_available: bool,
@@ -146,6 +165,19 @@ pub struct AiCapabilities {
 
     /// ML framework support
     pub ml_frameworks: Vec<String>,
+}
+
+impl Default for AiCapabilities {
+    fn default() -> Self {
+        Self {
+            local_llm_available: false,
+            llm_backends: Vec::new(),
+            available_models: Vec::new(),
+            voice_recognition: false,
+            computer_vision: false,
+            ml_frameworks: Vec::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

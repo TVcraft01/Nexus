@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::discovery::{DeviceCapabilities, DiscoveredDevice, DeviceClass, PeripheralType};
+use crate::discovery::{DiscoveredDevice, PeripheralType};
 use crate::NodeId;
 
 // ---------------------------------------------------------------------------
@@ -313,7 +313,10 @@ impl TaskExecutor {
                     id: format!("{}-0", task.id),
                     description: task.description.clone(),
                     workload_type: task.workload_type.clone(),
-                    assigned_node: Some(task.strategy.clone().into()),
+                    assigned_node: match task.strategy.clone() {
+                        ExecutionStrategy::RelayTo(id) => Some(id),
+                        _ => None,
+                    },
                     estimated_cost: 1.0,
                     status: TaskStatus::Pending,
                 }];
@@ -340,16 +343,6 @@ impl Default for TaskExecutor {
         Self::new()
     }
 }
-
-impl From<ExecutionStrategy> for Option<NodeId> {
-    fn from(s: ExecutionStrategy) -> Self {
-        match s {
-            ExecutionStrategy::RelayTo(id) => Some(id),
-            _ => None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

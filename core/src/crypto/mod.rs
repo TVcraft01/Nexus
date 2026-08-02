@@ -21,7 +21,7 @@ pub const KEY_LEN: usize = 32;
 
 /// A 32-byte symmetric key for AES-256-GCM
 #[derive(Clone)]
-pub struct SymmetricKey([u8; KEY_LEN]);
+pub struct SymmetricKey(pub [u8; KEY_LEN]);
 
 impl SymmetricKey {
     pub fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {

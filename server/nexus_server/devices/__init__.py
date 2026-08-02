@@ -22,13 +22,30 @@ class DeviceRegistry:
 
     def register_or_update(self, node) -> None:
         """Register or update a discovered mesh node."""
-        self.devices[node.id] = {
-            "id": node.id,
-            "name": node.name,
-            "address": node.address,
-            "port": node.port,
-            "is_paired": node.is_paired,
-            "last_seen": getattr(node, "last_seen", 0),
+        node_id = getattr(node, "id", node.get("id", "unknown")) if hasattr(node, "id") else node.get("id", "unknown")
+        name = getattr(node, "name", node.get("name", "unknown")) if hasattr(node, "name") else node.get("name", "unknown")
+
+        self.devices[node_id] = {
+            "id": node_id,
+            "name": name,
+            "address": getattr(node, "address", node.get("address", "")) if hasattr(node, "address") else node.get("address", ""),
+            "port": getattr(node, "port", node.get("port")) if hasattr(node, "port") else node.get("port"),
+            "is_paired": getattr(node, "is_paired", node.get("is_paired", False)) if hasattr(node, "is_paired") else node.get("is_paired", False),
+            "last_seen": getattr(node, "last_seen", node.get("last_seen", 0)) if hasattr(node, "last_seen") else node.get("last_seen", 0),
+            "capabilities": node.get("capabilities", {}) if isinstance(node, dict) else {},
+        }
+        self._save()
+
+    def register_with_capabilities(self, node_id: str, capabilities: dict) -> None:
+        """Register/update a device with explicit capabilities."""
+        self.devices[node_id] = {
+            "id": node_id,
+            "name": capabilities.get("hostname", node_id),
+            "address": capabilities.get("address", "unknown"),
+            "port": capabilities.get("port"),
+            "is_paired": True,
+            "last_seen": capabilities.get("last_seen", 0),
+            "capabilities": capabilities,
         }
         self._save()
 
@@ -38,7 +55,18 @@ class DeviceRegistry:
     def get_all_capabilities(self) -> Dict[str, Any]:
         return {
             "device_count": len(self.devices),
-            "devices": self.list_all(),
+            "devices": [
+                {
+                    "id": d["id"],
+                    "name": d["name"],
+                    "capability_score": d.get("capabilities", {}).get("capability_score", 0),
+                    "device_class": d.get("capabilities", {}).get("device_class", "unknown"),
+                    "cpu_cores": d.get("capabilities", {}).get("cpu", {}).get("cores", 0),
+                    "ram_mb": d.get("capabilities", {}).get("ram_mb", 0),
+                    "has_gpu": bool(d.get("capabilities", {}).get("gpu", {}).get("ml_capable", False)),
+                }
+                for d in self.list_all()
+            ],
             "paired_devices": sum(1 for d in self.devices.values() if d.get("is_paired")),
         }
 

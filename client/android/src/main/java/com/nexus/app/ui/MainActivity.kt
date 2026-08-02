@@ -57,6 +57,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Lock
@@ -136,6 +137,7 @@ import com.nexus.app.ui.components.VoiceInputOverlay
 import com.nexus.app.ui.components.VoiceEnrollmentDialog
 import com.nexus.app.ui.components.RuleEditorDialog
 import com.nexus.app.ui.components.DotGridVisualizer
+import com.nexus.app.ui.components.VisionTab
 import com.nexus.app.ui.theme.NexusAmber
 import com.nexus.app.ui.theme.NexusBackground
 import com.nexus.app.ui.theme.NexusCardDark
@@ -200,6 +202,12 @@ class MainActivity : ComponentActivity() {
         if (pendingWakeWordVoiceInput || pendingOneShotCommand != null) {
             prepareWakeScreen()
         }
+
+        // Connect to Nexus server if running on same network
+        // Default: emulator (10.0.2.2 → host) or physical device (check intent extra)
+        val serverUrl = intent?.getStringExtra("nexus_server_url")
+            ?: "http://10.0.2.2:9090"
+        viewModel.setServerUrl(serverUrl)
 
         setContent {
             NexusTheme {
@@ -423,6 +431,7 @@ class MainActivity : ComponentActivity() {
         HOME(R.string.tab_home, Icons.Default.Home),
         CHAT(R.string.tab_chat, Icons.Default.Message),
         TALK(R.string.tab_talk, Icons.Default.RecordVoiceOver),
+        VISION(R.string.tab_vision, Icons.Default.Camera),
         LOGS(R.string.tab_logs, Icons.Default.List),
         SETTINGS(R.string.tab_settings, Icons.Default.Settings)
     }
@@ -568,6 +577,17 @@ class MainActivity : ComponentActivity() {
                         onTalk = { startVoiceInput() }
                     )
                     NexusTab.LOGS -> LogsTab(state = state)
+                    NexusTab.VISION -> VisionTab(
+                        state = state,
+                        onCameraSelected = { viewModel.selectCamera(it) },
+                        onTogglePreview = { viewModel.toggleCameraPreview() },
+                        onFpsChanged = { viewModel.setPreviewFps(it) },
+                        onSnapshot = { viewModel.takeSnapshot() },
+                        onSearch = { viewModel.searchCameras(it) },
+                        onLocate = { viewModel.locateItem(it) },
+                        onRefreshStatus = { viewModel.refreshServerStatus() }
+                    )
+                    else -> viewModel.stopCameraPreview()
                     NexusTab.SETTINGS -> SettingsTab(
                         viewModel = viewModel,
                         state = state

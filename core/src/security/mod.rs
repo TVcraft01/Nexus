@@ -88,6 +88,9 @@ pub struct SecurityGuard {
     alerts: VecDeque<ThreatAlert>,
     connection_history: VecDeque<ConnectionAttempt>,
     blocked_ips: HashMap<String, u64>, // IP → blocked until timestamp
+
+    /// Number of times each IP has attempted blocked/blocklisted connections.
+    #[allow(dead_code)]
     failed_attempts: HashMap<String, u32>,
 }
 
@@ -182,8 +185,10 @@ impl SecurityGuard {
         let is_external = !self.config.allowlist.iter().any(|allowed| {
             if allowed.contains('/') {
                 ip_matches_cidr(&conn.dest_ip, allowed)
+            } else if *allowed == "localhost" {
+                conn.dest_ip == "127.0.0.1" || conn.dest_ip == "::1"
             } else {
-                allowed == conn.dest_ip || allowed == "localhost"
+                *allowed == conn.dest_ip
             }
         });
 

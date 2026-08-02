@@ -28,6 +28,23 @@ node_id
 *.swp
 *.swo
 
+# Freebuff
+.freebuff/
+
+# Downloaded models
+yolov8n.pt
+*.pt
+
+# Android
+client/android/.gradle/
+client/android/build/
+client/android/local.properties
+*.apk
+*.aab
+
+# Rust
+core/Cargo.lock
+
 # OS
 .DS_Store
 Thumbs.db

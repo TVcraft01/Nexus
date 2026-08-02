@@ -1,5 +1,6 @@
 package com.nexus.app.ui.viewmodel
 
+import android.graphics.Bitmap
 import com.nexus.app.brain.ChatMessage
 import com.nexus.app.command.CommandResult
 import com.nexus.app.command.RoutineSuggestion
@@ -45,28 +46,22 @@ data class NexusUiState(
     val permissionRationale: PermissionRationale? = null,
     val isListening: Boolean = false,
     val voiceError: String? = null,
-    // In-app (on-device Vosk) voice input state — live transcript + preparing flag.
     val voicePartialTranscript: String = "",
     val voicePreparing: Boolean = false,
-    // Opt-in larger English voice model for fewer mishearings.
     val highAccuracyVoice: Boolean = false,
     val highAccuracyVoiceDownloading: Boolean = false,
     val highAccuracyVoiceProgress: Float? = null,
     val highAccuracyVoiceReady: Boolean = false,
-    // One-shot wake: "hey nexus play my flow" runs in a single utterance.
     val oneShotWake: Boolean = false,
     val wakeWordEnabled: Boolean = false,
     val wakeWordLanguage: String = "en",
     val wakeWordStatus: String? = null,
-    // Speaker verification state
     val voiceprintEnrolled: Boolean = false,
     val voiceprintVerificationEnabled: Boolean = false,
     val voiceEnrollmentState: VoiceEnrollmentState = VoiceEnrollmentState.Idle,
     val customWakePhrase: String? = null,
     val ambientNoiseLevel: Float = 0f,
     val ambientNoiseClassification: String = "Quiet",
-    // Whether the OS has exempted Nexus from battery optimization (Doze), so
-    // the wake-word listener can stay alive overnight.
     val batteryOptimizationExempt: Boolean = false,
     val modelDownloadProgress: Float? = null,
     val modelDownloadLanguage: String? = null,
@@ -76,11 +71,30 @@ data class NexusUiState(
     val chatInput: String = "",
     val chatBackendStatus: String = "Checking local LLM…",
     val chatPendingConfirmation: Boolean = false,
-    // Skills system
     val installedSkills: List<InstalledSkill> = emptyList(),
     val availableSkills: List<SkillManifest> = emptyList(),
     val skillsLoading: Boolean = false,
-    val skillStatusMessage: String? = null
+    val skillStatusMessage: String? = null,
+    // ── Server connection / Vision / MQTT ─────────────────────
+    val serverUrl: String = "",
+    val serverConnected: Boolean = false,
+    val visionStatus: String = "Not connected",
+    val cameraIds: List<String> = listOf("local-0"),
+    val selectedCameraId: String = "local-0",
+    val previewFps: Int = 5,
+    val isPreviewRunning: Boolean = false,
+    val previewBitmap: Bitmap? = null,
+    val detectionsText: String = "",
+    val visionResultText: String = "",
+    val visionResultColor: Long = 0xFFAEAEB2,  // Gray300
+    val mqttAvailable: Boolean = false,
+    val mqttConnected: Boolean = false,
+    val mqttBroker: String = "",
+    val mqttPort: Int = 1883,
+    val networkDeviceCount: Int = 0,
+    val networkGpuCount: Int = 0,
+    val networkCameraCount: Int = 0,
+    val serverNodeId: String = ""
 ) {
     val canRunCommand: Boolean
         get() = commandInput.isNotBlank()

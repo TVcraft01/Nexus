@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 from typing import Callable, Dict, List, Optional
@@ -57,6 +60,8 @@ NAV_ITEMS = [
     ("Chat", "💬"),
     ("Home", "🏠"),
     ("Devices", "🌐"),
+    ("Vision", "🎥"),
+    ("Streams", "📡"),
     ("Logs", "📜"),
     ("Settings", "⚙️"),
 ]
@@ -75,9 +80,10 @@ QUICK_ACTIONS = [
 
 
 class NexusDesktopApp:
-    def __init__(self, root: ctk.CTk, service: NexusService, *, start_hidden: bool = False, use_tray: bool = True) -> None:
+    def __init__(self, root: ctk.CTk, service: NexusService, *, start_hidden: bool = False, use_tray: bool = True, api_client=None) -> None:
         self.root = root
         self.service = service
+        self.api_client = api_client  # Optional server API client for vision/streaming
         self.root.title("Nexus")
         self.root.geometry("960x720")
         self.root.minsize(800, 600)
@@ -106,6 +112,14 @@ class NexusDesktopApp:
         self._is_listening = False
         self._cancel_voice = False
         self._chat_messages: List[ctk.CTkFrame] = []
+
+        # Vision / streaming state
+        self._preview_running = threading.Event()
+        self._preview_camera_id = "local-0"
+        self._preview_photo: Optional[ImageTk.PhotoImage] = None
+        self._preview_fps = 5
+        self._streams_data: List[dict] = []
+        self._mqtt_status_label: Optional[ctk.CTkLabel] = None
 
         self._build_ui()
         self._select_tab("Home")
@@ -195,6 +209,8 @@ class NexusDesktopApp:
         self._content_frames["Chat"] = self._build_chat_frame()
         self._content_frames["Home"] = self._build_home_frame()
         self._content_frames["Devices"] = self._build_mesh_frame()
+        self._content_frames["Vision"] = self._build_vision_frame()
+        self._content_frames["Streams"] = self._build_streams_frame()
         self._content_frames["Logs"] = self._build_logs_frame()
         self._content_frames["Settings"] = self._build_settings_frame()
 
@@ -211,12 +227,24 @@ class NexusDesktopApp:
         frame.pack(fill=tk.BOTH, expand=True, padx=24, pady=24)
         if name == "Home":
             self.cmd_entry.focus_set()
+        elif name == "Vision":
+            self._refresh_vision_status()
+        elif name == "Streams":
+            self._refresh_streams_status()
+        elif name == "Devices":
+            self._refresh_mesh_mqtt_status()
+        else:
+            # Stop camera preview when leaving Vision tab
+            if self._preview_running.is_set():
+                self._stop_camera_preview()
 
     def _bind_keyboard_shortcuts(self) -> None:
-        # Mnemonic shortcuts: Chat, Home, Devices, Logs, Settings.
+        # Mnemonic shortcuts: Chat, Home, Devices, Vision, Streams, Logs, Settings.
         self.root.bind("<Control-Shift-c>", lambda e: self._select_tab("Chat"))
         self.root.bind("<Control-Shift-h>", lambda e: self._select_tab("Home"))
         self.root.bind("<Control-Shift-d>", lambda e: self._select_tab("Devices"))
+        self.root.bind("<Control-Shift-v>", lambda e: self._select_tab("Vision"))
+        self.root.bind("<Control-Shift-m>", lambda e: self._select_tab("Streams"))
         self.root.bind("<Control-Shift-l>", lambda e: self._select_tab("Logs"))
         self.root.bind("<Control-Shift-s>", lambda e: self._select_tab("Settings"))
 
@@ -706,9 +734,508 @@ class NexusDesktopApp:
         self.nodes_container = ctk.CTkScrollableFrame(frame, fg_color=PALETTE["bg"])
         self.nodes_container.pack(fill=tk.BOTH, expand=True)
 
+        # MQTT / Server status card (shown when api_client is connected)
+        self._mesh_mqtt_card = ctk.CTkFrame(frame, fg_color=PALETTE["card"], corner_radius=12)
+        self._mesh_mqtt_card.pack(fill=tk.X, pady=(12, 0))
+        self._mesh_mqtt_label = ctk.CTkLabel(
+            self._mesh_mqtt_card,
+            text="",
+            font=("SF Mono", 11),
+            text_color=PALETTE["text_secondary"],
+            justify="left",
+        )
+        self._mesh_mqtt_label.pack(padx=16, pady=12, anchor="w")
+
         return frame
 
-    # ------------------------------------------------------------------ Logs tab
+    # ------------------------------------------------------------------ Vision tab
+    def _build_vision_frame(self) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(self.content_container, fg_color=PALETTE["bg"])
+
+        # Header with status
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.pack(fill=tk.X, pady=(0, 12))
+        ctk.CTkLabel(
+            header, text="Computer Vision",
+            font=("Inter", 18, "bold"), text_color=PALETTE["text"],
+        ).pack(side=tk.LEFT)
+        self._vision_status_label = ctk.CTkLabel(
+            header, text="Not connected",
+            text_color=PALETTE["text_secondary"], font=("Inter", 11),
+        )
+        self._vision_status_label.pack(side=tk.RIGHT)
+
+        # Camera selector + controls row
+        controls = ctk.CTkFrame(frame, fg_color=PALETTE["card"], corner_radius=12)
+        controls.pack(fill=tk.X, pady=(0, 12))
+        controls.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            controls, text="Camera:",
+            text_color=PALETTE["text_secondary"], font=("Inter", 12),
+        ).grid(row=0, column=0, padx=(12, 8), pady=10, sticky="w")
+
+        self._camera_selector = ctk.CTkOptionMenu(
+            controls,
+            values=["local-0"],
+            command=self._on_camera_selected,
+            fg_color=PALETTE["surface"],
+            button_color=PALETTE["primary"],
+            button_hover_color=PALETTE["card_hover"],
+            text_color=PALETTE["text"],
+            font=("Inter", 12),
+        )
+        self._camera_selector.grid(row=0, column=1, padx=(0, 8), pady=10, sticky="ew")
+
+        self._preview_btn = ctk.CTkButton(
+            controls,
+            text="▶ Start",
+            width=80, height=30,
+            fg_color=PALETTE["primary"],
+            command=self._toggle_camera_preview,
+            font=("Inter", 11),
+        )
+        self._preview_btn.grid(row=0, column=2, padx=(0, 8), pady=10)
+
+        self._snapshot_btn = ctk.CTkButton(
+            controls,
+            text="📸 Snap",
+            width=80, height=30,
+            fg_color=PALETTE["card_hover"],
+            command=self._on_vision_snapshot,
+            font=("Inter", 11),
+        )
+        self._snapshot_btn.grid(row=0, column=3, padx=(0, 8), pady=10)
+
+        ctk.CTkLabel(
+            controls, text="FPS:",
+            text_color=PALETTE["text_secondary"], font=("Inter", 11),
+        ).grid(row=0, column=4, padx=(4, 4), pady=10, sticky="w")
+
+        self._fps_slider = ctk.CTkSlider(
+            controls, from_=1, to=15, number_of_steps=14,
+            command=self._on_fps_changed,
+            width=80, progress_color=PALETTE["primary"],
+        )
+        self._fps_slider.set(5)
+        self._fps_slider.grid(row=0, column=5, padx=(0, 4), pady=10)
+
+        self._fps_label = ctk.CTkLabel(
+            controls, text="5",
+            text_color=PALETTE["text"], font=("Inter", 11),
+        )
+        self._fps_label.grid(row=0, column=6, padx=(0, 12), pady=10)
+
+        # Camera preview area
+        preview_card = ctk.CTkFrame(frame, fg_color=PALETTE["card"], corner_radius=16)
+        preview_card.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+
+        self._preview_label = ctk.CTkLabel(
+            preview_card,
+            text="🎥\nStart a camera preview",
+            font=("Inter", 14),
+            text_color=PALETTE["text_secondary"],
+            width=600, height=300,
+        )
+        self._preview_label.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        # Detection overlay
+        self._detection_label = ctk.CTkLabel(
+            preview_card,
+            text="",
+            font=("SF Mono", 11),
+            text_color=PALETTE["success"],
+            anchor="sw",
+        )
+        self._detection_label.place(relx=0.02, rely=0.96, anchor="sw")
+
+        # Search & locate row
+        search_frame = ctk.CTkFrame(frame, fg_color=PALETTE["card"], corner_radius=12)
+        search_frame.pack(fill=tk.X, pady=(0, 8))
+        search_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            search_frame, text="Search:",
+            text_color=PALETTE["text_secondary"], font=("Inter", 12),
+        ).grid(row=0, column=0, padx=(12, 6), pady=8, sticky="w")
+
+        self._search_entry = ctk.CTkEntry(
+            search_frame,
+            placeholder_text="e.g. 'is there a person'",
+            height=30, corner_radius=8, border_width=0,
+            fg_color=PALETTE["surface"], text_color=PALETTE["text"],
+            font=("Inter", 12),
+        )
+        self._search_entry.grid(row=0, column=1, padx=(0, 6), pady=8, sticky="ew")
+        self._search_entry.bind("<Return>", lambda e: self._on_vision_search())
+
+        ctk.CTkButton(
+            search_frame, text="Search", width=70, height=30,
+            fg_color=PALETTE["primary"], command=self._on_vision_search,
+            font=("Inter", 11),
+        ).grid(row=0, column=2, padx=(0, 12), pady=8)
+
+        locate_frame = ctk.CTkFrame(frame, fg_color=PALETTE["card"], corner_radius=12)
+        locate_frame.pack(fill=tk.X, pady=(0, 8))
+        locate_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            locate_frame, text="Locate:",
+            text_color=PALETTE["text_secondary"], font=("Inter", 12),
+        ).grid(row=0, column=0, padx=(12, 6), pady=8, sticky="w")
+
+        self._locate_entry = ctk.CTkEntry(
+            locate_frame,
+            placeholder_text="e.g. 'USB drive'",
+            height=30, corner_radius=8, border_width=0,
+            fg_color=PALETTE["surface"], text_color=PALETTE["text"],
+            font=("Inter", 12),
+        )
+        self._locate_entry.grid(row=0, column=1, padx=(0, 6), pady=8, sticky="ew")
+        self._locate_entry.bind("<Return>", lambda e: self._on_vision_locate())
+
+        ctk.CTkButton(
+            locate_frame, text="Find", width=70, height=30,
+            fg_color=PALETTE["success"], command=self._on_vision_locate,
+            font=("Inter", 11),
+        ).grid(row=0, column=2, padx=(0, 12), pady=8)
+
+        # Results area
+        self._vision_result_label = ctk.CTkLabel(
+            frame,
+            text="",
+            font=("Inter", 12),
+            text_color=PALETTE["text_secondary"],
+            wraplength=700, justify="left",
+        )
+        self._vision_result_label.pack(fill=tk.X, padx=4, pady=(0, 8))
+
+        # Refresh camera list on tab select
+        self._needs_camera_refresh = True
+
+        return frame
+
+    def _on_camera_selected(self, camera_id: str) -> None:
+        self._preview_camera_id = camera_id
+        if self._preview_running.is_set():
+            self._stop_camera_preview()
+            self._start_camera_preview()
+
+    def _on_fps_changed(self, value: float) -> None:
+        self._preview_fps = max(1, int(round(value)))
+        self._fps_label.configure(text=str(self._preview_fps))
+
+    def _toggle_camera_preview(self) -> None:
+        if self._preview_running.is_set():
+            self._stop_camera_preview()
+        else:
+            self._start_camera_preview()
+
+    def _start_camera_preview(self) -> None:
+        if not self.api_client or not self.api_client.is_connected():
+            self._vision_result_label.configure(
+                text="⚠ Not connected to Nexus server. Start the server first.",
+                text_color=PALETTE["warning"],
+            )
+            return
+
+        self._preview_running.set()
+        self._preview_btn.configure(text="⏸ Stop", fg_color=PALETTE["error"])
+        self._preview_label.configure(text="Connecting...")
+        self._preview_frame_count = 0
+        threading.Thread(target=self._preview_loop, daemon=True).start()
+
+    def _stop_camera_preview(self) -> None:
+        self._preview_running.clear()
+        self._preview_btn.configure(text="▶ Start", fg_color=PALETTE["primary"])
+        self._preview_label.configure(
+            text="🎥\nCamera preview stopped",
+            image=None,
+        )
+        self._detection_label.configure(text="")
+
+    def _preview_loop(self) -> None:
+        """Background thread that polls camera snapshots from the server.
+
+        Uses the base64 snapshot endpoint (one HTTP call per frame) which returns
+        both the JPEG image and YOLO detections.
+        """
+        interval = 1.0 / max(1, self._preview_fps)
+        while self._preview_running.is_set():
+            loop_start = time.time()
+            try:
+                # Single HTTP call: base64 image + detections
+                snap = self.api_client.snapshot(self._preview_camera_id)
+                if snap and snap.get("image_base64"):
+                    try:
+                        jpeg_bytes = base64.b64decode(snap["image_base64"])
+                    except Exception:
+                        continue
+                    detections = snap.get("objects_detected", [])
+                    self._schedule_ui_callback(
+                        self._update_preview_frame, jpeg_bytes, detections
+                    )
+                else:
+                    # Fallback: try raw JPEG endpoint (faster, no detections)
+                    jpeg_bytes = self.api_client.snapshot_jpeg(
+                        self._preview_camera_id, timeout=2.0,
+                    )
+                    if jpeg_bytes:
+                        self._schedule_ui_callback(
+                            self._update_preview_frame, jpeg_bytes, None,
+                        )
+            except Exception as e:
+                logger.debug(f"Preview loop error: {e}")
+            elapsed = time.time() - loop_start
+            sleep_time = interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    def _update_preview_frame(self, jpeg_bytes: bytes,
+                              detections: Optional[List[dict]]) -> None:
+        """Update the preview label with a new camera frame (runs on UI thread)."""
+        try:
+            image = Image.open(io.BytesIO(jpeg_bytes))
+            # Scale to fit the preview area (max 640x480)
+            image.thumbnail((640, 480), Image.Resampling.LANCZOS)
+            self._preview_photo = ImageTk.PhotoImage(image)
+            self._preview_label.configure(
+                image=self._preview_photo, text="",
+            )
+        except Exception as e:
+            logger.debug(f"Preview frame decode failed: {e}")
+
+        if detections:
+            names = [d.get("class", d.get("name", "?")) for d in detections[:6]]
+            confs = [f"{d.get('confidence', 0):.0%}" for d in detections[:6]]
+            lines = ", ".join(f"{n} ({c})" for n, c in zip(names, confs))
+            self._detection_label.configure(text=f"Detected: {lines}" if lines else "")
+        else:
+            self._detection_label.configure(text="")
+
+    def _on_vision_snapshot(self) -> None:
+        if not self.api_client:
+            return
+        threading.Thread(target=self._run_vision_snapshot, daemon=True).start()
+
+    def _run_vision_snapshot(self) -> None:
+        result = self.api_client.snapshot(self._preview_camera_id)
+        if result.get("image_base64"):
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text=f"Snapshot saved: {result.get('filepath', '')} "
+                     f"({result.get('image_size', '')})",
+            )
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text_color=PALETTE["success"],
+            )
+        else:
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text=f"Snapshot failed: {result.get('error', 'unknown')}",
+            )
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text_color=PALETTE["error"],
+            )
+
+    def _on_vision_search(self) -> None:
+        query = self._search_entry.get().strip()
+        if not query or not self.api_client:
+            return
+        self._vision_result_label.configure(
+            text="Searching cameras...", text_color=PALETTE["text_secondary"],
+        )
+        threading.Thread(target=self._run_vision_search, args=(query,), daemon=True).start()
+
+    def _run_vision_search(self, query: str) -> None:
+        result = self.api_client.search_cameras(query)
+        if isinstance(result, list) and result:
+            lines = []
+            for cam in result:
+                cid = cam.get("camera_id", "?")
+                total = cam.get("total_objects", 0)
+                objs = cam.get("objects_detected", [])
+                obj_names = ", ".join(
+                    o.get("class", o.get("name", "?")) for o in objs[:5]
+                )
+                lines.append(f"🎥 {cid}: {total} objects — {obj_names}")
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text="\n".join(lines),
+            )
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text_color=PALETTE["success"],
+            )
+        else:
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text=f"No results for '{query}'",
+            )
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text_color=PALETTE["text_secondary"],
+            )
+
+    def _on_vision_locate(self) -> None:
+        item = self._locate_entry.get().strip()
+        if not item or not self.api_client:
+            return
+        self._vision_result_label.configure(
+            text=f"Looking for '{item}'...", text_color=PALETTE["text_secondary"],
+        )
+        threading.Thread(target=self._run_vision_locate, args=(item,), daemon=True).start()
+
+    def _run_vision_locate(self, item: str) -> None:
+        result = self.api_client.locate_item(item)
+        found = result.get("found", False)
+        cameras = result.get("cameras_searched", 0)
+        suggestion = result.get("suggestion", "")
+        if found:
+            location = result.get("location", "somewhere")
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text=f"✅ Found '{item}' at: {location}",
+            )
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text_color=PALETTE["success"],
+            )
+        else:
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text=f"❌ '{item}' not found ({cameras} cameras searched)\n{suggestion}",
+            )
+            self._schedule_ui_callback(
+                self._vision_result_label.configure,
+                text_color=PALETTE["warning"],
+            )
+
+    def _refresh_vision_status(self) -> None:
+        """Refresh camera list and vision status from the server."""
+        if not self.api_client:
+            return
+        threading.Thread(target=self._run_refresh_vision, daemon=True).start()
+
+    def _run_refresh_vision(self) -> None:
+        status = self.api_client.vision_status()
+        cameras = self.api_client.list_cameras()
+
+        # Update status
+        cv_ok = "OpenCV OK" if status.get("opencv_available") else "No CV"
+        yolo_ok = "YOLO OK" if status.get("yolo_available") else "No YOLO"
+        n_cams = status.get("cameras_registered", 0)
+        self._schedule_ui_callback(
+            self._vision_status_label.configure,
+            text=f"{cv_ok} • {yolo_ok} • {n_cams} camera(s)",
+        )
+
+        # Update camera selector
+        if isinstance(cameras, list) and cameras:
+            cam_ids = [c.get("id", c.get("camera_id", "")) for c in cameras if c.get("id") or c.get("camera_id")]
+            if cam_ids:
+                self._schedule_ui_callback(
+                    self._camera_selector.configure,
+                    values=cam_ids,
+                )
+                if self._preview_camera_id not in cam_ids and cam_ids:
+                    self._schedule_ui_callback(
+                        self._camera_selector.set, cam_ids[0],
+                    )
+                    self._preview_camera_id = cam_ids[0]
+
+    # ------------------------------------------------------------------ Streams tab
+    def _build_streams_frame(self) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(self.content_container, fg_color=PALETTE["bg"])
+
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.pack(fill=tk.X, pady=(0, 12))
+        ctk.CTkLabel(
+            header, text="Live Streams",
+            font=("Inter", 18, "bold"), text_color=PALETTE["text"],
+        ).pack(side=tk.LEFT)
+        self._streams_status_label = ctk.CTkLabel(
+            header, text="",
+            text_color=PALETTE["text_secondary"], font=("Inter", 11),
+        )
+        self._streams_status_label.pack(side=tk.RIGHT)
+
+        # Stream list
+        self._streams_container = ctk.CTkScrollableFrame(
+            frame, fg_color=PALETTE["card"], corner_radius=16,
+        )
+        self._streams_container.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+
+        # Empty state
+        self._streams_empty = ctk.CTkLabel(
+            self._streams_container,
+            text="No active streams.\nStart a camera preview in the Vision tab "
+                 "to create a stream.",
+            font=("Inter", 13),
+            text_color=PALETTE["text_secondary"],
+        )
+        self._streams_empty.pack(padx=16, pady=40)
+
+        # MQTT / Network status card
+        self._network_status_card = ctk.CTkFrame(
+            frame, fg_color=PALETTE["card"], corner_radius=12,
+        )
+        self._network_status_card.pack(fill=tk.X, pady=(0, 0))
+        self._network_status_text = ctk.CTkLabel(
+            self._network_status_card,
+            text="Click 'Refresh' to load server status",
+            font=("SF Mono", 11),
+            text_color=PALETTE["text_secondary"],
+            justify="left",
+        )
+        self._network_status_text.pack(padx=16, pady=12, anchor="w")
+
+        ctk.CTkButton(
+            self._network_status_card,
+            text="Refresh", width=80, height=28,
+            fg_color=PALETTE["primary"],
+            command=self._refresh_streams_status,
+            font=("Inter", 11),
+        ).pack(padx=16, pady=(0, 12), anchor="w")
+
+        return frame
+
+    def _refresh_streams_status(self) -> None:
+        """Refresh network, MQTT, and streams status from server."""
+        if not self.api_client:
+            self._network_status_text.configure(
+                text="⚠ No server connection configured.\n"
+                     "Start the desktop with --server http://localhost:9090"
+            )
+            return
+        threading.Thread(target=self._run_refresh_streams, daemon=True).start()
+
+    def _run_refresh_streams(self) -> None:
+        mqtt = self.api_client.mqtt_status()
+        network = self.api_client.network_summary()
+        server_status = self.api_client.server_status()
+
+        lines = [
+            f"🖥  Server: {server_status.get('node_id', '?')} "
+            f"({server_status.get('chat_status', 'offline')})",
+            f"🌐 Network: {network.get('total_devices', 0)} devices, "
+            f"GPU: {network.get('gpu_devices', 0)}, "
+            f"Cameras: {network.get('camera_devices', 0)}",
+            f"📡 MQTT: {'Available' if mqtt.get('available') else 'Not installed'} • "
+            f"Connected: {'Yes' if mqtt.get('connected') else 'No'} • "
+            f"Broker: {mqtt.get('broker_host', '?')}:{mqtt.get('broker_port', '?')}",
+        ]
+
+        self._schedule_ui_callback(
+            self._network_status_text.configure,
+            text="\n".join(lines),
+        )
+        self._schedule_ui_callback(
+            self._streams_status_label.configure,
+            text=f"{network.get('total_devices', 0)} device(s) online",
+        )
     def _build_logs_frame(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self.content_container, fg_color=PALETTE["bg"])
         header = ctk.CTkFrame(frame, fg_color="transparent")
@@ -1244,6 +1771,27 @@ class NexusDesktopApp:
         else:
             self._manual_pair_card.pack_forget()
             self._manual_pair_toggle.configure(text="Show advanced pairing options")
+
+    def _refresh_mesh_mqtt_status(self) -> None:
+        """Refresh MQTT/server status shown in Devices tab."""
+        if not self.api_client:
+            self._mesh_mqtt_label.configure(text="")
+            return
+        threading.Thread(target=self._run_mesh_mqtt_refresh, daemon=True).start()
+
+    def _run_mesh_mqtt_refresh(self) -> None:
+        mqtt = self.api_client.mqtt_status()
+        network = self.api_client.network_summary()
+        lines = [
+            f"🖥  Server: {self.api_client.base_url}",
+            f"🌐 Devices: {network.get('total_devices', 0)} online",
+            f"📡 MQTT: {'Available' if mqtt.get('available') else 'Not installed'} "
+            f"• Connected: {'Yes' if mqtt.get('connected') else 'No'}",
+        ]
+        self._schedule_ui_callback(
+            self._mesh_mqtt_label.configure,
+            text="\n".join(lines),
+        )
 
     def _run_remote(self, node: MeshNode, command: str) -> None:
         result = self.service.relay_command(node, command)

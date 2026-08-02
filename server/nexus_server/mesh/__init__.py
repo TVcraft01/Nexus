@@ -83,7 +83,7 @@ class PeerTrustStore:
 # ---------------------------------------------------------------------------
 
 class MeshManager:
-    """Coordinates mDNS discovery, TCP server, and peer management."""
+    """Coordinates mDNS discovery, TCP server, MQTT bridge, and peer management."""
 
     def __init__(
         self,
@@ -93,6 +93,8 @@ class MeshManager:
         command_engine,
         on_command: Optional[Callable] = None,
         on_node_changed: Optional[Callable] = None,
+        mqtt_broker: str = "localhost",
+        mqtt_port: int = 1883,
     ):
         self.node_id = node_id
         self.node_name = node_name
@@ -104,20 +106,78 @@ class MeshManager:
         self._server: Optional[_CommandServer] = None
         self._running = False
 
-    def start(self) -> None:
+        # Phase 2: MQTT bridge and discovery
+        from nexus_server.mesh.mqtt_bridge import MqttBridge
+        from nexus_server.mesh.discovery import DeviceDiscoveryService
+
+        self.discovery = DeviceDiscoveryService(
+            node_id=node_id,
+            node_name=node_name,
+            on_device_found=self._on_device_found_mqtt,
+            on_device_lost=self._on_device_lost_mqtt,
+        )
+        self.mqtt = MqttBridge(
+            node_id=node_id,
+            broker_host=mqtt_broker,
+            broker_port=mqtt_port,
+            on_command=self._on_mqtt_command,
+            on_node_discovered=self.discovery.on_device_announce,
+            on_subtask=self._on_mqtt_subtask,
+        )
+        self._on_subtask_callback: Optional[Callable] = None
+
+    def start(self, enable_mqtt: bool = False) -> None:
         self._running = True
         self._server = _CommandServer(
             self.node_id, 0, self.peer_store,
             self.command_engine, self.on_command,
         )
         self._server.start()
-        logger.info(f"Mesh started on port {self._server.actual_port}")
+        logger.info(f"Mesh TCP server started on port {self._server.actual_port}")
+
+        # Start MQTT bridge (optional)
+        if enable_mqtt:
+            from nexus_server.mesh.discovery import build_local_capabilities
+            caps = build_local_capabilities(self.node_id, self.node_name)
+            self.mqtt.start(local_capabilities=caps)
+            logger.info(f"MQTT bridge started (broker: {self.mqtt.broker_host}:{self.mqtt.broker_port})")
 
     def stop(self) -> None:
         self._running = False
+        self.mqtt.stop()
         if self._server:
             self._server.stop()
             self._server = None
+
+    # --- MQTT callbacks ---
+
+    def _on_device_found_mqtt(self, device_info: dict) -> None:
+        """New device discovered via MQTT."""
+        logger.info(f"Device discovered via MQTT: {device_info.get('node_id', '?')}")
+        if self.on_node_changed:
+            self.on_node_changed()
+
+    def _on_device_lost_mqtt(self, node_id: str) -> None:
+        """Device went offline via MQTT."""
+        logger.info(f"Device offline: {node_id}")
+        if self.on_node_changed:
+            self.on_node_changed()
+
+    def _on_mqtt_command(self, sender_id: str, command: str, payload: dict) -> None:
+        """Command received via MQTT."""
+        result = self.command_engine.execute_command(command)
+        if self.on_command:
+            self.on_command(sender_id, result)
+        # Send result back
+        self.mqtt.send_result(sender_id, "direct-cmd", result.success, result.message)
+
+    def _on_mqtt_subtask(self, sender_id: str, payload: dict) -> None:
+        """Sub-task received for distributed execution."""
+        if self._on_subtask_callback:
+            self._on_subtask_callback(sender_id, payload)
+
+    def set_subtask_handler(self, callback: Callable) -> None:
+        self._on_subtask_callback = callback
 
     def pair_with_pin(self, peer_id: str, pin: str) -> None:
         """Derive shared key from PIN and store it."""

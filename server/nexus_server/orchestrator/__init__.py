@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import uuid
 from typing import Callable, Dict, List, Optional
 
@@ -30,6 +31,9 @@ from nexus_server.storage import (
 )
 from nexus_server.models import CommandAction, CommandResult, CommandStatus, MeshNode, ParsedIntent
 from nexus_server.devices import DeviceRegistry
+from nexus_server.orchestrator.task_executor import (
+    DistributedTaskExecutor, WorkloadType, NexusTask,
+)
 
 logger = logging.getLogger("nexus.orchestrator")
 
@@ -53,7 +57,7 @@ class NexusOrchestrator:
         self.llm_parser = LocalLLMIntentParser()
 
         # New modules
-        self.proactive = ProactiveAssistant(self.learning_repo)
+        self.proactive = ProactiveAssistant(self.learning_repo, storage_dir=storage_dir)
         self.vision = VisionModule(storage_dir)
         self.device_registry = DeviceRegistry()
 
@@ -65,6 +69,11 @@ class NexusOrchestrator:
         )
         self._discovered_backend: Optional[DiscoveredBackend] = None
 
+        # Phase 2: Distributed task execution
+        self.task_executor = DistributedTaskExecutor(
+            on_dispatch=self._dispatch_subtask,
+        )
+
         # Mesh
         self.peer_store = PeerTrustStore(os.path.join(storage_dir, "peer_keys.json"))
         self.mesh: Optional[MeshManager] = None
@@ -72,6 +81,9 @@ class NexusOrchestrator:
         # Callbacks
         self._on_command: Optional[Callable[[str, CommandResult], None]] = None
         self._on_threat: Optional[Callable[[str, str], None]] = None
+
+        # Streaming (lazy-init)
+        self._stream_manager = None
 
     def _load_or_create_node_id(self) -> str:
         node_file = os.path.join(self.storage_dir, "node_id")
@@ -87,7 +99,8 @@ class NexusOrchestrator:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def start(self, enable_mesh: bool = True, api_port: int = 9090) -> None:
+    def start(self, enable_mesh: bool = True, api_port: int = 9090,
+              enable_mqtt: bool = False) -> None:
         """Start all Nexus services."""
         logger.info(f"Starting Nexus orchestrator as {self.node_id}")
 
@@ -100,14 +113,28 @@ class NexusOrchestrator:
                 on_command=self._on_command,
                 on_node_changed=self._on_node_changed,
             )
-            self.mesh.start()
-            logger.info("Mesh networking started")
+            self.mesh.set_subtask_handler(self._handle_remote_subtask)
+            self.mesh.start(enable_mqtt=enable_mqtt)
+            logger.info("Mesh networking started" + (" (with MQTT)" if enable_mqtt else ""))
+
+        # Wire local task execution to the command engine
+        self.task_executor.set_local_executor(
+            lambda cmd: self._execute_and_report(cmd)
+        )
 
         # Start API server
         self._start_api(api_port)
 
         # Start proactive assistant
         self.proactive.start()
+
+        # Start task executor
+        self.task_executor.start()
+
+        # Phase 3: Auto-detect local cameras
+        self.vision.auto_detect_cameras()
+        # Warm up YOLO model in background so first snapshot is fast
+        threading.Thread(target=self.vision.warmup, daemon=True).start()
 
         # Scan local device capabilities
         self._scan_local_capabilities()
@@ -119,15 +146,32 @@ class NexusOrchestrator:
         if self.mesh:
             self.mesh.stop()
             self.mesh = None
+        self.task_executor.stop()
         self.proactive.stop()
+        if self._stream_manager:
+            self._stream_manager.shutdown()
+            self._stream_manager = None
         logger.info("Nexus orchestrator stopped")
 
     def _on_node_changed(self) -> None:
         """Called when mesh nodes change - update device registry."""
         if not self.mesh:
             return
+        # Register TCP-discovered nodes
         for node in self.mesh.nodes.values():
             self.device_registry.register_or_update(node)
+        # Register MQTT-discovered nodes (online only)
+        for device in self.mesh.discovery.get_online_devices():
+            nid = device.get("node_id", "")
+            caps = device.get("capabilities", {})
+            if nid and caps:
+                self.device_registry.register_with_capabilities(nid, caps)
+                self.task_executor.register_device(nid, caps)
+        # Remove offline MQTT devices from task executor
+        all_known = {d.get("node_id") for d in self.mesh.discovery.get_all_devices()}
+        online = {d.get("node_id") for d in self.mesh.discovery.get_online_devices()}
+        for nid in all_known - online:
+            self.task_executor.remove_device(nid)
         logger.debug(f"Device registry updated: {len(self.device_registry.list_all())} devices")
 
     _rust_core_warned = False
@@ -216,6 +260,7 @@ class NexusOrchestrator:
             result = self.command_engine.perform_action(intent.action)
             if result.success:
                 self.learning_repo.record_success(command, intent.action)
+                self.proactive.record_action(command, intent.action)
             return result
 
         # 2. LLM fallback
@@ -224,6 +269,7 @@ class NexusOrchestrator:
             result = self.command_engine.perform_action(llm_intent.action)
             if result.success:
                 self.learning_repo.record_success(command, llm_intent.action)
+                self.proactive.record_action(command, llm_intent.action)
             return result
 
         # 3. Learning-based fallback
@@ -232,6 +278,7 @@ class NexusOrchestrator:
             result = self.command_engine.perform_action(learned)
             if result.success:
                 self.learning_repo.record_success(command, learned)
+                self.proactive.record_action(command, learned)
             return CommandResult(
                 result.success,
                 f"Learned: {result.message}",
@@ -364,6 +411,30 @@ class NexusOrchestrator:
         """Get the predicted routine for today."""
         return self.proactive.get_todays_routine()
 
+    def get_reminders(self) -> list:
+        """Get recent reminder notifications."""
+        return self.proactive.get_notifications()
+
+    def dismiss_reminder(self, index: int) -> bool:
+        """Dismiss a reminder notification."""
+        return self.proactive.dismiss_notification(index)
+
+    def send_test_reminder(self) -> bool:
+        """Send a test notification."""
+        return self.proactive.send_test_notification()
+
+    def get_insights(self) -> list:
+        """Get behavioral insights."""
+        return self.proactive.get_insights()
+
+    def get_streaks(self) -> list:
+        """Get current action streaks."""
+        return self.proactive.get_streaks()
+
+    def predict_next(self) -> Optional[dict]:
+        """Predict the user's next most likely action."""
+        return self.proactive.predict_next_action()
+
     # ------------------------------------------------------------------
     # Vision
     # ------------------------------------------------------------------
@@ -376,6 +447,42 @@ class NexusOrchestrator:
         """Query all connected cameras for information."""
         return self.vision.query_cameras(query)
 
+    def snapshot_camera(self, camera_id: str) -> Optional[dict]:
+        """Capture a snapshot from a specific camera."""
+        return self.vision.capture_snapshot(camera_id)
+
+    def list_cameras(self) -> list:
+        """List all registered cameras."""
+        return self.vision.list_cameras()
+
+    def search_cameras(self, query: str) -> list:
+        """Search all cameras for objects matching a query."""
+        return self.vision.query_cameras(query)
+
+    def vision_status(self) -> dict:
+        """Get vision module status."""
+        return self.vision.status()
+
+    def snapshot_image(self, camera_id: str) -> Optional[bytes]:
+        """Capture a raw JPEG snapshot (for image endpoint)."""
+        return self.vision.capture_snapshot_raw(camera_id)
+
+    def warmup_vision(self) -> dict:
+        """Manually trigger YOLO warmup."""
+        return self.vision.warmup()
+
+    # ------------------------------------------------------------------
+    # Streaming
+    # ------------------------------------------------------------------
+
+    @property
+    def stream_manager(self):
+        """Lazy-init the camera streaming manager."""
+        if self._stream_manager is None:
+            from nexus_server.api.streaming import CameraStreamManager
+            self._stream_manager = CameraStreamManager(self.vision)
+        return self._stream_manager
+
     # ------------------------------------------------------------------
     # Device infrastructure
     # ------------------------------------------------------------------
@@ -387,3 +494,152 @@ class NexusOrchestrator:
     def get_device_capabilities(self) -> dict:
         """Get capabilities of all registered devices."""
         return self.device_registry.get_all_capabilities()
+
+    # ------------------------------------------------------------------
+    # Phase 2: Distributed Task Execution
+    # ------------------------------------------------------------------
+
+    def _execute_and_report(self, command: str) -> tuple:
+        """Execute a command and return (success, message). Used by task executor."""
+        result = self.command_engine.execute_command(command)
+        return (result.success, result.message)
+
+    def submit_task(
+        self,
+        description: str,
+        workload_type: str = "command",
+        priority: int = 5,
+    ) -> dict:
+        """Submit a task for distributed execution across the mesh."""
+        # Register available device capabilities with executor
+        if self.mesh:
+            for device in self.mesh.discovery.get_online_devices():
+                nid = device.get("node_id", "")
+                caps = device.get("capabilities", {})
+                if nid and caps:
+                    self.task_executor.register_device(nid, caps)
+
+        wl = WorkloadType(workload_type) if workload_type in [
+            w.value for w in WorkloadType
+        ] else WorkloadType.COMMAND
+
+        task = self.task_executor.submit(description, wl, priority)
+        return {
+            "task_id": task.id,
+            "status": task.status.value,
+            "strategy": task.strategy.value,
+            "sub_tasks": len(task.sub_tasks),
+        }
+
+    def get_task(self, task_id: str) -> Optional[dict]:
+        """Get status of a distributed task."""
+        task = self.task_executor.get_task(task_id)
+        if not task:
+            return None
+        return self._task_to_dict(task)
+
+    def list_tasks(self) -> list:
+        """List all distributed tasks."""
+        return [self._task_to_dict(t) for t in self.task_executor.list_tasks()]
+
+    @staticmethod
+    def _task_to_dict(task: NexusTask) -> dict:
+        return {
+            "id": task.id,
+            "description": task.description,
+            "status": task.status.value,
+            "strategy": task.strategy.value,
+            "progress": round(task.progress, 2),
+            "sub_tasks": [
+                {
+                    "id": st.id,
+                    "status": st.status.value,
+                    "assigned_node": st.assigned_node,
+                    "result": st.result,
+                }
+                for st in task.sub_tasks
+            ],
+            "result_summary": task.result_summary,
+        }
+
+    def _dispatch_subtask(self, node_id: str, subtask) -> bool:
+        """Dispatch a sub-task to a remote node via mesh/MQTT."""
+        if not self.mesh:
+            return False
+
+        payload = {
+            "task_id": getattr(subtask, "id", str(subtask)),
+            "id": getattr(subtask, "id", str(subtask)),
+            "command": getattr(subtask, "command", ""),
+            "workload_type": getattr(subtask, "workload_type", WorkloadType.COMMAND),
+            "estimated_cost": getattr(subtask, "estimated_cost", 1.0),
+        }
+
+        # Try MQTT first, then TCP
+        if self.mesh.mqtt.is_available:
+            return self.mesh.mqtt.dispatch_subtask(node_id, payload, self.node_id)
+
+        # Fallback: try direct TCP
+        for node in self.discovered_nodes:
+            if node.id == node_id:
+                self.mesh.send_command(node, payload.get("command", ""))
+                return True
+
+        return False
+
+    def _handle_remote_subtask(self, sender_id: str, payload: dict) -> None:
+        """Handle a sub-task received from a remote node, or a result coming back."""
+        task_id = payload.get("task_id", "")
+        subtask_id = payload.get("subtask_id", "")
+        command = payload.get("command", "")
+
+        # If this is a result coming back, forward to task executor
+        if "success" in payload and command == "" and task_id:
+            self.task_executor.on_subtask_result(
+                task_id,
+                subtask_id or f"{task_id}-remote",
+                payload.get("success", False),
+                payload.get("output", ""),
+            )
+            return
+
+        # Otherwise, execute the sub-task locally
+        result = self.command_engine.execute_command(command)
+
+        # Send result back via MQTT (include subtask_id so originator can match)
+        if self.mesh:
+            self.mesh.mqtt.send_result(
+                sender_id, task_id, result.success, result.message,
+                subtask_id=subtask_id,
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 2: MQTT / Network
+    # ------------------------------------------------------------------
+
+    def enable_mqtt(self, broker_host: str = "localhost", broker_port: int = 1883) -> bool:
+        """Enable MQTT bridge for cross-network communication."""
+        if not self.mesh:
+            logger.warning("Cannot enable MQTT — mesh not started")
+            return False
+        from nexus_server.mesh.discovery import build_local_capabilities
+        caps = build_local_capabilities(self.node_id, self.node_name)
+        return self.mesh.mqtt.start(local_capabilities=caps)
+
+    def get_network_summary(self) -> dict:
+        """Get a summary of the device network, including MQTT status."""
+        if not self.mesh:
+            return {"total_devices": 0, "can_fuse": False, "mqtt_available": False}
+        summary = self.mesh.discovery.get_network_summary()
+        # Add MQTT bridge status
+        mqtt_s = self.mesh.mqtt.status
+        summary["mqtt_available"] = self.mesh.mqtt.is_available
+        summary["mqtt_connected"] = mqtt_s["connected"]
+        summary["mqtt_running"] = mqtt_s["running"]
+        return summary
+
+    def mqtt_status(self) -> dict:
+        """Get MQTT bridge status."""
+        if not self.mesh:
+            return {"available": False, "connected": False, "running": False}
+        return self.mesh.mqtt.status

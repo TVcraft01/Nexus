@@ -3,6 +3,9 @@ package com.nexus.app.ui.viewmodel
 import android.Manifest
 import android.app.Application
 import com.nexus.app.skill.SkillManifest
+import com.nexus.app.api.NexusApiClient
+import android.graphics.BitmapFactory
+import android.util.Base64
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -140,6 +143,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     // the shared key.
     private var activeQrPin: String? = null
 
+    // ── Server API client ─────────────────────────────────────
+    var apiClient: NexusApiClient? = null
+        private set
+    private var previewJob: kotlinx.coroutines.Job? = null
+
     init {
         // Reflect the persisted hands-free-wake preference immediately, so the
         // toggle shows the right state (and the service re-enables the listener
@@ -176,6 +184,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             voiceModel?.close()
         } catch (_: Exception) { }
         voiceModel = null
+        stopCameraPreview()
     }
 
     fun getAvailableLanguages(): List<VoskModelManager.Language> {
@@ -1345,5 +1354,162 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     private fun formatTime(timestamp: Long): String {
         val sdf = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
         return sdf.format(java.util.Date(timestamp))
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Server connection / Vision / MQTT
+    // ═══════════════════════════════════════════════════════════
+
+    fun setServerUrl(url: String) {
+        if (url.isBlank()) return
+        apiClient = NexusApiClient(url)
+        _uiState.value = _uiState.value.copy(serverUrl = url)
+        refreshServerStatus()
+    }
+
+    fun refreshServerStatus() {
+        val client = apiClient ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val health = client.health()
+                val isConnected = health?.get("status") == "ok"
+                val vision = client.visionStatus()
+                val mqtt = client.mqttStatus()
+                val network = client.networkSummary()
+                val opencvOk = vision?.get("opencv_available") == true
+                val yoloOk = vision?.get("yolo_available") == true
+                val camCount = (vision?.get("cameras_registered") as? Number)?.toInt() ?: 0
+                _uiState.value = _uiState.value.copy(
+                    serverConnected = isConnected,
+                    visionStatus = if (isConnected) "OpenCV=$opencvOk \u2022 YOLO=$yoloOk \u2022 $camCount cams" else "Not connected",
+                    mqttAvailable = mqtt?.get("available") == true,
+                    mqttConnected = mqtt?.get("connected") == true,
+                    mqttBroker = mqtt?.get("broker_host") as? String ?: "",
+                    mqttPort = (mqtt?.get("broker_port") as? Number)?.toInt() ?: 1883,
+                    networkDeviceCount = (network?.get("total_devices") as? Number)?.toInt() ?: 0,
+                    networkGpuCount = (network?.get("gpu_devices") as? Number)?.toInt() ?: 0,
+                    networkCameraCount = (network?.get("camera_devices") as? Number)?.toInt() ?: 0,
+                    serverNodeId = client.serverStatus()?.get("node_id") as? String ?: ""
+                )
+                val cameras = client.listCameras()
+                val camIds = cameras?.mapNotNull { c ->
+                    c["id"] as? String ?: c["camera_id"] as? String
+                } ?: listOf("local-0")
+                _uiState.value = _uiState.value.copy(
+                    cameraIds = camIds,
+                    selectedCameraId = camIds.firstOrNull() ?: "local-0"
+                )
+            } catch (_: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    serverConnected = false, visionStatus = "Connection failed"
+                )
+            }
+        }
+    }
+
+    fun selectCamera(cameraId: String) {
+        val wasRunning = _uiState.value.isPreviewRunning
+        if (wasRunning) stopCameraPreview()
+        _uiState.value = _uiState.value.copy(selectedCameraId = cameraId)
+        if (wasRunning) startCameraPreview()
+    }
+
+    fun setPreviewFps(fps: Int) {
+        _uiState.value = _uiState.value.copy(previewFps = fps.coerceIn(1, 15))
+    }
+
+    fun toggleCameraPreview() {
+        if (_uiState.value.isPreviewRunning) stopCameraPreview() else startCameraPreview()
+    }
+
+    fun startCameraPreview() {
+        val client = apiClient ?: return
+        _uiState.value = _uiState.value.copy(isPreviewRunning = true, visionResultText = "", visionResultColor = 0xFFAEAEB2)
+        previewJob?.cancel()
+        previewJob = viewModelScope.launch(Dispatchers.IO) {
+            val fps = _uiState.value.previewFps
+            val interval = 1000L / fps.coerceIn(1, 15)
+            val cameraId = _uiState.value.selectedCameraId
+            while (isActive) {
+                try {
+                    val snap = client.snapshotBase64(cameraId)
+                    val b64 = snap?.get("image_base64") as? String
+                    if (b64 != null) {
+                        val bytes = Base64.decode(b64, Base64.DEFAULT)
+                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        @Suppress("UNCHECKED_CAST")
+                        val detections = snap["objects_detected"] as? List<Map<String, Any?>>
+                        val detText = detections?.take(6)?.joinToString(", ") { d ->
+                            val name = d["class"] ?: d["name"] ?: "?"
+                            val conf = (d["confidence"] as? Number)?.toDouble() ?: 0.0
+                            "$name (${(conf * 100).toInt()}%)"
+                        } ?: ""
+                        _uiState.value = _uiState.value.copy(
+                            previewBitmap = bitmap,
+                            detectionsText = if (detText.isNotBlank()) "Detected: $detText" else ""
+                        )
+                    }
+                } catch (_: Exception) { }
+                delay(interval)
+            }
+        }
+    }
+
+    fun stopCameraPreview() {
+        previewJob?.cancel()
+        previewJob = null
+        _uiState.value = _uiState.value.copy(isPreviewRunning = false, previewBitmap = null, detectionsText = "")
+    }
+
+    fun takeSnapshot() {
+        val client = apiClient ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val snap = client.snapshotBase64(_uiState.value.selectedCameraId)
+            val filepath = snap?.get("filepath") as? String
+            val size = snap?.get("image_size") as? String
+            if (filepath != null) {
+                _uiState.value = _uiState.value.copy(visionResultText = "Snapshot saved: $filepath ($size)", visionResultColor = 0xFF34C759)
+            } else {
+                val err = snap?.get("error") as? String ?: "Failed to capture"
+                _uiState.value = _uiState.value.copy(visionResultText = err, visionResultColor = 0xFFFF4433)
+            }
+        }
+    }
+
+    fun searchCameras(query: String) {
+        val client = apiClient ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(visionResultText = "Searching...", visionResultColor = 0xFFAEAEB2)
+            val results = client.searchCameras(query)
+            if (results != null && results.isNotEmpty()) {
+                val lines = results.map { cam ->
+                    val cid = cam["camera_id"] as? String ?: "?"
+                    val total = (cam["total_objects"] as? Number)?.toInt() ?: 0
+                    val objs = cam["objects_detected"] as? List<Map<String, Any?>>
+                    val names = objs?.take(5)?.joinToString(", ") { it["class"] as? String ?: it["name"] as? String ?: "?" } ?: ""
+                    "\uD83C\uDFA5 $cid: $total objects \u2014 $names"
+                }
+                _uiState.value = _uiState.value.copy(visionResultText = lines.joinToString("\n"), visionResultColor = 0xFF34C759)
+            } else {
+                _uiState.value = _uiState.value.copy(visionResultText = "No results for '$query'", visionResultColor = 0xFFAEAEB2)
+            }
+        }
+    }
+
+    fun locateItem(item: String) {
+        val client = apiClient ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(visionResultText = "Looking for '$item'...", visionResultColor = 0xFFAEAEB2)
+            val result = client.locateItem(item)
+            val found = result?.get("found") as? Boolean ?: false
+            val searched = (result?.get("cameras_searched") as? Number)?.toInt() ?: 0
+            if (found) {
+                val location = result["location"] as? String ?: "somewhere"
+                _uiState.value = _uiState.value.copy(visionResultText = "\u2705 Found '$item' at: $location", visionResultColor = 0xFF34C759)
+            } else {
+                val suggestion = result?.get("suggestion") as? String ?: ""
+                _uiState.value = _uiState.value.copy(visionResultText = "\u274C '$item' not found ($searched cameras)\n$suggestion", visionResultColor = 0xFFFF9500)
+            }
+        }
     }
 }
