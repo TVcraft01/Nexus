@@ -140,6 +140,7 @@ class MeshService extends ChangeNotifier {
     this.onlineWindow = const Duration(seconds: 25),
     this.visibleWindow = const Duration(seconds: 12),
     this.heartbeatInterval = const Duration(seconds: 8),
+    this.nearbyWindow = const Duration(seconds: 60),
   }) : clipboard = clipboard ?? _RealClipboard();
 
   /// How old a verified contact may be before a device is shown offline.
@@ -147,6 +148,12 @@ class MeshService extends ChangeNotifier {
   final Duration onlineWindow;
   final Duration visibleWindow;
   final Duration heartbeatInterval;
+
+  /// How old a discovery announcement may be before the device disappears
+  /// from the Nearby list. Discovery announces every few seconds, so a
+  /// device that stopped announcing drops out within this window instead of
+  /// lingering as a ghost forever.
+  final Duration nearbyWindow;
 
   final Map<String, PairedDevice> _paired = {};
   final Map<String, DiscoveredDevice> _nearby = {};
@@ -177,10 +184,17 @@ class MeshService extends ChangeNotifier {
 
   List<PairedDevice> get pairedDevices => _paired.values.toList();
 
+  /// Devices heard from recently. Anything older than [nearbyWindow] is
+  /// dropped — a device that stopped announcing is gone, not a ghost.
   List<DiscoveredDevice> get nearbyDevices {
+    final cutoff = DateTime.now().subtract(nearbyWindow);
+    _nearby.removeWhere((_, d) => d.lastSeen.isBefore(cutoff));
     final list = _nearby.values.toList()..sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
     return list;
   }
+
+  /// When [id] was last heard from over the mesh (TCP or discovery), if ever.
+  DateTime? lastSeenAt(String id) => _lastSeen[id];
 
   bool isPaired(String id) => _paired.containsKey(id);
 
@@ -629,6 +643,9 @@ class MeshService extends ChangeNotifier {
     if (_heartbeatRunning) return;
     _heartbeatRunning = true;
     try {
+      // Drop devices that stopped announcing, so we never keep pinging ghosts.
+      final cutoff = DateTime.now().subtract(nearbyWindow);
+      _nearby.removeWhere((_, d) => d.lastSeen.isBefore(cutoff));
       final targets = <String, PairedDevice>{};
       for (final peer in _paired.values) {
         targets[peer.id] = peer;
@@ -854,6 +871,9 @@ class MeshService extends ChangeNotifier {
   Future<void> forgetDevice(String id) async {
     _paired.remove(id);
     _sessionKeys.remove(id);
+    _nearby.remove(id); // a forgotten device must not linger as a ghost
+    _lastSeen.remove(id);
+    _verified.remove(id);
     store.removePaired(id);
     await store.save();
     notifyListeners();
@@ -925,7 +945,7 @@ class MeshService extends ChangeNotifier {
     store.addClip(entry.toJson());
     await store.save();
 
-    if (store.autoApplyClipboard) {
+    if (store.clipboardSync) {
       _lastClipboard = text;
       await clipboard.writeText(text);
     }

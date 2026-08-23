@@ -120,8 +120,8 @@ class DevicesView extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           mesh.store.clipboardSync
-              ? 'Copy on any device and it shows up here. Nothing is applied to '
-                  'your clipboard without you choosing it.'
+              ? 'Copy on any device and it lands on the others — and in your '
+                  'clipboard, ready to paste anywhere.'
               : 'Clipboard sync is off — turn it on in Settings.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
@@ -227,12 +227,13 @@ class _DeviceCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final online = mesh.isOnline(device.id);
     final visible = mesh.isVisible(device.id);
+    final lastSeen = mesh.lastSeenAt(device.id);
 
     final (Color dotColor, String statusText) = online
         ? (NexusColors.ok, 'Online')
         : visible
             ? (NexusColors.warn, 'Nearby · not reachable')
-            : (NexusColors.muted, 'Offline');
+            : (NexusColors.muted, 'Offline · last seen ${_timeAgo(lastSeen)}');
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -372,6 +373,16 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
+/// "3m ago", "2h ago" — or "never" when we have no record of the device.
+String _timeAgo(DateTime? t) {
+  if (t == null) return 'never';
+  final d = DateTime.now().difference(t);
+  if (d.inSeconds < 60) return 'just now';
+  if (d.inMinutes < 60) return '${d.inMinutes}m ago';
+  if (d.inHours < 24) return '${d.inHours}h ago';
+  return '${d.inDays}d ago';
+}
+
 class _NearbyCard extends StatelessWidget {
   final MeshService mesh;
   final DiscoveredDevice device;
@@ -397,7 +408,9 @@ class _NearbyCard extends StatelessWidget {
                     Text(device.name, style: Theme.of(context).textTheme.titleMedium, overflow: TextOverflow.ellipsis),
                     const SizedBox(height: 3),
                     Text(
-                      online ? 'Reachable · ${platformLabel(device.platform)}' : 'Seen on network · ${platformLabel(device.platform)}',
+                      online
+                          ? 'Reachable · ${platformLabel(device.platform)}'
+                          : 'Seen ${_timeAgo(device.lastSeen)} · ${platformLabel(device.platform)}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],

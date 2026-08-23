@@ -95,6 +95,31 @@ class _HomeShellState extends State<HomeShell> {
     }
   }
 
+  /// Desktop screens are wide — a stretched bottom bar looks wrong there, so
+  /// they get a left rail instead; phones keep the familiar bottom bar.
+  bool get _isDesktop =>
+      defaultTargetPlatform == TargetPlatform.linux ||
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.macOS;
+
+  static const _destinations = [
+    NavigationRailDestination(
+      icon: Icon(Icons.devices_rounded),
+      selectedIcon: Icon(Icons.devices_rounded),
+      label: Text('Devices'),
+    ),
+    NavigationRailDestination(
+      icon: Icon(Icons.mic_none_rounded),
+      selectedIcon: Icon(Icons.mic_none_rounded),
+      label: Text('Assistant'),
+    ),
+    NavigationRailDestination(
+      icon: Icon(Icons.tune_rounded),
+      selectedIcon: Icon(Icons.tune_rounded),
+      label: Text('Settings'),
+    ),
+  ];
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -109,11 +134,6 @@ class _HomeShellState extends State<HomeShell> {
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text('Copied on ${incoming.fromName ?? 'another device'}: '
                   '"${incoming.text.length > 60 ? '${incoming.text.substring(0, 60)}…' : incoming.text}"'),
-              action: SnackBarAction(
-                label: 'Paste here',
-                textColor: Theme.of(context).colorScheme.primary,
-                onPressed: () => widget.mesh.clipboard.writeText(incoming.text),
-              ),
             ));
           });
         }
@@ -124,29 +144,48 @@ class _HomeShellState extends State<HomeShell> {
           SettingsView(mesh: widget.mesh),
         ];
 
+        final content = Column(
+          children: [
+            if (_update != null)
+              _UpdateBanner(
+                info: _update!,
+                applying: _applying,
+                error: _updateError,
+                onUpdate: _updateNow,
+                onDismiss: () => setState(() => _update = null),
+              ),
+            Expanded(child: IndexedStack(index: _index, children: views)),
+          ],
+        );
+
         return Scaffold(
-          body: Column(
-            children: [
-              if (_update != null)
-                _UpdateBanner(
-                  info: _update!,
-                  applying: _applying,
-                  error: _updateError,
-                  onUpdate: _updateNow,
-                  onDismiss: () => setState(() => _update = null),
+          body: _isDesktop
+              ? Row(
+                  children: [
+                    NavigationRail(
+                      selectedIndex: _index,
+                      onDestinationSelected: (i) => setState(() => _index = i),
+                      labelType: NavigationRailLabelType.all,
+                      groupAlignment: -0.8,
+                      backgroundColor: NexusColors.surface,
+                      destinations: _destinations,
+                    ),
+                    const VerticalDivider(width: 1),
+                    Expanded(child: content),
+                  ],
+                )
+              : content,
+          bottomNavigationBar: _isDesktop
+              ? null
+              : NavigationBar(
+                  selectedIndex: _index,
+                  onDestinationSelected: (i) => setState(() => _index = i),
+                  destinations: const [
+                    NavigationDestination(icon: Icon(Icons.devices_rounded), label: 'Devices'),
+                    NavigationDestination(icon: Icon(Icons.mic_none_rounded), label: 'Assistant'),
+                    NavigationDestination(icon: Icon(Icons.tune_rounded), label: 'Settings'),
+                  ],
                 ),
-              Expanded(child: IndexedStack(index: _index, children: views)),
-            ],
-          ),
-          bottomNavigationBar: NavigationBar(
-            selectedIndex: _index,
-            onDestinationSelected: (i) => setState(() => _index = i),
-            destinations: const [
-              NavigationDestination(icon: Icon(Icons.devices_rounded), label: 'Devices'),
-              NavigationDestination(icon: Icon(Icons.mic_none_rounded), label: 'Assistant'),
-              NavigationDestination(icon: Icon(Icons.tune_rounded), label: 'Settings'),
-            ],
-          ),
         );
       },
     );

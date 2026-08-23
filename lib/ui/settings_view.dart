@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/version.dart';
 import '../mesh/mesh_service.dart';
 import 'devices_view.dart';
 import 'theme.dart';
@@ -60,24 +61,14 @@ class _SettingsViewState extends State<SettingsView> {
 
         _SectionCard(
           children: [
-            _SectionTitle('Clipboard everywhere'),
+            _SectionTitle('Clipboard sync'),
             _ToggleRow(
-              title: 'Watch my clipboard',
-              detail: 'When I copy something, share it with paired devices.',
+              title: 'Sync clipboard across devices',
+              detail: 'One switch for everything: what I copy is shared with paired '
+                  'devices, and what they copy lands directly on my clipboard.',
               value: mesh.store.clipboardSync,
               onChanged: (v) {
                 setState(() => mesh.store.clipboardSync = v);
-                mesh.store.save();
-              },
-            ),
-            const Divider(height: 20),
-            _ToggleRow(
-              title: 'Apply incoming clips automatically',
-              detail: 'Copy on one device, paste anywhere on the other — text lands '
-                  'directly on my clipboard. Turn off to never overwrite it.',
-              value: mesh.store.autoApplyClipboard,
-              onChanged: (v) {
-                setState(() => mesh.store.autoApplyClipboard = v);
                 mesh.store.save();
               },
             ),
@@ -157,8 +148,8 @@ class _SettingsViewState extends State<SettingsView> {
         _SectionCard(
           children: [
             _SectionTitle('About'),
-            const _InfoRow(
-              title: 'Nexus 0.1 — the mesh',
+            _InfoRow(
+              title: 'Nexus $appVersion — the mesh',
               detail: 'Local-first. No cloud, no account. Everything between paired '
                   'devices is encrypted (AES-GCM) and travels direct.',
               icon: Icons.info_outline_rounded,

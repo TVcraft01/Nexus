@@ -25,9 +25,9 @@ One Flutter codebase: Android + Linux today, Windows next, then macOS and web.
   it is encrypted with a key derived from it (AES-GCM + HKDF). A stranger on
   your network can't pair with you and can't read your traffic. A device that
   sends a wrong code is rejected.
-- **Clipboard everywhere.** Copy text on any device; it appears on every
-  paired device's clipboard tray, encrypted end to end. Nothing overwrites
-  your clipboard without you choosing — auto-apply is off by default.
+- **Clipboard everywhere.** One switch in Settings: copy text on any device
+  and it lands on every paired device's clipboard, ready to paste anywhere —
+  encrypted end to end.
 - **Address re-finding.** If a paired device's IP changes (router reboot),
   the next successful contact updates its stored address automatically.
 - **Everything persists on-device** — identity, pairing secrets, clipboard
@@ -35,7 +35,7 @@ One Flutter codebase: Android + Linux today, Windows next, then macOS and web.
 
 ## What's verified
 
-- 21 automated tests pass, including a **real two-instance pairing and
+- 41 automated tests pass, including a **real two-instance pairing and
   encrypted clipboard exchange over localhost** (two `MeshService` instances
   on the same machine), wrong-code rejection, tamper/truncation rejection,
   offline honesty, and persistence across restarts.

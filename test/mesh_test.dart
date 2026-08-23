@@ -114,13 +114,13 @@ void main() {
     }
     expect(found, isTrue, reason: 'PC never received the clipboard message');
 
-    // Auto-apply is ON by default: the text lands directly in the PC's
+    // Clipboard sync is ON by default: the text lands directly in the PC's
     // clipboard, ready to paste anywhere.
     expect(clipA.value, 'hello from the phone');
   });
 
-  test('with auto-apply off, incoming clips do not touch the clipboard', () async {
-    storeA.autoApplyClipboard = false;
+  test('with clipboard sync off, incoming clips stay in the tray only', () async {
+    storeA.clipboardSync = false;
     await storeA.save();
     await meshA.start();
     await meshB.start();
@@ -136,7 +136,7 @@ void main() {
       found = meshA.clipTray.any((e) => e.text == 'should stay in the tray only');
     }
     expect(found, isTrue);
-    expect(clipA.value, isNull); // not auto-applied
+    expect(clipA.value, isNull); // not applied to the clipboard
   });
 
   test('pairs persist across restarts', () async {
