@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
-import 'devices_view.dart';
 import 'theme.dart';
 
 class SettingsView extends StatefulWidget {
@@ -16,8 +15,6 @@ class SettingsView extends StatefulWidget {
 }
 
 class _SettingsViewState extends State<SettingsView> {
-  late final TextEditingController _nameController =
-      TextEditingController(text: widget.mesh.identity.name);
   bool? _allFilesAccess; // Android: can this device read its whole storage?
 
   @override
@@ -29,19 +26,6 @@ class _SettingsViewState extends State<SettingsView> {
   }
 
   @override
-  void dispose() {
-    _nameController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _rename() async {
-    widget.mesh.renameDevice(_nameController.text);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Device name updated.')));
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
     final mesh = widget.mesh;
     return ListView(
@@ -49,45 +33,19 @@ class _SettingsViewState extends State<SettingsView> {
       children: [
         Text('Settings', style: Theme.of(context).textTheme.headlineMedium),
         const SizedBox(height: 4),
-        Text('This device and how it behaves.', style: Theme.of(context).textTheme.bodySmall),
-        const SizedBox(height: 20),
-
-        _SectionCard(
-          children: [
-            _SectionTitle('This device'),
-            TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Device name'),
-              onSubmitted: (_) => _rename(),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                FilledButton.icon(
-                  onPressed: _rename,
-                  icon: const Icon(Icons.save_rounded, size: 16),
-                  label: const Text('Save name'),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'How other devices see this one. ${platformLabel(mesh.identity.platform)} · '
-                    'listening on port ${mesh.port}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ],
-            ),
-          ],
+        Text(
+          'This device and how it behaves.',
+          style: Theme.of(context).textTheme.bodySmall,
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 20),
 
         _SectionCard(
           children: [
             _SectionTitle('Clipboard sync'),
             _ToggleRow(
               title: 'Sync clipboard across devices',
-              detail: 'One switch for everything: what I copy is shared with paired '
+              detail:
+                  'One switch for everything: what I copy is shared with paired '
                   'devices, and what they copy lands directly on my clipboard.',
               value: mesh.store.clipboardSync,
               onChanged: (v) {
@@ -114,7 +72,8 @@ class _SettingsViewState extends State<SettingsView> {
             const Divider(height: 20),
             _InfoRow(
               title: 'Reachability is honest',
-              detail: 'A device is marked online only when this device has actually '
+              detail:
+                  'A device is marked online only when this device has actually '
                   'talked to it. If it shows “not reachable”, it really wasn’t.',
               icon: Icons.verified_user_outlined,
             ),
@@ -130,10 +89,10 @@ class _SettingsViewState extends State<SettingsView> {
                 title: 'Show all your files to paired devices',
                 detail: _allFilesAccess == false
                     ? 'Without it, devices only see files Nexus downloaded. Grant '
-                        'it so your PC’s file manager can browse your photos, '
-                        'downloads and music.'
+                          'it so your PC’s file manager can browse your photos, '
+                          'downloads and music.'
                     : 'Paired devices can browse everything on this device — '
-                        'photos, downloads, music — and delete files you allow.',
+                          'photos, downloads, music — and delete files you allow.',
                 icon: _allFilesAccess == false
                     ? Icons.lock_outline_rounded
                     : Icons.folder_open_rounded,
@@ -150,7 +109,8 @@ class _SettingsViewState extends State<SettingsView> {
                     size: 18,
                   ),
                   label: Text(
-                      _allFilesAccess == false ? 'Grant access' : 'Open settings'),
+                    _allFilesAccess == false ? 'Grant access' : 'Open settings',
+                  ),
                 ),
               ),
             ],
@@ -163,7 +123,8 @@ class _SettingsViewState extends State<SettingsView> {
             _SectionTitle('Updates'),
             _ToggleRow(
               title: 'Check for updates automatically',
-              detail: 'On startup, look for a newer Nexus release on GitHub and offer '
+              detail:
+                  'On startup, look for a newer Nexus release on GitHub and offer '
                   'to install it.',
               value: mesh.store.autoUpdate,
               onChanged: (v) {
@@ -177,63 +138,19 @@ class _SettingsViewState extends State<SettingsView> {
 
         _SectionCard(
           children: [
-            _SectionTitle('Paired devices'),
-            if (mesh.pairedDevices.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Text('None yet. Pair a device from the Devices tab.',
-                    style: Theme.of(context).textTheme.bodySmall),
-              )
-            else
-              ...mesh.pairedDevices.map((d) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(platformIcon(d.platform), color: NexusColors.accent),
-                    title: Text(d.name, style: Theme.of(context).textTheme.titleMedium),
-                    subtitle: Text(
-                      mesh.isOnline(d.id) ? 'Online · ${d.address}:${d.port}' : 'Offline',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    trailing: IconButton(
-                      tooltip: 'Forget',
-                      icon: const Icon(Icons.delete_outline_rounded, size: 20, color: NexusColors.danger),
-                      onPressed: () async {
-                        final confirmed = await showDialog<bool>(
-                          context: context,
-                          builder: (context) => AlertDialog(
-                            backgroundColor: NexusColors.surface,
-                            title: const Text('Forget device?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                            content: Text('${d.name} will need to be paired again.', style: Theme.of(context).textTheme.bodyMedium),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                              FilledButton(
-                                style: FilledButton.styleFrom(backgroundColor: NexusColors.danger, foregroundColor: Colors.white),
-                                onPressed: () => Navigator.pop(context, true),
-                                child: const Text('Forget'),
-                              ),
-                            ],
-                          ),
-                        );
-                        if (confirmed == true) await mesh.forgetDevice(d.id);
-                      },
-                    ),
-                  )),
-          ],
-        ),
-        const SizedBox(height: 14),
-
-        _SectionCard(
-          children: [
             _SectionTitle('About'),
             _InfoRow(
               title: 'Nexus $appVersion — the mesh',
-              detail: 'Local-first. No cloud, no account. Everything between paired '
+              detail:
+                  'Local-first. No cloud, no account. Everything between paired '
                   'devices is encrypted (AES-GCM) and travels direct.',
               icon: Icons.info_outline_rounded,
             ),
             const Divider(height: 20),
             const _InfoRow(
               title: 'Privacy',
-              detail: 'Pairing secrets and your data stay on your devices. Nothing is '
+              detail:
+                  'Pairing secrets and your data stay on your devices. Nothing is '
                   'sent anywhere, ever.',
               icon: Icons.lock_outline_rounded,
             ),
@@ -251,7 +168,10 @@ class _SectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      child: Padding(padding: const EdgeInsets.all(16), child: Column(children: children)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(children: children),
+      ),
     );
   }
 }
@@ -264,7 +184,11 @@ class _SectionTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: Text(text, style: Theme.of(context).textTheme.titleMedium?.copyWith(color: NexusColors.accent)),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.titleMedium
+            ?.copyWith(color: NexusColors.accent),
+      ),
     );
   }
 }
@@ -275,7 +199,12 @@ class _ToggleRow extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;
 
-  const _ToggleRow({required this.title, required this.detail, required this.value, required this.onChanged});
+  const _ToggleRow({
+    required this.title,
+    required this.detail,
+    required this.value,
+    required this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -301,7 +230,11 @@ class _InfoRow extends StatelessWidget {
   final String title;
   final String detail;
   final IconData icon;
-  const _InfoRow({required this.title, required this.detail, required this.icon});
+  const _InfoRow({
+    required this.title,
+    required this.detail,
+    required this.icon,
+  });
 
   @override
   Widget build(BuildContext context) {

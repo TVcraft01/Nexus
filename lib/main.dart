@@ -2,7 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show DeviceOrientation, SystemChrome;
+import 'package:flutter/services.dart'
+    show DeviceOrientation, SystemChrome, SystemUiOverlayStyle;
 
 import 'core/identity.dart';
 import 'core/store.dart';
@@ -41,7 +42,11 @@ Future<void> main() async {
   // NEXUS_DATA_DIR lets you run a second instance with its own identity
   // (e.g. two copies of the app on one computer to test the mesh).
   final dataDir = Platform.environment['NEXUS_DATA_DIR'];
-  final store = NexusStore(explicitPath: dataDir == null ? null : '$dataDir${Platform.pathSeparator}state.json');
+  final store = NexusStore(
+    explicitPath: dataDir == null
+        ? null
+        : '$dataDir${Platform.pathSeparator}state.json',
+  );
   await store.load();
 
   // First run: create a stable identity for this device.
@@ -57,10 +62,7 @@ Future<void> main() async {
     await store.save();
   }
 
-  final mesh = MeshService(
-    identity: identity,
-    store: store,
-  );
+  final mesh = MeshService(identity: identity, store: store);
   await mesh.start();
 
   // Linux: expose the mesh to the file manager via a localhost gateway that
@@ -85,6 +87,16 @@ Future<void> main() async {
     }
   }
 
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: NexusColors.bg,
+      systemNavigationBarColor: NexusColors.surface,
+      systemNavigationBarDividerColor: NexusColors.surface,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarIconBrightness: Brightness.light,
+      systemNavigationBarContrastEnforced: false,
+    ),
+  );
   runApp(NexusApp(mesh: mesh));
 }
 

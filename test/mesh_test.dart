@@ -148,6 +148,33 @@ void main() {
     expect(clipA.value, 'hello from the phone');
   });
 
+  test('clipboard retries delivery after a temporary disconnect', () async {
+    await meshA.start();
+    await meshB.start();
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    final peerA = meshB.pairedDevices.single;
+    peerA.address = '192.0.2.1';
+    peerA.addresses = ['192.0.2.1'];
+    await meshB.broadcastClipboard('retry me');
+    expect(clipA.value, isNull);
+
+    peerA.address = '127.0.0.1';
+    peerA.addresses = ['127.0.0.1'];
+    var received = false;
+    for (var i = 0; i < 12 && !received; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 1600));
+      received = clipA.value == 'retry me';
+    }
+    expect(received, isTrue, reason: meshB.lastFileError);
+  });
+
   test('with clipboard sync off, incoming clips are not applied', () async {
     storeA.clipboardSync = false;
     await storeA.save();

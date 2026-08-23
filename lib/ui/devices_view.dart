@@ -22,6 +22,41 @@ IconData platformIcon(String platform) {
   }
 }
 
+Future<void> _renameThisDevice(BuildContext context, MeshService mesh) async {
+  final controller = TextEditingController(text: mesh.identity.name);
+  final name = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: NexusColors.surface,
+      title: const Text('Rename this device'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        maxLength: 24,
+        decoration: const InputDecoration(labelText: 'Device name'),
+        onSubmitted: (value) => Navigator.pop(dialogContext, value.trim()),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  if (name == null || name.isEmpty || !context.mounted) return;
+  await mesh.renameDevice(name);
+  if (context.mounted) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Device name updated.')));
+  }
+}
+
 String platformLabel(String platform) {
   switch (platform) {
     case 'android':
@@ -47,7 +82,9 @@ class DevicesView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final paired = mesh.pairedDevices;
-    final nearby = mesh.nearbyDevices.where((d) => !mesh.isPaired(d.id)).toList();
+    final nearby = mesh.nearbyDevices
+        .where((d) => !mesh.isPaired(d.id))
+        .toList();
     final online = mesh.onlineCount;
 
     return ListView(
@@ -62,16 +99,32 @@ class DevicesView extends StatelessWidget {
                 color: NexusColors.accent.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: const Icon(Icons.blur_on_rounded, color: NexusColors.accent, size: 24),
+              child: const Icon(
+                Icons.blur_on_rounded,
+                color: NexusColors.accent,
+                size: 24,
+              ),
             ),
             const SizedBox(width: 14),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Nexus', style: Theme.of(context).textTheme.headlineMedium),
+                Text(
+                  'Nexus',
+                  style: Theme.of(context).textTheme.headlineMedium,
+                ),
                 const SizedBox(height: 2),
-                Text('Your devices, one system', style: Theme.of(context).textTheme.bodySmall),
+                Text(
+                  'Your devices, one system',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
               ],
+            ),
+            const Spacer(),
+            IconButton(
+              onPressed: () => _renameThisDevice(context, mesh),
+              tooltip: 'Rename this device',
+              icon: const Icon(Icons.edit_outlined, color: NexusColors.muted),
             ),
           ],
         ),
@@ -83,7 +136,10 @@ class DevicesView extends StatelessWidget {
             Text('Your devices', style: Theme.of(context).textTheme.titleLarge),
             const Spacer(),
             if (paired.isNotEmpty)
-              Text('$online online', style: Theme.of(context).textTheme.bodySmall),
+              Text(
+                '$online online',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
           ],
         ),
         const SizedBox(height: 12),
@@ -113,7 +169,11 @@ class _StatusStrip extends StatelessWidget {
   final int total;
   final MeshService mesh;
 
-  const _StatusStrip({required this.online, required this.total, required this.mesh});
+  const _StatusStrip({
+    required this.online,
+    required this.total,
+    required this.mesh,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -136,8 +196,8 @@ class _StatusStrip extends StatelessWidget {
                     total == 0
                         ? 'No paired devices yet. Pair your first device to begin.'
                         : online == total
-                            ? 'All $total devices reachable right now.'
-                            : '$online of $total devices reachable right now.',
+                        ? 'All $total devices reachable right now.'
+                        : '$online of $total devices reachable right now.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
           ),
@@ -155,9 +215,12 @@ class _PulseDot extends StatefulWidget {
   State<_PulseDot> createState() => _PulseDotState();
 }
 
-class _PulseDotState extends State<_PulseDot> with SingleTickerProviderStateMixin {
-  late final AnimationController _controller =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 1600))..repeat();
+class _PulseDotState extends State<_PulseDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  )..repeat();
 
   @override
   void dispose() {
@@ -176,11 +239,27 @@ class _PulseDotState extends State<_PulseDot> with SingleTickerProviderStateMixi
           FadeTransition(
             opacity: Tween(begin: 0.5, end: 0.0).animate(_controller),
             child: ScaleTransition(
-              scale: Tween(begin: 0.7, end: 1.8).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut)),
-              child: Container(width: 18, height: 18, decoration: BoxDecoration(color: widget.color.withValues(alpha: 0.35), shape: BoxShape.circle)),
+              scale: Tween(begin: 0.7, end: 1.8).animate(
+                CurvedAnimation(parent: _controller, curve: Curves.easeOut),
+              ),
+              child: Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(alpha: 0.35),
+                  shape: BoxShape.circle,
+                ),
+              ),
             ),
           ),
-          Container(width: 9, height: 9, decoration: BoxDecoration(color: widget.color, shape: BoxShape.circle)),
+          Container(
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(
+              color: widget.color,
+              shape: BoxShape.circle,
+            ),
+          ),
         ],
       ),
     );
@@ -202,8 +281,8 @@ class _DeviceCard extends StatelessWidget {
     final (Color dotColor, String statusText) = online
         ? (NexusColors.ok, 'Online')
         : visible
-            ? (NexusColors.warn, 'Nearby · not reachable')
-            : (NexusColors.muted, 'Offline · last seen ${_timeAgo(lastSeen)}');
+        ? (NexusColors.warn, 'Nearby · not reachable')
+        : (NexusColors.muted, 'Offline · last seen ${_timeAgo(lastSeen)}');
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -218,13 +297,20 @@ class _DeviceCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(device.name, style: Theme.of(context).textTheme.titleMedium, overflow: TextOverflow.ellipsis),
+                    Text(
+                      device.name,
+                      style: Theme.of(context).textTheme.titleMedium,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     const SizedBox(height: 3),
                     Row(
                       children: [
                         _PulseDot(color: dotColor),
                         const SizedBox(width: 6),
-                        Text('$statusText · ${platformLabel(device.platform)}', style: Theme.of(context).textTheme.bodySmall),
+                        Text(
+                          '$statusText · ${platformLabel(device.platform)}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       ],
                     ),
                   ],
@@ -232,58 +318,49 @@ class _DeviceCard extends StatelessWidget {
               ),
               PopupMenuButton<String>(
                 color: NexusColors.surfaceHi,
-                icon: const Icon(Icons.more_vert, color: NexusColors.muted, size: 20),
+                icon: const Icon(
+                  Icons.more_vert,
+                  color: NexusColors.muted,
+                  size: 20,
+                ),
                 onSelected: (value) async {
                   switch (value) {
-                    case 'send':
-                      final controller = TextEditingController();
-                      final text = await showDialog<String>(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          backgroundColor: NexusColors.surface,
-                          title: Text('Send to ${device.name}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                          content: TextField(
-                            controller: controller,
-                            autofocus: true,
-                            maxLines: 4,
-                            minLines: 2,
-                            decoration: const InputDecoration(hintText: 'Text to send…'),
-                          ),
-                          actions: [
-                            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-                            FilledButton(
-                              onPressed: () => Navigator.pop(context, controller.text),
-                              child: const Text('Send'),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (text != null && text.trim().isNotEmpty) {
-                        final sent = await mesh.broadcastClipboard(text.trim());
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                            content: Text(sent > 0 ? 'Sent to $sent device${sent == 1 ? '' : 's'}.' : 'Could not reach ${device.name} right now.'),
-                          ));
-                        }
-                      }
                     case 'details':
                       showDialog(
                         context: context,
                         builder: (context) => AlertDialog(
                           backgroundColor: NexusColors.surface,
-                          title: Text(device.name, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                          title: Text(
+                            device.name,
+                            style: const TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                           content: Column(
                             mainAxisSize: MainAxisSize.min,
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               _DetailRow(label: 'Status', value: statusText),
-                              _DetailRow(label: 'Platform', value: platformLabel(device.platform)),
-                              _DetailRow(label: 'Address', value: '${device.address}:${device.port}'),
-                              _DetailRow(label: 'Paired', value: 'Encrypted · direct'),
+                              _DetailRow(
+                                label: 'Platform',
+                                value: platformLabel(device.platform),
+                              ),
+                              _DetailRow(
+                                label: 'Address',
+                                value: '${device.address}:${device.port}',
+                              ),
+                              _DetailRow(
+                                label: 'Paired',
+                                value: 'Encrypted · direct',
+                              ),
                             ],
                           ),
                           actions: [
-                            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('Close'),
+                            ),
                           ],
                         ),
                       );
@@ -292,12 +369,27 @@ class _DeviceCard extends StatelessWidget {
                         context: context,
                         builder: (context) => AlertDialog(
                           backgroundColor: NexusColors.surface,
-                          title: const Text('Forget device?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                          content: Text('${device.name} will need to be paired again to connect.', style: Theme.of(context).textTheme.bodyMedium),
+                          title: const Text(
+                            'Forget device?',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          content: Text(
+                            '${device.name} will need to be paired again to connect.',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
                           actions: [
-                            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('Cancel'),
+                            ),
                             FilledButton(
-                              style: FilledButton.styleFrom(backgroundColor: NexusColors.danger, foregroundColor: Colors.white),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: NexusColors.danger,
+                                foregroundColor: Colors.white,
+                              ),
                               onPressed: () => Navigator.pop(context, true),
                               child: const Text('Forget'),
                             ),
@@ -310,7 +402,6 @@ class _DeviceCard extends StatelessWidget {
                   }
                 },
                 itemBuilder: (context) => const [
-                  PopupMenuItem(value: 'send', child: Text('Send text')),
                   PopupMenuItem(value: 'details', child: Text('Details')),
                   PopupMenuItem(value: 'forget', child: Text('Forget device')),
                 ],
@@ -375,7 +466,11 @@ class _NearbyCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(device.name, style: Theme.of(context).textTheme.titleMedium, overflow: TextOverflow.ellipsis),
+                    Text(
+                      device.name,
+                      style: Theme.of(context).textTheme.titleMedium,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     const SizedBox(height: 3),
                     Text(
                       online
@@ -387,7 +482,8 @@ class _NearbyCard extends StatelessWidget {
                 ),
               ),
               OutlinedButton(
-                onPressed: () => showPairSheet(context, mesh: mesh, nearby: device),
+                onPressed: () =>
+                    showPairSheet(context, mesh: mesh, nearby: device),
                 child: const Text('Pair'),
               ),
             ],
@@ -404,7 +500,9 @@ class _Avatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final letters = name.trim().isEmpty ? '?' : name.trim().substring(0, 1).toUpperCase();
+    final letters = name.trim().isEmpty
+        ? '?'
+        : name.trim().substring(0, 1).toUpperCase();
     return Container(
       width: 42,
       height: 42,
@@ -413,7 +511,14 @@ class _Avatar extends StatelessWidget {
         color: NexusColors.surfaceHi,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Text(letters, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: NexusColors.accent)),
+      child: Text(
+        letters,
+        style: const TextStyle(
+          fontSize: 17,
+          fontWeight: FontWeight.w700,
+          color: NexusColors.accent,
+        ),
+      ),
     );
   }
 }
@@ -429,9 +534,16 @@ class _EmptyState extends StatelessWidget {
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            const Icon(Icons.devices_rounded, size: 40, color: NexusColors.muted),
+            const Icon(
+              Icons.devices_rounded,
+              size: 40,
+              color: NexusColors.muted,
+            ),
             const SizedBox(height: 12),
-            Text('Nothing paired yet', style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Nothing paired yet',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 6),
             Text(
               'On the other device, tap “Show my code”, then pair with it here — '

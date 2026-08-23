@@ -279,7 +279,11 @@ class MeshService extends ChangeNotifier {
   Timer? _heartbeatTimer;
   Timer? _clipboardTimer;
   bool _heartbeatRunning = false;
+  bool _clipboardSending = false;
   String? _lastClipboard;
+  String? _pendingClipboard;
+  final Set<String> _clipboardDeliveredTo = {};
+  final Map<String, Completer<bool>> _pendingClipboardAcks = {};
   bool _started = false;
 
   int get port => store.port;
@@ -733,6 +737,12 @@ class MeshService extends ChangeNotifier {
       case NexusMessage.clipboard:
         if (!encrypted) return; // clipboard text must never ride in plaintext
         await _handleIncomingClip(msg);
+
+      case NexusMessage.clipboardAck:
+        if (!encrypted) return;
+        final req = msg.payload['req'];
+        final ack = req is String ? _pendingClipboardAcks.remove(req) : null;
+        if (ack != null && !ack.isCompleted) ack.complete(true);
 
       case NexusMessage.fileList:
         if (!encrypted) return; // file paths are private — never in plaintext
@@ -2327,6 +2337,7 @@ class MeshService extends ChangeNotifier {
   Future<void> forgetDevice(String id) async {
     _paired.remove(id);
     _sessionKeys.remove(id);
+    _clipboardDeliveredTo.remove(id);
     _nearby.remove(id); // a forgotten device must not linger as a ghost
     _lastSeen.remove(id);
     _verified.remove(id);
@@ -2352,47 +2363,101 @@ class MeshService extends ChangeNotifier {
   Future<void> _checkClipboard() async {
     if (!store.clipboardSync) return;
     final text = await clipboard.readText();
-    if (text == null) return;
-    if (text == _lastClipboard) return;
-    _lastClipboard = text;
-    await broadcastClipboard(text);
+    if (text != null && text != _lastClipboard) {
+      _lastClipboard = text;
+      _pendingClipboard = text;
+      _clipboardDeliveredTo.clear();
+    }
+    await _flushPendingClipboard();
   }
 
-  /// Share [text] to every paired device that is reachable.
+  /// Share [text] to every paired device that is reachable. Failed deliveries
+  /// remain pending and are retried by the clipboard poller on the next tick.
   Future<int> broadcastClipboard(String text) async {
+    _lastClipboard = text;
+    _pendingClipboard = text;
+    _clipboardDeliveredTo.clear();
+    return _flushPendingClipboard();
+  }
+
+  Future<int> _flushPendingClipboard() async {
+    if (_clipboardSending || _pendingClipboard == null) return 0;
+    _clipboardSending = true;
     var sent = 0;
-    for (final peer in _paired.values.toList()) {
-      final msg = NexusMessage(
-        type: NexusMessage.clipboard,
-        from: identity.id,
-        to: peer.id,
-        payload: {'text': text, 'fromName': identity.name},
-        id: _newId(),
-        ts: DateTime.now().millisecondsSinceEpoch,
-      );
-      if (await _sendEnc(peer, msg)) {
-        sent++;
-        debugPrint('NEXUS mesh: clipboard -> ${peer.id}');
-      } else {
-        debugPrint(
-          'NEXUS mesh: clipboard FAILED -> ${peer.id} (${peer.address}:${peer.port})',
+    try {
+      final text = _pendingClipboard;
+      if (text == null) return 0;
+      for (final peer in _paired.values.toList()) {
+        if (_clipboardDeliveredTo.contains(peer.id)) continue;
+        final req = _newId();
+        final ack = Completer<bool>();
+        _pendingClipboardAcks[req] = ack;
+        final msg = NexusMessage(
+          type: NexusMessage.clipboard,
+          from: identity.id,
+          to: peer.id,
+          payload: {'req': req, 'text': text, 'fromName': identity.name},
+          id: _newId(),
+          ts: DateTime.now().millisecondsSinceEpoch,
         );
+        if (await _sendEnc(peer, msg)) {
+          try {
+            if (await ack.future.timeout(const Duration(seconds: 5))) {
+              _clipboardDeliveredTo.add(peer.id);
+              sent++;
+              debugPrint('NEXUS mesh: clipboard -> ${peer.id}');
+            }
+          } catch (_) {
+            debugPrint('NEXUS mesh: clipboard ACK TIMEOUT -> ${peer.id}');
+          } finally {
+            _pendingClipboardAcks.remove(req);
+          }
+        } else {
+          _pendingClipboardAcks.remove(req);
+          debugPrint(
+            'NEXUS mesh: clipboard FAILED -> ${peer.id} (${peer.address}:${peer.port})',
+          );
+        }
       }
+      if (_paired.keys.every(_clipboardDeliveredTo.contains)) {
+        _pendingClipboard = null;
+        _clipboardDeliveredTo.clear();
+      }
+      notifyListeners();
+      return sent;
+    } finally {
+      _clipboardSending = false;
     }
-    notifyListeners();
-    return sent;
   }
 
   Future<void> _handleIncomingClip(NexusMessage msg) async {
     final text = msg.payload['text'];
     if (text is! String || text.isEmpty) return;
-    // Ignore echoes of something this device already copied.
+    final req = msg.payload['req'];
+    final peer = _paired[msg.from];
+    if (req is String && peer != null) {
+      await _sendEnc(
+        peer,
+        NexusMessage(
+          type: NexusMessage.clipboardAck,
+          from: identity.id,
+          to: peer.id,
+          payload: {'req': req},
+          id: _newId(),
+          ts: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+    }
+    // Ignore echoes of something this device already copied, but acknowledge
+    // them above so the sender does not retry forever.
     if (text == _lastClipboard) return;
 
     debugPrint('NEXUS mesh: clipboard <- ${msg.from}');
 
     if (store.clipboardSync) {
       _lastClipboard = text;
+      _pendingClipboard = null;
+      _clipboardDeliveredTo.clear();
       await clipboard.writeText(text);
     }
     lastIncomingClip = ClipEntry(
