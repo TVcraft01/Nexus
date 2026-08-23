@@ -38,7 +38,7 @@ void main() {
     clipB = FakeClipboard();
 
     meshA = MeshService(
-      identity: const DeviceInfo(id: 'device-a', name: 'Test Linux PC', platform: 'linux'),
+      identity: DeviceInfo(id: 'device-a', name: 'Test Linux PC', platform: 'linux'),
       store: storeA,
       clipboard: clipA,
       onlineWindow: const Duration(seconds: 3),
@@ -46,7 +46,7 @@ void main() {
       heartbeatInterval: const Duration(seconds: 2),
     );
     meshB = MeshService(
-      identity: const DeviceInfo(id: 'device-b', name: 'Test Phone', platform: 'android'),
+      identity: DeviceInfo(id: 'device-b', name: 'Test Phone', platform: 'android'),
       store: storeB,
       clipboard: clipB,
       onlineWindow: const Duration(seconds: 3),
@@ -148,7 +148,7 @@ void main() {
 
     await meshB.stop();
     final restarted = MeshService(
-      identity: const DeviceInfo(id: 'device-b', name: 'Test Phone', platform: 'android'),
+      identity: DeviceInfo(id: 'device-b', name: 'Test Phone', platform: 'android'),
       store: storeB,
       clipboard: clipB,
     );
@@ -156,6 +156,35 @@ void main() {
     expect(restarted.isPaired('device-a'), isTrue);
     expect(restarted.pairedDevices.single.pairingSecret, session.code);
     await restarted.stop();
+  });
+
+  test('renaming a device propagates the new name to paired devices', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(address: '127.0.0.1', port: meshA.port, code: session.code);
+    expect(result.ok, isTrue);
+
+    // Rename A; the next heartbeat ping carries the new name, and B must
+    // learn it without a restart.
+    await meshA.renameDevice('New PC Name');
+
+    // The renaming device's own in-memory identity updates immediately.
+    expect(meshA.identity.name, 'New PC Name');
+
+    var learned = false;
+    for (var i = 0; i < 30 && !learned; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      learned = meshB.pairedDevices.any((d) => d.id == 'device-a' && d.name == 'New PC Name');
+    }
+    expect(learned, isTrue, reason: 'B never learned A\'s new name');
+
+    // The new name is persisted in B's store, not just in memory.
+    final reloaded = NexusStore(explicitPath: storeB.explicitPath);
+    await reloaded.load();
+    final stored = reloaded.pairedDevices.firstWhere((d) => d['id'] == 'device-a');
+    expect(stored['name'], 'New PC Name');
   });
 
   test('unreachable device reports honestly as offline', () async {

@@ -40,6 +40,11 @@ class NexusStore {
 
   set broadcastDiscovery(bool value) => _settings()['broadcastDiscovery'] = value;
 
+  /// Whether the app checks GitHub for a newer release on startup.
+  bool get autoUpdate => ((_data['settings'] as Map<String, dynamic>?)?['autoUpdate'] as bool?) ?? true;
+
+  set autoUpdate(bool value) => _settings()['autoUpdate'] = value;
+
   Map<String, dynamic> _settings() =>
       _data.putIfAbsent('settings', () => <String, dynamic>{});
 

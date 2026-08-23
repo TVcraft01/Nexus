@@ -9,6 +9,7 @@ import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
 import 'assistant_view.dart';
 import 'devices_view.dart';
+import 'pair_sheet.dart';
 import 'settings_view.dart';
 import 'theme.dart';
 
@@ -32,9 +33,11 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    // Check for updates on supported platforms (Linux + Android).
-    if (defaultTargetPlatform == TargetPlatform.linux ||
-        defaultTargetPlatform == TargetPlatform.android) {
+    // Check for updates on startup when auto-update is enabled and the
+    // platform supports it (Linux + Android).
+    if (widget.mesh.store.autoUpdate &&
+        (defaultTargetPlatform == TargetPlatform.linux ||
+            defaultTargetPlatform == TargetPlatform.android)) {
       unawaited(_checkForUpdates());
     }
   }
@@ -172,7 +175,17 @@ class _HomeShellState extends State<HomeShell> {
                       destinations: _destinations,
                     ),
                     const VerticalDivider(width: 1),
-                    Expanded(child: content),
+                    // Desktop windows can be very wide — cap the content
+                    // column so cards and text don't stretch across the
+                    // whole monitor.
+                    Expanded(
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 980),
+                          child: content,
+                        ),
+                      ),
+                    ),
                   ],
                 )
               : content,
@@ -187,6 +200,14 @@ class _HomeShellState extends State<HomeShell> {
                     NavigationDestination(icon: Icon(Icons.tune_rounded), label: 'Settings'),
                   ],
                 ),
+          // A + button to pair a new device, on every platform.
+          floatingActionButton: FloatingActionButton(
+            onPressed: () => showPairSheet(context, mesh: widget.mesh),
+            tooltip: 'Pair a new device',
+            backgroundColor: NexusColors.accent,
+            foregroundColor: const Color(0xFF06251F),
+            child: const Icon(Icons.add_rounded),
+          ),
         );
       },
     );

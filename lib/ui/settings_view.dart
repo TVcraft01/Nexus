@@ -49,11 +49,23 @@ class _SettingsViewState extends State<SettingsView> {
               decoration: const InputDecoration(labelText: 'Device name'),
               onSubmitted: (_) => _rename(),
             ),
-            const SizedBox(height: 8),
-            Text(
-              'How other devices see this one. ${platformLabel(mesh.identity.platform)} · '
-              'listening on port ${mesh.port}',
-              style: Theme.of(context).textTheme.bodySmall,
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                FilledButton.icon(
+                  onPressed: _rename,
+                  icon: const Icon(Icons.save_rounded, size: 16),
+                  label: const Text('Save name'),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'How other devices see this one. ${platformLabel(mesh.identity.platform)} · '
+                    'listening on port ${mesh.port}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -94,6 +106,23 @@ class _SettingsViewState extends State<SettingsView> {
               detail: 'A device is marked online only when this device has actually '
                   'talked to it. If it shows “not reachable”, it really wasn’t.',
               icon: Icons.verified_user_outlined,
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+
+        _SectionCard(
+          children: [
+            _SectionTitle('Updates'),
+            _ToggleRow(
+              title: 'Check for updates automatically',
+              detail: 'On startup, look for a newer Nexus release on GitHub and offer '
+                  'to install it.',
+              value: mesh.store.autoUpdate,
+              onChanged: (v) {
+                setState(() => mesh.store.autoUpdate = v);
+                mesh.store.save();
+              },
             ),
           ],
         ),

@@ -859,7 +859,11 @@ class MeshService extends ChangeNotifier {
   }
 
   Future<void> renameDevice(String name) async {
-    store.setIdentity(identity.copyWith(name: sanitizeDeviceName(name)));
+    // Mutate the live identity (announcements and heartbeats read it every
+    // few seconds) so the new name reaches every paired device without a
+    // restart, then persist it.
+    identity.name = sanitizeDeviceName(name);
+    store.setIdentity(identity);
     await store.save();
     notifyListeners();
   }
