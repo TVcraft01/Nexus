@@ -69,6 +69,33 @@ class NexusStore {
     list?.removeWhere((e) => e['id'] == deviceId);
   }
 
+  /// Recently-seen device addresses, so discovery can say hello directly to
+  /// known devices even when multicast is filtered by the router.
+  List<Map<String, dynamic>> get neighbors =>
+      ((_data['neighbors'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  void upsertNeighbor(String id, String address, int port, String name) {
+    final list = _data.putIfAbsent('neighbors', () => <Map<String, dynamic>>[])
+        as List;
+    final now = DateTime.now().toIso8601String();
+    final idx = list.indexWhere((e) => e['id'] == id);
+    if (idx >= 0) {
+      list[idx] = {'id': id, 'address': address, 'port': port, 'name': name, 'lastSeen': now};
+    } else {
+      list.add({'id': id, 'address': address, 'port': port, 'name': name, 'lastSeen': now});
+    }
+    // Keep it small: the most recent 12 devices, dropping anything seen more
+    // than 7 days ago (a stale address is worse than none).
+    final cutoff = DateTime.now().subtract(const Duration(days: 7));
+    list.removeWhere((e) {
+      final seen = DateTime.tryParse(e['lastSeen'] as String? ?? '');
+      return seen != null && seen.isBefore(cutoff);
+    });
+    if (list.length > 12) list.removeRange(12, list.length);
+  }
+
   List<Map<String, dynamic>> get clipTray =>
       ((_data['clipTray'] as List?) ?? const [])
           .whereType<Map<String, dynamic>>()

@@ -4,11 +4,12 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show ChangeNotifier;
+import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../core/crypto.dart';
 import '../core/identity.dart';
+import '../core/pair_payload.dart';
 import '../core/protocol.dart';
 import '../core/store.dart';
 import 'discovery.dart';
@@ -225,27 +226,58 @@ class MeshService extends ChangeNotifier {
       ..addAll(store.clipTray.map(ClipEntry.fromJson));
   }
 
+  static const int defaultPort = 51820;
+
   Future<void> _bindServer() async {
-    final requested = store.port;
-    try {
-      _server = await ServerSocket.bind(InternetAddress.anyIPv4, requested);
-    } catch (_) {
-      // Port busy (e.g. a second instance on this machine, or another app).
-      // Bind an ephemeral port and say so — silently "working" while
-      // unreachable is exactly what we refuse to do.
+    // Try the canonical port first, then the last-used port, then an
+    // ephemeral one. This self-heals the case where an old ephemeral port
+    // got persisted while the canonical port was temporarily busy.
+    final attempts = <int>[defaultPort, store.port];
+    var bound = false;
+    for (final port in attempts) {
+      if (port <= 0 || port > 65535) continue;
+      try {
+        _server = await ServerSocket.bind(InternetAddress.anyIPv4, port);
+        if (store.port != port) {
+          store.port = port;
+          await store.save();
+        }
+        bound = true;
+        break;
+      } catch (_) {
+        // try the next candidate
+      }
+    }
+    if (!bound) {
+      // Everything busy (e.g. a second instance on this machine). Bind an
+      // ephemeral port and say so — silently "working" while unreachable is
+      // exactly what we refuse to do.
       _server = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
       store.port = _server!.port;
       await store.save();
-      lastNotice = 'Port $requested was busy — Nexus is using port ${_server!.port}.';
+      lastNotice = 'Port $defaultPort was busy — Nexus is using port ${_server!.port}.';
     }
     _server!.listen(_onClientSocket);
+    debugPrint('NEXUS mesh: listening on 0.0.0.0:${_server!.port}');
   }
 
   void _startDiscovery() {
+    // Load the addresses we have seen before so we can say hello directly to
+    // them, even before multicast delivers anything (flaky home routers).
+    final known = <({String address, int port})>[];
+    for (final n in store.neighbors) {
+      final address = n['address'];
+      final port = n['port'];
+      if (address is String && port is int && port > 0) {
+        known.add((address: address, port: port));
+      }
+    }
     final discovery = DiscoveryService(
       identity: identity,
       onDiscovered: _onDiscovered,
+      canBroadcast: identity.platform == 'android',
     )..tcpPort = store.port;
+    discovery.knownAddresses.addAll(known);
     _discovery = discovery;
     unawaited(discovery.start());
   }
@@ -263,6 +295,34 @@ class MeshService extends ChangeNotifier {
       _nearby[device.id] = device.withSeen(device.lastSeen);
     }
     _lastSeen[device.id] = device.lastSeen;
+
+    // Remember where this device lives so we can greet it directly next time
+    // even if the router stops forwarding multicast. Persistence is debounced
+    // (hellos arrive in bursts) and flushed on shutdown.
+    store.upsertNeighbor(device.id, device.address, device.port, device.name);
+    _neighborsDirty = true;
+    _neighborSaveTimer ??= Timer(const Duration(seconds: 5), () {
+      _neighborSaveTimer = null;
+      if (_neighborsDirty) {
+        _neighborsDirty = false;
+        _queueSave();
+      }
+    });
+    final known = _discovery?.knownAddresses;
+    if (known != null &&
+        !known.any((k) => k.address == device.address && k.port == device.port)) {
+      known.add((address: device.address, port: device.port));
+    }
+  }
+
+  bool _neighborsDirty = false;
+  Timer? _neighborSaveTimer;
+  Future<void>? _saveChain;
+
+  /// Serialized persistence: every queued save completes before [stop]
+  /// returns, so tests never race a pending write against teardown.
+  void _queueSave() {
+    _saveChain = (_saveChain ?? Future.value()).then((_) => store.save());
   }
 
   // ---------------------------------------------------------------------
@@ -359,6 +419,7 @@ class MeshService extends ChangeNotifier {
       return;
     }
     if (msg.type == NexusMessage.pairRequest) {
+      debugPrint('NEXUS mesh: pair-request <- ${msg.from} (code matched)');
       await _handlePairRequest(msg, socket);
     }
   }
@@ -446,6 +507,7 @@ class MeshService extends ChangeNotifier {
         final name = payload['name'] as String? ?? 'Unknown device';
         final port = (payload['port'] as num?)?.toInt();
         _noteSeen(msg.from, verified: true);
+        debugPrint('NEXUS mesh: ping <- ${msg.from} from ${socket.remoteAddress.address}');
         if (port != null) {
           await _learnAddress(msg.from, socket.remoteAddress.address, port, name, payload['platform'] as String? ?? 'other');
         }
@@ -463,6 +525,7 @@ class MeshService extends ChangeNotifier {
 
       case NexusMessage.pong:
         _noteSeen(msg.from, verified: true);
+        debugPrint('NEXUS mesh: pong <- ${msg.from}');
         final payload = msg.payload;
         final name = payload['name'] as String?;
         final port = (payload['port'] as num?)?.toInt();
@@ -606,14 +669,20 @@ class MeshService extends ChangeNotifier {
   // ---------------------------------------------------------------------
 
   /// Start "show my code": returns a code + QR payload valid for 5 minutes.
+  /// The QR includes the LAN IP when known, so a scanning device can connect
+  /// straight away without typing an address.
   PairingSession beginPairing() {
     final code = generatePairingCode();
     pendingCode = code;
     pendingCodeExpiry = DateTime.now().add(const Duration(minutes: 5));
     return PairingSession(
       code: code,
-      qrPayload: 'nexus://pair?v=1&id=${identity.id}&name=${Uri.encodeComponent(identity.name)}'
-          '&port=${store.port}&code=$code',
+      qrPayload: PairPayload.build(
+        id: identity.id,
+        name: identity.name,
+        port: store.port,
+        code: code,
+      ),
       expiresAt: pendingCodeExpiry!,
     );
   }
@@ -725,6 +794,7 @@ class MeshService extends ChangeNotifier {
           final clear = await decryptFromB64(json['enc'] as String, key);
           final msg = NexusMessage.fromJson(jsonDecode(utf8.decode(clear)) as Map<String, dynamic>);
           if (msg.type == NexusMessage.pairAccept) {
+            debugPrint('NEXUS mesh: pair-accept <- ${msg.from}');
             if (!completer.isCompleted) {
               _paired[msg.from] = PairedDevice(
                 id: msg.from,
@@ -776,6 +846,7 @@ class MeshService extends ChangeNotifier {
     final result = await completer.future;
     timeout.cancel();
     socket.destroy();
+    debugPrint('NEXUS mesh: pairWith -> ${result.ok ? 'ok' : result.error}');
     notifyListeners();
     return result;
   }
@@ -830,7 +901,12 @@ class MeshService extends ChangeNotifier {
         id: _newId(),
         ts: DateTime.now().millisecondsSinceEpoch,
       );
-      if (await _sendEnc(peer, msg)) sent++;
+      if (await _sendEnc(peer, msg)) {
+        sent++;
+        debugPrint('NEXUS mesh: clipboard -> ${peer.id}');
+      } else {
+        debugPrint('NEXUS mesh: clipboard FAILED -> ${peer.id} (${peer.address}:${peer.port})');
+      }
     }
     notifyListeners();
     return sent;
@@ -842,6 +918,7 @@ class MeshService extends ChangeNotifier {
     // Ignore echoes of something this device already copied.
     if (text == _lastClipboard) return;
 
+    debugPrint('NEXUS mesh: clipboard <- ${msg.from}');
     final fromName = (msg.payload['fromName'] as String?) ?? 'Another device';
     final entry = ClipEntry(id: _newId(), text: text, fromName: fromName, ts: DateTime.now());
     clipTray.insert(0, entry);
@@ -889,6 +966,8 @@ class MeshService extends ChangeNotifier {
     _started = false;
     _heartbeatTimer?.cancel();
     _clipboardTimer?.cancel();
+    _neighborSaveTimer?.cancel();
+    _neighborSaveTimer = null;
     await _discovery?.stop();
     _server?.close();
     for (final socket in _outbound.values.toList()) {
@@ -897,5 +976,10 @@ class MeshService extends ChangeNotifier {
       } catch (_) {}
     }
     _outbound.clear();
+    if (_neighborsDirty) {
+      _neighborsDirty = false;
+      _queueSave();
+    }
+    await _saveChain; // flush any pending write before we return
   }
 }

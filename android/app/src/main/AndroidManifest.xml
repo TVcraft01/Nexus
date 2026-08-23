@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <!-- Needed so Android lets the app receive multicast announcements. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
+    <!-- For scanning pairing QR codes with the camera. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <application
         android:label="Nexus"
         android:name="${applicationName}"

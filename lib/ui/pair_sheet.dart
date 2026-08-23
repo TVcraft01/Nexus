@@ -1,11 +1,15 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../core/network_info.dart';
+import '../core/pair_payload.dart';
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
+import 'scan_qr_page.dart';
 import 'theme.dart';
 
 /// Opens the pairing sheet. If [nearby] is given, the "Enter code" tab is
@@ -45,6 +49,11 @@ class _PairSheetState extends State<_PairSheet> {
   bool _pairing = false;
   String? _error;
 
+  /// Camera scanning needs a real camera; the phone can scan, desktop types.
+  bool get _canScan =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+
   @override
   void initState() {
     super.initState();
@@ -53,6 +62,54 @@ class _PairSheetState extends State<_PairSheet> {
     _addressController = TextEditingController(text: widget.nearby?.address ?? '');
     _portController = TextEditingController(text: '${widget.nearby?.port ?? widget.mesh.port}');
     if (widget.nearby != null) _tab = 1;
+    // Add our LAN IP to the QR as soon as we know it, so the other device can
+    // connect straight from a scan without typing an address.
+    unawaited(_refreshQrWithIp());
+  }
+
+  Future<void> _refreshQrWithIp() async {
+    final ip = await detectLanIpv4();
+    if (!mounted) return;
+    setState(() {
+      _session = PairingSession(
+        code: _session.code,
+        qrPayload: PairPayload.build(
+          id: widget.mesh.identity.id,
+          name: widget.mesh.identity.name,
+          port: widget.mesh.port,
+          code: _session.code,
+          ip: ip,
+        ),
+        expiresAt: _session.expiresAt,
+      );
+    });
+  }
+
+  /// Opens the camera, parses a scanned Nexus QR, and pairs immediately.
+  Future<void> _scanQr() async {
+    final payload = await Navigator.push<PairPayload>(
+      context,
+      MaterialPageRoute(builder: (_) => const ScanQrPage()),
+    );
+    if (payload == null || !mounted) return;
+    if (payload.id == widget.mesh.identity.id) {
+      setState(() => _error = 'That is this device’s own code — scan the other device.');
+      return;
+    }
+    setState(() {
+      _codeController.text = payload.code;
+      _portController.text = '${payload.port}';
+      _addressController.text = payload.ip ?? _addressForId(payload.id);
+      _error = null;
+    });
+    await _pair();
+  }
+
+  String _addressForId(String id) {
+    for (final d in widget.mesh.nearbyDevices) {
+      if (d.id == id) return d.address;
+    }
+    return '';
   }
 
   @override
@@ -295,6 +352,13 @@ class _PairSheetState extends State<_PairSheet> {
             ),
           ],
           const SizedBox(height: 16),
+          if (_canScan)
+            OutlinedButton.icon(
+              onPressed: _pairing ? null : _scanQr,
+              icon: const Icon(Icons.qr_code_scanner_rounded, size: 18),
+              label: const Text('Scan a QR code instead'),
+            ),
+          if (_canScan) const SizedBox(height: 10),
           FilledButton.icon(
             onPressed: _pairing ? null : _pair,
             icon: _pairing

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../core/identity.dart';
 
 /// A device seen on the local network via [DiscoveryService].
@@ -46,15 +48,31 @@ class DiscoveredDevice {
 class DiscoveryService {
   static const int discoveryPort = 51822;
   static final InternetAddress group = InternetAddress('239.255.0.250');
+  static final InternetAddress broadcast = InternetAddress('255.255.255.255');
 
   final DeviceInfo identity;
-  final void Function(DiscoveredDevice device) onDiscovered;
+  final FutureOr<void> Function(DiscoveredDevice device) onDiscovered;
+
+  /// Devices we have seen before. Every announce cycle we also send a hello
+  /// directly to each one (unicast), so the mesh heals itself when the router
+  /// stops forwarding multicast — the most common real-world discovery
+  /// failure on home Wi-Fi.
+  final List<({String address, int port})> knownAddresses = [];
+
+  /// Android permits UDP broadcast sends (desktop Linux refuses them without
+  /// SO_BROADCAST), so on Android we announce by broadcast too — another path
+  /// that survives flaky multicast.
+  final bool canBroadcast;
 
   RawDatagramSocket? _socket;
   Timer? _broadcastTimer;
   bool _started = false;
 
-  DiscoveryService({required this.identity, required this.onDiscovered});
+  DiscoveryService({
+    required this.identity,
+    required this.onDiscovered,
+    this.canBroadcast = false,
+  });
 
   Future<void> start() async {
     if (_started) return;
@@ -73,9 +91,12 @@ class DiscoveryService {
     }
 
     await _joinGroups();
-    _socket!.listen(_onDatagram);
+    // onError is swallowed: a best-effort discovery socket must never take
+    // the app down (e.g. a broadcast send refused on some platforms).
+    _socket!.listen(_onDatagram, onError: (_) {});
     _broadcastTimer = Timer.periodic(const Duration(seconds: 3), (_) => unawaited(_announce()));
     unawaited(_announce());
+    debugPrint('NEXUS discovery: listening on ${_socket!.address.address}:${_socket!.port}');
   }
 
   Future<void> _joinGroups() async {
@@ -106,18 +127,24 @@ class DiscoveryService {
     final socket = _socket;
     if (socket == null) return;
 
-    // Announce on the multicast group, and also unicast to loopback so two
-    // instances on the same machine can find each other (useful for testing).
-    for (final target in [group, InternetAddress('127.0.0.1')]) {
+    final targets = <InternetAddress>{
+      group,
+      InternetAddress('127.0.0.1'), // two instances on one machine can find each other
+      for (final known in knownAddresses) InternetAddress(known.address),
+      if (canBroadcast) broadcast,
+    };
+    for (final target in targets) {
       try {
         socket.send(payload, target, discoveryPort);
       } catch (_) {
         // A filtered network or a dead interface — try the next target.
       }
     }
+    debugPrint('NEXUS discovery: announced id=${identity.id} port=$_tcpPort '
+        '(multicast + ${knownAddresses.length} known + loopback${canBroadcast ? ' + broadcast' : ''})');
   }
 
-  void _onDatagram(RawSocketEvent event) {
+  Future<void> _onDatagram(RawSocketEvent event) async {
     final socket = _socket;
     if (socket == null || event != RawSocketEvent.read) return;
     final datagram = socket.receive();
@@ -137,7 +164,8 @@ class DiscoveryService {
         port: port,
         lastSeen: DateTime.now(),
       );
-      onDiscovered(device);
+      await onDiscovered(device);
+      debugPrint('NEXUS discovery: heard ${device.name} (${device.id}) at ${device.address}:${device.port}');
 
       // Reply by unicast so the sender learns about us even on networks
       // where multicast is filtered.
