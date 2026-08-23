@@ -75,27 +75,13 @@ class PairingSession {
   const PairingSession({required this.code, required this.qrPayload, required this.expiresAt});
 }
 
-/// One entry in the clipboard tray.
+/// A clipboard message that arrived from another device — used only for the
+/// transient "Copied on …" notification. The device's own clipboard is the
+/// single source of truth; nothing is stored.
 class ClipEntry {
-  final String id;
   final String text;
-  final String? fromName; // null = copied on this device
-  final DateTime ts;
-  const ClipEntry({required this.id, required this.text, required this.fromName, required this.ts});
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'text': text,
-        'fromName': fromName,
-        'ts': ts.toIso8601String(),
-      };
-
-  factory ClipEntry.fromJson(Map<String, dynamic> json) => ClipEntry(
-        id: json['id'] as String,
-        text: json['text'] as String,
-        fromName: json['fromName'] as String?,
-        ts: DateTime.tryParse(json['ts'] as String? ?? '') ?? DateTime.now(),
-      );
+  final String? fromName;
+  const ClipEntry({required this.text, required this.fromName});
 }
 
 /// Small abstraction over the platform clipboard so the mesh logic can be
@@ -165,7 +151,6 @@ class MeshService extends ChangeNotifier {
   final Map<String, Uint8List> _sessionKeys = {}; // peerId -> cached key
   final Set<String> _recentMessageIds = {}; // dedupe across multi-hop relays
 
-  final List<ClipEntry> clipTray = [];
   ClipEntry? lastIncomingClip;
 
   String? pendingCode;
@@ -215,8 +200,8 @@ class MeshService extends ChangeNotifier {
     if (_started) return;
     _started = true;
     await store.load();
+    store.pruneStaleNeighbors(); // ghosts from an earlier session must not come back
     _loadPaired();
-    _loadClipTray();
     await _bindServer();
     _startDiscovery();
     _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) => _heartbeat());
@@ -232,12 +217,6 @@ class MeshService extends ChangeNotifier {
         _paired[device.id] = device;
       } catch (_) {}
     }
-  }
-
-  void _loadClipTray() {
-    clipTray
-      ..clear()
-      ..addAll(store.clipTray.map(ClipEntry.fromJson));
   }
 
   static const int defaultPort = 51820;
@@ -898,19 +877,8 @@ class MeshService extends ChangeNotifier {
     await broadcastClipboard(text);
   }
 
-  /// Share [text] to every paired device that is reachable, and record it
-  /// in this device's own tray.
+  /// Share [text] to every paired device that is reachable.
   Future<int> broadcastClipboard(String text) async {
-    final entry = ClipEntry(
-      id: _newId(),
-      text: text,
-      fromName: null,
-      ts: DateTime.now(),
-    );
-    clipTray.insert(0, entry);
-    store.addClip(entry.toJson());
-    await store.save();
-
     var sent = 0;
     for (final peer in _paired.values.toList()) {
       final msg = NexusMessage(
@@ -939,17 +907,15 @@ class MeshService extends ChangeNotifier {
     if (text == _lastClipboard) return;
 
     debugPrint('NEXUS mesh: clipboard <- ${msg.from}');
-    final fromName = (msg.payload['fromName'] as String?) ?? 'Another device';
-    final entry = ClipEntry(id: _newId(), text: text, fromName: fromName, ts: DateTime.now());
-    clipTray.insert(0, entry);
-    store.addClip(entry.toJson());
-    await store.save();
 
     if (store.clipboardSync) {
       _lastClipboard = text;
       await clipboard.writeText(text);
     }
-    lastIncomingClip = entry;
+    lastIncomingClip = ClipEntry(
+      text: text,
+      fromName: (msg.payload['fromName'] as String?) ?? 'Another device',
+    );
     notifyListeners();
   }
 

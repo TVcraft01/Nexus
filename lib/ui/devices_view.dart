@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
@@ -115,24 +114,6 @@ class DevicesView extends StatelessWidget {
           const SizedBox(height: 12),
           ...nearby.map((d) => _NearbyCard(mesh: mesh, device: d)),
         ],
-        const SizedBox(height: 28),
-        Text('Clipboard tray', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 4),
-        Text(
-          mesh.store.clipboardSync
-              ? 'Copy on any device and it lands on the others — and in your '
-                  'clipboard, ready to paste anywhere.'
-              : 'Clipboard sync is off — turn it on in Settings.',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 12),
-        if (mesh.clipTray.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Text('Nothing copied yet.', style: Theme.of(context).textTheme.bodySmall),
-          )
-        else
-          ...mesh.clipTray.take(10).map((e) => _ClipCard(entry: e)),
       ],
     );
   }
@@ -444,52 +425,6 @@ class _Avatar extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(letters, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: NexusColors.accent)),
-    );
-  }
-}
-
-class _ClipCard extends StatelessWidget {
-  final ClipEntry entry;
-  const _ClipCard({required this.entry});
-
-  @override
-  Widget build(BuildContext context) {
-    final from = entry.fromName ?? 'This device';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: NexusColors.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: NexusColors.border),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(entry.text, maxLines: 2, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodyMedium),
-                  const SizedBox(height: 4),
-                  Text('From $from', style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ),
-            ),
-            IconButton(
-              tooltip: 'Copy here',
-              icon: const Icon(Icons.copy_rounded, size: 18, color: NexusColors.muted),
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: entry.text));
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied on this device.')));
-                }
-              },
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

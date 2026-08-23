@@ -30,8 +30,8 @@ One Flutter codebase: Android + Linux today, Windows next, then macOS and web.
   encrypted end to end.
 - **Address re-finding.** If a paired device's IP changes (router reboot),
   the next successful contact updates its stored address automatically.
-- **Everything persists on-device** — identity, pairing secrets, clipboard
-  history — in the app's private data directory. Nothing leaves your device.
+- **Everything persists on-device** — identity, pairing secrets, and
+  settings — in the app's private data directory. Nothing leaves your device.
 
 ## What's verified
 
@@ -61,7 +61,7 @@ NEXUS_DATA_DIR=/tmp/nexus2 ./build/linux/x64/release/bundle/nexus
 Both windows discover each other ("Nearby"), then pair: on one, *Pair a
 device → Show my code*; on the other, *Pair a device → Enter a code* (address
 should be prefilled as 127.0.0.1). After pairing, copy text in one window and
-watch it arrive in the other's clipboard tray.
+watch it land directly on the other's clipboard.
 
 > The second instance may note "Port 51820 was busy — using port X". That's
 > the app being honest, not a bug.
@@ -71,8 +71,8 @@ watch it arrive in the other's clipboard tray.
 1. Plug your Android phone in and run `flutter run -d <device>`, or install
    `build/app/outputs/flutter-apk/app-debug.apk`.
 2. Run the Linux app on your PC. Both devices are on the same Wi-Fi.
-3. Pair as above. Copy something on the phone; it lands on the PC's tray and
-   vice versa.
+3. Pair as above. Copy something on the phone; it lands on the PC's clipboard
+   and vice versa.
 
 ## Auto-update
 

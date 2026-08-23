@@ -81,9 +81,10 @@ class NexusStore {
     } else {
       list.add({'id': id, 'address': address, 'port': port, 'name': name, 'lastSeen': now});
     }
-    // Keep it small: the most recent 12 devices, dropping anything seen more
-    // than 7 days ago (a stale address is worse than none).
-    final cutoff = DateTime.now().subtract(const Duration(days: 7));
+    // Keep it small: the most recent 12 devices, dropping anything not seen
+    // within the last day (a stale address is worse than none — a phone that
+    // was switched off overnight is re-discovered when it announces again).
+    final cutoff = DateTime.now().subtract(const Duration(hours: 24));
     list.removeWhere((e) {
       final seen = DateTime.tryParse(e['lastSeen'] as String? ?? '');
       return seen != null && seen.isBefore(cutoff);
@@ -91,16 +92,18 @@ class NexusStore {
     if (list.length > 12) list.removeRange(12, list.length);
   }
 
-  List<Map<String, dynamic>> get clipTray =>
-      ((_data['clipTray'] as List?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .toList();
-
-  void addClip(Map<String, dynamic> clip) {
-    final list = _data.putIfAbsent('clipTray', () => <Map<String, dynamic>>[])
-        as List;
-    list.insert(0, clip);
-    if (list.length > 30) list.removeRange(30, list.length);
+  /// Drops stored neighbors not seen in the last 24h. Called on startup so
+  /// ghost devices from an earlier session disappear instead of being
+  /// re-greeted forever.
+  void pruneStaleNeighbors() {
+    final list = _data['neighbors'] as List?;
+    if (list == null) return;
+    final cutoff = DateTime.now().subtract(const Duration(hours: 24));
+    list.removeWhere((e) {
+      if (e is! Map) return false;
+      final seen = DateTime.tryParse(e['lastSeen'] as String? ?? '');
+      return seen != null && seen.isBefore(cutoff);
+    });
   }
 
   Future<void> load() async {

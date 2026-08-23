@@ -125,7 +125,8 @@ class _HomeShellState extends State<HomeShell> {
     return ListenableBuilder(
       listenable: widget.mesh,
       builder: (context, _) {
-        // Show a friendly banner the moment a clip arrives from another device.
+        // Show a friendly notification the moment a clip arrives from another
+        // device — the text is already on the clipboard, this just says so.
         final incoming = widget.mesh.lastIncomingClip;
         if (incoming != null && incoming != _lastShown) {
           _lastShown = incoming;

@@ -110,7 +110,8 @@ void main() {
     var found = false;
     for (var i = 0; i < 20 && !found; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
-      found = meshA.clipTray.any((e) => e.text == 'hello from the phone' && e.fromName == 'Test Phone');
+      final clip = meshA.lastIncomingClip;
+      found = clip != null && clip.text == 'hello from the phone' && clip.fromName == 'Test Phone';
     }
     expect(found, isTrue, reason: 'PC never received the clipboard message');
 
@@ -119,7 +120,7 @@ void main() {
     expect(clipA.value, 'hello from the phone');
   });
 
-  test('with clipboard sync off, incoming clips stay in the tray only', () async {
+  test('with clipboard sync off, incoming clips are not applied', () async {
     storeA.clipboardSync = false;
     await storeA.save();
     await meshA.start();
@@ -129,11 +130,11 @@ void main() {
     final result = await meshB.pairWith(address: '127.0.0.1', port: meshA.port, code: session.code);
     expect(result.ok, isTrue);
 
-    await meshB.broadcastClipboard('should stay in the tray only');
+    await meshB.broadcastClipboard('should not be applied');
     var found = false;
     for (var i = 0; i < 20 && !found; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
-      found = meshA.clipTray.any((e) => e.text == 'should stay in the tray only');
+      found = meshA.lastIncomingClip?.text == 'should not be applied';
     }
     expect(found, isTrue);
     expect(clipA.value, isNull); // not applied to the clipboard
