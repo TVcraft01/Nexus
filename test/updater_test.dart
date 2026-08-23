@@ -34,12 +34,9 @@ void main() {
     }
 
     /// Helper: builds a fake GitHub release JSON with the given assets.
-    String release(String tag,
-            {List<Map<String, String>>? assets,
-            String body = 'Release notes'}) =>
-        jsonEncode({
+    String release(String tag, {List<Map<String, String>>? assets}) => jsonEncode({
           'tag_name': tag,
-          'body': body,
+          'body': 'Release notes',
           'assets': assets ??
               [
                 {
@@ -57,9 +54,8 @@ void main() {
       final info = await check(release('v0.2.0'), '0.1.1');
       expect(info, isNotNull);
       expect(info!.version, '0.2.0');
-      // downloadUrl should be set for at least one platform asset
+      // downloadUrl should be set for at least one platform asset.
       expect(info.downloadUrl, isNotNull);
-      expect(info.notes, 'Release notes');
     });
 
     test('returns null when the release is not newer', () async {
@@ -74,18 +70,9 @@ void main() {
     });
 
     test('returns null when the archive asset is missing', () async {
-      final info = await check(
-          release('v0.2.0', assets: []), '0.1.1');
+      final info = await check(release('v0.2.0', assets: []), '0.1.1');
       expect(info, isNotNull);
       expect(info!.downloadUrl, isNull);
-    });
-
-    test('prefers Linux tarball on desktop', () async {
-      final info = await check(release('v0.2.0'), '0.1.1');
-      expect(info, isNotNull);
-      // On Linux the tarball is the platform asset; on other hosts
-      // (where tests run) either asset may match — just verify one was found.
-      expect(info!.downloadUrl, isA<String>());
     });
   });
 }

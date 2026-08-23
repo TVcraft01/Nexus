@@ -1,5 +1,3 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -10,11 +8,6 @@ plugins {
 // (local and CI) produces APKs signed with the same key. This is what makes
 // the in-app auto-update work — Android refuses to install over an app
 // signed with a different key, and debug keys differ per machine.
-val keystoreProperties = Properties().apply {
-    val f = rootProject.file("key.properties")
-    if (f.exists()) load(f.inputStream())
-}
-
 android {
     namespace = "dev.nexus.nexus"
     compileSdk = flutter.compileSdkVersion

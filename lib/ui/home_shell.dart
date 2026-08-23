@@ -33,7 +33,8 @@ class _HomeShellState extends State<HomeShell> {
   void initState() {
     super.initState();
     // Check for updates on supported platforms (Linux + Android).
-    if (Updater.platformSupported) {
+    if (defaultTargetPlatform == TargetPlatform.linux ||
+        defaultTargetPlatform == TargetPlatform.android) {
       unawaited(_checkForUpdates());
     }
   }
@@ -65,25 +66,18 @@ class _HomeShellState extends State<HomeShell> {
       }
 
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // On Android, download the APK and hand it to the system installer.
-        // The user will confirm the install in the system dialog.
-        final applied = await Updater.applyUpdate(path, '');
+        // Hand the APK to the system installer; the user confirms there.
+        final applied = await Updater.applyUpdate(path);
         setState(() {
           _applying = false;
-          if (applied) {
-            _updateError = null;
-            _update = UpdateInfo(
-              version: info.version,
-              notes: 'Opening installer — confirm the update on screen.',
-            );
-          } else {
+          if (!applied) {
             _updateError = 'Could not open the installer. Try downloading from GitHub manually.';
           }
         });
       } else {
         // Linux: extract, swap, and relaunch.
         final installDir = File(Platform.resolvedExecutable).parent.path;
-        final applied = await Updater.applyUpdate(path, installDir);
+        final applied = await Updater.applyUpdate(path, installDir: installDir);
         if (applied) {
           exit(0);
         }
@@ -204,7 +198,12 @@ class _UpdateBanner extends StatelessWidget {
             ),
           ),
           if (!applying)
-            TextButton(onPressed: onUpdate, child: Text(Updater.updateButtonLabel))
+            TextButton(
+              onPressed: onUpdate,
+              child: Text(defaultTargetPlatform == TargetPlatform.android
+                  ? 'Update & install'
+                  : 'Update & restart'),
+            )
           else
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 12),

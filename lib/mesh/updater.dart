@@ -8,8 +8,7 @@ import 'package:flutter/services.dart';
 class UpdateInfo {
   final String version;
   final String? downloadUrl;
-  final String? notes;
-  const UpdateInfo({required this.version, this.downloadUrl, this.notes});
+  const UpdateInfo({required this.version, this.downloadUrl});
 }
 
 /// Cross-platform auto-update.
@@ -57,20 +56,6 @@ class Updater {
     return 'nexus-linux-x64.tar.gz';
   }
 
-  /// Whether the current platform supports in-app updates.
-  static bool get platformSupported {
-    return defaultTargetPlatform == TargetPlatform.linux ||
-        defaultTargetPlatform == TargetPlatform.android;
-  }
-
-  /// Button label for the update banner.
-  static String get updateButtonLabel {
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'Update & install';
-    }
-    return 'Update & restart';
-  }
-
   /// Asks GitHub for the latest release and returns [UpdateInfo] when it is
   /// newer than [currentVersion]. [fetch] is injectable for tests.
   static Future<UpdateInfo?> checkForUpdate({
@@ -101,7 +86,6 @@ class Updater {
       final info = UpdateInfo(
         version: version,
         downloadUrl: assetUrl,
-        notes: (json['body'] as String?)?.trim().isEmpty ?? true ? null : (json['body'] as String?),
       );
       debugPrint('NEXUS updater: update available v$version');
       return info;
@@ -131,22 +115,27 @@ class Updater {
     }
   }
 
-  /// Applies a downloaded update. Platform-specific:
-  /// - **Linux**: extract, swap dirs, relaunch.
-  /// - **Android**: hand APK to system installer.
+  /// Applies a downloaded update:
+  /// - **Linux**: extract, swap dirs, relaunch; needs [installDir].
+  /// - **Android**: hand the APK to the system installer.
   ///
   /// Returns true when the update flow has been started (the app should
   /// step back and let the user/system finish).
-  static Future<bool> applyUpdate(String archivePath, String installDir) async {
+  static Future<bool> applyUpdate(String archivePath, {String? installDir}) async {
     if (defaultTargetPlatform == TargetPlatform.android) {
-      return _applyAndroidUpdate(archivePath);
+      try {
+        final launched = await _androidChannel.invokeMethod<bool>('installApk', {
+          'path': archivePath,
+        });
+        debugPrint('NEXUS updater: Android installer launched: $launched');
+        return launched == true;
+      } catch (e) {
+        debugPrint('NEXUS updater: Android install failed: $e');
+        return false;
+      }
     }
-    return _applyLinuxUpdate(archivePath, installDir);
-  }
 
-  // --- Linux ----------------------------------------------------------
-
-  static Future<bool> _applyLinuxUpdate(String archivePath, String installDir) async {
+    if (installDir == null) return false;
     if (!await extractAndSwap(archivePath, installDir)) return false;
     try {
       await Process.start(
@@ -190,29 +179,6 @@ class Updater {
     }
     return true;
   }
-
-  // --- Android --------------------------------------------------------
-
-  /// Sends the APK path to the platform channel, which opens the system
-  /// installer. Returns true when the intent was launched successfully.
-  static Future<bool> _applyAndroidUpdate(String apkPath) async {
-    try {
-      final result = await _androidChannel.invokeMethod<bool>('installApk', {
-        'path': apkPath,
-      });
-      if (result == true) {
-        debugPrint('NEXUS updater: Android installer launched');
-        return true;
-      }
-      debugPrint('NEXUS updater: Android installer returned false');
-      return false;
-    } catch (e) {
-      debugPrint('NEXUS updater: Android install failed: $e');
-      return false;
-    }
-  }
-
-  // --- HTTP -----------------------------------------------------------
 
   static Future<String> _httpGet(String url) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
