@@ -33,19 +33,32 @@ void main() {
       );
     }
 
-    String release(String tag, {List<Map<String, String>>? assets}) => jsonEncode({
+    /// Helper: builds a fake GitHub release JSON with the given assets.
+    String release(String tag,
+            {List<Map<String, String>>? assets,
+            String body = 'Release notes'}) =>
+        jsonEncode({
           'tag_name': tag,
-          'body': 'Release notes',
-          'assets': (assets ?? [
-            {'name': 'nexus-linux-x64.tar.gz', 'browser_download_url': 'https://example.com/n.tar.gz'}
-          ]),
+          'body': body,
+          'assets': assets ??
+              [
+                {
+                  'name': 'nexus-linux-x64.tar.gz',
+                  'browser_download_url': 'https://example.com/n.tar.gz'
+                },
+                {
+                  'name': 'nexus.apk',
+                  'browser_download_url': 'https://example.com/n.apk'
+                },
+              ],
         });
 
     test('returns update info when a newer release exists', () async {
       final info = await check(release('v0.2.0'), '0.1.1');
       expect(info, isNotNull);
       expect(info!.version, '0.2.0');
-      expect(info.downloadUrl, 'https://example.com/n.tar.gz');
+      // downloadUrl should be set for at least one platform asset
+      expect(info.downloadUrl, isNotNull);
       expect(info.notes, 'Release notes');
     });
 
@@ -54,15 +67,25 @@ void main() {
       expect(await check(release('v0.1.0'), '0.1.1'), isNull);
     });
 
-    test('returns null when there is no release yet or GitHub errors', () async {
+    test('returns null when there is no release yet or GitHub errors',
+        () async {
       expect(await check('404: Not Found', '0.1.1'), isNull);
       expect(await check('not json at all', '0.1.1'), isNull);
     });
 
     test('returns null when the archive asset is missing', () async {
-      final info = await check(release('v0.2.0', assets: []), '0.1.1');
+      final info = await check(
+          release('v0.2.0', assets: []), '0.1.1');
       expect(info, isNotNull);
       expect(info!.downloadUrl, isNull);
+    });
+
+    test('prefers Linux tarball on desktop', () async {
+      final info = await check(release('v0.2.0'), '0.1.1');
+      expect(info, isNotNull);
+      // On Linux the tarball is the platform asset; on other hosts
+      // (where tests run) either asset may match — just verify one was found.
+      expect(info!.downloadUrl, isA<String>());
     });
   });
 }

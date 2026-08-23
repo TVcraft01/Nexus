@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/services.dart';
 
 /// Info about a newer Nexus release, if one exists.
 class UpdateInfo {
@@ -11,18 +12,22 @@ class UpdateInfo {
   const UpdateInfo({required this.version, this.downloadUrl, this.notes});
 }
 
-/// Linux auto-update.
+/// Cross-platform auto-update.
 ///
 /// How it works: the app asks GitHub "what is the latest release?" on
 /// startup. If it is newer than the running version, the app offers
-/// "Update & restart": it downloads the release tarball, extracts it next to
-/// the running install, swaps the directories, and relaunches itself.
+/// "Update & restart" (Linux) or "Update & install" (Android).
 ///
-/// Honest limits: this works for the Linux desktop install
-/// (~/.local/share/nexus-app). Android updates come from the APK; the other
-/// desktops are a future step. If anything fails it says so and points to
-/// update.sh — it never silently half-updates.
+/// - **Linux**: downloads the tarball, extracts next to the running install,
+///   swaps directories, and relaunches itself.
+/// - **Android**: downloads the APK and hands it to the system installer
+///   (the OS shows "Do you want to install this update?").
+///
+/// If anything fails it says so — it never silently half-updates.
 class Updater {
+  /// The Android method channel used to open the APK installer.
+  static const _androidChannel = MethodChannel('dev.nexus.nexus/installer');
+
   /// Compares semantic versions like "0.1.1" or "v0.1.1". Returns <0 if
   /// [a] is older than [b], 0 if equal, >0 if newer.
   static int compareVersions(String a, String b) {
@@ -42,6 +47,28 @@ class Updater {
       if (pa[i] != pb[i]) return pa[i] - pb[i];
     }
     return 0;
+  }
+
+  /// The expected asset name for the current platform.
+  static String get _assetName {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return 'nexus.apk';
+    }
+    return 'nexus-linux-x64.tar.gz';
+  }
+
+  /// Whether the current platform supports in-app updates.
+  static bool get platformSupported {
+    return defaultTargetPlatform == TargetPlatform.linux ||
+        defaultTargetPlatform == TargetPlatform.android;
+  }
+
+  /// Button label for the update banner.
+  static String get updateButtonLabel {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return 'Update & install';
+    }
+    return 'Update & restart';
   }
 
   /// Asks GitHub for the latest release and returns [UpdateInfo] when it is
@@ -66,7 +93,7 @@ class Updater {
       final assets = json['assets'];
       if (assets is List) {
         for (final asset in assets) {
-          if (asset is Map && asset['name'] == 'nexus-linux-x64.tar.gz') {
+          if (asset is Map && asset['name'] == _assetName) {
             assetUrl = asset['browser_download_url'] as String?;
           }
         }
@@ -79,16 +106,15 @@ class Updater {
       debugPrint('NEXUS updater: update available v$version');
       return info;
     } catch (e) {
-      // No release yet, offline, or GitHub unreachable — not an error, just
-      // no update.
       debugPrint('NEXUS updater: check failed (${e.runtimeType}) — no update');
       return null;
     }
   }
 
-  /// Downloads the update archive to a temp file. Returns the path.
+  /// Downloads the update archive/APK to a temp file. Returns the path.
   static Future<String?> download(String url) async {
-    final tmp = File('${Directory.systemTemp.path}/nexus-update-${DateTime.now().millisecondsSinceEpoch}.tar.gz');
+    final ext = defaultTargetPlatform == TargetPlatform.android ? '.apk' : '.tar.gz';
+    final tmp = File('${Directory.systemTemp.path}/nexus-update-${DateTime.now().millisecondsSinceEpoch}$ext');
     final client = HttpClient();
     try {
       final request = await client.getUrl(Uri.parse(url));
@@ -105,10 +131,22 @@ class Updater {
     }
   }
 
-  /// Applies a downloaded update: extract next to [installDir], verify the
-  /// new binary, swap directories, and relaunch. Returns true when the new
-  /// version is in place and the app should exit.
+  /// Applies a downloaded update. Platform-specific:
+  /// - **Linux**: extract, swap dirs, relaunch.
+  /// - **Android**: hand APK to system installer.
+  ///
+  /// Returns true when the update flow has been started (the app should
+  /// step back and let the user/system finish).
   static Future<bool> applyUpdate(String archivePath, String installDir) async {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return _applyAndroidUpdate(archivePath);
+    }
+    return _applyLinuxUpdate(archivePath, installDir);
+  }
+
+  // --- Linux ----------------------------------------------------------
+
+  static Future<bool> _applyLinuxUpdate(String archivePath, String installDir) async {
     if (!await extractAndSwap(archivePath, installDir)) return false;
     try {
       await Process.start(
@@ -152,6 +190,29 @@ class Updater {
     }
     return true;
   }
+
+  // --- Android --------------------------------------------------------
+
+  /// Sends the APK path to the platform channel, which opens the system
+  /// installer. Returns true when the intent was launched successfully.
+  static Future<bool> _applyAndroidUpdate(String apkPath) async {
+    try {
+      final result = await _androidChannel.invokeMethod<bool>('installApk', {
+        'path': apkPath,
+      });
+      if (result == true) {
+        debugPrint('NEXUS updater: Android installer launched');
+        return true;
+      }
+      debugPrint('NEXUS updater: Android installer returned false');
+      return false;
+    } catch (e) {
+      debugPrint('NEXUS updater: Android install failed: $e');
+      return false;
+    }
+  }
+
+  // --- HTTP -----------------------------------------------------------
 
   static Future<String> _httpGet(String url) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);

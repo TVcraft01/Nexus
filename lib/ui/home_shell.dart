@@ -32,9 +32,8 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    // Auto-update currently works on Linux desktop; other platforms check
-    // later (Android updates via APK).
-    if (defaultTargetPlatform == TargetPlatform.linux) {
+    // Check for updates on supported platforms (Linux + Android).
+    if (Updater.platformSupported) {
       unawaited(_checkForUpdates());
     }
   }
@@ -64,21 +63,40 @@ class _HomeShellState extends State<HomeShell> {
         });
         return;
       }
-      final installDir = File(Platform.resolvedExecutable).parent.path;
-      final applied = await Updater.applyUpdate(path, installDir);
-      if (applied) {
-        // The new version relaunches itself; exit this one.
-        exit(0);
+
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        // On Android, download the APK and hand it to the system installer.
+        // The user will confirm the install in the system dialog.
+        final applied = await Updater.applyUpdate(path, '');
+        setState(() {
+          _applying = false;
+          if (applied) {
+            _updateError = null;
+            _update = UpdateInfo(
+              version: info.version,
+              notes: 'Opening installer — confirm the update on screen.',
+            );
+          } else {
+            _updateError = 'Could not open the installer. Try downloading from GitHub manually.';
+          }
+        });
+      } else {
+        // Linux: extract, swap, and relaunch.
+        final installDir = File(Platform.resolvedExecutable).parent.path;
+        final applied = await Updater.applyUpdate(path, installDir);
+        if (applied) {
+          exit(0);
+        }
+        setState(() {
+          _applying = false;
+          _updateError = 'The update could not be applied. Run update.sh to update manually.';
+        });
       }
-      setState(() {
-        _applying = false;
-        _updateError = 'The update could not be applied. Run update.sh to update manually.';
-      });
     } catch (e) {
       debugPrint('NEXUS updater: ${e.runtimeType}: $e');
       setState(() {
         _applying = false;
-        _updateError = 'The update failed. Run update.sh to update manually.';
+        _updateError = 'The update failed. Check your connection and try again.';
       });
     }
   }
@@ -96,7 +114,7 @@ class _HomeShellState extends State<HomeShell> {
             if (!mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text('Copied on ${incoming.fromName ?? 'another device'}: '
-                  '“${incoming.text.length > 60 ? '${incoming.text.substring(0, 60)}…' : incoming.text}”'),
+                  '"${incoming.text.length > 60 ? '${incoming.text.substring(0, 60)}…' : incoming.text}"'),
               action: SnackBarAction(
                 label: 'Paste here',
                 textColor: Theme.of(context).colorScheme.primary,
@@ -186,7 +204,7 @@ class _UpdateBanner extends StatelessWidget {
             ),
           ),
           if (!applying)
-            TextButton(onPressed: onUpdate, child: const Text('Update & restart'))
+            TextButton(onPressed: onUpdate, child: Text(Updater.updateButtonLabel))
           else
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 12),
