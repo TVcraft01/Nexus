@@ -1,0 +1,113 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
+
+import 'identity.dart';
+
+/// Everything Nexus persists on one device lives in a single JSON file in the
+/// app's private data directory. Nothing is ever sent anywhere; this is the
+/// device's own copy of its identity, its pairing secrets, and its history.
+class NexusStore {
+  File? _file;
+  final String? explicitPath;
+  Map<String, dynamic> _data = {};
+
+  /// [explicitPath] is used by tests so no plugin is needed; production code
+  /// resolves the app-support directory automatically.
+  NexusStore({this.explicitPath});
+
+  DeviceInfo get identity {
+    final raw = _data['identity'] as Map<String, dynamic>?;
+    if (raw != null) return DeviceInfo.fromJson(raw);
+    return DeviceInfo(id: 'unknown', name: 'My device', platform: 'other');
+  }
+
+  void setIdentity(DeviceInfo info) {
+    _data['identity'] = info.toJson();
+  }
+
+  int get port => ((_data['settings'] as Map<String, dynamic>?)?['port'] as num?)?.toInt() ?? 51820;
+
+  set port(int value) => _settings()['port'] = value;
+
+  bool get clipboardSync => ((_data['settings'] as Map<String, dynamic>?)?['clipboardSync'] as bool?) ?? true;
+
+  set clipboardSync(bool value) => _settings()['clipboardSync'] = value;
+
+  bool get autoApplyClipboard =>
+      ((_data['settings'] as Map<String, dynamic>?)?['autoApplyClipboard'] as bool?) ?? false;
+
+  set autoApplyClipboard(bool value) => _settings()['autoApplyClipboard'] = value;
+
+  bool get broadcastDiscovery =>
+      ((_data['settings'] as Map<String, dynamic>?)?['broadcastDiscovery'] as bool?) ?? true;
+
+  set broadcastDiscovery(bool value) => _settings()['broadcastDiscovery'] = value;
+
+  Map<String, dynamic> _settings() =>
+      _data.putIfAbsent('settings', () => <String, dynamic>{});
+
+  List<Map<String, dynamic>> get pairedDevices =>
+      ((_data['paired'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  void upsertPaired(Map<String, dynamic> device) {
+    final list = _data.putIfAbsent('paired', () => <Map<String, dynamic>>[])
+        as List;
+    final idx = list.indexWhere((e) => e['id'] == device['id']);
+    if (idx >= 0) {
+      list[idx] = device;
+    } else {
+      list.add(device);
+    }
+  }
+
+  void removePaired(String deviceId) {
+    final list = _data['paired'] as List?;
+    list?.removeWhere((e) => e['id'] == deviceId);
+  }
+
+  List<Map<String, dynamic>> get clipTray =>
+      ((_data['clipTray'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  void addClip(Map<String, dynamic> clip) {
+    final list = _data.putIfAbsent('clipTray', () => <Map<String, dynamic>>[])
+        as List;
+    list.insert(0, clip);
+    if (list.length > 30) list.removeRange(30, list.length);
+  }
+
+  Future<void> load() async {
+    _file ??= await _defaultFile();
+    if (await _file!.exists()) {
+      try {
+        final text = await _file!.readAsString();
+        _data = (jsonDecode(text) as Map<String, dynamic>?) ?? {};
+      } catch (_) {
+        // A corrupted store must never brick the app — start fresh but keep
+        // the file around so the user can inspect it.
+        _data = {};
+      }
+    }
+  }
+
+  Future<void> save() async {
+    final file = _file ??= await _defaultFile();
+    await file.parent.create(recursive: true);
+    final tmp = File('${file.path}.tmp');
+    await tmp.writeAsString(jsonEncode(_data), flush: true);
+    await tmp.rename(file.path);
+  }
+
+  Future<File> _defaultFile() async {
+    if (explicitPath != null) {
+      return File(explicitPath!);
+    }
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}${Platform.pathSeparator}nexus${Platform.pathSeparator}state.json');
+  }
+}
