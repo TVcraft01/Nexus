@@ -30,6 +30,11 @@ class NexusMessage {
   static const pairAccept = 'pair-accept';
   static const pairReject = 'pair-reject';
   static const clipboard = 'clipboard';
+  static const fileList = 'file.list';
+  static const fileListResult = 'file.list.result';
+  static const fileGet = 'file.get';
+  static const fileChunk = 'file.chunk';
+  static const fileError = 'file.error';
 
   Map<String, dynamic> toJson() => {
         'type': type,

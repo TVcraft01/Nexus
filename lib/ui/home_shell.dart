@@ -9,6 +9,7 @@ import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
 import 'assistant_view.dart';
 import 'devices_view.dart';
+import 'files_view.dart';
 import 'pair_sheet.dart';
 import 'settings_view.dart';
 import 'theme.dart';
@@ -112,6 +113,11 @@ class _HomeShellState extends State<HomeShell> {
       label: Text('Devices'),
     ),
     NavigationRailDestination(
+      icon: Icon(Icons.folder_rounded),
+      selectedIcon: Icon(Icons.folder_rounded),
+      label: Text('Files'),
+    ),
+    NavigationRailDestination(
       icon: Icon(Icons.mic_none_rounded),
       selectedIcon: Icon(Icons.mic_none_rounded),
       label: Text('Assistant'),
@@ -144,6 +150,7 @@ class _HomeShellState extends State<HomeShell> {
 
         final views = [
           DevicesView(mesh: widget.mesh),
+          FilesView(mesh: widget.mesh),
           const AssistantView(),
           SettingsView(mesh: widget.mesh),
         ];
@@ -196,6 +203,7 @@ class _HomeShellState extends State<HomeShell> {
                   onDestinationSelected: (i) => setState(() => _index = i),
                   destinations: const [
                     NavigationDestination(icon: Icon(Icons.devices_rounded), label: 'Devices'),
+                    NavigationDestination(icon: Icon(Icons.folder_rounded), label: 'Files'),
                     NavigationDestination(icon: Icon(Icons.mic_none_rounded), label: 'Assistant'),
                     NavigationDestination(icon: Icon(Icons.tune_rounded), label: 'Settings'),
                   ],

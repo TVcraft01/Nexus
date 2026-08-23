@@ -44,6 +44,7 @@ void main() {
       onlineWindow: const Duration(seconds: 3),
       visibleWindow: const Duration(seconds: 3),
       heartbeatInterval: const Duration(seconds: 2),
+      connectTimeout: const Duration(milliseconds: 300),
     );
     meshB = MeshService(
       identity: DeviceInfo(id: 'device-b', name: 'Test Phone', platform: 'android'),
@@ -52,6 +53,7 @@ void main() {
       onlineWindow: const Duration(seconds: 3),
       visibleWindow: const Duration(seconds: 3),
       heartbeatInterval: const Duration(seconds: 2),
+      connectTimeout: const Duration(milliseconds: 300),
     );
   });
 
@@ -185,6 +187,155 @@ void main() {
     await reloaded.load();
     final stored = reloaded.pairedDevices.firstWhere((d) => d['id'] == 'device-a');
     expect(stored['name'], 'New PC Name');
+  });
+
+  test('falls back across multiple addresses and self-heals to the working one', () async {
+    // A (the PC) serves a folder; B (the phone) browses it. The observable is
+    // B's outbound path — a file request — because presence pings still
+    // bounce both ways while B's listener works, even if B cannot initiate.
+    final root = Directory('${tmp.path}/served')..createSync();
+    File('${root.path}/hello.txt').writeAsStringSync('hello from A');
+
+    await meshA.stop();
+    meshA = MeshService(
+      identity: DeviceInfo(id: 'device-a', name: 'Test Linux PC', platform: 'linux'),
+      store: storeA,
+      clipboard: clipA,
+      fileRoot: root.path,
+      onlineWindow: const Duration(seconds: 3),
+      visibleWindow: const Duration(seconds: 3),
+      heartbeatInterval: const Duration(seconds: 2),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(address: '127.0.0.1', port: meshA.port, code: session.code);
+    expect(result.ok, isTrue);
+    final peer = meshB.pairedDevices.single;
+    expect(peer.address, '127.0.0.1');
+
+    // Mutate BEFORE any outbound socket exists (pairing destroys its own):
+    // Phase 1 — B only knows a dead address (a stale LAN IP from home), so
+    // outbound requests must honestly fail.
+    peer.address = '192.0.2.1';
+    peer.addresses = ['192.0.2.1'];
+    expect(await meshB.listRemoteFiles(peer, ''), isNull);
+    expect(meshB.lastFileError, contains('Could not reach'));
+
+    // Phase 2: the working address rejoins the list (e.g. the Tailscale IP)
+    // → B reaches A through the fallback, and A's pong heals B's primary
+    // address back to the one that actually works.
+    peer.addresses = ['192.0.2.1', '127.0.0.1'];
+    final entries = await meshB.listRemoteFiles(peer, '');
+    expect(entries, isNotNull, reason: meshB.lastFileError);
+    expect(entries!.single.name, 'hello.txt');
+
+    // A's next pong (on the socket B just opened) heals B's primary address.
+    var healed = false;
+    for (var i = 0; i < 20 && !healed; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      healed = meshB.pairedDevices.single.address == '127.0.0.1';
+    }
+    expect(healed, isTrue, reason: 'B did not self-heal its primary address');
+  });
+
+  test('address list is persisted with the paired device', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(address: '127.0.0.1', port: meshA.port, code: session.code);
+    expect(result.ok, isTrue);
+
+    // B's copy of A remembers where A lives, and the announced address list
+    // survives a reload of the store (what powers remote access after restart).
+    final reloaded = NexusStore(explicitPath: storeB.explicitPath);
+    await reloaded.load();
+    final stored = reloaded.pairedDevices.singleWhere((d) => d['id'] == 'device-a');
+    expect(stored['address'], '127.0.0.1');
+    expect((stored['addresses'] as List).contains('127.0.0.1'), isTrue);
+  });
+
+  test('files: list, navigate, pull (incl. multi-chunk), and root is enforced', () async {
+    // A (the "PC") serves a temp folder; B (the "phone") browses and pulls.
+    final root = Directory('${tmp.path}/served')..createSync();
+    File('${root.path}/hello.txt').writeAsStringSync('hello from A');
+    Directory('${root.path}/docs').createSync();
+    File('${root.path}/docs/readme.md').writeAsStringSync('# Readme');
+    File('${root.path}/empty.bin').writeAsStringSync('');
+    // 700 KiB > the 256 KiB chunk size, so this exercises multi-chunk pulls.
+    final big = StringBuffer();
+    for (var i = 0; i < 700 * 1024; i++) {
+      big.write('x');
+    }
+    File('${root.path}/big.bin').writeAsStringSync(big.toString());
+
+    await meshA.stop();
+    meshA = MeshService(
+      identity: DeviceInfo(id: 'device-a', name: 'Test Linux PC', platform: 'linux'),
+      store: storeA,
+      clipboard: clipA,
+      fileRoot: root.path,
+      onlineWindow: const Duration(seconds: 3),
+      visibleWindow: const Duration(seconds: 3),
+      heartbeatInterval: const Duration(seconds: 2),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(address: '127.0.0.1', port: meshA.port, code: session.code);
+    expect(result.ok, isTrue);
+    final peerA = meshB.pairedDevices.single;
+
+    // List the served root.
+    final rootEntries = await meshB.listRemoteFiles(peerA, '');
+    expect(rootEntries, isNotNull, reason: meshB.lastFileError);
+    final names = rootEntries!.map((e) => e.name).toSet();
+    expect(names, containsAll(['hello.txt', 'docs', 'empty.bin', 'big.bin']));
+    expect(rootEntries.firstWhere((e) => e.name == 'big.bin').size, 700 * 1024);
+
+    // Navigate into a subfolder using the path A reported.
+    final docs = rootEntries.firstWhere((e) => e.name == 'docs');
+    expect(docs.isDir, isTrue);
+    final docsEntries = await meshB.listRemoteFiles(peerA, docs.path);
+    expect(docsEntries, isNotNull, reason: meshB.lastFileError);
+    expect(docsEntries!.single.name, 'readme.md');
+
+    // Pull a small file.
+    final hello = rootEntries.firstWhere((e) => e.name == 'hello.txt');
+    final saved = await meshB.pullRemoteFile(peerA, hello.path, savePath: '${tmp.path}/dl.txt');
+    expect(saved, isNotNull, reason: meshB.lastFileError);
+    expect(File(saved!.path).readAsStringSync(), 'hello from A');
+
+    // Pull the multi-chunk file, watching progress reach 100%.
+    final bigEntry = rootEntries.firstWhere((e) => e.name == 'big.bin');
+    var lastProgress = 0.0;
+    final bigSaved = await meshB.pullRemoteFile(
+      peerA,
+      bigEntry.path,
+      savePath: '${tmp.path}/dl_big.bin',
+      onProgress: (received, total) {
+        if (total > 0) lastProgress = received / total;
+      },
+    );
+    expect(bigSaved, isNotNull, reason: meshB.lastFileError);
+    expect(File(bigSaved!.path).lengthSync(), 700 * 1024);
+    expect(lastProgress, 1.0);
+
+    // A zero-byte file still completes with an empty result.
+    final empty = rootEntries.firstWhere((e) => e.name == 'empty.bin');
+    final emptySaved = await meshB.pullRemoteFile(peerA, empty.path, savePath: '${tmp.path}/dl_empty.bin');
+    expect(emptySaved, isNotNull, reason: meshB.lastFileError);
+    expect(File(emptySaved!.path).lengthSync(), 0);
+
+    // Anything outside the served root is refused.
+    final denied = await meshB.listRemoteFiles(peerA, tmp.path);
+    expect(denied, isNull);
+    expect(meshB.lastFileError, contains('Access denied'));
   });
 
   test('unreachable device reports honestly as offline', () async {
