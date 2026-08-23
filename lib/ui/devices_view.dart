@@ -88,6 +88,17 @@ class DevicesView extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
+        // Always available — pairing a new device must be possible even when
+        // devices already exist (found this missing during real testing).
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.icon(
+            onPressed: () => showPairSheet(context, mesh: mesh),
+            icon: const Icon(Icons.qr_code_2_rounded, size: 18),
+            label: const Text('Pair a new device'),
+          ),
+        ),
+        const SizedBox(height: 12),
         if (paired.isEmpty)
           _EmptyState(mesh: mesh)
         else
