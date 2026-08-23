@@ -136,6 +136,24 @@ class _FilePull {
   _FilePull({required this.savePath, required this.peerName, this.onProgress});
 }
 
+/// State of one in-flight file transfer arriving on this device. Mirrors
+/// [_FilePull] on the receiving side: chunks overlap, so all writes go
+/// through [chain]; on the final chunk the file is closed and an ack is sent
+/// back so the sender knows it landed.
+class _FilePush {
+  final String name; // sanitized basename, safe to write under [dir]
+  final String dir; // the "Nexus Incoming" folder under the served root
+  final String peerName;
+  RandomAccessFile? sink;
+  String savedPath = '';
+  int received = 0;
+  int total = 0;
+  Timer? watchdog;
+  Future<void> chain = Future.value();
+
+  _FilePush({required this.name, required this.dir, required this.peerName});
+}
+
 /// Small abstraction over the platform clipboard so the mesh logic can be
 /// unit-tested without a device.
 abstract class ClipboardBackend {
@@ -221,6 +239,8 @@ class MeshService extends ChangeNotifier {
 
   final Map<String, Completer<List<FileEntry>?>> _pendingLists = {}; // req -> list
   final Map<String, _FilePull> _pendingPulls = {}; // req -> download state
+  final Map<String, _FilePush> _incomingPushes = {}; // req -> upload state
+  final Map<String, Completer<String?>> _outgoingPushes = {}; // req -> saved path on peer
 
   List<String>? _ipsCache;
   DateTime? _ipsCacheAt;
@@ -667,6 +687,14 @@ class MeshService extends ChangeNotifier {
         if (!encrypted) return;
         await _handleFileChunk(msg);
 
+      case NexusMessage.filePush:
+        if (!encrypted) return;
+        await _handleFilePush(msg);
+
+      case NexusMessage.filePushAck:
+        if (!encrypted) return;
+        await _handleFilePushAck(msg);
+
       case NexusMessage.fileError:
         if (!encrypted) return;
         await _handleFileError(msg);
@@ -726,12 +754,41 @@ class MeshService extends ChangeNotifier {
       await _sendFileError(peer, req, 'Access denied — that folder is outside your home directory.');
       return;
     }
-    List<FileEntry> entries;
+    final entries = await _listDir(resolved);
+    if (entries == null) {
+      await _sendFileError(peer, req, lastFileError ?? 'Could not read that folder.');
+      return;
+    }
+    await _sendEnc(peer, NexusMessage(
+      type: NexusMessage.fileListResult,
+      from: identity.id,
+      to: peer.id,
+      payload: {
+        'req': req,
+        'entries': entries
+            .map((e) => {
+                  'name': e.name,
+                  'path': e.path,
+                  'size': e.size,
+                  'dir': e.isDir,
+                  'modified': e.modified.toIso8601String(),
+                })
+            .toList(),
+      },
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    ));
+  }
+
+  /// Lists [resolved] (a path already validated against the served root),
+  /// skipping unreadable entries. Returns null on failure — [lastFileError]
+  /// says why. Shared by remote list requests and local "This device" browsing.
+  Future<List<FileEntry>?> _listDir(String resolved) async {
     try {
       final dir = Directory(resolved);
       if (!await dir.exists()) {
-        await _sendFileError(peer, req, 'That folder does not exist on this device.');
-        return;
+        lastFileError = 'That folder does not exist on this device.';
+        return null;
       }
       final children = await dir.list().toList();
       final listed = <FileEntry>[];
@@ -756,30 +813,11 @@ class MeshService extends ChangeNotifier {
         if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
         return a.name.toLowerCase().compareTo(b.name.toLowerCase());
       });
-      entries = listed;
+      return listed;
     } catch (_) {
-      await _sendFileError(peer, req, 'Could not read that folder.');
-      return;
+      lastFileError = 'Could not read that folder.';
+      return null;
     }
-    await _sendEnc(peer, NexusMessage(
-      type: NexusMessage.fileListResult,
-      from: identity.id,
-      to: peer.id,
-      payload: {
-        'req': req,
-        'entries': entries
-            .map((e) => {
-                  'name': e.name,
-                  'path': e.path,
-                  'size': e.size,
-                  'dir': e.isDir,
-                  'modified': e.modified.toIso8601String(),
-                })
-            .toList(),
-      },
-      id: _newId(),
-      ts: DateTime.now().millisecondsSinceEpoch,
-    ));
   }
 
   Future<void> _handleFileGetRequest(NexusMessage msg) async {
@@ -900,6 +938,100 @@ class MeshService extends ChangeNotifier {
     }
   }
 
+  /// First frame of an incoming push carries the file name; every frame
+  /// carries data. Frames are dispatched concurrently, so all disk writes
+  /// chain onto the push's [chain] — the same serialization that fixed the
+  /// pull-side overlap bug.
+  Future<void> _handleFilePush(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final peer = _paired[msg.from];
+    if (peer == null || req is! String) return;
+    var push = _incomingPushes[req];
+    if (push == null) {
+      final name = (msg.payload['name'] as String?) ?? '';
+      if (!_safeIncomingName(name)) {
+        await _sendFileError(peer, req, 'Refused file with an invalid name.');
+        return;
+      }
+      final root = await _servedRoot();
+      final dir = '$root${Platform.pathSeparator}Nexus Incoming';
+      push = _FilePush(name: name, dir: dir, peerName: peer.name);
+      _incomingPushes[req] = push;
+    }
+    final active = push;
+    active.chain = active.chain.then((_) => _applyPushChunk(active, peer, req, msg));
+    await active.chain.catchError((_) {});
+  }
+
+  Future<void> _applyPushChunk(
+      _FilePush push, PairedDevice peer, String req, NexusMessage msg) async {
+    final data = base64Decode(msg.payload['data'] as String? ?? '');
+    final total = (msg.payload['total'] as num?)?.toInt() ?? 0;
+    final done = msg.payload['done'] == true;
+    try {
+      push.sink ??= await _openIncoming(push);
+      if (data.isNotEmpty) {
+        await push.sink!.writeFrom(data);
+        push.received += data.length;
+      }
+      if (push.total == 0) push.total = total;
+      // Any chunk proves the sender is alive — reset the watchdog.
+      push.watchdog?.cancel();
+      push.watchdog = Timer(const Duration(seconds: 15), () {
+        _failPush(peer, req, 'The transfer stalled — the connection to ${push.peerName} was lost.');
+      });
+      if (done) {
+        await push.sink!.flush();
+        await push.sink!.close();
+        push.sink = null;
+        push.watchdog?.cancel();
+        _incomingPushes.remove(req);
+        await _sendEnc(peer, NexusMessage(
+          type: NexusMessage.filePushAck,
+          from: identity.id,
+          to: peer.id,
+          payload: {'req': req, 'path': push.savedPath},
+          id: _newId(),
+          ts: DateTime.now().millisecondsSinceEpoch,
+        ));
+      }
+    } catch (e) {
+      _failPush(peer, req, 'Could not save the file: $e');
+    }
+  }
+
+  /// A file name may only be a plain basename — anything with path separators
+  /// or dot-dots is refused so a push can never escape the incoming folder.
+  static bool _safeIncomingName(String name) {
+    if (name.isEmpty || name == '.' || name == '..') return false;
+    if (name.contains('/') || name.contains('\\')) return false;
+    return true;
+  }
+
+  /// Opens the destination file under the incoming folder, creating the
+  /// folder if needed and giving collisions a `(n)` suffix (like downloads).
+  Future<RandomAccessFile> _openIncoming(_FilePush push) async {
+    await Directory(push.dir).create(recursive: true);
+    var path = '${push.dir}${Platform.pathSeparator}${push.name}';
+    var n = 1;
+    while (File(path).existsSync()) {
+      path = '${push.dir}${Platform.pathSeparator}'
+          '${push.name.replaceFirst(RegExp(r'(\.[^.]*)?$'), ' ($n)\$1')}';
+      n++;
+    }
+    push.savedPath = path;
+    return File(path).open(mode: FileMode.write);
+  }
+
+  void _failPush(PairedDevice peer, String req, String message) {
+    final push = _incomingPushes.remove(req);
+    if (push == null) return;
+    push.watchdog?.cancel();
+    push.sink?.close().catchError((_) {});
+    push.sink = null;
+    unawaited(_sendFileError(peer, req, message));
+  }
+
   Future<void> _handleFileError(NexusMessage msg) async {
     final req = msg.payload['req'];
     final message = (msg.payload['message'] as String?) ?? 'The device refused the request.';
@@ -912,11 +1044,25 @@ class MeshService extends ChangeNotifier {
       if (!pull.done.isCompleted) pull.done.complete(null);
       return;
     }
+    final push = req is String ? _outgoingPushes.remove(req) : null;
+    if (push != null) {
+      lastFileError = message;
+      if (!push.isCompleted) push.complete(null);
+      return;
+    }
     final completer = req is String ? _pendingLists.remove(req) : null;
     if (completer != null) {
       lastFileError = message;
       if (!completer.isCompleted) completer.complete(null);
     }
+  }
+
+  Future<void> _handleFilePushAck(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final completer = req is String ? _outgoingPushes.remove(req) : null;
+    if (completer == null) return;
+    final saved = msg.payload['path'] as String?;
+    if (!completer.isCompleted) completer.complete(saved);
   }
 
   void _failPull(String req, String message) {
@@ -990,6 +1136,97 @@ class MeshService extends ChangeNotifier {
       _failPull(req, 'Could not reach ${peer.name}.');
     }
     return pull.done.future;
+  }
+
+  /// Lists a folder on this device's own served root — what the Files tab
+  /// shows when browsing "This device". Same sandbox rules as remote requests.
+  Future<List<FileEntry>?> listLocalFiles(String path) async {
+    final root = await _servedRoot();
+    final resolved = _resolveServedPath(path, root);
+    if (resolved == null) {
+      lastFileError = 'Access denied — that folder is outside your home directory.';
+      return null;
+    }
+    return _listDir(resolved);
+  }
+
+  /// Streams a local file (browsed via [listLocalFiles]) to [peer] over the
+  /// encrypted mesh. The peer writes it into its "Nexus Incoming" folder and
+  /// acks when every chunk has landed; returns the path it was saved to on
+  /// the peer, or null on failure — [lastFileError] says why.
+  Future<String?> pushLocalFile(
+    PairedDevice peer,
+    String localPath, {
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    final req = _newId();
+    final completer = Completer<String?>();
+    _outgoingPushes[req] = completer;
+    RandomAccessFile raf;
+    try {
+      raf = await File(localPath).open();
+    } catch (_) {
+      _failOutgoingPush(req, 'Could not open that file on this device.');
+      return null;
+    }
+    var watchdog = Timer(const Duration(seconds: 15), () {
+      _failOutgoingPush(req, 'Timed out sending to ${peer.name}.');
+    });
+    try {
+      final total = await raf.length();
+      final name = localPath.split(RegExp(r'[/\\]')).last;
+      // Same chunk size as the pull side — well under the frame guard.
+      const chunkSize = 256 * 1024;
+      var offset = 0;
+      var first = true;
+      while (true) {
+        final data = await raf.read(chunkSize);
+        final done = offset + data.length >= total;
+        final ok = await _sendEnc(peer, NexusMessage(
+          type: NexusMessage.filePush,
+          from: identity.id,
+          to: peer.id,
+          payload: {
+            'req': req,
+            if (first) 'name': name,
+            'offset': offset,
+            'data': base64Encode(data),
+            'total': total,
+            'done': done,
+          },
+          id: _newId(),
+          ts: DateTime.now().millisecondsSinceEpoch,
+        ));
+        if (!ok) {
+          _failOutgoingPush(req, 'Could not reach ${peer.name}.');
+          return null;
+        }
+        first = false;
+        offset += data.length;
+        onProgress?.call(offset, total);
+        // Any sent chunk proves the connection is alive — reset the watchdog.
+        watchdog.cancel();
+        watchdog = Timer(const Duration(seconds: 15), () {
+          _failOutgoingPush(req, 'Timed out sending to ${peer.name}.');
+        });
+        if (done) break;
+      }
+    } catch (_) {
+      _failOutgoingPush(req, 'Could not read the file while sending.');
+      return null;
+    } finally {
+      await raf.close();
+    }
+    final saved = await completer.future;
+    watchdog.cancel();
+    return saved;
+  }
+
+  void _failOutgoingPush(String req, String message) {
+    final completer = _outgoingPushes.remove(req);
+    if (completer == null) return;
+    lastFileError = message;
+    if (!completer.isCompleted) completer.complete(null);
   }
 
   void _noteSeen(String id, {required bool verified}) {

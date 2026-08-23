@@ -338,6 +338,77 @@ void main() {
     expect(meshB.lastFileError, contains('Access denied'));
   });
 
+  test('files: push sends a local file to a paired device (multi-chunk + empty)', () async {
+    // B (the "phone") pushes to A (the "PC"): B browses its own folder, then
+    // streams the file; A lands it in its "Nexus Incoming" folder and acks.
+    final rootA = Directory('${tmp.path}/servedA')..createSync();
+    final rootB = Directory('${tmp.path}/servedB')..createSync();
+    // 700 KiB > the 256 KiB chunk size, so this exercises multi-chunk pushes.
+    final content = StringBuffer();
+    for (var i = 0; i < 700 * 1024; i++) {
+      content.write('y');
+    }
+    File('${rootB.path}/photo.jpg').writeAsStringSync(content.toString());
+    File('${rootB.path}/empty.bin').writeAsStringSync('');
+
+    await meshA.stop();
+    meshA = MeshService(
+      identity: DeviceInfo(id: 'device-a', name: 'Test Linux PC', platform: 'linux'),
+      store: storeA,
+      clipboard: clipA,
+      fileRoot: rootA.path,
+      onlineWindow: const Duration(seconds: 3),
+      visibleWindow: const Duration(seconds: 3),
+      heartbeatInterval: const Duration(seconds: 2),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshB.stop();
+    meshB = MeshService(
+      identity: DeviceInfo(id: 'device-b', name: 'Test Phone', platform: 'android'),
+      store: storeB,
+      clipboard: clipB,
+      fileRoot: rootB.path,
+      onlineWindow: const Duration(seconds: 3),
+      visibleWindow: const Duration(seconds: 3),
+      heartbeatInterval: const Duration(seconds: 2),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(address: '127.0.0.1', port: meshA.port, code: session.code);
+    expect(result.ok, isTrue);
+    final peerA = meshB.pairedDevices.single;
+
+    // B browses its own served folder (the "This device" view).
+    final localEntries = await meshB.listLocalFiles('');
+    expect(localEntries, isNotNull, reason: meshB.lastFileError);
+    final names = localEntries!.map((e) => e.name).toSet();
+    expect(names, containsAll(['photo.jpg', 'empty.bin']));
+
+    // Multi-chunk push: A acks only after every chunk has landed.
+    final photo = localEntries.firstWhere((e) => e.name == 'photo.jpg');
+    var lastProgress = 0.0;
+    final saved = await meshB.pushLocalFile(
+      peerA,
+      photo.path,
+      onProgress: (sent, total) {
+        if (total > 0) lastProgress = sent / total;
+      },
+    );
+    expect(saved, isNotNull, reason: meshB.lastFileError);
+    expect(saved!.endsWith('${Platform.pathSeparator}Nexus Incoming${Platform.pathSeparator}photo.jpg'), isTrue);
+    expect(File(saved).readAsStringSync(), content.toString());
+    expect(lastProgress, 1.0);
+
+    // A zero-byte file still completes.
+    final empty = localEntries.firstWhere((e) => e.name == 'empty.bin');
+    final emptySaved = await meshB.pushLocalFile(peerA, empty.path);
+    expect(emptySaved, isNotNull, reason: meshB.lastFileError);
+    expect(File(emptySaved!).lengthSync(), 0);
+  });
+
   test('unreachable device reports honestly as offline', () async {
     await meshA.start();
 
