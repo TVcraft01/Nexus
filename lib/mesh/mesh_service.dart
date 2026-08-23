@@ -6,9 +6,11 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:path_provider/path_provider.dart' show getApplicationDocumentsDirectory;
 
 import '../core/crypto.dart';
 import '../core/identity.dart';
+import '../core/network_info.dart';
 import '../core/pair_payload.dart';
 import '../core/protocol.dart';
 import '../core/store.dart';
@@ -20,7 +22,16 @@ class PairedDevice {
   final String id;
   String name;
   final String platform;
+
+  /// The address that worked most recently (the source address of the last
+  /// real connection). Tried first when connecting.
   String address;
+
+  /// Every address this device has announced — LAN, VPN, Tailscale (100.x).
+  /// The mesh tries them in order, so a device paired at home still works
+  /// from far away via its Tailscale address. Defaults to [address] for
+  /// devices paired before this existed.
+  List<String> addresses;
   int port;
   final String pairingSecret;
   DateTime? lastVerified;
@@ -32,14 +43,16 @@ class PairedDevice {
     required this.address,
     required this.port,
     required this.pairingSecret,
+    List<String>? addresses,
     this.lastVerified,
-  });
+  }) : addresses = addresses ?? [address];
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'platform': platform,
         'address': address,
+        'addresses': addresses,
         'port': port,
         'pairingSecret': pairingSecret,
         'lastVerified': lastVerified?.toIso8601String(),
@@ -52,6 +65,10 @@ class PairedDevice {
         address: json['address'] as String,
         port: (json['port'] as num).toInt(),
         pairingSecret: json['pairingSecret'] as String,
+        addresses: (json['addresses'] as List?)
+            ?.whereType<String>()
+            .where((a) => a.isNotEmpty)
+            .toList(),
         lastVerified: json['lastVerified'] != null
             ? DateTime.tryParse(json['lastVerified'] as String)
             : null,
@@ -82,6 +99,41 @@ class ClipEntry {
   final String text;
   final String? fromName;
   const ClipEntry({required this.text, required this.fromName});
+}
+
+/// One entry in a remote directory listing.
+class FileEntry {
+  final String name;
+  final String path; // absolute path on the peer device
+  final int size; // bytes; 0 for directories
+  final bool isDir;
+  final DateTime modified;
+
+  const FileEntry({
+    required this.name,
+    required this.path,
+    required this.size,
+    required this.isDir,
+    required this.modified,
+  });
+}
+
+/// State of one in-flight file download on the requesting side.
+class _FilePull {
+  final String savePath;
+  final String peerName;
+  final void Function(int received, int total)? onProgress;
+  final Completer<File?> done = Completer<File?>();
+  RandomAccessFile? sink;
+  int received = 0;
+  int total = 0;
+  Timer? watchdog;
+
+  /// Chunks arrive as separately-dispatched frames and can overlap; all disk
+  /// writes go through this chain so a second write never starts mid-write.
+  Future<void> chain = Future.value();
+
+  _FilePull({required this.savePath, required this.peerName, this.onProgress});
 }
 
 /// Small abstraction over the platform clipboard so the mesh logic can be
@@ -127,7 +179,17 @@ class MeshService extends ChangeNotifier {
     this.visibleWindow = const Duration(seconds: 12),
     this.heartbeatInterval = const Duration(seconds: 8),
     this.nearbyWindow = const Duration(seconds: 60),
+    this.connectTimeout = const Duration(seconds: 3),
+    this.fileRoot,
   }) : clipboard = clipboard ?? _RealClipboard();
+
+  /// How long to wait per address before falling back to the next one.
+  /// Configurable so tests can exercise address fallback quickly.
+  final Duration connectTimeout;
+
+  /// The folder this device serves to paired devices (the "Files" tab browses
+  /// it). Defaults to the home directory on desktop; tests pass a temp dir.
+  final String? fileRoot;
 
   /// How old a verified contact may be before a device is shown offline.
   /// Configurable so tests can use short windows instead of waiting 25s.
@@ -152,6 +214,16 @@ class MeshService extends ChangeNotifier {
   final Set<String> _recentMessageIds = {}; // dedupe across multi-hop relays
 
   ClipEntry? lastIncomingClip;
+
+  /// Why the last file request failed ("could not reach", "access denied",
+  /// timeouts). Read by the Files UI to show an honest error.
+  String? lastFileError;
+
+  final Map<String, Completer<List<FileEntry>?>> _pendingLists = {}; // req -> list
+  final Map<String, _FilePull> _pendingPulls = {}; // req -> download state
+
+  List<String>? _ipsCache;
+  DateTime? _ipsCacheAt;
 
   String? pendingCode;
   DateTime? pendingCodeExpiry;
@@ -217,6 +289,22 @@ class MeshService extends ChangeNotifier {
         _paired[device.id] = device;
       } catch (_) {}
     }
+  }
+
+  /// All of this device's non-loopback IPv4 addresses (LAN + Tailscale +
+  /// VPN), cached briefly so heartbeats don't re-scan interfaces every 8s.
+  Future<List<String>> _myIps() async {
+    final cached = _ipsCache;
+    final at = _ipsCacheAt;
+    if (cached != null &&
+        at != null &&
+        DateTime.now().difference(at) < const Duration(minutes: 2)) {
+      return cached;
+    }
+    final ips = await detectAllIpv4s();
+    _ipsCache = ips;
+    _ipsCacheAt = DateTime.now();
+    return ips;
   }
 
   static const int defaultPort = 51820;
@@ -459,15 +547,30 @@ class MeshService extends ChangeNotifier {
     // anything still registered is usable (a send that races a close is
     // caught and dropped below).
     if (existing != null) return existing;
-    try {
-      final socket = await Socket.connect(peer.address, peer.port, timeout: const Duration(seconds: 4));
-      _outbound[peer.id] = socket;
-      _inboundPeer[socket] = peer.id; // so replies on this socket are attributed
-      _onClientSocket(socket);
-      return socket;
-    } catch (_) {
-      return null;
+    // Try every address we know for this peer. The one that worked most
+    // recently (peer.address) goes first, so LAN at home and Tailscale when
+    // far away both work without any reconfiguration.
+    final candidates = <String>[];
+    void add(String a) {
+      if (a.isNotEmpty && !candidates.contains(a)) candidates.add(a);
     }
+
+    add(peer.address);
+    for (final a in peer.addresses) {
+      add(a);
+    }
+    for (final address in candidates) {
+      try {
+        final socket = await Socket.connect(address, peer.port, timeout: connectTimeout);
+        _outbound[peer.id] = socket;
+        _inboundPeer[socket] = peer.id; // so replies on this socket are attributed
+        _onClientSocket(socket);
+        return socket;
+      } catch (_) {
+        // Unreachable via this address — try the next one.
+      }
+    }
+    return null;
   }
 
   Future<Uint8List> _sessionKeyFor(PairedDevice peer) async {
@@ -499,10 +602,11 @@ class MeshService extends ChangeNotifier {
         final payload = msg.payload;
         final name = payload['name'] as String? ?? 'Unknown device';
         final port = (payload['port'] as num?)?.toInt();
+        final ips = (payload['ips'] as List?)?.whereType<String>().toList();
         _noteSeen(msg.from, verified: true);
         debugPrint('NEXUS mesh: ping <- ${msg.from} from ${socket.remoteAddress.address}');
         if (port != null) {
-          await _learnAddress(msg.from, socket.remoteAddress.address, port, name, payload['platform'] as String? ?? 'other');
+          await _learnAddress(msg.from, socket.remoteAddress.address, port, name, payload['platform'] as String? ?? 'other', ips: ips);
         }
         _sendPlain(
           socket,
@@ -510,7 +614,12 @@ class MeshService extends ChangeNotifier {
             type: NexusMessage.pong,
             from: identity.id,
             to: msg.from,
-            payload: {'name': identity.name, 'platform': identity.platform, 'port': store.port},
+            payload: {
+              'name': identity.name,
+              'platform': identity.platform,
+              'port': store.port,
+              'ips': await _myIps(),
+            },
             id: _newId(),
             ts: DateTime.now().millisecondsSinceEpoch,
           ),
@@ -522,8 +631,9 @@ class MeshService extends ChangeNotifier {
         final payload = msg.payload;
         final name = payload['name'] as String?;
         final port = (payload['port'] as num?)?.toInt();
+        final ips = (payload['ips'] as List?)?.whereType<String>().toList();
         if (port != null && name != null) {
-          await _learnAddress(msg.from, socket.remoteAddress.address, port, name, payload['platform'] as String? ?? 'other');
+          await _learnAddress(msg.from, socket.remoteAddress.address, port, name, payload['platform'] as String? ?? 'other', ips: ips);
         }
 
       case NexusMessage.pairRequest:
@@ -540,7 +650,346 @@ class MeshService extends ChangeNotifier {
       case NexusMessage.clipboard:
         if (!encrypted) return; // clipboard text must never ride in plaintext
         await _handleIncomingClip(msg);
+
+      case NexusMessage.fileList:
+        if (!encrypted) return; // file paths are private — never in plaintext
+        await _handleFileListRequest(msg);
+
+      case NexusMessage.fileGet:
+        if (!encrypted) return;
+        await _handleFileGetRequest(msg);
+
+      case NexusMessage.fileListResult:
+        if (!encrypted) return;
+        await _handleFileListResult(msg);
+
+      case NexusMessage.fileChunk:
+        if (!encrypted) return;
+        await _handleFileChunk(msg);
+
+      case NexusMessage.fileError:
+        if (!encrypted) return;
+        await _handleFileError(msg);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Remote file access (encrypted, served from this device's home folder)
+  // ---------------------------------------------------------------------
+
+  /// The folder this device serves. Desktop: the home directory. Android:
+  /// the app's documents dir (the interesting files live on the PC anyway).
+  /// Tests inject their own root.
+  Future<String> _servedRoot() async {
+    if (fileRoot != null) return fileRoot!;
+    final home = Platform.environment['HOME'];
+    if (home != null && home.isNotEmpty) return home;
+    final profile = Platform.environment['USERPROFILE'];
+    if (profile != null && profile.isNotEmpty) return profile;
+    final dir = await getApplicationDocumentsDirectory();
+    return dir.path;
+  }
+
+  /// Maps a peer-supplied path onto the served root, collapsing `.`/`..` and
+  /// refusing anything that escapes the root. Returns null = access denied.
+  String? _resolveServedPath(String path, String root) {
+    final clean = _normalizePath(path);
+    if (clean.isEmpty || clean == '/') return root;
+    if (clean != root && !clean.startsWith('$root${Platform.pathSeparator}')) {
+      return null;
+    }
+    return clean;
+  }
+
+  static String _normalizePath(String path) {
+    final parts = <String>[];
+    for (final seg in path.split(Platform.pathSeparator)) {
+      if (seg.isEmpty || seg == '.') continue;
+      if (seg == '..') {
+        if (parts.isNotEmpty) parts.removeLast();
+      } else {
+        parts.add(seg);
+      }
+    }
+    final prefix = path.startsWith(Platform.pathSeparator) ? Platform.pathSeparator : '';
+    return prefix + parts.join(Platform.pathSeparator);
+  }
+
+  Future<void> _handleFileListRequest(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final peer = _paired[msg.from];
+    if (peer == null || req is! String) return;
+    final path = msg.payload['path'] as String? ?? '';
+    final root = await _servedRoot();
+    final resolved = _resolveServedPath(path, root);
+    if (resolved == null) {
+      await _sendFileError(peer, req, 'Access denied — that folder is outside your home directory.');
+      return;
+    }
+    List<FileEntry> entries;
+    try {
+      final dir = Directory(resolved);
+      if (!await dir.exists()) {
+        await _sendFileError(peer, req, 'That folder does not exist on this device.');
+        return;
+      }
+      final children = await dir.list().toList();
+      final listed = <FileEntry>[];
+      for (final child in children) {
+        try {
+          final isDir = child is Directory;
+          final stat = await child.stat();
+          final segments =
+              child.path.split(Platform.pathSeparator).where((s) => s.isNotEmpty).toList();
+          listed.add(FileEntry(
+            name: segments.isEmpty ? child.path : segments.last,
+            path: child.path,
+            size: isDir ? 0 : stat.size,
+            isDir: isDir,
+            modified: stat.modified,
+          ));
+        } catch (_) {
+          // Unreadable entry (permission, vanished mid-listing) — skip it.
+        }
+      }
+      listed.sort((a, b) {
+        if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+      entries = listed;
+    } catch (_) {
+      await _sendFileError(peer, req, 'Could not read that folder.');
+      return;
+    }
+    await _sendEnc(peer, NexusMessage(
+      type: NexusMessage.fileListResult,
+      from: identity.id,
+      to: peer.id,
+      payload: {
+        'req': req,
+        'entries': entries
+            .map((e) => {
+                  'name': e.name,
+                  'path': e.path,
+                  'size': e.size,
+                  'dir': e.isDir,
+                  'modified': e.modified.toIso8601String(),
+                })
+            .toList(),
+      },
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    ));
+  }
+
+  Future<void> _handleFileGetRequest(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final peer = _paired[msg.from];
+    if (peer == null || req is! String) return;
+    final path = msg.payload['path'] as String? ?? '';
+    final root = await _servedRoot();
+    final resolved = _resolveServedPath(path, root);
+    if (resolved == null) {
+      await _sendFileError(peer, req, 'Access denied — that file is outside your home directory.');
+      return;
+    }
+    RandomAccessFile raf;
+    try {
+      raf = await File(resolved).open();
+    } catch (_) {
+      await _sendFileError(peer, req, 'Could not open that file.');
+      return;
+    }
+    try {
+      final total = await raf.length();
+      // Stream in 256 KiB chunks — small enough to stay well under the 1 MiB
+      // frame guard, large enough that big files don't become a message zoo.
+      const chunkSize = 256 * 1024;
+      var offset = 0;
+      while (true) {
+        final data = await raf.read(chunkSize);
+        final done = offset + data.length >= total;
+        final ok = await _sendEnc(peer, NexusMessage(
+          type: NexusMessage.fileChunk,
+          from: identity.id,
+          to: peer.id,
+          payload: {
+            'req': req,
+            'offset': offset,
+            'data': base64Encode(data),
+            'total': total,
+            'done': done,
+          },
+          id: _newId(),
+          ts: DateTime.now().millisecondsSinceEpoch,
+        ));
+        if (!ok) break; // peer went away mid-transfer
+        offset += data.length;
+        if (done) break;
+      }
+    } catch (_) {
+      await _sendFileError(peer, req, 'The file changed while reading it.');
+    } finally {
+      await raf.close();
+    }
+  }
+
+  Future<void> _sendFileError(PairedDevice peer, String req, String message) async {
+    lastFileError = message;
+    await _sendEnc(peer, NexusMessage(
+      type: NexusMessage.fileError,
+      from: identity.id,
+      to: peer.id,
+      payload: {'req': req, 'message': message},
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    ));
+  }
+
+  Future<void> _handleFileListResult(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final completer = req is String ? _pendingLists.remove(req) : null;
+    if (completer == null) return;
+    final raw = (msg.payload['entries'] as List?) ?? const [];
+    final entries = raw.whereType<Map<String, dynamic>>().map((e) => FileEntry(
+          name: e['name'] as String? ?? '?',
+          path: e['path'] as String? ?? '',
+          size: (e['size'] as num?)?.toInt() ?? 0,
+          isDir: e['dir'] == true,
+          modified: DateTime.tryParse(e['modified'] as String? ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0),
+        )).toList();
+    if (!completer.isCompleted) completer.complete(entries);
+  }
+
+  Future<void> _handleFileChunk(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final pull = req is String ? _pendingPulls[req] : null;
+    if (pull == null) return;
+    pull.chain = pull.chain.then((_) => _applyChunk(pull, req, msg));
+    await pull.chain.catchError((_) {});
+  }
+
+  Future<void> _applyChunk(_FilePull pull, String req, NexusMessage msg) async {
+    final data = base64Decode(msg.payload['data'] as String? ?? '');
+    final total = (msg.payload['total'] as num?)?.toInt() ?? 0;
+    final done = msg.payload['done'] == true;
+    try {
+      pull.sink ??= await File(pull.savePath).open(mode: FileMode.write);
+      if (data.isNotEmpty) {
+        await pull.sink!.writeFrom(data);
+        pull.received += data.length;
+      }
+      if (pull.total == 0) pull.total = total;
+      pull.onProgress?.call(pull.received, pull.total);
+      // Any chunk proves the peer is alive — reset the watchdog.
+      pull.watchdog?.cancel();
+      pull.watchdog = Timer(const Duration(seconds: 15), () {
+        _failPull(req, 'The transfer stalled — the connection to ${pull.peerName} was lost.');
+      });
+      if (done) {
+        await pull.sink!.flush();
+        await pull.sink!.close();
+        pull.sink = null;
+        pull.watchdog?.cancel();
+        _pendingPulls.remove(req);
+        if (!pull.done.isCompleted) pull.done.complete(File(pull.savePath));
+      }
+    } catch (e) {
+      _failPull(req, 'Could not save the file: $e');
+    }
+  }
+
+  Future<void> _handleFileError(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final message = (msg.payload['message'] as String?) ?? 'The device refused the request.';
+    final pull = req is String ? _pendingPulls.remove(req) : null;
+    if (pull != null) {
+      pull.watchdog?.cancel();
+      pull.sink?.close().catchError((_) {});
+      pull.sink = null;
+      lastFileError = message;
+      if (!pull.done.isCompleted) pull.done.complete(null);
+      return;
+    }
+    final completer = req is String ? _pendingLists.remove(req) : null;
+    if (completer != null) {
+      lastFileError = message;
+      if (!completer.isCompleted) completer.complete(null);
+    }
+  }
+
+  void _failPull(String req, String message) {
+    final pull = _pendingPulls.remove(req);
+    if (pull == null) return;
+    pull.watchdog?.cancel();
+    pull.sink?.close().catchError((_) {});
+    pull.sink = null;
+    lastFileError = message;
+    if (!pull.done.isCompleted) pull.done.complete(null);
+  }
+
+  /// Requests a directory listing from [peer]. `path` is an absolute path on
+  /// the peer ('' or '/' = its home). Returns null on failure — [lastFileError]
+  /// says why.
+  Future<List<FileEntry>?> listRemoteFiles(PairedDevice peer, String path) async {
+    final req = _newId();
+    final completer = Completer<List<FileEntry>?>();
+    _pendingLists[req] = completer;
+    final sent = await _sendEnc(peer, NexusMessage(
+      type: NexusMessage.fileList,
+      from: identity.id,
+      to: peer.id,
+      payload: {'req': req, 'path': path},
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    ));
+    if (!sent) {
+      _pendingLists.remove(req);
+      lastFileError = 'Could not reach ${peer.name}.';
+      return null;
+    }
+    final timer = Timer(const Duration(seconds: 15), () {
+      if (!completer.isCompleted) {
+        _pendingLists.remove(req);
+        lastFileError = 'Timed out reading ${path.isEmpty ? 'home' : path}.';
+        completer.complete(null);
+      }
+    });
+    final result = await completer.future;
+    timer.cancel();
+    return result;
+  }
+
+  /// Streams a file from [peer] into [savePath], reporting progress via
+  /// [onProgress] (received, total). Returns the saved file, or null on
+  /// failure — [lastFileError] says why.
+  Future<File?> pullRemoteFile(
+    PairedDevice peer,
+    String path, {
+    required String savePath,
+    void Function(int received, int total)? onProgress,
+  }) async {
+    final req = _newId();
+    final pull = _FilePull(savePath: savePath, onProgress: onProgress, peerName: peer.name);
+    _pendingPulls[req] = pull;
+    // Watchdog covers the whole transfer: waiting for the first chunk counts
+    // too, and any chunk resets it.
+    pull.watchdog = Timer(const Duration(seconds: 15), () {
+      _failPull(req, 'Timed out waiting for ${peer.name}.');
+    });
+    final sent = await _sendEnc(peer, NexusMessage(
+      type: NexusMessage.fileGet,
+      from: identity.id,
+      to: peer.id,
+      payload: {'req': req, 'path': path},
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    ));
+    if (!sent) {
+      _failPull(req, 'Could not reach ${peer.name}.');
+    }
+    return pull.done.future;
   }
 
   void _noteSeen(String id, {required bool verified}) {
@@ -549,7 +998,14 @@ class MeshService extends ChangeNotifier {
     if (verified) _verified[id] = now;
   }
 
-  Future<void> _learnAddress(String id, String address, int port, String name, String platform) async {
+  Future<void> _learnAddress(
+    String id,
+    String address,
+    int port,
+    String name,
+    String platform, {
+    List<String>? ips,
+  }) async {
     final peer = _paired[id];
     if (peer != null) {
       var changed = false;
@@ -563,6 +1019,21 @@ class MeshService extends ChangeNotifier {
       }
       if (peer.name != name) {
         peer.name = name;
+        changed = true;
+      }
+      // Merge the announced address list: the connecting address first (it
+      // just worked), then the announced ones, then anything we already had
+      // — so a device that gained a Tailscale IP keeps all routes to it.
+      final merged = <String>[address, ...?ips];
+      final next = <String>[];
+      for (final a in merged) {
+        if (a.isNotEmpty && !next.contains(a)) next.add(a);
+      }
+      for (final a in peer.addresses) {
+        if (!next.contains(a)) next.add(a);
+      }
+      if (!_sameList(peer.addresses, next)) {
+        peer.addresses = next;
         changed = true;
       }
       if (changed) {
@@ -583,6 +1054,14 @@ class MeshService extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  bool _sameList(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   void _sendPlain(Socket socket, NexusMessage msg) {
@@ -644,7 +1123,12 @@ class MeshService extends ChangeNotifier {
           type: NexusMessage.ping,
           from: identity.id,
           to: peer.id,
-          payload: {'name': identity.name, 'platform': identity.platform, 'port': store.port},
+          payload: {
+            'name': identity.name,
+            'platform': identity.platform,
+            'port': store.port,
+            'ips': await _myIps(),
+          },
           id: _newId(),
           ts: DateTime.now().millisecondsSinceEpoch,
         );
