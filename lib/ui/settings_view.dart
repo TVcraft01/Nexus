@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 import '../core/version.dart';
@@ -16,6 +18,15 @@ class SettingsView extends StatefulWidget {
 class _SettingsViewState extends State<SettingsView> {
   late final TextEditingController _nameController =
       TextEditingController(text: widget.mesh.identity.name);
+  bool? _allFilesAccess; // Android: can this device read its whole storage?
+
+  @override
+  void initState() {
+    super.initState();
+    MeshService.hasAllFilesAccess().then((v) {
+      if (mounted) setState(() => _allFilesAccess = v);
+    });
+  }
 
   @override
   void dispose() {
@@ -110,6 +121,42 @@ class _SettingsViewState extends State<SettingsView> {
           ],
         ),
         const SizedBox(height: 14),
+
+        if (defaultTargetPlatform == TargetPlatform.android) ...[
+          _SectionCard(
+            children: [
+              _SectionTitle('Files on this device'),
+              _InfoRow(
+                title: 'Show all your files to paired devices',
+                detail: _allFilesAccess == false
+                    ? 'Without it, devices only see files Nexus downloaded. Grant '
+                        'it so your PC’s file manager can browse your photos, '
+                        'downloads and music.'
+                    : 'Paired devices can browse everything on this device — '
+                        'photos, downloads, music — and delete files you allow.',
+                icon: _allFilesAccess == false
+                    ? Icons.lock_outline_rounded
+                    : Icons.folder_open_rounded,
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton.tonalIcon(
+                  onPressed: MeshService.openAllFilesAccessSettings,
+                  icon: Icon(
+                    _allFilesAccess == false
+                        ? Icons.lock_open_rounded
+                        : Icons.settings_rounded,
+                    size: 18,
+                  ),
+                  label: Text(
+                      _allFilesAccess == false ? 'Grant access' : 'Open settings'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+        ],
 
         _SectionCard(
           children: [

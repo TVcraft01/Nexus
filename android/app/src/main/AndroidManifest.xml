@@ -12,6 +12,12 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- For installing APK updates on Android 8+. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- So the Files tab / PC file manager can see ALL of the phone's files
+         (photos, downloads, music…), not just the app's own folder. The user
+         grants it explicitly from the Files tab; nothing is ever sent off
+         the paired mesh. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
     <application
         android:label="Nexus"
         android:name="${applicationName}"

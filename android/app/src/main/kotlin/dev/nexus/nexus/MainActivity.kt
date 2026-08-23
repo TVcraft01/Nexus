@@ -1,8 +1,11 @@
 package dev.nexus.nexus
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -21,6 +24,8 @@ class MainActivity : FlutterActivity() {
     // returns from the system settings screen.
     private var pendingInstallPath: String? = null
 
+    private val STORAGE_CHANNEL = "dev.nexus.nexus/storage"
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -37,6 +42,49 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "allFilesAccess" -> result.success(hasAllFilesAccess())
+                    "openAllFilesAccessSettings" -> {
+                        openAllFilesAccessSettings()
+                        result.success(true)
+                    }
+                    "sharedRoot" -> result.success(
+                        Environment.getExternalStorageDirectory().absolutePath
+                    )
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    /// Whether the app may read the whole shared storage. On Android 11+ that
+    /// is the "All files access" toggle (MANAGE_EXTERNAL_STORAGE); on older
+    /// versions the READ_EXTERNAL_STORAGE runtime permission suffices.
+    private fun hasAllFilesAccess(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    /// Opens the system screen where the user flips the "All files access"
+    /// toggle for this app (Android 11+), or the app details page otherwise.
+    private fun openAllFilesAccessSettings() {
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData(Uri.parse("package:$packageName"))
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
     }
 
     /// Returns "launched" (installer open), "permission" (routed the user to
