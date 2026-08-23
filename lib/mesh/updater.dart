@@ -150,18 +150,23 @@ class Updater {
 
   /// Applies a downloaded update:
   /// - **Linux**: extract, swap dirs, relaunch; needs [installDir].
-  /// - **Android**: hand the APK to the system installer.
+  /// - **Android**: check the unknown-sources permission, hand the APK to the
+  ///   system installer.
   ///
   /// Returns true when the update flow has been started (the app should
   /// step back and let the user/system finish).
   static Future<bool> applyUpdate(String archivePath, {String? installDir}) async {
     if (defaultTargetPlatform == TargetPlatform.android) {
       try {
-        final launched = await _androidChannel.invokeMethod<bool>('installApk', {
+        final status = await _androidChannel.invokeMethod<String>('installApk', {
           'path': archivePath,
         });
-        debugPrint('NEXUS updater: Android installer launched: $launched');
-        return launched == true;
+        debugPrint('NEXUS updater: Android installer status: $status');
+        // "launched" — installer open. "permission" — the app routed the
+        // user to the system unknown-sources screen first; the install
+        // continues automatically when they grant it and come back. Either
+        // way the flow is in the user's hands, so it is not an error.
+        return status == 'launched' || status == 'permission';
       } catch (e) {
         debugPrint('NEXUS updater: Android install failed: $e');
         return false;

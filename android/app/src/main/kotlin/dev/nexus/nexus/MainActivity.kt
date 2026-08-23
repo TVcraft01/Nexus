@@ -3,6 +3,7 @@ package dev.nexus.nexus
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -13,6 +14,12 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "dev.nexus.nexus/installer"
     private val TAG = "NexusInstaller"
+    private val REQUEST_INSTALL_PERMISSION = 42601
+
+    // The APK we were about to install when the unknown-sources permission
+    // was missing. The install resumes as soon as the user grants it and
+    // returns from the system settings screen.
+    private var pendingInstallPath: String? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -32,7 +39,48 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    private fun installApk(path: String): Boolean {
+    /// Returns "launched" (installer open), "permission" (routed the user to
+    /// the system unknown-sources screen; the install will continue when they
+    /// grant it), or "error".
+    private fun installApk(path: String): String {
+        val source = File(path)
+        if (!source.exists()) {
+            Log.e(TAG, "APK not found at $path")
+            return "error"
+        }
+
+        // Android 8+ refuses to install without the "install unknown apps"
+        // permission — the session dies instantly with
+        // INSTALL_FAILED_VERIFICATION_FAILURE. Open the system settings
+        // screen for this app first; the install resumes on return.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            pendingInstallPath = path
+            val intent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName")
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivityForResult(intent, REQUEST_INSTALL_PERMISSION)
+            Log.i(TAG, "unknown-sources permission missing — opening settings")
+            return "permission"
+        }
+        return if (launchInstaller(path)) "launched" else "error"
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_INSTALL_PERMISSION) {
+            val path = pendingInstallPath
+            pendingInstallPath = null
+            val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                packageManager.canRequestPackageInstalls()
+            if (path != null && granted) {
+                Log.i(TAG, "permission granted — resuming install")
+                launchInstaller(path)
+            }
+        }
+    }
+
+    private fun launchInstaller(path: String): Boolean {
         return try {
             val source = File(path)
             if (!source.exists()) {
@@ -68,7 +116,7 @@ class MainActivity : FlutterActivity() {
             startActivity(intent)
             true
         } catch (e: Exception) {
-            Log.e(TAG, "installApk failed", e)
+            Log.e(TAG, "launchInstaller failed", e)
             false
         }
     }
