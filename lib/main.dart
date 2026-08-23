@@ -6,6 +6,7 @@ import 'package:flutter/services.dart' show DeviceOrientation, SystemChrome;
 
 import 'core/identity.dart';
 import 'core/store.dart';
+import 'mesh/gateway.dart';
 import 'mesh/mesh_service.dart';
 import 'ui/home_shell.dart';
 import 'ui/theme.dart';
@@ -61,6 +62,28 @@ Future<void> main() async {
     store: store,
   );
   await mesh.start();
+
+  // Linux: expose the mesh to the file manager via a localhost gateway that
+  // tools/nexusfs.py mounts as folders ("Nexus Devices" in Nemo). The token
+  // is persisted so a running mount survives an app restart; the daemon reads
+  // it from the store at mount time.
+  if (defaultTargetPlatform == TargetPlatform.linux) {
+    final token = store.gatewayToken ?? MeshGateway.newToken();
+    store.gatewayToken = token;
+    await store.save();
+    for (var port = store.gatewayPort; port < store.gatewayPort + 5; port++) {
+      try {
+        final gateway = MeshGateway(mesh: mesh, token: token, port: port);
+        await gateway.start();
+        store.gatewayPort = port;
+        await store.save();
+        debugPrint('NEXUS gateway: listening on 127.0.0.1:$port');
+        break;
+      } on SocketException {
+        continue; // port busy (another instance?) — try the next one
+      }
+    }
+  }
 
   runApp(NexusApp(mesh: mesh));
 }

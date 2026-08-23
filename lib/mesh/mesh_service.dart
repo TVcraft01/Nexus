@@ -5,8 +5,10 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
-import 'package:path_provider/path_provider.dart' show getApplicationDocumentsDirectory;
+import 'package:flutter/services.dart'
+    show Clipboard, ClipboardData, MethodChannel;
+import 'package:path_provider/path_provider.dart'
+    show getApplicationDocumentsDirectory, getExternalStorageDirectory;
 
 import '../core/crypto.dart';
 import '../core/identity.dart';
@@ -15,6 +17,10 @@ import '../core/pair_payload.dart';
 import '../core/protocol.dart';
 import '../core/store.dart';
 import 'discovery.dart';
+
+/// Local channel to the Android side (see MainActivity): "All files access"
+/// state and the real shared-storage root, which the mesh serves to peers.
+const _storageChannel = MethodChannel('dev.nexus.nexus/storage');
 
 /// A device that has been paired with us. "Paired" means we share a secret
 /// (the pairing code) and can talk to each other encrypted.
@@ -48,31 +54,31 @@ class PairedDevice {
   }) : addresses = addresses ?? [address];
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'platform': platform,
-        'address': address,
-        'addresses': addresses,
-        'port': port,
-        'pairingSecret': pairingSecret,
-        'lastVerified': lastVerified?.toIso8601String(),
-      };
+    'id': id,
+    'name': name,
+    'platform': platform,
+    'address': address,
+    'addresses': addresses,
+    'port': port,
+    'pairingSecret': pairingSecret,
+    'lastVerified': lastVerified?.toIso8601String(),
+  };
 
   factory PairedDevice.fromJson(Map<String, dynamic> json) => PairedDevice(
-        id: json['id'] as String,
-        name: json['name'] as String,
-        platform: json['platform'] as String? ?? 'other',
-        address: json['address'] as String,
-        port: (json['port'] as num).toInt(),
-        pairingSecret: json['pairingSecret'] as String,
-        addresses: (json['addresses'] as List?)
-            ?.whereType<String>()
-            .where((a) => a.isNotEmpty)
-            .toList(),
-        lastVerified: json['lastVerified'] != null
-            ? DateTime.tryParse(json['lastVerified'] as String)
-            : null,
-      );
+    id: json['id'] as String,
+    name: json['name'] as String,
+    platform: json['platform'] as String? ?? 'other',
+    address: json['address'] as String,
+    port: (json['port'] as num).toInt(),
+    pairingSecret: json['pairingSecret'] as String,
+    addresses: (json['addresses'] as List?)
+        ?.whereType<String>()
+        .where((a) => a.isNotEmpty)
+        .toList(),
+    lastVerified: json['lastVerified'] != null
+        ? DateTime.tryParse(json['lastVerified'] as String)
+        : null,
+  );
 }
 
 /// Result of an attempted pairing.
@@ -89,7 +95,11 @@ class PairingSession {
   final String code;
   final String qrPayload;
   final DateTime expiresAt;
-  const PairingSession({required this.code, required this.qrPayload, required this.expiresAt});
+  const PairingSession({
+    required this.code,
+    required this.qrPayload,
+    required this.expiresAt,
+  });
 }
 
 /// A clipboard message that arrived from another device — used only for the
@@ -144,6 +154,7 @@ class _FilePush {
   final String name; // sanitized basename, safe to write under [dir]
   final String dir; // the "Nexus Incoming" folder under the served root
   final String peerName;
+  final bool overwrite;
   RandomAccessFile? sink;
   String savedPath = '';
   int received = 0;
@@ -151,7 +162,12 @@ class _FilePush {
   Timer? watchdog;
   Future<void> chain = Future.value();
 
-  _FilePush({required this.name, required this.dir, required this.peerName});
+  _FilePush({
+    required this.name,
+    required this.dir,
+    required this.peerName,
+    this.overwrite = false,
+  });
 }
 
 /// Small abstraction over the platform clipboard so the mesh logic can be
@@ -174,7 +190,8 @@ class _RealClipboard implements ClipboardBackend {
   }
 
   @override
-  Future<void> writeText(String text) => Clipboard.setData(ClipboardData(text: text));
+  Future<void> writeText(String text) =>
+      Clipboard.setData(ClipboardData(text: text));
 }
 
 /// The mesh: one service per device that owns the TCP server, discovery,
@@ -237,10 +254,18 @@ class MeshService extends ChangeNotifier {
   /// timeouts). Read by the Files UI to show an honest error.
   String? lastFileError;
 
-  final Map<String, Completer<List<FileEntry>?>> _pendingLists = {}; // req -> list
+  final Map<String, Completer<List<FileEntry>?>> _pendingLists =
+      {}; // req -> list
   final Map<String, _FilePull> _pendingPulls = {}; // req -> download state
   final Map<String, _FilePush> _incomingPushes = {}; // req -> upload state
-  final Map<String, Completer<String?>> _outgoingPushes = {}; // req -> saved path on peer
+  Future<void> _filePushChain = Future.value();
+  final Map<String, Completer<String?>> _outgoingPushes =
+      {}; // req -> saved path on peer
+  final Map<String, Completer<Uint8List?>> _pendingRanges =
+      {}; // req -> byte range read
+  final Map<String, Completer<bool>> _pendingDeletes = {}; // req -> deleted ok?
+  final Map<String, Completer<String?>> _pendingOperations =
+      {}; // req -> result path
 
   List<String>? _ipsCache;
   DateTime? _ipsCacheAt;
@@ -266,7 +291,8 @@ class MeshService extends ChangeNotifier {
   List<DiscoveredDevice> get nearbyDevices {
     final cutoff = DateTime.now().subtract(nearbyWindow);
     _nearby.removeWhere((_, d) => d.lastSeen.isBefore(cutoff));
-    final list = _nearby.values.toList()..sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
+    final list = _nearby.values.toList()
+      ..sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
     return list;
   }
 
@@ -297,7 +323,10 @@ class MeshService extends ChangeNotifier {
     await _bindServer();
     _startDiscovery();
     _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) => _heartbeat());
-    _clipboardTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) => _checkClipboard());
+    _clipboardTimer = Timer.periodic(
+      const Duration(milliseconds: 1500),
+      (_) => _checkClipboard(),
+    );
     unawaited(_heartbeat());
     notifyListeners();
   }
@@ -356,7 +385,8 @@ class MeshService extends ChangeNotifier {
       _server = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
       store.port = _server!.port;
       await store.save();
-      lastNotice = 'Port $defaultPort was busy — Nexus is using port ${_server!.port}.';
+      lastNotice =
+          'Port $defaultPort was busy — Nexus is using port ${_server!.port}.';
     }
     _server!.listen(_onClientSocket);
     debugPrint('NEXUS mesh: listening on 0.0.0.0:${_server!.port}');
@@ -389,7 +419,9 @@ class MeshService extends ChangeNotifier {
 
   void _onDiscovered(DiscoveredDevice device) {
     final existing = _nearby[device.id];
-    if (existing == null || device.port != existing.port || device.name != existing.name) {
+    if (existing == null ||
+        device.port != existing.port ||
+        device.name != existing.name) {
       _nearby[device.id] = device;
       notifyListeners();
     } else {
@@ -411,7 +443,9 @@ class MeshService extends ChangeNotifier {
     });
     final known = _discovery?.knownAddresses;
     if (known != null &&
-        !known.any((k) => k.address == device.address && k.port == device.port)) {
+        !known.any(
+          (k) => k.address == device.address && k.port == device.port,
+        )) {
       known.add((address: device.address, port: device.port));
     }
   }
@@ -494,7 +528,9 @@ class MeshService extends ChangeNotifier {
     }
     NexusMessage msg;
     try {
-      msg = NexusMessage.fromJson(jsonDecode(utf8.decode(clear)) as Map<String, dynamic>);
+      msg = NexusMessage.fromJson(
+        jsonDecode(utf8.decode(clear)) as Map<String, dynamic>,
+      );
     } catch (_) {
       return;
     }
@@ -515,7 +551,9 @@ class MeshService extends ChangeNotifier {
     }
     NexusMessage msg;
     try {
-      msg = NexusMessage.fromJson(jsonDecode(utf8.decode(clear)) as Map<String, dynamic>);
+      msg = NexusMessage.fromJson(
+        jsonDecode(utf8.decode(clear)) as Map<String, dynamic>,
+      );
     } catch (_) {
       return;
     }
@@ -581,9 +619,14 @@ class MeshService extends ChangeNotifier {
     }
     for (final address in candidates) {
       try {
-        final socket = await Socket.connect(address, peer.port, timeout: connectTimeout);
+        final socket = await Socket.connect(
+          address,
+          peer.port,
+          timeout: connectTimeout,
+        );
         _outbound[peer.id] = socket;
-        _inboundPeer[socket] = peer.id; // so replies on this socket are attributed
+        _inboundPeer[socket] =
+            peer.id; // so replies on this socket are attributed
         _onClientSocket(socket);
         return socket;
       } catch (_) {
@@ -609,7 +652,11 @@ class MeshService extends ChangeNotifier {
   // Messaging
   // ---------------------------------------------------------------------
 
-  Future<void> _handleMessage(NexusMessage msg, Socket socket, {required bool encrypted}) async {
+  Future<void> _handleMessage(
+    NexusMessage msg,
+    Socket socket, {
+    required bool encrypted,
+  }) async {
     _remember(msg.id);
 
     switch (msg.type) {
@@ -624,9 +671,18 @@ class MeshService extends ChangeNotifier {
         final port = (payload['port'] as num?)?.toInt();
         final ips = (payload['ips'] as List?)?.whereType<String>().toList();
         _noteSeen(msg.from, verified: true);
-        debugPrint('NEXUS mesh: ping <- ${msg.from} from ${socket.remoteAddress.address}');
+        debugPrint(
+          'NEXUS mesh: ping <- ${msg.from} from ${socket.remoteAddress.address}',
+        );
         if (port != null) {
-          await _learnAddress(msg.from, socket.remoteAddress.address, port, name, payload['platform'] as String? ?? 'other', ips: ips);
+          await _learnAddress(
+            msg.from,
+            socket.remoteAddress.address,
+            port,
+            name,
+            payload['platform'] as String? ?? 'other',
+            ips: ips,
+          );
         }
         _sendPlain(
           socket,
@@ -653,7 +709,14 @@ class MeshService extends ChangeNotifier {
         final port = (payload['port'] as num?)?.toInt();
         final ips = (payload['ips'] as List?)?.whereType<String>().toList();
         if (port != null && name != null) {
-          await _learnAddress(msg.from, socket.remoteAddress.address, port, name, payload['platform'] as String? ?? 'other', ips: ips);
+          await _learnAddress(
+            msg.from,
+            socket.remoteAddress.address,
+            port,
+            name,
+            payload['platform'] as String? ?? 'other',
+            ips: ips,
+          );
         }
 
       case NexusMessage.pairRequest:
@@ -695,6 +758,22 @@ class MeshService extends ChangeNotifier {
         if (!encrypted) return;
         await _handleFilePushAck(msg);
 
+      case NexusMessage.fileDelete:
+        if (!encrypted) return;
+        await _handleFileDelete(msg);
+
+      case NexusMessage.fileDeleteAck:
+        if (!encrypted) return;
+        await _handleFileDeleteAck(msg);
+
+      case NexusMessage.fileOperation:
+        if (!encrypted) return;
+        await _handleFileOperation(msg);
+
+      case NexusMessage.fileOperationAck:
+        if (!encrypted) return;
+        await _handleFileOperationAck(msg);
+
       case NexusMessage.fileError:
         if (!encrypted) return;
         await _handleFileError(msg);
@@ -706,10 +785,25 @@ class MeshService extends ChangeNotifier {
   // ---------------------------------------------------------------------
 
   /// The folder this device serves. Desktop: the home directory. Android:
-  /// the app's documents dir (the interesting files live on the PC anyway).
-  /// Tests inject their own root.
+  /// the real shared storage when the user granted "All files access" (so the
+  /// PC file manager sees every photo, download and music file), otherwise
+  /// the app's own external dir. Tests inject their own root.
   Future<String> _servedRoot() async {
     if (fileRoot != null) return fileRoot!;
+    if (Platform.isAndroid) {
+      if (await hasAllFilesAccess()) {
+        final shared = await androidSharedRoot();
+        if (shared != null && shared.isNotEmpty) return shared;
+      }
+      try {
+        final external = await getExternalStorageDirectory();
+        if (external != null) return external.path;
+      } catch (_) {
+        // No external storage (emulator, weird device) — fall back below.
+      }
+      final dir = await getApplicationDocumentsDirectory();
+      return dir.path;
+    }
     final home = Platform.environment['HOME'];
     if (home != null && home.isNotEmpty) return home;
     final profile = Platform.environment['USERPROFILE'];
@@ -718,14 +812,52 @@ class MeshService extends ChangeNotifier {
     return dir.path;
   }
 
+  /// On Android, whether the app may read the whole shared storage (the
+  /// "All files access" toggle). Always true on other platforms.
+  static Future<bool> hasAllFilesAccess() async {
+    if (!Platform.isAndroid) return true;
+    try {
+      return await _storageChannel.invokeMethod<bool>('allFilesAccess') ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// On Android, the real shared storage root (e.g. /storage/emulated/0) —
+  /// only readable once [hasAllFilesAccess] is granted.
+  static Future<String?> androidSharedRoot() async {
+    if (!Platform.isAndroid) return null;
+    try {
+      return await _storageChannel.invokeMethod<String>('sharedRoot');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Opens the system "All files access" settings screen for this app.
+  static Future<void> openAllFilesAccessSettings() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _storageChannel.invokeMethod<void>('openAllFilesAccessSettings');
+    } catch (_) {
+      // Channel unavailable (tests) — nothing to open.
+    }
+  }
+
   /// Maps a peer-supplied path onto the served root, collapsing `.`/`..` and
   /// refusing anything that escapes the root. Returns null = access denied.
   String? _resolveServedPath(String path, String root) {
-    final clean = _normalizePath(path);
-    if (clean.isEmpty || clean == '/') return root;
-    if (clean != root && !clean.startsWith('$root${Platform.pathSeparator}')) {
-      return null;
-    }
+    final separator = Platform.pathSeparator;
+    final requested = path.replaceAll(separator == '/' ? '\\' : '/', separator);
+    if (requested.isEmpty || requested == separator) return root;
+    // Relative destinations are rooted in the shared folder. Normalize after
+    // anchoring so `../` cannot be used to escape it.
+    final candidate = requested.startsWith(separator)
+        ? requested
+        : '$root$separator$requested';
+    final clean = _normalizePath(candidate);
+    if (clean != root && !clean.startsWith('$root$separator')) return null;
     return clean;
   }
 
@@ -739,8 +871,34 @@ class MeshService extends ChangeNotifier {
         parts.add(seg);
       }
     }
-    final prefix = path.startsWith(Platform.pathSeparator) ? Platform.pathSeparator : '';
+    final prefix = path.startsWith(Platform.pathSeparator)
+        ? Platform.pathSeparator
+        : '';
     return prefix + parts.join(Platform.pathSeparator);
+  }
+
+  /// Lexical containment is not enough when a user-created symlink points
+  /// outside the shared root. Existing path segments must resolve inside it;
+  /// a missing leaf is checked through its nearest existing parent.
+  Future<bool> _isInsideServedRoot(String path, String root) async {
+    try {
+      final realRoot = await Directory(root).resolveSymbolicLinks();
+      var candidate = path;
+      while (FileSystemEntity.typeSync(candidate) ==
+          FileSystemEntityType.notFound) {
+        final parent = Directory(candidate).parent.path;
+        if (parent == candidate) return false;
+        candidate = parent;
+      }
+      final realCandidate =
+          FileSystemEntity.typeSync(candidate) == FileSystemEntityType.directory
+          ? await Directory(candidate).resolveSymbolicLinks()
+          : await File(candidate).resolveSymbolicLinks();
+      return realCandidate == realRoot ||
+          realCandidate.startsWith('$realRoot${Platform.pathSeparator}');
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _handleFileListRequest(NexusMessage msg) async {
@@ -750,39 +908,52 @@ class MeshService extends ChangeNotifier {
     final path = msg.payload['path'] as String? ?? '';
     final root = await _servedRoot();
     final resolved = _resolveServedPath(path, root);
-    if (resolved == null) {
-      await _sendFileError(peer, req, 'Access denied — that folder is outside your home directory.');
+    if (resolved == null || !await _isInsideServedRoot(resolved, root)) {
+      await _sendFileError(
+        peer,
+        req,
+        'Access denied — that folder is outside your home directory.',
+      );
       return;
     }
     final entries = await _listDir(resolved);
     if (entries == null) {
-      await _sendFileError(peer, req, lastFileError ?? 'Could not read that folder.');
+      await _sendFileError(
+        peer,
+        req,
+        lastFileError ?? 'Could not read that folder.',
+      );
       return;
     }
-    await _sendEnc(peer, NexusMessage(
-      type: NexusMessage.fileListResult,
-      from: identity.id,
-      to: peer.id,
-      payload: {
-        'req': req,
-        'entries': entries
-            .map((e) => {
+    await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileListResult,
+        from: identity.id,
+        to: peer.id,
+        payload: {
+          'req': req,
+          'entries': entries
+              .map(
+                (e) => {
                   'name': e.name,
                   'path': e.path,
                   'size': e.size,
                   'dir': e.isDir,
                   'modified': e.modified.toIso8601String(),
-                })
-            .toList(),
-      },
-      id: _newId(),
-      ts: DateTime.now().millisecondsSinceEpoch,
-    ));
+                },
+              )
+              .toList(),
+        },
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
   }
 
   /// Lists [resolved] (a path already validated against the served root),
   /// skipping unreadable entries. Returns null on failure — [lastFileError]
-  /// says why. Shared by remote list requests and local "This device" browsing.
+  /// says why.
   Future<List<FileEntry>?> _listDir(String resolved) async {
     try {
       final dir = Directory(resolved);
@@ -796,15 +967,19 @@ class MeshService extends ChangeNotifier {
         try {
           final isDir = child is Directory;
           final stat = await child.stat();
-          final segments =
-              child.path.split(Platform.pathSeparator).where((s) => s.isNotEmpty).toList();
-          listed.add(FileEntry(
-            name: segments.isEmpty ? child.path : segments.last,
-            path: child.path,
-            size: isDir ? 0 : stat.size,
-            isDir: isDir,
-            modified: stat.modified,
-          ));
+          final segments = child.path
+              .split(Platform.pathSeparator)
+              .where((s) => s.isNotEmpty)
+              .toList();
+          listed.add(
+            FileEntry(
+              name: segments.isEmpty ? child.path : segments.last,
+              path: child.path,
+              size: isDir ? 0 : stat.size,
+              isDir: isDir,
+              modified: stat.modified,
+            ),
+          );
         } catch (_) {
           // Unreadable entry (permission, vanished mid-listing) — skip it.
         }
@@ -827,8 +1002,12 @@ class MeshService extends ChangeNotifier {
     final path = msg.payload['path'] as String? ?? '';
     final root = await _servedRoot();
     final resolved = _resolveServedPath(path, root);
-    if (resolved == null) {
-      await _sendFileError(peer, req, 'Access denied — that file is outside your home directory.');
+    if (resolved == null || !await _isInsideServedRoot(resolved, root)) {
+      await _sendFileError(
+        peer,
+        req,
+        'Access denied — that file is outside your home directory.',
+      );
       return;
     }
     RandomAccessFile raf;
@@ -840,29 +1019,67 @@ class MeshService extends ChangeNotifier {
     }
     try {
       final total = await raf.length();
-      // Stream in 256 KiB chunks — small enough to stay well under the 1 MiB
-      // frame guard, large enough that big files don't become a message zoo.
+      final offset = (msg.payload['offset'] as num?)?.toInt() ?? 0;
+      final length = (msg.payload['length'] as num?)?.toInt() ?? 0;
+      if (offset < 0 || length < 0) {
+        await _sendFileError(peer, req, 'That byte range is not valid.');
+        return;
+      }
+      if (length > 0) {
+        // Range read (the FUSE gateway asks for exact byte ranges when the
+        // file manager reads a file): one seeked chunk, done — no stream.
+        try {
+          if (offset > 0) await raf.setPosition(offset);
+          final data = await raf.read(length);
+          await _sendEnc(
+            peer,
+            NexusMessage(
+              type: NexusMessage.fileChunk,
+              from: identity.id,
+              to: peer.id,
+              payload: {
+                'req': req,
+                'offset': offset,
+                'data': base64Encode(data),
+                'total': length,
+                'done': true,
+              },
+              id: _newId(),
+              ts: DateTime.now().millisecondsSinceEpoch,
+            ),
+          );
+        } catch (_) {
+          await _sendFileError(peer, req, 'Could not read that range.');
+        }
+        return;
+      }
+      // Whole-file stream in 256 KiB chunks — small enough to stay well under
+      // the 1 MiB frame guard, large enough that big files don't become a
+      // message zoo.
       const chunkSize = 256 * 1024;
-      var offset = 0;
+      var sent = 0;
       while (true) {
         final data = await raf.read(chunkSize);
-        final done = offset + data.length >= total;
-        final ok = await _sendEnc(peer, NexusMessage(
-          type: NexusMessage.fileChunk,
-          from: identity.id,
-          to: peer.id,
-          payload: {
-            'req': req,
-            'offset': offset,
-            'data': base64Encode(data),
-            'total': total,
-            'done': done,
-          },
-          id: _newId(),
-          ts: DateTime.now().millisecondsSinceEpoch,
-        ));
+        final done = sent + data.length >= total;
+        final ok = await _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.fileChunk,
+            from: identity.id,
+            to: peer.id,
+            payload: {
+              'req': req,
+              'offset': sent,
+              'data': base64Encode(data),
+              'total': total,
+              'done': done,
+            },
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
         if (!ok) break; // peer went away mid-transfer
-        offset += data.length;
+        sent += data.length;
         if (done) break;
       }
     } catch (_) {
@@ -872,16 +1089,23 @@ class MeshService extends ChangeNotifier {
     }
   }
 
-  Future<void> _sendFileError(PairedDevice peer, String req, String message) async {
+  Future<void> _sendFileError(
+    PairedDevice peer,
+    String req,
+    String message,
+  ) async {
     lastFileError = message;
-    await _sendEnc(peer, NexusMessage(
-      type: NexusMessage.fileError,
-      from: identity.id,
-      to: peer.id,
-      payload: {'req': req, 'message': message},
-      id: _newId(),
-      ts: DateTime.now().millisecondsSinceEpoch,
-    ));
+    await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileError,
+        from: identity.id,
+        to: peer.id,
+        payload: {'req': req, 'message': message},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
   }
 
   Future<void> _handleFileListResult(NexusMessage msg) async {
@@ -889,20 +1113,35 @@ class MeshService extends ChangeNotifier {
     final completer = req is String ? _pendingLists.remove(req) : null;
     if (completer == null) return;
     final raw = (msg.payload['entries'] as List?) ?? const [];
-    final entries = raw.whereType<Map<String, dynamic>>().map((e) => FileEntry(
-          name: e['name'] as String? ?? '?',
-          path: e['path'] as String? ?? '',
-          size: (e['size'] as num?)?.toInt() ?? 0,
-          isDir: e['dir'] == true,
-          modified: DateTime.tryParse(e['modified'] as String? ?? '') ??
-              DateTime.fromMillisecondsSinceEpoch(0),
-        )).toList();
+    final entries = raw
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (e) => FileEntry(
+            name: e['name'] as String? ?? '?',
+            path: e['path'] as String? ?? '',
+            size: (e['size'] as num?)?.toInt() ?? 0,
+            isDir: e['dir'] == true,
+            modified:
+                DateTime.tryParse(e['modified'] as String? ?? '') ??
+                DateTime.fromMillisecondsSinceEpoch(0),
+          ),
+        )
+        .toList();
     if (!completer.isCompleted) completer.complete(entries);
   }
 
   Future<void> _handleFileChunk(NexusMessage msg) async {
     final req = msg.payload['req'];
-    final pull = req is String ? _pendingPulls[req] : null;
+    if (req is! String) return;
+    // A range request gets exactly one chunk — hand it straight to the
+    // caller (the FUSE gateway) instead of a pull state machine.
+    final range = _pendingRanges.remove(req);
+    if (range != null) {
+      final data = base64Decode(msg.payload['data'] as String? ?? '');
+      if (!range.isCompleted) range.complete(data);
+      return;
+    }
+    final pull = _pendingPulls[req];
     if (pull == null) return;
     pull.chain = pull.chain.then((_) => _applyChunk(pull, req, msg));
     await pull.chain.catchError((_) {});
@@ -923,7 +1162,10 @@ class MeshService extends ChangeNotifier {
       // Any chunk proves the peer is alive — reset the watchdog.
       pull.watchdog?.cancel();
       pull.watchdog = Timer(const Duration(seconds: 15), () {
-        _failPull(req, 'The transfer stalled — the connection to ${pull.peerName} was lost.');
+        _failPull(
+          req,
+          'The transfer stalled — the connection to ${pull.peerName} was lost.',
+        );
       });
       if (done) {
         await pull.sink!.flush();
@@ -943,28 +1185,76 @@ class MeshService extends ChangeNotifier {
   /// chain onto the push's [chain] — the same serialization that fixed the
   /// pull-side overlap bug.
   Future<void> _handleFilePush(NexusMessage msg) async {
+    _filePushChain = _filePushChain.then((_) => _handleFilePushNow(msg));
+    await _filePushChain.catchError((_) {});
+  }
+
+  Future<void> _handleFilePushNow(NexusMessage msg) async {
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
     if (peer == null || req is! String) return;
     var push = _incomingPushes[req];
     if (push == null) {
       final name = (msg.payload['name'] as String?) ?? '';
-      if (!_safeIncomingName(name)) {
+      final root = await _servedRoot();
+      final requestedDestination = msg.payload['destination'] as String?;
+      final destination = requestedDestination == null
+          ? '$root${Platform.pathSeparator}Nexus Incoming${Platform.pathSeparator}$name'
+          : _resolveServedPath(requestedDestination, root);
+      if (destination == null ||
+          destination == root ||
+          (requestedDestination == null && !_safeIncomingName(name))) {
+        await _sendFileError(
+          peer,
+          req,
+          'Access denied — invalid destination path.',
+        );
+        return;
+      }
+      final incomingDirectory = Directory(
+        '$root${Platform.pathSeparator}Nexus Incoming',
+      );
+      final containmentPath = requestedDestination == null
+          ? incomingDirectory
+          : FileSystemEntity.typeSync(destination) !=
+                FileSystemEntityType.notFound
+          ? File(destination)
+          : Directory(destination).parent;
+      if (await containmentPath.exists() &&
+          !await _isInsideServedRoot(containmentPath.path, root)) {
+        await _sendFileError(
+          peer,
+          req,
+          'Access denied — invalid destination path.',
+        );
+        return;
+      }
+      final destinationName = destination.split(Platform.pathSeparator).last;
+      if (!_safeIncomingName(destinationName)) {
         await _sendFileError(peer, req, 'Refused file with an invalid name.');
         return;
       }
-      final root = await _servedRoot();
-      final dir = '$root${Platform.pathSeparator}Nexus Incoming';
-      push = _FilePush(name: name, dir: dir, peerName: peer.name);
+      push = _FilePush(
+        name: destinationName,
+        dir: Directory(destination).parent.path,
+        peerName: peer.name,
+        overwrite: msg.payload['overwrite'] == true,
+      );
       _incomingPushes[req] = push;
     }
     final active = push;
-    active.chain = active.chain.then((_) => _applyPushChunk(active, peer, req, msg));
+    active.chain = active.chain.then(
+      (_) => _applyPushChunk(active, peer, req, msg),
+    );
     await active.chain.catchError((_) {});
   }
 
   Future<void> _applyPushChunk(
-      _FilePush push, PairedDevice peer, String req, NexusMessage msg) async {
+    _FilePush push,
+    PairedDevice peer,
+    String req,
+    NexusMessage msg,
+  ) async {
     final data = base64Decode(msg.payload['data'] as String? ?? '');
     final total = (msg.payload['total'] as num?)?.toInt() ?? 0;
     final done = msg.payload['done'] == true;
@@ -978,7 +1268,11 @@ class MeshService extends ChangeNotifier {
       // Any chunk proves the sender is alive — reset the watchdog.
       push.watchdog?.cancel();
       push.watchdog = Timer(const Duration(seconds: 15), () {
-        _failPush(peer, req, 'The transfer stalled — the connection to ${push.peerName} was lost.');
+        _failPush(
+          peer,
+          req,
+          'The transfer stalled — the connection to ${push.peerName} was lost.',
+        );
       });
       if (done) {
         await push.sink!.flush();
@@ -986,14 +1280,17 @@ class MeshService extends ChangeNotifier {
         push.sink = null;
         push.watchdog?.cancel();
         _incomingPushes.remove(req);
-        await _sendEnc(peer, NexusMessage(
-          type: NexusMessage.filePushAck,
-          from: identity.id,
-          to: peer.id,
-          payload: {'req': req, 'path': push.savedPath},
-          id: _newId(),
-          ts: DateTime.now().millisecondsSinceEpoch,
-        ));
+        await _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.filePushAck,
+            from: identity.id,
+            to: peer.id,
+            payload: {'req': req, 'path': push.savedPath},
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
       }
     } catch (e) {
       _failPush(peer, req, 'Could not save the file: $e');
@@ -1012,12 +1309,13 @@ class MeshService extends ChangeNotifier {
   /// folder if needed and giving collisions a `(n)` suffix (like downloads).
   Future<RandomAccessFile> _openIncoming(_FilePush push) async {
     await Directory(push.dir).create(recursive: true);
-    var path = '${push.dir}${Platform.pathSeparator}${push.name}';
-    var n = 1;
-    while (File(path).existsSync()) {
-      path = '${push.dir}${Platform.pathSeparator}'
-          '${push.name.replaceFirst(RegExp(r'(\.[^.]*)?$'), ' ($n)\$1')}';
-      n++;
+    final path = '${push.dir}${Platform.pathSeparator}${push.name}';
+    final existing = FileSystemEntity.typeSync(path);
+    if (existing != FileSystemEntityType.notFound) {
+      if (!push.overwrite || existing == FileSystemEntityType.directory) {
+        throw StateError('A file with that name already exists.');
+      }
+      await File(path).delete();
     }
     push.savedPath = path;
     return File(path).open(mode: FileMode.write);
@@ -1034,7 +1332,9 @@ class MeshService extends ChangeNotifier {
 
   Future<void> _handleFileError(NexusMessage msg) async {
     final req = msg.payload['req'];
-    final message = (msg.payload['message'] as String?) ?? 'The device refused the request.';
+    final message =
+        (msg.payload['message'] as String?) ??
+        'The device refused the request.';
     final pull = req is String ? _pendingPulls.remove(req) : null;
     if (pull != null) {
       pull.watchdog?.cancel();
@@ -1055,6 +1355,17 @@ class MeshService extends ChangeNotifier {
       lastFileError = message;
       if (!completer.isCompleted) completer.complete(null);
     }
+    final del = req is String ? _pendingDeletes.remove(req) : null;
+    if (del != null) {
+      lastFileError = message;
+      if (!del.isCompleted) del.complete(false);
+      return;
+    }
+    final operation = req is String ? _pendingOperations.remove(req) : null;
+    if (operation != null) {
+      lastFileError = message;
+      if (!operation.isCompleted) operation.complete(null);
+    }
   }
 
   Future<void> _handleFilePushAck(NexusMessage msg) async {
@@ -1063,6 +1374,363 @@ class MeshService extends ChangeNotifier {
     if (completer == null) return;
     final saved = msg.payload['path'] as String?;
     if (!completer.isCompleted) completer.complete(saved);
+  }
+
+  /// Deletes a file (or empty folder) on this device at the peer's request.
+  /// The path must resolve inside the served root — the same sandbox that
+  /// governs listing and reading — and the root itself is never deletable.
+  Future<void> _handleFileOperation(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final peer = _paired[msg.from];
+    if (peer == null || req is! String) return;
+    final operation = msg.payload['operation'] as String?;
+    final source = msg.payload['source'] as String? ?? '';
+    final destination = msg.payload['destination'] as String? ?? '';
+    final root = await _servedRoot();
+    final sourcePath = _resolveServedPath(source, root);
+    final destinationPath = _resolveServedPath(destination, root);
+    final destinationName =
+        destinationPath?.split(Platform.pathSeparator).last ?? '';
+    if (destinationPath == null ||
+        destinationPath == root ||
+        !_safeIncomingName(destinationName) ||
+        (operation != 'mkdir' && (sourcePath == null || sourcePath == root))) {
+      await _sendFileError(
+        peer,
+        req,
+        'Access denied — the path is outside the shared folder.',
+      );
+      return;
+    }
+    if (!await _isInsideServedRoot(destinationPath, root) ||
+        operation != 'mkdir' && !await _isInsideServedRoot(sourcePath!, root)) {
+      await _sendFileError(
+        peer,
+        req,
+        'Access denied — the path is outside the shared folder.',
+      );
+      return;
+    }
+    try {
+      if (operation == 'mkdir') {
+        if (FileSystemEntity.typeSync(destinationPath) !=
+            FileSystemEntityType.notFound) {
+          await _sendFileError(
+            peer,
+            req,
+            'A file with that name already exists.',
+          );
+          return;
+        }
+        await Directory(destinationPath).create(recursive: true);
+      } else {
+        final sourcePathValue = sourcePath!;
+        final sourceType = FileSystemEntity.typeSync(sourcePathValue);
+        if (sourceType == FileSystemEntityType.notFound) {
+          await _sendFileError(peer, req, 'That file no longer exists.');
+          return;
+        }
+        if (operation == 'rename' || operation == 'move') {
+          if (FileSystemEntity.typeSync(destinationPath) !=
+              FileSystemEntityType.notFound) {
+            await _sendFileError(
+              peer,
+              req,
+              'A file with that name already exists.',
+            );
+            return;
+          }
+          if (sourceType == FileSystemEntityType.directory &&
+              (destinationPath == sourcePathValue ||
+                  destinationPath.startsWith(
+                    '$sourcePathValue${Platform.pathSeparator}',
+                  ))) {
+            await _sendFileError(
+              peer,
+              req,
+              'A folder cannot be moved inside itself.',
+            );
+            return;
+          }
+          await Directory(destinationPath).parent.create(recursive: true);
+          if (sourceType == FileSystemEntityType.directory) {
+            await Directory(sourcePathValue).rename(destinationPath);
+          } else {
+            await File(sourcePathValue).rename(destinationPath);
+          }
+        } else if (operation == 'copy') {
+          if (FileSystemEntity.typeSync(destinationPath) !=
+              FileSystemEntityType.notFound) {
+            await _sendFileError(
+              peer,
+              req,
+              'A file with that name already exists.',
+            );
+            return;
+          }
+          await Directory(destinationPath).parent.create(recursive: true);
+          if (sourceType == FileSystemEntityType.directory) {
+            await _copyDirectory(
+              Directory(sourcePathValue),
+              Directory(destinationPath),
+            );
+          } else {
+            await File(sourcePathValue).copy(destinationPath);
+          }
+        } else {
+          await _sendFileError(peer, req, 'Unsupported file operation.');
+          return;
+        }
+      }
+    } catch (_) {
+      await _sendFileError(
+        peer,
+        req,
+        'Could not complete that file operation.',
+      );
+      return;
+    }
+    await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileOperationAck,
+        from: identity.id,
+        to: peer.id,
+        payload: {'req': req, 'path': destinationPath},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
+  Future<void> _copyDirectory(Directory source, Directory destination) async {
+    await destination.create(recursive: true);
+    await for (final child in source.list()) {
+      final name = child.path.split(Platform.pathSeparator).last;
+      final target = '${destination.path}${Platform.pathSeparator}$name';
+      if (child is Directory) {
+        await _copyDirectory(child, Directory(target));
+      } else if (child is File) {
+        await child.copy(target);
+      }
+    }
+  }
+
+  Future<void> _handleFileDelete(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final peer = _paired[msg.from];
+    if (peer == null || req is! String) return;
+    final path = msg.payload['path'] as String? ?? '';
+    final root = await _servedRoot();
+    final resolved = _resolveServedPath(path, root);
+    if (resolved == null ||
+        resolved == root ||
+        !await _isInsideServedRoot(resolved, root)) {
+      await _sendFileError(
+        peer,
+        req,
+        'Access denied — that is outside the shared folder.',
+      );
+      return;
+    }
+    try {
+      final entity = FileSystemEntity.typeSync(resolved);
+      if (entity == FileSystemEntityType.notFound) {
+        await _sendFileError(peer, req, 'That file no longer exists.');
+        return;
+      }
+      if (entity == FileSystemEntityType.directory) {
+        if (Directory(resolved).listSync().isNotEmpty) {
+          await _sendFileError(peer, req, 'The folder is not empty.');
+          return;
+        }
+        await Directory(resolved).delete();
+      } else {
+        await File(resolved).delete();
+      }
+    } catch (_) {
+      await _sendFileError(peer, req, 'Could not delete that file.');
+      return;
+    }
+    await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileDeleteAck,
+        from: identity.id,
+        to: peer.id,
+        payload: {'req': req},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
+  Future<void> _handleFileDeleteAck(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final completer = req is String ? _pendingDeletes.remove(req) : null;
+    if (completer != null && !completer.isCompleted) completer.complete(true);
+  }
+
+  Future<void> _handleFileOperationAck(NexusMessage msg) async {
+    final req = msg.payload['req'];
+    final completer = req is String ? _pendingOperations.remove(req) : null;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(msg.payload['path'] as String?);
+    }
+  }
+
+  /// Asks [peer] to perform a filesystem operation on its served root.
+  /// [operation] is `rename`, `move`, `copy`, or `mkdir`; [source] is omitted
+  /// for `mkdir`. Returns the resulting path or null on failure.
+  Future<String?> operateRemoteFile(
+    PairedDevice peer, {
+    required String operation,
+    String source = '',
+    required String destination,
+  }) async {
+    final req = _newId();
+    final completer = Completer<String?>();
+    _pendingOperations[req] = completer;
+    final sent = await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileOperation,
+        from: identity.id,
+        to: peer.id,
+        payload: {
+          'req': req,
+          'operation': operation,
+          'source': source,
+          'destination': destination,
+        },
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (!sent) {
+      _pendingOperations.remove(req);
+      lastFileError = 'Could not reach ${peer.name}.';
+      return null;
+    }
+    final timer = Timer(const Duration(seconds: 15), () {
+      if (!completer.isCompleted) {
+        _pendingOperations.remove(req);
+        lastFileError = 'Timed out performing that file operation.';
+        completer.complete(null);
+      }
+    });
+    final result = await completer.future;
+    timer.cancel();
+    return result;
+  }
+
+  /// Copies or moves a remote file or directory between two paired devices.
+  /// Directories are transferred recursively; a move removes the source only
+  /// after every child has arrived at the destination.
+  Future<String?> transferRemoteFile(
+    PairedDevice source,
+    String sourcePath,
+    PairedDevice target,
+    String destinationPath, {
+    bool move = false,
+  }) async {
+    if (source.id == target.id) {
+      return operateRemoteFile(
+        target,
+        operation: move ? 'move' : 'copy',
+        source: sourcePath,
+        destination: destinationPath,
+      );
+    }
+    final temp = File(
+      '${Directory.systemTemp.path}/nexus-transfer-${_newId()}',
+    );
+    try {
+      final entries = await listRemoteFiles(source, sourcePath);
+      if (entries != null) {
+        final created = await operateRemoteFile(
+          target,
+          operation: 'mkdir',
+          destination: destinationPath,
+        );
+        if (created == null) return null;
+        for (final entry in entries) {
+          final childDestination = _joinFilePath(destinationPath, entry.name);
+          final copied = await transferRemoteFile(
+            source,
+            entry.path,
+            target,
+            childDestination,
+            move: move,
+          );
+          if (copied == null) return null;
+        }
+        if (move && await deleteRemoteFile(source, sourcePath))
+          return destinationPath;
+        if (move) return null;
+        return destinationPath;
+      }
+      final pulled = await pullRemoteFile(
+        source,
+        sourcePath,
+        savePath: temp.path,
+      );
+      if (pulled == null) return null;
+      final saved = await pushLocalFile(
+        target,
+        temp.path,
+        destinationPath: destinationPath,
+      );
+      if (saved == null) return null;
+      if (move && !await deleteRemoteFile(source, sourcePath)) return null;
+      return saved;
+    } finally {
+      try {
+        if (await temp.exists()) await temp.delete();
+      } catch (_) {}
+    }
+  }
+
+  static String _joinFilePath(String directory, String name) {
+    if (directory.isEmpty) return name;
+    final separator = Platform.pathSeparator;
+    return '${directory.endsWith(separator) ? directory.substring(0, directory.length - 1) : directory}$separator$name';
+  }
+
+  /// Asks [peer] to delete the file at [path] on its served root. Returns
+  /// false on failure — [lastFileError] says why (a folder that is not empty
+  /// is refused, so a deleted folder is always an empty one).
+  Future<bool> deleteRemoteFile(PairedDevice peer, String path) async {
+    final req = _newId();
+    final completer = Completer<bool>();
+    _pendingDeletes[req] = completer;
+    final sent = await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileDelete,
+        from: identity.id,
+        to: peer.id,
+        payload: {'req': req, 'path': path},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (!sent) {
+      _pendingDeletes.remove(req);
+      lastFileError = 'Could not reach ${peer.name}.';
+      return false;
+    }
+    final timer = Timer(const Duration(seconds: 15), () {
+      if (!completer.isCompleted) {
+        _pendingDeletes.remove(req);
+        lastFileError =
+            'Timed out deleting ${path.split(RegExp(r'[/\\]')).last}.';
+        completer.complete(false);
+      }
+    });
+    final ok = await completer.future;
+    timer.cancel();
+    return ok;
   }
 
   void _failPull(String req, String message) {
@@ -1078,18 +1746,24 @@ class MeshService extends ChangeNotifier {
   /// Requests a directory listing from [peer]. `path` is an absolute path on
   /// the peer ('' or '/' = its home). Returns null on failure — [lastFileError]
   /// says why.
-  Future<List<FileEntry>?> listRemoteFiles(PairedDevice peer, String path) async {
+  Future<List<FileEntry>?> listRemoteFiles(
+    PairedDevice peer,
+    String path,
+  ) async {
     final req = _newId();
     final completer = Completer<List<FileEntry>?>();
     _pendingLists[req] = completer;
-    final sent = await _sendEnc(peer, NexusMessage(
-      type: NexusMessage.fileList,
-      from: identity.id,
-      to: peer.id,
-      payload: {'req': req, 'path': path},
-      id: _newId(),
-      ts: DateTime.now().millisecondsSinceEpoch,
-    ));
+    final sent = await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileList,
+        from: identity.id,
+        to: peer.id,
+        payload: {'req': req, 'path': path},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
     if (!sent) {
       _pendingLists.remove(req);
       lastFileError = 'Could not reach ${peer.name}.';
@@ -1117,46 +1791,84 @@ class MeshService extends ChangeNotifier {
     void Function(int received, int total)? onProgress,
   }) async {
     final req = _newId();
-    final pull = _FilePull(savePath: savePath, onProgress: onProgress, peerName: peer.name);
+    final pull = _FilePull(
+      savePath: savePath,
+      onProgress: onProgress,
+      peerName: peer.name,
+    );
     _pendingPulls[req] = pull;
     // Watchdog covers the whole transfer: waiting for the first chunk counts
     // too, and any chunk resets it.
     pull.watchdog = Timer(const Duration(seconds: 15), () {
       _failPull(req, 'Timed out waiting for ${peer.name}.');
     });
-    final sent = await _sendEnc(peer, NexusMessage(
-      type: NexusMessage.fileGet,
-      from: identity.id,
-      to: peer.id,
-      payload: {'req': req, 'path': path},
-      id: _newId(),
-      ts: DateTime.now().millisecondsSinceEpoch,
-    ));
+    final sent = await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileGet,
+        from: identity.id,
+        to: peer.id,
+        payload: {'req': req, 'path': path},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
     if (!sent) {
       _failPull(req, 'Could not reach ${peer.name}.');
     }
     return pull.done.future;
   }
 
-  /// Lists a folder on this device's own served root — what the Files tab
-  /// shows when browsing "This device". Same sandbox rules as remote requests.
-  Future<List<FileEntry>?> listLocalFiles(String path) async {
-    final root = await _servedRoot();
-    final resolved = _resolveServedPath(path, root);
-    if (resolved == null) {
-      lastFileError = 'Access denied — that folder is outside your home directory.';
+  /// Reads one exact byte range [offset, offset+length) from a file on
+  /// [peer] — what the FUSE gateway needs for arbitrary file-manager reads.
+  /// Returns the bytes (possibly shorter than requested near EOF, empty past
+  /// it), or null on failure — [lastFileError] says why.
+  Future<Uint8List?> pullRemoteRange(
+    PairedDevice peer,
+    String path, {
+    required int offset,
+    required int length,
+  }) async {
+    final req = _newId();
+    final completer = Completer<Uint8List?>();
+    _pendingRanges[req] = completer;
+    final sent = await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.fileGet,
+        from: identity.id,
+        to: peer.id,
+        payload: {'req': req, 'path': path, 'offset': offset, 'length': length},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (!sent) {
+      _pendingRanges.remove(req);
+      lastFileError = 'Could not reach ${peer.name}.';
       return null;
     }
-    return _listDir(resolved);
+    final timer = Timer(const Duration(seconds: 15), () {
+      if (!completer.isCompleted) {
+        _pendingRanges.remove(req);
+        lastFileError = 'Timed out reading that range.';
+        completer.complete(null);
+      }
+    });
+    final result = await completer.future;
+    timer.cancel();
+    return result;
   }
 
-  /// Streams a local file (browsed via [listLocalFiles]) to [peer] over the
+  /// Streams a local file to [peer] over the
   /// encrypted mesh. The peer writes it into its "Nexus Incoming" folder and
   /// acks when every chunk has landed; returns the path it was saved to on
   /// the peer, or null on failure — [lastFileError] says why.
   Future<String?> pushLocalFile(
     PairedDevice peer,
     String localPath, {
+    String? destinationPath,
+    bool overwrite = false,
     void Function(int sent, int total)? onProgress,
   }) async {
     final req = _newId();
@@ -1182,21 +1894,27 @@ class MeshService extends ChangeNotifier {
       while (true) {
         final data = await raf.read(chunkSize);
         final done = offset + data.length >= total;
-        final ok = await _sendEnc(peer, NexusMessage(
-          type: NexusMessage.filePush,
-          from: identity.id,
-          to: peer.id,
-          payload: {
-            'req': req,
-            if (first) 'name': name,
-            'offset': offset,
-            'data': base64Encode(data),
-            'total': total,
-            'done': done,
-          },
-          id: _newId(),
-          ts: DateTime.now().millisecondsSinceEpoch,
-        ));
+        final ok = await _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.filePush,
+            from: identity.id,
+            to: peer.id,
+            payload: {
+              'req': req,
+              if (first) 'name': name,
+              if (first && destinationPath != null)
+                'destination': destinationPath,
+              if (first && destinationPath != null) 'overwrite': overwrite,
+              'offset': offset,
+              'data': base64Encode(data),
+              'total': total,
+              'done': done,
+            },
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
         if (!ok) {
           _failOutgoingPush(req, 'Could not reach ${peer.name}.');
           return null;
@@ -1346,14 +2064,17 @@ class MeshService extends ChangeNotifier {
         targets[peer.id] = peer;
       }
       for (final device in _nearby.values) {
-        targets.putIfAbsent(device.id, () => PairedDevice(
-              id: device.id,
-              name: device.name,
-              platform: device.platform,
-              address: device.address,
-              port: device.port,
-              pairingSecret: '',
-            ));
+        targets.putIfAbsent(
+          device.id,
+          () => PairedDevice(
+            id: device.id,
+            name: device.name,
+            platform: device.platform,
+            address: device.address,
+            port: device.port,
+            pairingSecret: '',
+          ),
+        );
       }
       for (final peer in targets.values) {
         final msg = NexusMessage(
@@ -1406,7 +2127,9 @@ class MeshService extends ChangeNotifier {
 
   bool get pendingCodeActive {
     final expiry = pendingCodeExpiry;
-    return pendingCode != null && expiry != null && DateTime.now().isBefore(expiry);
+    return pendingCode != null &&
+        expiry != null &&
+        DateTime.now().isBefore(expiry);
   }
 
   /// The other side: verify the pairing request and accept it.
@@ -1444,7 +2167,11 @@ class MeshService extends ChangeNotifier {
       type: NexusMessage.pairAccept,
       from: identity.id,
       to: msg.from,
-      payload: {'name': identity.name, 'platform': identity.platform, 'port': store.port},
+      payload: {
+        'name': identity.name,
+        'platform': identity.platform,
+        'port': store.port,
+      },
       id: _newId(),
       ts: DateTime.now().millisecondsSinceEpoch,
     );
@@ -1470,16 +2197,26 @@ class MeshService extends ChangeNotifier {
 
     Socket socket;
     try {
-      socket = await Socket.connect(address, port, timeout: const Duration(seconds: 6));
+      socket = await Socket.connect(
+        address,
+        port,
+        timeout: const Duration(seconds: 6),
+      );
     } catch (_) {
-      return PairResult.failure('Could not reach $address:$port. Is that device on and on the same network?');
+      return PairResult.failure(
+        'Could not reach $address:$port. Is that device on and on the same network?',
+      );
     }
 
     final completer = Completer<PairResult>();
     final request = NexusMessage(
       type: NexusMessage.pairRequest,
       from: identity.id,
-      payload: {'name': identity.name, 'platform': identity.platform, 'port': store.port},
+      payload: {
+        'name': identity.name,
+        'platform': identity.platform,
+        'port': store.port,
+      },
       id: _newId(),
       ts: DateTime.now().millisecondsSinceEpoch,
     );
@@ -1489,13 +2226,19 @@ class MeshService extends ChangeNotifier {
       pendingEnc = await encryptToB64(encodeJson(request.toJson()), key);
     } catch (e) {
       socket.destroy();
-      return PairResult.failure('Something went wrong preparing the pairing request.');
+      return PairResult.failure(
+        'Something went wrong preparing the pairing request.',
+      );
     }
 
     final decoder = FrameDecoder();
     final timeout = Timer(const Duration(seconds: 12), () {
       if (!completer.isCompleted) {
-        completer.complete(PairResult.failure('No answer from the device. Double-check the code and that it is still showing.'));
+        completer.complete(
+          PairResult.failure(
+            'No answer from the device. Double-check the code and that it is still showing.',
+          ),
+        );
         socket.destroy();
       }
     });
@@ -1509,7 +2252,9 @@ class MeshService extends ChangeNotifier {
           final json = jsonDecode(utf8.decode(frame));
           if (json is! Map<String, dynamic> || json['enc'] is! String) continue;
           final clear = await decryptFromB64(json['enc'] as String, key);
-          final msg = NexusMessage.fromJson(jsonDecode(utf8.decode(clear)) as Map<String, dynamic>);
+          final msg = NexusMessage.fromJson(
+            jsonDecode(utf8.decode(clear)) as Map<String, dynamic>,
+          );
           if (msg.type == NexusMessage.pairAccept) {
             debugPrint('NEXUS mesh: pair-accept <- ${msg.from}');
             if (!completer.isCompleted) {
@@ -1530,7 +2275,12 @@ class MeshService extends ChangeNotifier {
             return;
           } else if (msg.type == NexusMessage.pairReject) {
             if (!completer.isCompleted) {
-              completer.complete(PairResult.failure((msg.payload['reason'] as String?) ?? 'The device rejected the pairing.'));
+              completer.complete(
+                PairResult.failure(
+                  (msg.payload['reason'] as String?) ??
+                      'The device rejected the pairing.',
+                ),
+              );
             }
             return;
           }
@@ -1544,10 +2294,16 @@ class MeshService extends ChangeNotifier {
     socket.listen(
       handleChunk,
       onError: (_) {
-        if (!completer.isCompleted) completer.complete(PairResult.failure('Connection was lost during pairing.'));
+        if (!completer.isCompleted)
+          completer.complete(
+            PairResult.failure('Connection was lost during pairing.'),
+          );
       },
       onDone: () {
-        if (!completer.isCompleted) completer.complete(PairResult.failure('Connection closed before pairing finished.'));
+        if (!completer.isCompleted)
+          completer.complete(
+            PairResult.failure('Connection closed before pairing finished.'),
+          );
       },
     );
 
@@ -1618,7 +2374,9 @@ class MeshService extends ChangeNotifier {
         sent++;
         debugPrint('NEXUS mesh: clipboard -> ${peer.id}');
       } else {
-        debugPrint('NEXUS mesh: clipboard FAILED -> ${peer.id} (${peer.address}:${peer.port})');
+        debugPrint(
+          'NEXUS mesh: clipboard FAILED -> ${peer.id} (${peer.address}:${peer.port})',
+        );
       }
     }
     notifyListeners();

@@ -36,25 +36,29 @@ class NexusMessage {
   static const fileChunk = 'file.chunk';
   static const filePush = 'file.push';
   static const filePushAck = 'file.push.ack';
+  static const fileDelete = 'file.delete';
+  static const fileDeleteAck = 'file.delete.ack';
+  static const fileOperation = 'file.operation';
+  static const fileOperationAck = 'file.operation.ack';
   static const fileError = 'file.error';
 
   Map<String, dynamic> toJson() => {
-        'type': type,
-        'from': from,
-        if (to != null) 'to': to,
-        'payload': payload,
-        'id': id,
-        'ts': ts,
-      };
+    'type': type,
+    'from': from,
+    if (to != null) 'to': to,
+    'payload': payload,
+    'id': id,
+    'ts': ts,
+  };
 
   factory NexusMessage.fromJson(Map<String, dynamic> json) => NexusMessage(
-        type: json['type'] as String,
-        from: json['from'] as String,
-        to: json['to'] as String?,
-        payload: (json['payload'] as Map<String, dynamic>?) ?? const {},
-        id: json['id'] as String,
-        ts: (json['ts'] as num?)?.toInt() ?? 0,
-      );
+    type: json['type'] as String,
+    from: json['from'] as String,
+    to: json['to'] as String?,
+    payload: (json['payload'] as Map<String, dynamic>?) ?? const {},
+    id: json['id'] as String,
+    ts: (json['ts'] as num?)?.toInt() ?? 0,
+  );
 
   String encodePlain() => jsonEncode(toJson());
 
@@ -88,7 +92,11 @@ class FrameDecoder {
     var offset = 0;
     while (true) {
       if (bytes.length - offset < 4) break;
-      final length = ByteData.sublistView(bytes, offset, offset + 4).getUint32(0);
+      final length = ByteData.sublistView(
+        bytes,
+        offset,
+        offset + 4,
+      ).getUint32(0);
       if (length > maxFrameBytes) {
         // Malformed/garbage frame — refuse the whole buffer.
         _buf.clear();

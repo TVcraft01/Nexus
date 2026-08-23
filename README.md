@@ -30,6 +30,10 @@ One Flutter codebase: Android + Linux today, Windows next, then macOS and web.
   encrypted end to end.
 - **Address re-finding.** If a paired device's IP changes (router reboot),
   the next successful contact updates its stored address automatically.
+- **Files across devices.** The Files tab and the Linux file-manager mount
+  browse paired devices over the encrypted mesh. Rename, copy, move, create
+  folders, and delete in place; cross-device copy and move stream through the
+  running app and keep the source until the destination is confirmed.
 - **Everything persists on-device** — identity, pairing secrets, and
   settings — in the app's private data directory. Nothing leaves your device.
 
@@ -65,6 +69,24 @@ watch it land directly on the other's clipboard.
 
 > The second instance may note "Port 51820 was busy — using port X". That's
 > the app being honest, not a bug.
+
+## Use the Linux file-manager mount
+
+With the Linux app running and `fusepy` installed, mount paired devices as
+folders in Nemo, Nautilus, or another FUSE-capable file manager:
+
+```bash
+pip3 install --user --break-system-packages fusepy
+tools/mount-nexus.sh
+```
+
+The default mount point is `~/Nexus Devices`; set `NEXUS_MOUNT` to choose a
+different location. Normal file-manager rename, copy/paste, drag-and-drop,
+folder creation, and delete operations are sent through the encrypted app
+connection. Unmount with `tools/mount-nexus.sh --umount`.
+
+The mount must be run on the same Linux user that runs Nexus, because it reads
+the app's local gateway token from the user's state file.
 
 ## Try it (phone + PC)
 

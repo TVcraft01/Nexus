@@ -45,6 +45,23 @@ class NexusStore {
 
   set autoUpdate(bool value) => _settings()['autoUpdate'] = value;
 
+  /// Localhost gateway (Linux FUSE mount companion): a fixed default port the
+  /// mount script can find, and a per-launch random token the daemon must
+  /// present so only it (and the app) can use the gateway.
+  int get gatewayPort => ((_data['settings'] as Map<String, dynamic>?)?['gatewayPort'] as num?)?.toInt() ?? 51823;
+
+  set gatewayPort(int value) => _settings()['gatewayPort'] = value;
+
+  String? get gatewayToken => ((_data['settings'] as Map<String, dynamic>?)?['gatewayToken'] as String?);
+
+  set gatewayToken(String? value) {
+    if (value == null) {
+      (_data['settings'] as Map<String, dynamic>?)?.remove('gatewayToken');
+    } else {
+      _settings()['gatewayToken'] = value;
+    }
+  }
+
   Map<String, dynamic> _settings() =>
       _data.putIfAbsent('settings', () => <String, dynamic>{});
 
