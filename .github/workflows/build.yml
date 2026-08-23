@@ -72,12 +72,12 @@ jobs:
       - name: Build
         run: |
           flutter pub get
-          flutter build apk --debug
+          flutter build apk --release
 
       - uses: actions/upload-artifact@v4
         with:
           name: nexus-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Version
         id: ver
@@ -88,7 +88,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           V="v${{ steps.ver.outputs.version }}"
-          APK="build/app/outputs/flutter-apk/app-debug.apk"
+          APK="build/app/outputs/flutter-apk/app-release.apk"
           cp "$APK" nexus.apk
           if gh release view "$V" >/dev/null 2>&1; then
             gh release upload "$V" nexus.apk --clobber
