@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show DeviceOrientation, SystemChrome;
 
 import 'core/identity.dart';
 import 'core/store.dart';
@@ -28,6 +29,13 @@ String _platformName(TargetPlatform platform) {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Phones stay portrait: the app has no landscape content (no video, no
+  // wide tables), so rotation only fights the user. Desktops stay free.
+  if (defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS) {
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
 
   // NEXUS_DATA_DIR lets you run a second instance with its own identity
   // (e.g. two copies of the app on one computer to test the mesh).

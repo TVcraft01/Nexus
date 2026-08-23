@@ -4,10 +4,14 @@ import 'dart:math';
 /// A device's stable identity within the Nexus mesh.
 class DeviceInfo {
   final String id;
-  final String name;
+
+  /// Mutable so a rename takes effect live (announcements and heartbeats
+  /// carry the current name to every paired device) instead of waiting for
+  /// the next restart.
+  String name;
   final String platform; // 'android' | 'linux' | 'windows' | 'macos' | 'ios' | 'other'
 
-  const DeviceInfo({
+  DeviceInfo({
     required this.id,
     required this.name,
     required this.platform,
@@ -20,8 +24,6 @@ class DeviceInfo {
         name: json['name'] as String,
         platform: json['platform'] as String? ?? 'other',
       );
-
-  DeviceInfo copyWith({String? name}) => DeviceInfo(id: id, name: name ?? this.name, platform: platform);
 }
 
 const _idAlphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';

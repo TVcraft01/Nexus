@@ -198,8 +198,7 @@ class _PairSheetState extends State<_PairSheet> {
                 segments: [
                   const ButtonSegment(value: 0, label: Text('Show my code'), icon: Icon(Icons.qr_code_2_rounded, size: 16)),
                   const ButtonSegment(value: 1, label: Text('Enter a code'), icon: Icon(Icons.keyboard_rounded, size: 16)),
-                  if (_canCable)
-                    ButtonSegment(value: 2, label: Text('Pair over cable'), icon: Icon(Icons.usb_rounded, size: 16)),
+                  const ButtonSegment(value: 2, label: Text('Pair over cable'), icon: Icon(Icons.usb_rounded, size: 16)),
                 ],
                 selected: {_tab},
                 onSelectionChanged: (s) => setState(() => _tab = s.first),
@@ -281,6 +280,51 @@ class _PairSheetState extends State<_PairSheet> {
   }
 
   Widget _buildCableTab(BuildContext context) {
+    // The PC is the one that drives cable pairing — it identifies the
+    // connected device, installs the matching app over the cable, and opens
+    // the tunnel. A phone is the device being set up, so it gets a guide
+    // instead of a "start" button (a phone cannot install apps on a PC).
+    if (!_canCable) {
+      return SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: NexusColors.accent.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: NexusColors.accent.withValues(alpha: 0.3)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.usb_rounded, size: 20, color: NexusColors.accent),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Plug this phone into a PC running Nexus with a USB cable. '
+                      'The PC identifies what is connected and sends this phone '
+                      'the Android app, then pairs automatically.',
+                      style: TextStyle(color: NexusColors.text, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('1.  On the PC: open Nexus → Pair a device → Pair over cable.',
+                style: Theme.of(context).textTheme.bodyMedium),
+            const SizedBox(height: 8),
+            Text('2.  Plug this phone in with the cable and follow the PC’s prompts.',
+                style: Theme.of(context).textTheme.bodyMedium),
+            const SizedBox(height: 8),
+            Text('3.  When the PC says it’s paired, you’re done — no code needed.',
+                style: Theme.of(context).textTheme.bodyMedium),
+          ],
+        ),
+      );
+    }
+
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

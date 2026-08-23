@@ -12,7 +12,7 @@ void main() {
   testWidgets('shell renders the devices view with no paired devices', (tester) async {
     final store = NexusStore(explicitPath: '${Directory.systemTemp.createTempSync('w').path}/s.json');
     final mesh = MeshService(
-      identity: const DeviceInfo(id: 'test-device', name: 'Test PC', platform: 'linux'),
+      identity: DeviceInfo(id: 'test-device', name: 'Test PC', platform: 'linux'),
       store: store,
     );
 
