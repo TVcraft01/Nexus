@@ -9,6 +9,7 @@ import '../core/network_info.dart';
 import '../core/pair_payload.dart';
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
+import 'cable_pair_page.dart';
 import 'scan_qr_page.dart';
 import 'theme.dart';
 
@@ -53,6 +54,13 @@ class _PairSheetState extends State<_PairSheet> {
   bool get _canScan =>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
+
+  /// Cable pairing is a desktop feature: the PC identifies the connected
+  /// device and serves the matching app over the cable.
+  bool get _canCable =>
+      defaultTargetPlatform == TargetPlatform.linux ||
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.macOS;
 
   @override
   void initState() {
@@ -187,9 +195,11 @@ class _PairSheetState extends State<_PairSheet> {
               ),
               const SizedBox(height: 10),
               SegmentedButton<int>(
-                segments: const [
-                  ButtonSegment(value: 0, label: Text('Show my code'), icon: Icon(Icons.qr_code_2_rounded, size: 16)),
-                  ButtonSegment(value: 1, label: Text('Enter a code'), icon: Icon(Icons.keyboard_rounded, size: 16)),
+                segments: [
+                  const ButtonSegment(value: 0, label: Text('Show my code'), icon: Icon(Icons.qr_code_2_rounded, size: 16)),
+                  const ButtonSegment(value: 1, label: Text('Enter a code'), icon: Icon(Icons.keyboard_rounded, size: 16)),
+                  if (_canCable)
+                    ButtonSegment(value: 2, label: Text('Pair over cable'), icon: Icon(Icons.usb_rounded, size: 16)),
                 ],
                 selected: {_tab},
                 onSelectionChanged: (s) => setState(() => _tab = s.first),
@@ -202,7 +212,7 @@ class _PairSheetState extends State<_PairSheet> {
                 ),
               ),
               const SizedBox(height: 16),
-              Expanded(child: _tab == 0 ? _buildShowTab(context) : _buildEnterTab(context)),
+              Expanded(child: _tab == 0 ? _buildShowTab(context) : _tab == 1 ? _buildEnterTab(context) : _buildCableTab(context)),
             ],
           ),
         ),
@@ -264,6 +274,64 @@ class _PairSheetState extends State<_PairSheet> {
             onPressed: () => Clipboard.setData(ClipboardData(text: _session.code)),
             icon: const Icon(Icons.copy_rounded, size: 16),
             label: const Text('Copy code'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCableTab(BuildContext context) {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: NexusColors.accent.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: NexusColors.accent.withValues(alpha: 0.3)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.usb_rounded, size: 20, color: NexusColors.accent),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Plug the device into this PC with a cable. This PC identifies '
+                    'what is connected and sends the matching Nexus app — a phone '
+                    'gets the Android app over the cable, a Raspberry Pi or other '
+                    'Linux device gets a setup script.',
+                    style: TextStyle(color: NexusColors.text, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            onPressed: () async {
+              final paired = await Navigator.push<bool>(
+                this.context,
+                MaterialPageRoute(
+                  builder: (_) => CablePairPage(mesh: widget.mesh),
+                ),
+              );
+              if (paired == true && mounted) {
+                Navigator.pop(this.context);
+                ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(
+                  content: Text('Device paired over the cable. 🎉'),
+                ));
+              }
+            },
+            icon: const Icon(Icons.usb_rounded, size: 18),
+            label: const Text('Start cable pairing'),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Only runs when you start it — nothing is detected or installed '
+            'until you tap the button.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: NexusColors.muted),
           ),
         ],
       ),

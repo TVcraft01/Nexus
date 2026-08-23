@@ -66,31 +66,64 @@ class Updater {
   }) async {
     final fetcher = fetch ?? (url) => _httpGet(url);
     try {
-      final body = await fetcher('https://api.github.com/repos/$owner/$repo/releases/latest');
-      final json = jsonDecode(body);
-      if (json is! Map<String, dynamic>) return null;
+      final json = await _latestReleaseJson(fetcher, owner: owner, repo: repo);
+      if (json == null) return null;
       final tag = json['tag_name'];
       if (tag is! String) return null;
       final version = tag.replaceFirst(RegExp(r'^v'), '');
       if (compareVersions(version, currentVersion) <= 0) return null;
 
-      String? assetUrl;
-      final assets = json['assets'];
-      if (assets is List) {
-        for (final asset in assets) {
-          if (asset is Map && asset['name'] == _assetName) {
-            assetUrl = asset['browser_download_url'] as String?;
-          }
-        }
-      }
       final info = UpdateInfo(
         version: version,
-        downloadUrl: assetUrl,
+        downloadUrl: _assetUrl(json, _assetName),
       );
       debugPrint('NEXUS updater: update available v$version');
       return info;
     } catch (e) {
       debugPrint('NEXUS updater: check failed (${e.runtimeType}) — no update');
+      return null;
+    }
+  }
+
+  /// Fetches the latest release JSON from GitHub. Shared with cable pairing,
+  /// which needs the same "what did we last publish?" answer.
+  static Future<Map<String, dynamic>?> _latestReleaseJson(
+    Future<String> Function(String url) fetch, {
+    required String owner,
+    required String repo,
+  }) async {
+    final body = await fetch('https://api.github.com/repos/$owner/$repo/releases/latest');
+    final json = jsonDecode(body);
+    return json is Map<String, dynamic> ? json : null;
+  }
+
+  /// Finds the download URL of [assetName] in a GitHub release JSON body.
+  static String? _assetUrl(Map<String, dynamic> json, String assetName) {
+    final assets = json['assets'];
+    if (assets is! List) return null;
+    for (final asset in assets) {
+      if (asset is Map && asset['name'] == assetName) {
+        return asset['browser_download_url'] as String?;
+      }
+    }
+    return null;
+  }
+
+  /// The GitHub download URL of the latest published `nexus.apk`, if the
+  /// latest release has one. Used by cable pairing to push the app to a
+  /// phone that does not have it yet. [fetch] is injectable for tests.
+  static Future<String?> latestApkUrl({
+    String owner = 'TVcraft01',
+    String repo = 'Nexus',
+    Future<String> Function(String url)? fetch,
+  }) async {
+    final fetcher = fetch ?? (url) => _httpGet(url);
+    try {
+      final json = await _latestReleaseJson(fetcher, owner: owner, repo: repo);
+      if (json == null) return null;
+      return _assetUrl(json, 'nexus.apk');
+    } catch (e) {
+      debugPrint('NEXUS updater: latest APK lookup failed (${e.runtimeType})');
       return null;
     }
   }
