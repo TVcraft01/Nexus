@@ -35,8 +35,11 @@ class NexusStore {
 
   set clipboardSync(bool value) => _settings()['clipboardSync'] = value;
 
+  // Auto-apply is ON by default: copied text on one device lands directly in
+  // the other's clipboard, so it pastes anywhere. It can be turned off for
+  // devices where you never want your clipboard overwritten.
   bool get autoApplyClipboard =>
-      ((_data['settings'] as Map<String, dynamic>?)?['autoApplyClipboard'] as bool?) ?? false;
+      ((_data['settings'] as Map<String, dynamic>?)?['autoApplyClipboard'] as bool?) ?? true;
 
   set autoApplyClipboard(bool value) => _settings()['autoApplyClipboard'] = value;
 

@@ -74,6 +74,16 @@ watch it arrive in the other's clipboard tray.
 3. Pair as above. Copy something on the phone; it lands on the PC's tray and
    vice versa.
 
+## Auto-update (Linux)
+
+The Linux app checks GitHub on startup and, when a newer release exists, shows
+an **"Update & restart"** banner: it downloads the new build, swaps it in, and
+relaunches — no terminal needed. Every push to `main` builds the Linux bundle
+and Android APK on GitHub Actions and publishes the bundle as a release.
+
+Manual update / rebuild from source: `./update.sh` (pulls, builds, reinstalls,
+restarts). Android updates come from the APK.
+
 ## Building
 
 ```bash

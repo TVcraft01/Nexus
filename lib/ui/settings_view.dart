@@ -73,8 +73,8 @@ class _SettingsViewState extends State<SettingsView> {
             const Divider(height: 20),
             _ToggleRow(
               title: 'Apply incoming clips automatically',
-              detail: 'Copy from another device lands directly on my clipboard. '
-                  'Off by default, so nothing overwrites it without you asking.',
+              detail: 'Copy on one device, paste anywhere on the other — text lands '
+                  'directly on my clipboard. Turn off to never overwrite it.',
               value: mesh.store.autoApplyClipboard,
               onChanged: (v) {
                 setState(() => mesh.store.autoApplyClipboard = v);

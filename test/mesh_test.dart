@@ -114,8 +114,29 @@ void main() {
     }
     expect(found, isTrue, reason: 'PC never received the clipboard message');
 
-    // The PC's own clipboard is untouched (auto-apply is off by default).
-    expect(clipA.value, isNull);
+    // Auto-apply is ON by default: the text lands directly in the PC's
+    // clipboard, ready to paste anywhere.
+    expect(clipA.value, 'hello from the phone');
+  });
+
+  test('with auto-apply off, incoming clips do not touch the clipboard', () async {
+    storeA.autoApplyClipboard = false;
+    await storeA.save();
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(address: '127.0.0.1', port: meshA.port, code: session.code);
+    expect(result.ok, isTrue);
+
+    await meshB.broadcastClipboard('should stay in the tray only');
+    var found = false;
+    for (var i = 0; i < 20 && !found; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      found = meshA.clipTray.any((e) => e.text == 'should stay in the tray only');
+    }
+    expect(found, isTrue);
+    expect(clipA.value, isNull); // not auto-applied
   });
 
   test('pairs persist across restarts', () async {
