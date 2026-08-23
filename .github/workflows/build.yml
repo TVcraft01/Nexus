@@ -88,13 +88,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           V="v${{ steps.ver.outputs.version }}"
+          APK="build/app/outputs/flutter-apk/app-debug.apk"
+          cp "$APK" nexus.apk
           if gh release view "$V" >/dev/null 2>&1; then
-            gh release upload "$V" build/app/outputs/flutter-apk/app-debug.apk#nexus.apk \
-              --clobber
+            gh release upload "$V" nexus.apk --clobber
             echo "Attached APK to release $V"
           else
-            # Release may not exist yet if the linux job hasn't finished — create it.
-            gh release create "$V" build/app/outputs/flutter-apk/app-debug.apk#nexus.apk \
+            gh release create "$V" nexus.apk \
               --title "Nexus $V" \
               --notes "Nexus $V"
             echo "Created release $V with APK"
