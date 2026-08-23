@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Creating releases (for auto-update) needs write access to contents.
+permissions:
+  contents: write
+
 jobs:
   linux:
     name: Linux bundle
