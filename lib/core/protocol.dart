@@ -34,6 +34,8 @@ class NexusMessage {
   static const fileListResult = 'file.list.result';
   static const fileGet = 'file.get';
   static const fileChunk = 'file.chunk';
+  static const filePush = 'file.push';
+  static const filePushAck = 'file.push.ack';
   static const fileError = 'file.error';
 
   Map<String, dynamic> toJson() => {
