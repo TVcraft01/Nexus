@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform, debugPrint;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, debugPrint;
 import 'package:flutter/material.dart';
 
 import '../core/version.dart';
@@ -94,7 +95,8 @@ class _HomeShellState extends State<HomeShell> {
       debugPrint('NEXUS updater: ${e.runtimeType}: $e');
       setState(() {
         _applying = false;
-        _updateError = 'The update failed. Check your connection and try again.';
+        _updateError =
+            'The update failed. Check your connection and try again.';
       });
     }
   }
@@ -141,10 +143,14 @@ class _HomeShellState extends State<HomeShell> {
           _lastShown = incoming;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Copied on ${incoming.fromName ?? 'another device'}: '
-                  '"${incoming.text.length > 60 ? '${incoming.text.substring(0, 60)}…' : incoming.text}"'),
-            ));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Copied on ${incoming.fromName ?? 'another device'}: '
+                  '"${incoming.text.length > 60 ? '${incoming.text.substring(0, 60)}…' : incoming.text}"',
+                ),
+              ),
+            );
           });
         }
 
@@ -165,7 +171,9 @@ class _HomeShellState extends State<HomeShell> {
                 onUpdate: _updateNow,
                 onDismiss: () => setState(() => _update = null),
               ),
-            Expanded(child: IndexedStack(index: _index, children: views)),
+            Expanded(
+              child: IndexedStack(index: _index, children: views),
+            ),
           ],
         );
 
@@ -195,17 +203,29 @@ class _HomeShellState extends State<HomeShell> {
                     ),
                   ],
                 )
-              : content,
+              : SafeArea(top: true, bottom: false, child: content),
           bottomNavigationBar: _isDesktop
               ? null
               : NavigationBar(
                   selectedIndex: _index,
                   onDestinationSelected: (i) => setState(() => _index = i),
                   destinations: const [
-                    NavigationDestination(icon: Icon(Icons.devices_rounded), label: 'Devices'),
-                    NavigationDestination(icon: Icon(Icons.folder_rounded), label: 'Files'),
-                    NavigationDestination(icon: Icon(Icons.mic_none_rounded), label: 'Assistant'),
-                    NavigationDestination(icon: Icon(Icons.tune_rounded), label: 'Settings'),
+                    NavigationDestination(
+                      icon: Icon(Icons.devices_rounded),
+                      label: 'Devices',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.folder_rounded),
+                      label: 'Files',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.mic_none_rounded),
+                      label: 'Assistant',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.tune_rounded),
+                      label: 'Settings',
+                    ),
                   ],
                 ),
           // A + button to pair a new device, on every platform.
@@ -249,7 +269,11 @@ class _UpdateBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(Icons.system_update_alt_rounded, size: 20, color: NexusColors.accent),
+          const Icon(
+            Icons.system_update_alt_rounded,
+            size: 20,
+            color: NexusColors.accent,
+          ),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -259,28 +283,48 @@ class _UpdateBanner extends StatelessWidget {
                   applying
                       ? 'Updating to v${info.version}…'
                       : 'Nexus v${info.version} is available',
-                  style: const TextStyle(color: NexusColors.text, fontWeight: FontWeight.w600, fontSize: 13.5),
+                  style: const TextStyle(
+                    color: NexusColors.text,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13.5,
+                  ),
                 ),
                 if (error != null)
-                  Text(error!, style: const TextStyle(color: NexusColors.danger, fontSize: 12)),
+                  Text(
+                    error!,
+                    style: const TextStyle(
+                      color: NexusColors.danger,
+                      fontSize: 12,
+                    ),
+                  ),
               ],
             ),
           ),
           if (!applying)
             TextButton(
               onPressed: onUpdate,
-              child: Text(defaultTargetPlatform == TargetPlatform.android
-                  ? 'Update & install'
-                  : 'Update & restart'),
+              child: Text(
+                defaultTargetPlatform == TargetPlatform.android
+                    ? 'Update & install'
+                    : 'Update & restart',
+              ),
             )
           else
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 12),
-              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+              child: SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
             ),
           IconButton(
             onPressed: applying ? null : onDismiss,
-            icon: const Icon(Icons.close_rounded, size: 18, color: NexusColors.muted),
+            icon: const Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: NexusColors.muted,
+            ),
           ),
         ],
       ),

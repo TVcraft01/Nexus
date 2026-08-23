@@ -30,6 +30,7 @@ class NexusMessage {
   static const pairAccept = 'pair-accept';
   static const pairReject = 'pair-reject';
   static const clipboard = 'clipboard';
+  static const clipboardAck = 'clipboard.ack';
   static const fileList = 'file.list';
   static const fileListResult = 'file.list.result';
   static const fileGet = 'file.get';
