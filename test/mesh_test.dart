@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
+import 'package:nexus/core/version.dart';
 import 'package:nexus/mesh/gateway.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 
@@ -223,6 +224,48 @@ void main() {
     expect(restarted.isPaired('device-a'), isTrue);
     expect(restarted.pairedDevices.single.pairingSecret, session.code);
     await restarted.stop();
+  });
+
+  test('paired device aliases survive remote name announcements', () async {
+    await meshA.start();
+    await meshB.start();
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    await meshB.renamePairedDevice('device-a', 'My PC');
+    expect(meshB.pairedDevices.single.name, 'My PC');
+
+    await meshA.renameDevice('Remote PC Name');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    expect(meshB.pairedDevices.single.name, 'My PC');
+
+    final reloaded = NexusStore(explicitPath: storeB.explicitPath);
+    await reloaded.load();
+    expect(reloaded.pairedDevices.single['name'], 'My PC');
+  });
+
+  test('paired devices share their running app version', () async {
+    await meshA.start();
+    await meshB.start();
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    var received = false;
+    for (var i = 0; i < 20 && !received; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      received = meshB.latestPeerUpdateVersion == appVersion;
+    }
+    expect(received, isTrue);
   });
 
   test('renaming a device propagates the new name to paired devices', () async {

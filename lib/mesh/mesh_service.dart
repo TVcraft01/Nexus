@@ -16,6 +16,7 @@ import '../core/network_info.dart';
 import '../core/pair_payload.dart';
 import '../core/protocol.dart';
 import '../core/store.dart';
+import '../core/version.dart';
 import 'discovery.dart';
 
 /// Local channel to the Android side (see MainActivity): "All files access"
@@ -28,6 +29,7 @@ class PairedDevice {
   final String id;
   String name;
   final String platform;
+  bool localName;
 
   /// The address that worked most recently (the source address of the last
   /// real connection). Tried first when connecting.
@@ -46,6 +48,7 @@ class PairedDevice {
     required this.id,
     required this.name,
     required this.platform,
+    this.localName = false,
     required this.address,
     required this.port,
     required this.pairingSecret,
@@ -57,6 +60,7 @@ class PairedDevice {
     'id': id,
     'name': name,
     'platform': platform,
+    'localName': localName,
     'address': address,
     'addresses': addresses,
     'port': port,
@@ -68,6 +72,7 @@ class PairedDevice {
     id: json['id'] as String,
     name: json['name'] as String,
     platform: json['platform'] as String? ?? 'other',
+    localName: json['localName'] == true,
     address: json['address'] as String,
     port: (json['port'] as num).toInt(),
     pairingSecret: json['pairingSecret'] as String,
@@ -284,9 +289,12 @@ class MeshService extends ChangeNotifier {
   String? _pendingClipboard;
   final Set<String> _clipboardDeliveredTo = {};
   final Map<String, Completer<bool>> _pendingClipboardAcks = {};
+  String? _latestPeerUpdateVersion;
   bool _started = false;
 
   int get port => store.port;
+
+  String? get latestPeerUpdateVersion => _latestPeerUpdateVersion;
 
   List<PairedDevice> get pairedDevices => _paired.values.toList();
 
@@ -671,6 +679,9 @@ class MeshService extends ChangeNotifier {
           _inboundPeer[socket] = msg.from;
         }
         final payload = msg.payload;
+        if (_paired.containsKey(msg.from)) {
+          _notePeerVersion(msg.from, payload['appVersion']);
+        }
         final name = payload['name'] as String? ?? 'Unknown device';
         final port = (payload['port'] as num?)?.toInt();
         final ips = (payload['ips'] as List?)?.whereType<String>().toList();
@@ -697,6 +708,7 @@ class MeshService extends ChangeNotifier {
             payload: {
               'name': identity.name,
               'platform': identity.platform,
+              'appVersion': appVersion,
               'port': store.port,
               'ips': await _myIps(),
             },
@@ -709,6 +721,9 @@ class MeshService extends ChangeNotifier {
         _noteSeen(msg.from, verified: true);
         debugPrint('NEXUS mesh: pong <- ${msg.from}');
         final payload = msg.payload;
+        if (_paired.containsKey(msg.from)) {
+          _notePeerVersion(msg.from, payload['appVersion']);
+        }
         final name = payload['name'] as String?;
         final port = (payload['port'] as num?)?.toInt();
         final ips = (payload['ips'] as List?)?.whereType<String>().toList();
@@ -1957,6 +1972,19 @@ class MeshService extends ChangeNotifier {
     if (!completer.isCompleted) completer.complete(null);
   }
 
+  void _notePeerVersion(String peerId, Object? rawVersion) {
+    if (!_paired.containsKey(peerId) ||
+        rawVersion is! String ||
+        rawVersion.trim().isEmpty) {
+      return;
+    }
+    final version = rawVersion.trim();
+    final previous = _latestPeerUpdateVersion;
+    if (version == previous) return;
+    _latestPeerUpdateVersion = version;
+    notifyListeners();
+  }
+
   void _noteSeen(String id, {required bool verified}) {
     final now = DateTime.now();
     _lastSeen[id] = now;
@@ -1982,7 +2010,7 @@ class MeshService extends ChangeNotifier {
         peer.port = port;
         changed = true;
       }
-      if (peer.name != name) {
+      if (!peer.localName && peer.name != name) {
         peer.name = name;
         changed = true;
       }
@@ -2083,6 +2111,7 @@ class MeshService extends ChangeNotifier {
             address: device.address,
             port: device.port,
             pairingSecret: '',
+            localName: false,
           ),
         );
       }
@@ -2094,6 +2123,7 @@ class MeshService extends ChangeNotifier {
           payload: {
             'name': identity.name,
             'platform': identity.platform,
+            'appVersion': appVersion,
             'port': store.port,
             'ips': await _myIps(),
           },
@@ -2352,6 +2382,17 @@ class MeshService extends ChangeNotifier {
     // restart, then persist it.
     identity.name = sanitizeDeviceName(name);
     store.setIdentity(identity);
+    await store.save();
+    notifyListeners();
+  }
+
+  Future<void> renamePairedDevice(String id, String name) async {
+    final device = _paired[id];
+    if (device == null) return;
+    device.name = sanitizeDeviceName(name);
+    device.localName = true;
+    store.upsertPaired(device.toJson());
+
     await store.save();
     notifyListeners();
   }

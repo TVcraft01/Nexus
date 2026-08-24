@@ -30,6 +30,8 @@ class _HomeShellState extends State<HomeShell> {
   UpdateInfo? _update;
   bool _applying = false;
   String? _updateError;
+  String? _lastPeerUpdateVersion;
+  bool _peerUpdateChecking = false;
   bool _updateChecked = false;
 
   @override
@@ -44,13 +46,39 @@ class _HomeShellState extends State<HomeShell> {
     }
   }
 
-  Future<void> _checkForUpdates() async {
-    if (_updateChecked) return;
+  Future<UpdateInfo?> _checkForUpdates({bool force = false}) async {
+    if (_updateChecked && !force) return null;
     _updateChecked = true;
     final info = await Updater.checkForUpdate(currentVersion: appVersion);
     if (info != null && mounted) {
       setState(() => _update = info);
     }
+    return info;
+  }
+
+  void _checkPeerUpdate() {
+    if (!widget.mesh.store.autoUpdate) return;
+    final version = widget.mesh.latestPeerUpdateVersion;
+    if (version == null ||
+        Updater.compareVersions(version, appVersion) <= 0 ||
+        version == _lastPeerUpdateVersion) {
+      return;
+    }
+    if (_peerUpdateChecking) return;
+    _peerUpdateChecking = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        _peerUpdateChecking = false;
+        return;
+      }
+      unawaited(
+        _checkForUpdates(force: true)
+            .then((info) {
+              if (info != null) _lastPeerUpdateVersion = version;
+            })
+            .whenComplete(() => _peerUpdateChecking = false),
+      );
+    });
   }
 
   Future<void> _updateNow() async {
@@ -136,6 +164,7 @@ class _HomeShellState extends State<HomeShell> {
     return ListenableBuilder(
       listenable: widget.mesh,
       builder: (context, _) {
+        _checkPeerUpdate();
         // Show a friendly notification the moment a clip arrives from another
         // device — the text is already on the clipboard, this just says so.
         final incoming = widget.mesh.lastIncomingClip;
@@ -158,7 +187,10 @@ class _HomeShellState extends State<HomeShell> {
           DevicesView(mesh: widget.mesh),
           FilesView(mesh: widget.mesh),
           const AssistantView(),
-          SettingsView(mesh: widget.mesh),
+          SettingsView(
+            mesh: widget.mesh,
+            onCheckForUpdate: () => _checkForUpdates(force: true),
+          ),
         ];
 
         final content = Column(

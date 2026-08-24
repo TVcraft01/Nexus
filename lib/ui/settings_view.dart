@@ -1,14 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
+import '../mesh/updater.dart';
 import 'theme.dart';
 
 class SettingsView extends StatefulWidget {
   final MeshService mesh;
-  const SettingsView({super.key, required this.mesh});
+  final Future<UpdateInfo?> Function()? onCheckForUpdate;
+  const SettingsView({super.key, required this.mesh, this.onCheckForUpdate});
 
   @override
   State<SettingsView> createState() => _SettingsViewState();
@@ -16,6 +20,8 @@ class SettingsView extends StatefulWidget {
 
 class _SettingsViewState extends State<SettingsView> {
   bool? _allFilesAccess; // Android: can this device read its whole storage?
+  bool _checking = false;
+  String? _checkResult;
 
   @override
   void initState() {
@@ -131,6 +137,84 @@ class _SettingsViewState extends State<SettingsView> {
                 setState(() => mesh.store.autoUpdate = v);
                 mesh.store.save();
               },
+            ),
+            const Divider(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Check for updates now',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 2),
+                      if (_checking)
+                        const Text(
+                          'Checking…',
+                          style: TextStyle(
+                            color: NexusColors.muted,
+                            fontSize: 12,
+                          ),
+                        )
+                      else if (_checkResult != null)
+                        Text(
+                          _checkResult!,
+                          style: TextStyle(
+                            color: _checkResult!.startsWith('Update')
+                                ? NexusColors.accent
+                                : NexusColors.muted,
+                            fontSize: 12,
+                          ),
+                        )
+                      else
+                        Text(
+                          'Manually look for a newer release on GitHub.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                    ],
+                  ),
+                ),
+                if (_checking)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                else
+                  FilledButton.tonal(
+                    onPressed: widget.onCheckForUpdate == null
+                        ? null
+                        : () async {
+                            setState(() {
+                              _checking = true;
+                              _checkResult = null;
+                            });
+                            try {
+                              final info =
+                                  await widget.onCheckForUpdate!();
+                              if (!mounted) return;
+                              setState(() {
+                                _checking = false;
+                                _checkResult = info != null
+                                    ? 'Update to v${info.version} available'
+                                    : 'Up to date — v$appVersion';
+                              });
+                            } catch (e) {
+                              if (!mounted) return;
+                              setState(() {
+                                _checking = false;
+                                _checkResult = 'Check failed — try again';
+                              });
+                            }
+                          },
+                    child: const Text('Check now'),
+                  ),
+              ],
             ),
           ],
         ),

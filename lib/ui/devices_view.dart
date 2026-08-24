@@ -22,38 +22,62 @@ IconData platformIcon(String platform) {
   }
 }
 
-Future<void> _renameThisDevice(BuildContext context, MeshService mesh) async {
-  final controller = TextEditingController(text: mesh.identity.name);
+Future<void> _renamePairedDevice(
+  BuildContext context,
+  MeshService mesh,
+  PairedDevice device,
+) async {
   final name = await showDialog<String>(
     context: context,
-    builder: (dialogContext) => AlertDialog(
+    builder: (_) => _RenameDeviceDialog(initialName: device.name),
+  );
+  if (name == null || name.isEmpty || !context.mounted) return;
+  await mesh.renamePairedDevice(device.id, name);
+}
+
+class _RenameDeviceDialog extends StatefulWidget {
+  final String initialName;
+
+  const _RenameDeviceDialog({required this.initialName});
+
+  @override
+  State<_RenameDeviceDialog> createState() => _RenameDeviceDialogState();
+}
+
+class _RenameDeviceDialogState extends State<_RenameDeviceDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialName,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
       backgroundColor: NexusColors.surface,
-      title: const Text('Rename this device'),
+      title: const Text('Rename device'),
       content: TextField(
-        controller: controller,
+        controller: _controller,
         autofocus: true,
         maxLength: 24,
         decoration: const InputDecoration(labelText: 'Device name'),
-        onSubmitted: (value) => Navigator.pop(dialogContext, value.trim()),
+        onSubmitted: (value) => Navigator.pop(context, value.trim()),
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(dialogContext),
+          onPressed: () => Navigator.pop(context),
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
+          onPressed: () => Navigator.pop(context, _controller.text.trim()),
           child: const Text('Save'),
         ),
       ],
-    ),
-  );
-  controller.dispose();
-  if (name == null || name.isEmpty || !context.mounted) return;
-  await mesh.renameDevice(name);
-  if (context.mounted) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Device name updated.')));
+    );
   }
 }
 
@@ -121,11 +145,6 @@ class DevicesView extends StatelessWidget {
               ],
             ),
             const Spacer(),
-            IconButton(
-              onPressed: () => _renameThisDevice(context, mesh),
-              tooltip: 'Rename this device',
-              icon: const Icon(Icons.edit_outlined, color: NexusColors.muted),
-            ),
           ],
         ),
         const SizedBox(height: 24),
@@ -364,20 +383,23 @@ class _DeviceCard extends StatelessWidget {
                           ],
                         ),
                       );
+                    case 'edit_name':
+                      await _renamePairedDevice(context, mesh, device);
                     case 'forget':
                       final confirmed = await showDialog<bool>(
                         context: context,
                         builder: (context) => AlertDialog(
                           backgroundColor: NexusColors.surface,
                           title: const Text(
-                            'Forget device?',
+                            'Forget this device?',
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                           content: Text(
-                            '${device.name} will need to be paired again to connect.',
+                            'Careful — ${device.name} will be removed and must be paired '
+                            'again from scratch to reconnect. This can\'t be undone.',
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                           actions: [
@@ -391,7 +413,7 @@ class _DeviceCard extends StatelessWidget {
                                 foregroundColor: Colors.white,
                               ),
                               onPressed: () => Navigator.pop(context, true),
-                              child: const Text('Forget'),
+                              child: const Text('Forget device'),
                             ),
                           ],
                         ),
@@ -401,9 +423,22 @@ class _DeviceCard extends StatelessWidget {
                       }
                   }
                 },
-                itemBuilder: (context) => const [
-                  PopupMenuItem(value: 'details', child: Text('Details')),
-                  PopupMenuItem(value: 'forget', child: Text('Forget device')),
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'edit_name',
+                    child: Text('Edit name'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'details',
+                    child: Text('Details'),
+                  ),
+                  PopupMenuItem(
+                    value: 'forget',
+                    child: Text(
+                      'Forget device',
+                      style: TextStyle(color: NexusColors.danger),
+                    ),
+                  ),
                 ],
               ),
             ],
