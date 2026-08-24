@@ -1,7 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- USB devices Nexus is interested in: CDC-ACM serial devices, which is
-     what ESP32/Arduino boards present when plugged in over USB-OTG.
-     class 2 (CDC) matches broadly so any microcontroller board shows up. -->
+<!-- USB devices Nexus is interested in: serial-capable microcontroller boards
+     plugged in over USB-OTG. Matches broadly so any common board shows up:
+     - class 2 (CDC-ACM): Arduino Nano, ESP32-S3, STM32, etc.
+     - vendor-specific (class 0xFF): CH340/CH341 (most common ESP32 dev board),
+       CP2102, FTDI, PL2303, etc. -->
 <resources>
+    <!-- CDC-ACM serial devices -->
     <usb-device class="2" subclass="0" protocol="0"/>
+    <!-- CH340/CH341 (QinHeng Electronics) — class 0xFF vendor-specific -->
+    <usb-device vendor-id="6790" product-id="29987"/>
+    <!-- CP2102/CP2104 (Silicon Labs) -->
+    <usb-device vendor-id="4292" product-id="60000"/>
+    <!-- FTDI FT232R -->
+    <usb-device vendor-id="1027" product-id="24577"/>
+    <!-- PL2303 (Prolific) -->
+    <usb-device vendor-id="1659" product-id="8963"/>
 </resources>
