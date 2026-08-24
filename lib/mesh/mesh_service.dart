@@ -290,15 +290,11 @@ class MeshService extends ChangeNotifier {
   final Set<String> _clipboardDeliveredTo = {};
   final Map<String, Completer<bool>> _pendingClipboardAcks = {};
 
-  /// The last clipboard text this device held — kept so other devices can
-  /// pull it on demand.
-  String? get clipboardHoldText => _lastClipboard;
-
-  /// Pending clipboard notifications from peers (pull-on-demand mode).
-  /// Each entry: {fromId, fromName, preview}.
-  final List<Map<String, String>> _pendingClipNotifications = [];
-  List<Map<String, String>> get pendingClipNotifications =>
-      List.unmodifiable(_pendingClipNotifications);
+  /// Text held during the post-copy delay. When the timer fires, if the
+  /// local clipboard still matches this text the user hasn't pasted locally
+  /// and we sync it; otherwise we cancel.
+  String? _clipboardHoldText;
+  Timer? _clipboardDelayTimer;
 
   String? _latestPeerUpdateVersion;
   bool _started = false;
@@ -771,13 +767,11 @@ class MeshService extends ChangeNotifier {
         if (ack != null && !ack.isCompleted) ack.complete(true);
 
       case NexusMessage.clipboardNotify:
-        if (!encrypted) return;
-        await _handleClipboardNotify(msg);
+        // No longer used — kept for backward compatibility with older peers.
         break;
 
       case NexusMessage.clipboardPull:
-        if (!encrypted) return;
-        await _handleClipboardPull(msg);
+        // No longer used — kept for backward compatibility with older peers.
         break;
 
       case NexusMessage.fileList:
@@ -2419,58 +2413,57 @@ class MeshService extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------
-  // Clipboard everywhere
+  // Clipboard — smart delayed sync
   // ---------------------------------------------------------------------
+  //
+  // When the user copies something, the text is held for a short delay
+  // (3 s). If the local clipboard changes during that window (the user
+  // pasted locally or copied something else), the sync is cancelled.
+  // After the delay, only devices that are actively being used receive
+  // the text — not every paired device.
 
   Future<void> _checkClipboard() async {
     if (!store.clipboardSync) return;
     final text = await clipboard.readText();
     if (text != null && text != _lastClipboard) {
       _lastClipboard = text;
-
-      if (store.pullClipboard) {
-        // Pull-on-demand: notify peers, don't send text.
-        await _sendClipboardNotify();
-      } else {
-        // Push mode: send the full text to all peers.
-        _pendingClipboard = text;
-        _clipboardDeliveredTo.clear();
-      }
+      // New clipboard content detected — start the delay.
+      _clipboardDelayTimer?.cancel();
+      _clipboardHoldText = text;
+      _clipboardDelayTimer = Timer(const Duration(seconds: 3), _onClipboardDelayExpired);
     }
-    // Always flush any pending clipboard (retries for push-mode deliveries
-    // that failed earlier, and also handles broadcastClipboard calls).
+    // Always flush any pending clipboard (retries for deliveries that
+    // failed earlier).
     await _flushPendingClipboard();
   }
 
-  /// Send a lightweight "I copied something" notification to all peers.
-  Future<void> _sendClipboardNotify() async {
-    final text = _lastClipboard;
-    if (text == null) return;
-    final preview = text.length > 30 ? '${text.substring(0, 30)}…' : text;
-    for (final peer in _paired.values.toList()) {
-      final msg = NexusMessage(
-        type: NexusMessage.clipboardNotify,
-        from: identity.id,
-        to: peer.id,
-        payload: {'fromName': identity.name, 'preview': preview},
-        id: _newId(),
-        ts: DateTime.now().millisecondsSinceEpoch,
-      );
-      if (await _sendEnc(peer, msg)) {
-        debugPrint('NEXUS mesh: clipboard-notify -> ${peer.id}');
-      }
+  /// Called when the post-copy delay expires. If the local clipboard still
+  /// matches what we held, the user hasn't pasted locally — sync to active
+  /// devices. If it changed, cancel.
+  void _onClipboardDelayExpired() {
+    final held = _clipboardHoldText;
+    if (held == null) return;
+    _clipboardHoldText = null;
+    // The clipboard changed during the delay — user pasted or copied
+    // something else. Don't sync.
+    if (_lastClipboard != held) {
+      debugPrint('NEXUS clipboard: local activity detected, skipping sync');
+      return;
     }
+    _pendingClipboard = held;
+    _clipboardDeliveredTo.clear();
   }
 
-  /// Share [text] to every paired device that is reachable. Failed deliveries
-  /// remain pending and are retried by the clipboard poller on the next tick.
-  /// In pull-on-demand mode, only sends a lightweight notification.
+  /// Whether a device is actively being used (not just reachable).
+  /// A device counts as active if it was seen within the last [threshold].
+  bool isActiveDevice(String id, {Duration threshold = const Duration(seconds: 10)}) {
+    final seen = _lastSeen[id];
+    if (seen == null) return false;
+    return DateTime.now().difference(seen) <= threshold;
+  }
+
   Future<int> broadcastClipboard(String text) async {
     _lastClipboard = text;
-    if (store.pullClipboard) {
-      await _sendClipboardNotify();
-      return 0;
-    }
     _pendingClipboard = text;
     _clipboardDeliveredTo.clear();
     return _flushPendingClipboard();
@@ -2485,6 +2478,11 @@ class MeshService extends ChangeNotifier {
       if (text == null) return 0;
       for (final peer in _paired.values.toList()) {
         if (_clipboardDeliveredTo.contains(peer.id)) continue;
+        // Smart filter: only send to actively-used devices.
+        if (!isActiveDevice(peer.id)) {
+          debugPrint('NEXUS clipboard: skipping ${peer.id} (not active)');
+          continue;
+        }
         final req = _newId();
         final ack = Completer<bool>();
         _pendingClipboardAcks[req] = ack;
@@ -2515,7 +2513,9 @@ class MeshService extends ChangeNotifier {
           );
         }
       }
-      if (_paired.keys.every(_clipboardDeliveredTo.contains)) {
+      if (_paired.keys.every(_clipboardDeliveredTo.contains) ||
+          _paired.keys.every((id) => !isActiveDevice(id))) {
+        // All active devices delivered, or none are active — clear pending.
         _pendingClipboard = null;
         _clipboardDeliveredTo.clear();
       }
@@ -2524,78 +2524,6 @@ class MeshService extends ChangeNotifier {
     } finally {
       _clipboardSending = false;
     }
-  }
-
-  /// Handle a clipboard notification from a peer (pull-on-demand mode).
-  /// Stores the notification so the UI can offer a "Pull" button.
-  Future<void> _handleClipboardNotify(NexusMessage msg) async {
-    final peer = _paired[msg.from];
-    if (peer == null) return;
-    final fromName = (msg.payload['fromName'] as String?) ?? peer.name;
-    final preview = (msg.payload['preview'] as String?) ?? '…';
-    debugPrint('NEXUS mesh: clipboard-notify <- ${msg.from} ($preview)');
-
-    // Dismiss stale notifications from the same device — only the latest
-    // copy matters.
-    _pendingClipNotifications.removeWhere((n) => n['fromId'] == msg.from);
-    _pendingClipNotifications.add({
-      'fromId': msg.from,
-      'fromName': fromName,
-      'preview': preview,
-    });
-    notifyListeners();
-  }
-
-  /// Pull the clipboard text from a remote peer. Called by the UI when the
-  /// user taps "Pull" on a clipboard notification.
-  Future<void> pullClipboardFrom(String peerId) async {
-    final peer = _paired[peerId];
-    if (peer == null) return;
-
-    // Remove the notification.
-    _pendingClipNotifications.removeWhere((n) => n['fromId'] == peerId);
-    notifyListeners();
-
-    final msg = NexusMessage(
-      type: NexusMessage.clipboardPull,
-      from: identity.id,
-      to: peerId,
-      payload: {},
-      id: _newId(),
-      ts: DateTime.now().millisecondsSinceEpoch,
-    );
-    if (await _sendEnc(peer, msg)) {
-      debugPrint('NEXUS mesh: clipboard-pull -> $peerId');
-    }
-  }
-
-  /// Handle a clipboard pull request from a peer. Responds with the held
-  /// clipboard text.
-  Future<void> _handleClipboardPull(NexusMessage msg) async {
-    final peer = _paired[msg.from];
-    if (peer == null) return;
-    final text = _lastClipboard;
-    if (text == null || text.isEmpty) return;
-
-    debugPrint('NEXUS mesh: clipboard-pull <- ${msg.from}');
-    final req = _newId();
-    final ack = Completer<bool>();
-    _pendingClipboardAcks[req] = ack;
-    await _sendEnc(
-      peer,
-      NexusMessage(
-        type: NexusMessage.clipboard,
-        from: identity.id,
-        to: peer.id,
-        payload: {'req': req, 'text': text, 'fromName': identity.name},
-        id: _newId(),
-        ts: DateTime.now().millisecondsSinceEpoch,
-      ),
-    );
-    try {
-      await ack.future.timeout(const Duration(seconds: 5));
-    } catch (_) {}
-    _pendingClipboardAcks.remove(req);
   }
 
   Future<void> _handleIncomingClip(NexusMessage msg) async {
@@ -2629,9 +2557,6 @@ class MeshService extends ChangeNotifier {
       await clipboard.writeText(text);
     }
 
-    // Clear any pending notification from this device — we got the text.
-    _pendingClipNotifications.removeWhere((n) => n['fromId'] == msg.from);
-
     lastIncomingClip = ClipEntry(
       text: text,
       fromName: (msg.payload['fromName'] as String?) ?? 'Another device',
@@ -2639,28 +2564,10 @@ class MeshService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Dismiss a pending clipboard notification (user chose not to pull).
-  void dismissClipboardNotification(String peerId) {
-    _pendingClipNotifications.removeWhere((n) => n['fromId'] == peerId);
-    notifyListeners();
-  }
-
-  /// Called when the user copies locally — dismisses all pending clipboard
-  /// notifications since the user is actively using their local clipboard.
-  void clearPendingClipboardNotifications() {
-    if (_pendingClipNotifications.isEmpty) return;
-    _pendingClipNotifications.clear();
-    notifyListeners();
-  }
-
   Future<void> copyText(String text) async {
     _lastClipboard = text;
     await clipboard.writeText(text);
-    if (store.pullClipboard) {
-      await _sendClipboardNotify();
-    } else {
-      await broadcastClipboard(text);
-    }
+    await broadcastClipboard(text);
   }
 
   // ---------------------------------------------------------------------

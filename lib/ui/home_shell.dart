@@ -33,7 +33,6 @@ class _HomeShellState extends State<HomeShell> {
   String? _lastPeerUpdateVersion;
   bool _peerUpdateChecking = false;
   bool _updateChecked = false;
-  Map<String, String>? _lastClipNotify;
 
   @override
   void initState() {
@@ -183,14 +182,6 @@ class _HomeShellState extends State<HomeShell> {
             );
           });
         }
-        // Pull-on-demand: show the latest clipboard notification as a banner.
-        final clipNotes = widget.mesh.pendingClipNotifications;
-        final latestNote = clipNotes.isNotEmpty ? clipNotes.last : null;
-        if (latestNote != null && latestNote != _lastClipNotify) {
-          _lastClipNotify = latestNote;
-        } else if (latestNote == null) {
-          _lastClipNotify = null;
-        }
 
         final views = [
           DevicesView(mesh: widget.mesh),
@@ -211,25 +202,6 @@ class _HomeShellState extends State<HomeShell> {
                 error: _updateError,
                 onUpdate: _updateNow,
                 onDismiss: () => setState(() => _update = null),
-              ),
-            if (_lastClipNotify != null)
-              _ClipboardPullBanner(
-                fromName: _lastClipNotify!['fromName'] ?? 'A device',
-                preview: _lastClipNotify!['preview'] ?? '…',
-                onPull: () {
-                  final id = _lastClipNotify!['fromId'];
-                  if (id != null) {
-                    widget.mesh.pullClipboardFrom(id);
-                  }
-                  setState(() => _lastClipNotify = null);
-                },
-                onDismiss: () {
-                  final id = _lastClipNotify!['fromId'];
-                  if (id != null) {
-                    widget.mesh.dismissClipboardNotification(id);
-                  }
-                  setState(() => _lastClipNotify = null);
-                },
               ),
             Expanded(
               child: IndexedStack(index: _index, children: views),
@@ -380,79 +352,6 @@ class _UpdateBanner extends StatelessWidget {
             ),
           IconButton(
             onPressed: applying ? null : onDismiss,
-            icon: const Icon(
-              Icons.close_rounded,
-              size: 18,
-              color: NexusColors.muted,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ClipboardPullBanner extends StatelessWidget {
-  final String fromName;
-  final String preview;
-  final VoidCallback onPull;
-  final VoidCallback onDismiss;
-
-  const _ClipboardPullBanner({
-    required this.fromName,
-    required this.preview,
-    required this.onPull,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
-      decoration: BoxDecoration(
-        color: NexusColors.accent.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.content_paste_go_rounded,
-            size: 20,
-            color: NexusColors.accent,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '$fromName copied something',
-                  style: const TextStyle(
-                    color: NexusColors.text,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13.5,
-                  ),
-                ),
-                Text(
-                  '"$preview"',
-                  style: const TextStyle(
-                    color: NexusColors.muted,
-                    fontSize: 12,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-          TextButton(
-            onPressed: onPull,
-            child: const Text('Pull'),
-          ),
-          IconButton(
-            onPressed: onDismiss,
             icon: const Icon(
               Icons.close_rounded,
               size: 18,

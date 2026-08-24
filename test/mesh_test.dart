@@ -31,12 +31,10 @@ void main() {
     tmp = await Directory.systemTemp.createTemp('nexus_test');
     storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
       ..port = 53210
-      ..clipboardSync = true
-      ..pullClipboard = false;
+      ..clipboardSync = true;
     storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
       ..port = 53211
-      ..clipboardSync = true
-      ..pullClipboard = false;
+      ..clipboardSync = true;
     await storeA.save();
     await storeB.save();
 
@@ -202,9 +200,7 @@ void main() {
     expect(clipA.value, isNull); // not applied to the clipboard
   });
 
-  test('pull-on-demand: notify arrives but text is not pushed', () async {
-    storeB.pullClipboard = true;
-    await storeB.save();
+  test('smart clipboard: skips inactive devices', () async {
     await meshA.start();
     await meshB.start();
     final session = meshA.beginPairing();
@@ -215,37 +211,17 @@ void main() {
     );
     expect(result.ok, isTrue);
 
-    // B copies — in pull mode this should only notify A, not push text.
-    await meshB.broadcastClipboard('secret text');
-
-    // Wait for the notify to arrive.
-    var notified = false;
-    for (var i = 0; i < 20 && !notified; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      notified = meshA.pendingClipNotifications.isNotEmpty;
-    }
-    expect(notified, isTrue, reason: 'A never received a clipboard notify');
-
-    // The clipboard text must NOT have been pushed.
-    expect(clipA.value, isNull, reason: 'text was pushed in pull mode');
-
-    // A pulls the text.
-    final note = meshA.pendingClipNotifications.last;
-    await meshA.pullClipboardFrom(note['fromId']!);
-
-    // Now the text should arrive.
+    // B copies — A is active (just paired), so text should arrive.
+    await meshB.broadcastClipboard('active device text');
     var received = false;
     for (var i = 0; i < 20 && !received; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
-      received = clipA.value == 'secret text';
+      received = clipA.value == 'active device text';
     }
-    expect(received, isTrue, reason: 'A never received pulled text');
-    expect(meshA.pendingClipNotifications, isEmpty);
+    expect(received, isTrue, reason: 'active device should receive clipboard');
   });
 
-  test('pull-on-demand: local copy dismisses pending notifications', () async {
-    storeB.pullClipboard = true;
-    await storeB.save();
+  test('isActiveDevice returns false for stale devices', () async {
     await meshA.start();
     await meshB.start();
     final session = meshA.beginPairing();
@@ -255,19 +231,14 @@ void main() {
       code: session.code,
     );
 
-    // B copies — A gets a notification.
-    await meshB.broadcastClipboard('will be dismissed');
-    var notified = false;
-    for (var i = 0; i < 20 && !notified; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      notified = meshA.pendingClipNotifications.isNotEmpty;
-    }
-    expect(notified, isTrue);
+    // A device that was never seen is not active.
+    expect(meshB.isActiveDevice('device-a'), isTrue); // just paired
 
-    // A copies locally — pending notifications should be dismissed.
-    clipA.value = 'local copy';
-    meshA.clearPendingClipboardNotifications();
-    expect(meshA.pendingClipNotifications, isEmpty);
+    // Simulate stale by checking with a very short threshold.
+    expect(
+      meshB.isActiveDevice('device-a', threshold: Duration.zero),
+      isFalse,
+    );
   });
 
   test('pairs persist across restarts', () async {
