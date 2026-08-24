@@ -12,6 +12,10 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- For installing APK updates on Android 8+. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- For talking to microcontrollers (ESP32, …) plugged into the phone
+         over USB-OTG. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
+    <uses-permission android:name="android.permission.USB_PERMISSION"/>
     <!-- So the Files tab / PC file manager can see ALL of the phone's files
          (photos, downloads, music…), not just the app's own folder. The user
          grants it explicitly from the Files tab; nothing is ever sent off
@@ -43,6 +47,14 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Offer to open Nexus when a microcontroller (ESP32, …) is
+                 plugged into the phone over USB-OTG. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
         </activity>
         <!-- FileProvider so the system installer can read APK updates we download. -->
         <provider

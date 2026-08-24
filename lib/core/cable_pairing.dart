@@ -142,4 +142,40 @@ echo ""
 echo "After pairing, both devices talk directly — no cloud, no account."
 ''';
   }
+
+  /// Detects a phone attached over USB *without adb* — i.e. with USB
+  /// tethering on. Android's tethering presents an RNDIS/ECM link named
+  /// `usb0` (or an `enp*s0u*` on some kernels) and usually hands the PC a
+  /// 192.168.42.x address. When present, the phone and this PC are on the
+  /// same link and the mesh works over the cable with no developer mode.
+  /// Returns a short human-readable description, or null when nothing is
+  /// found.
+  static Future<String?> detectUsbTether() async {
+    try {
+      final links = await Process.run('ip', ['-o', 'link', 'show']);
+      if (links.exitCode == 0) {
+        final text = links.stdout as String;
+        for (final line in text.split('\n')) {
+          final iface = RegExp(r'\d+:\s+(\S+)').firstMatch(line)?.group(1) ?? '';
+          final lower = iface.toLowerCase();
+          if (lower == 'usb0' ||
+              lower == 'usb1' ||
+              lower.startsWith('enp') && lower.contains('s0u')) {
+            return 'Phone on USB tethering ($iface) — it can reach this PC '
+                'over the cable. Pair it with a code as usual (no adb, no '
+                'developer mode needed).';
+          }
+        }
+      }
+      final routes = await Process.run('ip', ['route']);
+      if (routes.exitCode == 0 &&
+          (routes.stdout as String).contains('192.168.42.')) {
+        return 'Phone on USB tethering detected — it can reach this PC over '
+            'the cable. Pair it with a code as usual.';
+      }
+    } catch (_) {
+      // ip may be missing — fall through.
+    }
+    return null;
+  }
 }

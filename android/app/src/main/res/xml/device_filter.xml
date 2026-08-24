@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- USB devices Nexus is interested in: CDC-ACM serial devices, which is
+     what ESP32/Arduino boards present when plugged in over USB-OTG.
+     class 2 (CDC) matches broadly so any microcontroller board shows up. -->
+<resources>
+    <usb-device class="2" subclass="0" protocol="0"/>
+</resources>

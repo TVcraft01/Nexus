@@ -4,7 +4,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
+import 'package:flutter/foundation.dart'
+    show ChangeNotifier, TargetPlatform, debugPrint, defaultTargetPlatform;
 import 'package:flutter/services.dart'
     show Clipboard, ClipboardData, MethodChannel;
 import 'package:path_provider/path_provider.dart'
@@ -15,9 +16,11 @@ import '../core/identity.dart';
 import '../core/network_info.dart';
 import '../core/pair_payload.dart';
 import '../core/protocol.dart';
+import '../core/serial_transport.dart';
 import '../core/store.dart';
 import '../core/version.dart';
 import 'discovery.dart';
+import 'serial_bridge.dart';
 
 /// Local channel to the Android side (see MainActivity): "All files access"
 /// state and the real shared-storage root, which the mesh serves to peers.
@@ -298,6 +301,51 @@ class MeshService extends ChangeNotifier {
 
   String? _latestPeerUpdateVersion;
   bool _started = false;
+
+  /// Devices plugged into this machine over a USB cable (ESP32, …). Created
+  /// lazily the first time the cable-pairing flow asks for it, so a plain
+  /// mesh session never scans serial ports.
+  SerialBridge? _serial;
+  SerialBridge? get serial => _serial;
+
+  /// Serial nodes currently visible over the cable (alive within the last
+  /// 15 s). These are mesh-visible but only offer what the node advertises.
+  List<SerialDevice> get serialDevices => _serial?.devices ?? const [];
+
+  /// Ensures the serial bridge exists and starts scanning the cable. Uses the
+  /// platform-appropriate transport (USB-OTG on Android, /dev/ttyUSB* on
+  /// Linux). No-op where neither exists.
+  Future<SerialBridge?> ensureSerialBridge() async {
+    if (_serial != null) {
+      await _serial!.startScan();
+      return _serial;
+    }
+    SerialTransport? transport;
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      transport = AndroidUsbSerialTransport.defaultInstance();
+    } else if (defaultTargetPlatform == TargetPlatform.linux) {
+      transport = LinuxSerialTransport();
+    }
+    if (transport == null) return null;
+    final bridge = SerialBridge(
+      transport: transport,
+      onChanged: notifyListeners,
+    );
+    _serial = bridge;
+    await bridge.startScan();
+    notifyListeners();
+    return bridge;
+  }
+
+  /// Confirms a serial node as paired (persists its state on the node).
+  Future<void> pairSerialDevice(String id) async {
+    await _serial?.pair(id);
+  }
+
+  /// Sends a small command payload to a serial node over the cable.
+  Future<bool> sendSerialMessage(String id, Map<String, dynamic> data) async {
+    return await _serial?.sendMessage(id, data) ?? false;
+  }
 
   int get port => store.port;
 

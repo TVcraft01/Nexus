@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
+import '../mesh/serial_bridge.dart';
 import 'pair_sheet.dart';
 import 'theme.dart';
 
@@ -109,6 +110,7 @@ class DevicesView extends StatelessWidget {
     final nearby = mesh.nearbyDevices
         .where((d) => !mesh.isPaired(d.id))
         .toList();
+    final serial = mesh.serialDevices;
     final online = mesh.onlineCount;
 
     return ListView(
@@ -166,6 +168,24 @@ class DevicesView extends StatelessWidget {
           _EmptyState(mesh: mesh)
         else
           ...paired.map((d) => _DeviceCard(mesh: mesh, device: d)),
+        if (serial.isNotEmpty) ...[
+          const SizedBox(height: 28),
+          Row(
+            children: [
+              Text('Over cable', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(width: 8),
+              const Icon(Icons.usb_rounded, size: 16, color: NexusColors.muted),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Microcontrollers plugged into this machine. They only do what '
+            'they advertise — no clipboard or files.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          ...serial.map((d) => _SerialCard(mesh: mesh, device: d)),
+        ],
         if (nearby.isNotEmpty) ...[
           const SizedBox(height: 28),
           Text('Nearby', style: Theme.of(context).textTheme.titleLarge),
@@ -593,6 +613,99 @@ class _EmptyState extends StatelessWidget {
               label: const Text('Pair a device'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A microcontroller on the cable. Capability-aware: it advertises only
+/// `ping`/`msg`, so the card offers exactly those actions and nothing more.
+class _SerialCard extends StatelessWidget {
+  final MeshService mesh;
+  final SerialDevice device;
+  const _SerialCard({required this.mesh, required this.device});
+
+  @override
+  Widget build(BuildContext context) {
+    final online = device.online;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: (online ? NexusColors.accent : NexusColors.muted)
+                      .withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  online ? Icons.memory_rounded : Icons.memory_outlined,
+                  color: online ? NexusColors.accent : NexusColors.muted,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      device.name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${device.id} · over USB cable',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: NexusColors.muted,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      online ? 'Online · small messages only' : 'Disconnected',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: online ? NexusColors.ok : NexusColors.warn,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (device.can('msg'))
+                IconButton(
+                  tooltip: 'Send a test blink',
+                  icon: const Icon(Icons.bolt_rounded, size: 18),
+                  color: NexusColors.accent,
+                  onPressed: () async {
+                    final ok = await mesh.sendSerialMessage(
+                      device.id,
+                      {'blink': true},
+                    );
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            ok
+                                ? 'Sent to ${device.name}.'
+                                : 'Could not reach ${device.name}.',
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                ),
+            ],
+          ),
         ),
       ),
     );

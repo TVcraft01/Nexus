@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
@@ -25,6 +26,8 @@ class MainActivity : FlutterActivity() {
     private var pendingInstallPath: String? = null
 
     private val STORAGE_CHANNEL = "dev.nexus.nexus/storage"
+
+    private lateinit var usbSerial: UsbSerialBridge
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -57,6 +60,19 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // USB-OTG serial: microcontrollers (ESP32, …) plugged into the phone.
+        usbSerial = UsbSerialBridge(this)
+        usbSerial.registerChannels(
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                "dev.nexus.nexus/usb_serial",
+            ),
+            EventChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                "dev.nexus.nexus/usb_serial_events",
+            ),
+        )
     }
 
     /// Whether the app may read the whole shared storage. On Android 11+ that
