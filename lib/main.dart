@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -44,6 +45,18 @@ Future<void> main() async {
   // NEXUS_DATA_DIR lets you run a second instance with its own identity
   // (e.g. two copies of the app on one computer to test the mesh).
   final dataDir = Platform.environment['NEXUS_DATA_DIR'];
+
+  // Only one desktop instance at a time: closing the window hides to the
+  // tray, so relaunching the app must bring that window back — not start a
+  // second process that grabs an ephemeral port and adds a second tray icon.
+  // Skipped when NEXUS_DATA_DIR is set (deliberate second instance).
+  if (defaultTargetPlatform == TargetPlatform.linux && dataDir == null) {
+    if (!await _ensureSingleInstance()) {
+      debugPrint('NEXUS: another instance is already running — showing it.');
+      exit(0);
+    }
+  }
+
   final store = NexusStore(
     explicitPath: dataDir == null
         ? null
@@ -110,6 +123,56 @@ Future<void> main() async {
   runApp(NexusApp(mesh: mesh));
 }
 
+/// The localhost port the first instance binds. A second launch tries to
+/// connect to it; if something answers, that something is the running app,
+/// so the second process signals it to show its window and exits. Kept free
+/// of the mesh (51820), discovery (51822) and gateway (51823) ports.
+const int _singletonPort = 51824;
+
+/// Returns true if this process is (now) the single instance. When another
+/// instance is already running, tells it to bring its window to the front
+/// and returns false — the caller should exit.
+Future<bool> _ensureSingleInstance() async {
+  // Can we reach a running instance? Then signal it and go away.
+  try {
+    final socket = await Socket.connect(
+      InternetAddress.loopbackIPv4,
+      _singletonPort,
+      timeout: const Duration(milliseconds: 400),
+    );
+    socket.add(utf8.encode('show\n'));
+    await socket.flush();
+    socket.destroy();
+    return false;
+  } catch (_) {
+    // Nothing listening — try to become the singleton.
+  }
+  try {
+    final server = await ServerSocket.bind(
+      InternetAddress.loopbackIPv4,
+      _singletonPort,
+    );
+    server.listen((socket) {
+      socket.listen(
+        (_) {
+          // A second launch asked us to appear — show and focus the window
+          // even if it is already visible but sitting behind other windows.
+          windowManager.show();
+          windowManager.focus();
+          _windowHidden = false;
+          socket.destroy();
+        },
+        onDone: () => socket.destroy(),
+        onError: (_) => socket.destroy(),
+      );
+    });
+    return true;
+  } catch (_) {
+    // Lost the race between connect and bind — someone else is the instance.
+    return false;
+  }
+}
+
 /// Sets up the system tray icon with Show / Quit menu.
 Future<void> _initSystemTray() async {
   final tray = TrayManager.instance;
@@ -131,6 +194,10 @@ Future<void> _initSystemTray() async {
 final windowManager = WindowManager.instance;
 bool _windowHidden = false;
 
+/// Set the moment the user picks "Quit". Guards [onWindowClose] so a real
+/// quit is never turned back into a hide-to-tray.
+bool _quitting = false;
+
 void _showWindow() {
   if (_windowHidden) {
     windowManager.show();
@@ -139,8 +206,15 @@ void _showWindow() {
   }
 }
 
-void _quitApp() {
-  windowManager.destroy();
+Future<void> _quitApp() async {
+  _quitting = true;
+  // Drop the tray icon, stop intercepting the window close, then close the
+  // window for real. destroy() fires the close event — onWindowClose sees the
+  // flag and lets it through instead of hiding to tray. exit(0) is the final
+  // word if the close path ever stalls.
+  await TrayManager.instance.destroy();
+  await windowManager.setPreventClose(false);
+  await windowManager.destroy();
   exit(0);
 }
 
@@ -184,6 +258,8 @@ class _NexusAppState extends State<NexusApp> with WindowListener {
 
   @override
   void onWindowClose() {
+    // A real quit (tray → Quit) must close, not hide to tray.
+    if (_quitting) return;
     // Hide to tray instead of quitting — the mesh stays alive.
     windowManager.hide();
     _windowHidden = true;
