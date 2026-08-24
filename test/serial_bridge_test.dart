@@ -137,6 +137,31 @@ void main() {
     expect(line, contains('"ok":true'));
   });
 
+  test('up payloads fire the onUp callback with device id and data', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    );
+    String? upId;
+    Map<String, dynamic>? upData;
+    final bridge = SerialBridge(
+      transport: transport,
+      onChanged: () {},
+      onUp: (id, data) {
+        upId = id;
+        upData = data;
+      },
+    );
+    await bridge.startScan();
+    final port = transport.opened.single;
+    port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await settle();
+
+    port.feed('{"t":"up","id":"esp32-abc","data":{"echo":"ok"}}\n');
+    await settle();
+    expect(upId, 'esp32-abc');
+    expect(upData, {'echo': 'ok'});
+  });
+
   test('unplugged port drops the device', () async {
     final transport = FakeTransport(
       [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],

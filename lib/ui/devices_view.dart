@@ -111,6 +111,7 @@ class DevicesView extends StatelessWidget {
         .where((d) => !mesh.isPaired(d.id))
         .toList();
     final serial = mesh.serialDevices;
+    final remoteSerial = mesh.remoteSerialDevices;
     final online = mesh.onlineCount;
 
     return ListView(
@@ -168,23 +169,39 @@ class DevicesView extends StatelessWidget {
           _EmptyState(mesh: mesh)
         else
           ...paired.map((d) => _DeviceCard(mesh: mesh, device: d)),
-        if (serial.isNotEmpty) ...[
+        if (serial.isNotEmpty || remoteSerial.isNotEmpty) ...[
           const SizedBox(height: 28),
           Row(
             children: [
-              Text('Over cable', style: Theme.of(context).textTheme.titleLarge),
+              Text('Microcontrollers', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(width: 8),
               const Icon(Icons.usb_rounded, size: 16, color: NexusColors.muted),
             ],
           ),
           const SizedBox(height: 4),
           Text(
-            'Microcontrollers plugged into this machine. They only do what '
-            'they advertise — no clipboard or files.',
+            'On a cable, or reachable through another device. They only do '
+            'what they advertise — no clipboard or files.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
-          ...serial.map((d) => _SerialCard(mesh: mesh, device: d)),
+          ...serial.map((d) => _SerialCard(mesh: mesh, device: d, hostName: null)),
+          ...remoteSerial.map((d) {
+            final hostId = d.port.startsWith('remote:')
+                ? d.port.substring(7)
+                : null;
+            final hostName = hostId == null
+                ? null
+                : mesh.pairedDevices
+                    .where((p) => p.id == hostId)
+                    .map((p) => p.name)
+                    .firstOrNull;
+            return _SerialCard(
+              mesh: mesh,
+              device: d,
+              hostName: hostName ?? hostId,
+            );
+          }),
         ],
         if (nearby.isNotEmpty) ...[
           const SizedBox(height: 28),
@@ -624,7 +641,11 @@ class _EmptyState extends StatelessWidget {
 class _SerialCard extends StatelessWidget {
   final MeshService mesh;
   final SerialDevice device;
-  const _SerialCard({required this.mesh, required this.device});
+
+  /// Set for devices hosted by another paired device (multi-hop relay); the
+  /// card then shows "via [host]" instead of "over USB cable".
+  final String? hostName;
+  const _SerialCard({required this.mesh, required this.device, this.hostName});
 
   @override
   Widget build(BuildContext context) {
@@ -664,7 +685,7 @@ class _SerialCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${device.id} · over USB cable',
+                      '${device.id} · ${hostName != null ? "via $hostName" : "over USB cable"}',
                       style: const TextStyle(
                         fontSize: 11,
                         color: NexusColors.muted,
