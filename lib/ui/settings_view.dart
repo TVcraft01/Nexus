@@ -59,20 +59,7 @@ class _SettingsViewState extends State<SettingsView> {
                 mesh.store.save();
               },
             ),
-            if (mesh.store.clipboardSync) ...[
-              const Divider(height: 20),
-              _ToggleRow(
-                title: 'Pull on demand',
-                detail:
-                    'Instead of pushing text automatically, paired devices '
-                    'notify you when they copy. You choose when to pull.',
-                value: mesh.store.pullClipboard,
-                onChanged: (v) {
-                  setState(() => mesh.store.pullClipboard = v);
-                  mesh.store.save();
-                },
-              ),
-            ],
+
           ],
         ),
         const SizedBox(height: 14),
