@@ -2,6 +2,8 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // usb-serial-for-android (for ESP32/Arduino boards over USB-OTG).
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

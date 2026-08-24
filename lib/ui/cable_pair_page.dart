@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../core/cable_pairing.dart';
 import '../mesh/mesh_service.dart';
+import '../mesh/serial_bridge.dart';
 import 'theme.dart';
 
 /// The "Pair over cable" flow. Steps through identifying the connected
@@ -30,6 +31,8 @@ class _CablePairPageState extends State<CablePairPage> {
   String? _guide; // fallback guide for non-Android devices
   Timer? _poll;
   int _pairedAtStart = 0;
+  Timer? _refresh;
+  String? _tetherHint;
 
   String get _code => _session?.code ?? '';
   PairingSession? _session;
@@ -38,6 +41,18 @@ class _CablePairPageState extends State<CablePairPage> {
   void initState() {
     super.initState();
     _detect();
+    // Microcontrollers on the cable announce periodically; keep the list
+    // fresh while this page is open.
+    _refresh = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (mounted) setState(() {});
+    });
+    unawaited(widget.mesh.ensureSerialBridge());
+    unawaited(_checkTether());
+  }
+
+  Future<void> _checkTether() async {
+    final hint = await CablePairing.detectUsbTether();
+    if (mounted) setState(() => _tetherHint = hint);
   }
 
   Future<void> _detect() async {
@@ -122,6 +137,7 @@ class _CablePairPageState extends State<CablePairPage> {
   @override
   void dispose() {
     _poll?.cancel();
+    _refresh?.cancel();
     super.dispose();
   }
 
@@ -173,8 +189,48 @@ class _CablePairPageState extends State<CablePairPage> {
               _buildCodeCard(context),
             ],
           ],
+          const SizedBox(height: 26),
+          _buildSerialSection(context),
+          if (_tetherHint != null) ...[
+            const SizedBox(height: 14),
+            _Row(
+              icon: Icons.link_rounded,
+              text: _tetherHint!,
+            ),
+          ],
         ],
       ),
+    );
+  }
+
+  /// Microcontrollers (ESP32, …) plugged into this machine over USB. They
+  /// announce themselves and show up here to be paired and messaged.
+  Widget _buildSerialSection(BuildContext context) {
+    final devices = widget.mesh.serialDevices;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Microcontrollers on the cable',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'ESP32 and friends announce themselves here when plugged in over '
+          'USB — no driver or flashing needed to see them.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 10),
+        if (devices.isEmpty)
+          const _Row(
+            icon: Icons.memory_rounded,
+            text: 'No microcontroller detected. Plug one in over USB and it '
+                'appears here within seconds.',
+          )
+        else
+          for (final d in devices)
+            _SerialDeviceTile(mesh: widget.mesh, device: d),
+      ],
     );
   }
 
@@ -337,6 +393,95 @@ class _ErrorRow extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(text, style: const TextStyle(color: NexusColors.danger, fontSize: 13)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SerialDeviceTile extends StatelessWidget {
+  final MeshService mesh;
+  final SerialDevice device;
+  const _SerialDeviceTile({required this.mesh, required this.device});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: NexusColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: device.online ? NexusColors.accent : NexusColors.border,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            device.online ? Icons.memory_rounded : Icons.memory_outlined,
+            size: 22,
+            color: device.online ? NexusColors.accent : NexusColors.muted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  device.name,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${device.id} · ${device.port}',
+                  style: const TextStyle(fontSize: 11, color: NexusColors.muted),
+                ),
+              ],
+            ),
+          ),
+          if (device.paired)
+            const Text(
+              'Paired ✓',
+              style: TextStyle(fontSize: 12, color: NexusColors.accent),
+            )
+          else
+            FilledButton.tonal(
+              onPressed: () async {
+                await mesh.pairSerialDevice(device.id);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('${device.name} paired over cable.')),
+                  );
+                }
+              },
+              style: FilledButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+              ),
+              child: const Text('Pair', style: TextStyle(fontSize: 12)),
+            ),
+          const SizedBox(width: 6),
+          IconButton(
+            tooltip: 'Send a test blink',
+            icon: const Icon(Icons.bolt_rounded, size: 18),
+            color: NexusColors.accent,
+            onPressed: () async {
+              final ok = await mesh.sendSerialMessage(device.id, {'blink': true});
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      ok ? 'Sent to ${device.name}.' : 'Could not reach ${device.name}.',
+                    ),
+                  ),
+                );
+              }
+            },
           ),
         ],
       ),

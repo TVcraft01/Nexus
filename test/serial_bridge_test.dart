@@ -1,0 +1,175 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/core/serial_protocol.dart';
+import 'package:nexus/core/serial_transport.dart';
+import 'package:nexus/mesh/serial_bridge.dart';
+
+class FakePort implements SerialPort {
+  final StreamController<List<int>> _in = StreamController.broadcast();
+  final List<List<int>> written = [];
+  bool closed = false;
+
+  @override
+  Stream<List<int>> get bytes => _in.stream;
+
+  @override
+  bool get isOpen => !closed;
+
+  @override
+  Future<void> write(List<int> data) async {
+    written.add(data);
+  }
+
+  @override
+  Future<void> close() async {
+    closed = true;
+    await _in.close();
+  }
+
+  void feed(String line) => _in.add(utf8.encode(line));
+}
+
+class FakeTransport implements SerialTransport {
+  final List<SerialPortInfo> ports;
+  final List<FakePort> opened = [];
+  int openCalls = 0;
+  bool failOpen = false;
+
+  FakeTransport(this.ports);
+
+  @override
+  Future<List<SerialPortInfo>> listPorts() async => ports;
+
+  @override
+  Future<SerialPort> open(SerialPortInfo info, {int baudRate = 115200}) async {
+    openCalls++;
+    if (failOpen) throw StateError('no device');
+    final port = FakePort();
+    opened.add(port);
+    return port;
+  }
+}
+
+/// Lets queued stream events from the fake ports be delivered.
+Future<void> settle() => Future<void>.delayed(Duration.zero);
+
+void main() {
+  test('a node announcing itself appears as a device with its caps', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    );
+    var changes = 0;
+    final bridge = SerialBridge(transport: transport, onChanged: () => changes++);
+
+    await bridge.startScan();
+    expect(transport.openCalls, 1);
+    // The bridge asks for an identify right after opening.
+    expect(
+      transport.opened.single.written.single,
+      utf8.encode(SerialMessage.helloMsg().encode()),
+    );
+
+    transport.opened.single.feed(
+      '{"t":"ann","id":"esp32-abc","name":"Nexus ESP32","caps":["ping","msg"],"fw":"0.1.0"}\n',
+    );
+    await settle();
+    expect(changes, greaterThan(0));
+    final device = bridge.byId('esp32-abc');
+    expect(device, isNotNull);
+    expect(device!.name, 'Nexus ESP32');
+    expect(device.port, '/dev/ttyUSB0');
+    expect(device.can('msg'), isTrue);
+    expect(device.can('clipboard'), isFalse);
+  });
+
+  test('sendMessage writes a msg line to the right port', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    );
+    final bridge = SerialBridge(transport: transport, onChanged: () {});
+
+    await bridge.startScan();
+    final port = transport.opened.single;
+    port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await settle();
+    port.written.clear(); // forget the hello
+
+    final ok = await bridge.sendMessage('esp32-abc', {'blink': true});
+    expect(ok, isTrue);
+    final line = utf8.decode(port.written.single);
+    final json = jsonDecode(line) as Map<String, dynamic>;
+    expect(json['t'], 'msg');
+    expect(json['data'], {'blink': true});
+  });
+
+  test('sendMessage to an unknown node fails', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    );
+    final bridge = SerialBridge(transport: transport, onChanged: () {});
+    await bridge.startScan();
+    expect(await bridge.sendMessage('nope', {'x': 1}), isFalse);
+  });
+
+  test('pair marks the device and tells the node', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    );
+    var pairedId = '';
+    final bridge = SerialBridge(
+      transport: transport,
+      onChanged: () {},
+      onPaired: (d) async => pairedId = d.id,
+    );
+    await bridge.startScan();
+    final port = transport.opened.single;
+    port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await settle();
+    port.written.clear();
+
+    await bridge.pair('esp32-abc');
+    expect(bridge.byId('esp32-abc')!.paired, isTrue);
+    expect(pairedId, 'esp32-abc');
+    final line = utf8.decode(port.written.single);
+    expect(line, contains('"t":"pair"'));
+    expect(line, contains('"ok":true'));
+  });
+
+  test('unplugged port drops the device', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    );
+    var changes = 0;
+    final bridge = SerialBridge(transport: transport, onChanged: () => changes++);
+    await bridge.startScan();
+    final port = transport.opened.single;
+    port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await settle();
+    expect(bridge.devices, hasLength(1));
+
+    await port.close(); // simulates unplug: stream done + bridge drops
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(bridge.devices, isEmpty);
+  });
+
+  test('startScan skips ports already open', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    );
+    final bridge = SerialBridge(transport: transport, onChanged: () {});
+    await bridge.startScan();
+    await bridge.startScan();
+    expect(transport.openCalls, 1);
+  });
+
+  test('failing to open a port does not crash the scan', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    )..failOpen = true;
+    final bridge = SerialBridge(transport: transport, onChanged: () {});
+    await bridge.startScan(); // must not throw
+    expect(bridge.devices, isEmpty);
+  });
+}

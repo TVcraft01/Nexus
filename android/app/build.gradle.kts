@@ -51,3 +51,8 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // USB serial for ESP32/Arduino boards plugged into the phone (USB-OTG).
+    implementation("com.github.mik3y:usb-serial-for-android:3.7.0")
+}
