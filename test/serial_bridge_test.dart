@@ -37,7 +37,7 @@ class FakeTransport implements SerialTransport {
   int openCalls = 0;
   bool failOpen = false;
 
-  FakeTransport(this.ports);
+  FakeTransport(List<SerialPortInfo> ports) : ports = List.of(ports);
 
   @override
   Future<List<SerialPortInfo>> listPorts() async => ports;
@@ -54,6 +54,17 @@ class FakeTransport implements SerialTransport {
 
 /// Lets queued stream events from the fake ports be delivered.
 Future<void> settle() => Future<void>.delayed(Duration.zero);
+
+/// Polls until [cond] is true (with a timeout).
+Future<void> _waitFor(bool Function() cond,
+    {Duration timeout = const Duration(seconds: 2)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (cond()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
+  fail('condition not met within $timeout');
+}
 
 void main() {
   test('a node announcing itself appears as a device with its caps', () async {
@@ -196,5 +207,59 @@ void main() {
     final bridge = SerialBridge(transport: transport, onChanged: () {});
     await bridge.startScan(); // must not throw
     expect(bridge.devices, isEmpty);
+  });
+
+  test('a board plugged in after the first scan shows up via the rescan', () async {
+    final transport = FakeTransport(const []);
+    final bridge = SerialBridge(
+      transport: transport,
+      onChanged: () {},
+      rescanInterval: const Duration(milliseconds: 40),
+    );
+    await bridge.startScan();
+    expect(transport.openCalls, 0);
+
+    // Board plugged in now — the periodic rescan picks it up on its own.
+    transport.ports.add(
+      const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0'),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(transport.openCalls, 1);
+    transport.opened.single.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await settle();
+    expect(bridge.byId('esp32-abc'), isNotNull);
+
+    await bridge.dispose();
+  });
+
+  test('unplugging and replugging the same board rediscovers it', () async {
+    final transport = FakeTransport(
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
+    );
+    final bridge = SerialBridge(
+      transport: transport,
+      onChanged: () {},
+      rescanInterval: const Duration(milliseconds: 40),
+    );
+    await bridge.startScan();
+    final port = transport.opened.single;
+    port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await settle();
+    expect(bridge.devices, hasLength(1));
+
+    // Unplug: the read stream closes and the device is dropped.
+    await port.close();
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(bridge.devices, isEmpty);
+
+    // Replug: the periodic rescan opens the same port name again and the
+    // node re-announces.
+    await _waitFor(() => transport.opened.length >= 2);
+    final replugged = transport.opened.last;
+    replugged.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await settle();
+    expect(bridge.byId('esp32-abc'), isNotNull);
+
+    await bridge.dispose();
   });
 }
