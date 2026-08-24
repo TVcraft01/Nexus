@@ -380,6 +380,8 @@ class MeshService extends ChangeNotifier {
       // A node on our cable reported something — relay it to whichever peer
       // asked (multi-hop), or note it locally.
       onUp: _relaySerialUp,
+      loadKnown: _knownSerialDevices,
+      saveKnown: _saveKnownSerialDevices,
     );
     _serial = bridge;
     await bridge.startScan();
@@ -392,8 +394,20 @@ class MeshService extends ChangeNotifier {
   Future<void> attachSerialBridge(SerialBridge bridge) async {
     _serial = bridge;
     bridge.onUp ??= _relaySerialUp;
+    bridge.saveKnown ??= _saveKnownSerialDevices;
     await bridge.startScan();
     notifyListeners();
+  }
+
+  /// Serial nodes remembered from earlier runs, so a board that is unplugged
+  /// at startup still shows as Disconnected.
+  List<SerialDevice> _knownSerialDevices() => store.knownSerialDevices
+      .map(SerialDevice.fromJson)
+      .toList();
+
+  void _saveKnownSerialDevices(List<SerialDevice> devices) {
+    store.setKnownSerialDevices(devices.map((d) => d.toJson()).toList());
+    _queueSave();
   }
 
   /// A node on our cable reported something — relay it to whichever peer

@@ -268,4 +268,44 @@ void main() {
 
     await bridge.dispose();
   });
+
+  test('known nodes persist and re-seed as Disconnected after a restart', () async {
+    // Run 1: a node announces, then the port is unplugged before shutdown —
+    // the save callback records the (now offline) list.
+    final persisted = <List<SerialDevice>>[];
+    final transport = FakeTransport(const []);
+    final bridge1 = SerialBridge(
+      transport: transport,
+      onChanged: () {},
+      rescanInterval: const Duration(milliseconds: 40),
+      saveKnown: (devices) => persisted.add(List.of(devices)),
+    );
+    await bridge1.startScan();
+    transport.ports.add(
+      const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0'),
+    );
+    await _waitFor(() => transport.opened.isNotEmpty);
+    final port = transport.opened.first;
+    port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await settle();
+    await port.close(); // unplug before shutdown
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    await bridge1.dispose();
+    expect(persisted, isNotEmpty);
+    expect(persisted.last.single.id, 'esp32-abc');
+
+    // Run 2 (restart): nothing on the cable, but the node is remembered —
+    // shown as Disconnected instead of never appearing.
+    final bridge2 = SerialBridge(
+      transport: FakeTransport(const []),
+      onChanged: () {},
+      loadKnown: () => persisted.last,
+    );
+    await bridge2.startScan();
+    expect(bridge2.devices, hasLength(1));
+    expect(bridge2.devices.single.name, 'ESP');
+    expect(bridge2.devices.single.online, isFalse);
+    expect(bridge2.liveDevices, isEmpty);
+    await bridge2.dispose();
+  });
 }
