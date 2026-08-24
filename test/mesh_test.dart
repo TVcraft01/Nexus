@@ -241,6 +241,19 @@ void main() {
     );
   });
 
+  test('alwaysMerge default is true', () {
+    expect(storeA.alwaysMerge, isTrue);
+    expect(storeB.alwaysMerge, isTrue);
+  });
+
+  test('alwaysMerge can be toggled off for smart mode', () async {
+    storeA.alwaysMerge = false;
+    await storeA.save();
+    final reloaded = NexusStore(explicitPath: storeA.explicitPath);
+    await reloaded.load();
+    expect(reloaded.alwaysMerge, isFalse);
+  });
+
   test('pairs persist across restarts', () async {
     await meshA.start();
     await meshB.start();
