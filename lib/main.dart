@@ -177,7 +177,12 @@ Future<bool> _ensureSingleInstance() async {
 Future<void> _initSystemTray() async {
   final tray = TrayManager.instance;
   await tray.setIcon('assets/tray_icon.png');
-  await tray.setToolTip('Nexus — your devices, one system');
+  // setToolTip isn't implemented on the Linux plugin — guard it so a
+  // missing method can't abort tray setup before the context menu is set
+  // (which is what left the tray icon with no working Quit).
+  try {
+    await tray.setToolTip('Nexus — your devices, one system');
+  } catch (_) {}
 
   final menu = Menu(
     items: [
