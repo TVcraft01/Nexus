@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
     show DeviceOrientation, SystemChrome, SystemUiOverlayStyle;
+import 'package:tray_manager/tray_manager.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'core/identity.dart';
 import 'core/store.dart';
@@ -97,12 +99,95 @@ Future<void> main() async {
       systemNavigationBarContrastEnforced: false,
     ),
   );
+
+  // Linux: set up system tray so the app stays alive when the window is
+  // closed — the mesh keeps running, clipboard sync works, and paired
+  // devices can still reach this machine.
+  if (defaultTargetPlatform == TargetPlatform.linux) {
+    await _initSystemTray();
+  }
+
   runApp(NexusApp(mesh: mesh));
 }
 
-class NexusApp extends StatelessWidget {
+/// Sets up the system tray icon with Show / Quit menu.
+Future<void> _initSystemTray() async {
+  final tray = TrayManager.instance;
+  await tray.setIcon('assets/tray_icon.png');
+  await tray.setToolTip('Nexus — your devices, one system');
+
+  final menu = Menu(
+    items: [
+      MenuItem(label: 'Show Nexus', onClick: (_) => _showWindow()),
+      MenuItem.separator(),
+      MenuItem(label: 'Quit', onClick: (_) => _quitApp()),
+    ],
+  );
+  await tray.setContextMenu(menu);
+
+  tray.addListener(_TrayListener());
+}
+
+final windowManager = WindowManager.instance;
+bool _windowHidden = false;
+
+void _showWindow() {
+  if (_windowHidden) {
+    windowManager.show();
+    windowManager.focus();
+    _windowHidden = false;
+  }
+}
+
+void _quitApp() {
+  windowManager.destroy();
+  exit(0);
+}
+
+class _TrayListener extends TrayListener {
+  @override
+  void onTrayIconMouseDown() {
+    _showWindow();
+  }
+
+  @override
+  void onTrayIconRightMouseDown() {
+    // Right-click shows the context menu (handled by tray_manager).
+  }
+}
+
+class NexusApp extends StatefulWidget {
   final MeshService mesh;
   const NexusApp({super.key, required this.mesh});
+
+  @override
+  State<NexusApp> createState() => _NexusAppState();
+}
+
+class _NexusAppState extends State<NexusApp> with WindowListener {
+  @override
+  void initState() {
+    super.initState();
+    if (defaultTargetPlatform == TargetPlatform.linux) {
+      windowManager.addListener(this);
+      windowManager.setPreventClose(true);
+    }
+  }
+
+  @override
+  void dispose() {
+    if (defaultTargetPlatform == TargetPlatform.linux) {
+      windowManager.removeListener(this);
+    }
+    super.dispose();
+  }
+
+  @override
+  void onWindowClose() {
+    // Hide to tray instead of quitting — the mesh stays alive.
+    windowManager.hide();
+    _windowHidden = true;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -110,7 +195,7 @@ class NexusApp extends StatelessWidget {
       title: 'Nexus',
       debugShowCheckedModeBanner: false,
       theme: buildNexusTheme(),
-      home: HomeShell(mesh: mesh),
+      home: HomeShell(mesh: widget.mesh),
     );
   }
 }
