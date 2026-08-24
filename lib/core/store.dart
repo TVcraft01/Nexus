@@ -45,6 +45,14 @@ class NexusStore {
 
   set autoUpdate(bool value) => _settings()['autoUpdate'] = value;
 
+  /// When true, clipboard changes are pushed immediately to all paired
+  /// devices. When false, the smart delayed sync is used (3 s delay +
+  /// activity filter). Defaults to true so clipboard sync is reliable
+  /// out of the box.
+  bool get alwaysMerge => ((_data['settings'] as Map<String, dynamic>?)?['alwaysMerge'] as bool?) ?? true;
+
+  set alwaysMerge(bool value) => _settings()['alwaysMerge'] = value;
+
   /// Localhost gateway (Linux FUSE mount companion): a fixed default port the
   /// mount script can find, and a per-launch random token the daemon must
   /// present so only it (and the app) can use the gateway.

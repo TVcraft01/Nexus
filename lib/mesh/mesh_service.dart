@@ -2427,10 +2427,19 @@ class MeshService extends ChangeNotifier {
     final text = await clipboard.readText();
     if (text != null && text != _lastClipboard) {
       _lastClipboard = text;
-      // New clipboard content detected — start the delay.
-      _clipboardDelayTimer?.cancel();
-      _clipboardHoldText = text;
-      _clipboardDelayTimer = Timer(const Duration(seconds: 3), _onClipboardDelayExpired);
+      if (store.alwaysMerge) {
+        // Push immediately to all paired devices.
+        _pendingClipboard = text;
+        _clipboardDeliveredTo.clear();
+      } else {
+        // Smart mode: hold for 3 s, then check if user pasted locally.
+        _clipboardDelayTimer?.cancel();
+        _clipboardHoldText = text;
+        _clipboardDelayTimer = Timer(
+          const Duration(seconds: 3),
+          _onClipboardDelayExpired,
+        );
+      }
     }
     // Always flush any pending clipboard (retries for deliveries that
     // failed earlier).
@@ -2478,8 +2487,8 @@ class MeshService extends ChangeNotifier {
       if (text == null) return 0;
       for (final peer in _paired.values.toList()) {
         if (_clipboardDeliveredTo.contains(peer.id)) continue;
-        // Smart filter: only send to actively-used devices.
-        if (!isActiveDevice(peer.id)) {
+        // In smart mode, only send to actively-used devices.
+        if (!store.alwaysMerge && !isActiveDevice(peer.id)) {
           debugPrint('NEXUS clipboard: skipping ${peer.id} (not active)');
           continue;
         }
@@ -2513,9 +2522,14 @@ class MeshService extends ChangeNotifier {
           );
         }
       }
-      if (_paired.keys.every(_clipboardDeliveredTo.contains) ||
-          _paired.keys.every((id) => !isActiveDevice(id))) {
-        // All active devices delivered, or none are active — clear pending.
+      if (store.alwaysMerge && _paired.keys.every(_clipboardDeliveredTo.contains)) {
+        // All devices delivered in always-merge mode — clear pending.
+        _pendingClipboard = null;
+        _clipboardDeliveredTo.clear();
+      } else if (!store.alwaysMerge &&
+          (_paired.keys.every(_clipboardDeliveredTo.contains) ||
+          _paired.keys.every((id) => !isActiveDevice(id)))) {
+        // Smart mode: all active devices delivered, or none are active — clear pending.
         _pendingClipboard = null;
         _clipboardDeliveredTo.clear();
       }

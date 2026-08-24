@@ -59,6 +59,19 @@ class _SettingsViewState extends State<SettingsView> {
                 mesh.store.save();
               },
             ),
+            const Divider(height: 20),
+            _ToggleRow(
+              title: 'Always merge clipboard',
+              detail:
+                  'Push every copy immediately to all paired devices. Turn off '
+                  'for smart mode that waits 3 s and only syncs if you didn'
+                  't paste locally.',
+              value: mesh.store.alwaysMerge,
+              onChanged: (v) {
+                setState(() => mesh.store.alwaysMerge = v);
+                mesh.store.save();
+              },
+            ),
 
           ],
         ),
