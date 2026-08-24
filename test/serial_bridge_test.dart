@@ -173,7 +173,7 @@ void main() {
     expect(upData, {'echo': 'ok'});
   });
 
-  test('unplugged port drops the device', () async {
+  test('unplugged node stays listed as offline, not vanished', () async {
     final transport = FakeTransport(
       [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')],
     );
@@ -184,10 +184,14 @@ void main() {
     port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
     await settle();
     expect(bridge.devices, hasLength(1));
+    expect(bridge.devices.single.online, isTrue);
+    expect(bridge.liveDevices, hasLength(1));
 
-    await port.close(); // simulates unplug: stream done + bridge drops
+    await port.close(); // simulates unplug: stream done, node goes offline
     await Future<void>.delayed(const Duration(milliseconds: 20));
-    expect(bridge.devices, isEmpty);
+    expect(bridge.devices, hasLength(1)); // remembered, not deleted
+    expect(bridge.devices.single.online, isFalse);
+    expect(bridge.liveDevices, isEmpty); // peers must not see it for relay
   });
 
   test('startScan skips ports already open', () async {
@@ -247,18 +251,20 @@ void main() {
     await settle();
     expect(bridge.devices, hasLength(1));
 
-    // Unplug: the read stream closes and the device is dropped.
+    // Unplug: the read stream closes; the node stays listed but offline.
     await port.close();
     await Future<void>.delayed(const Duration(milliseconds: 60));
-    expect(bridge.devices, isEmpty);
+    expect(bridge.devices, hasLength(1));
+    expect(bridge.devices.single.online, isFalse);
 
     // Replug: the periodic rescan opens the same port name again and the
-    // node re-announces.
+    // node re-announces, flipping it back online.
     await _waitFor(() => transport.opened.length >= 2);
     final replugged = transport.opened.last;
     replugged.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
     await settle();
     expect(bridge.byId('esp32-abc'), isNotNull);
+    expect(bridge.byId('esp32-abc')!.online, isTrue);
 
     await bridge.dispose();
   });

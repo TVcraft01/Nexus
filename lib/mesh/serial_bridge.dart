@@ -81,13 +81,23 @@ class SerialBridge {
     this.onUp,
   });
 
+  /// How long a node stays listed after it stops announcing (unplugged or
+  /// asleep). Longer than the 15 s "online" window, so an unplugged board
+  /// shows as Disconnected instead of vanishing — the UI keeps a memory of
+  /// nodes we have seen, like paired devices do.
+  static const _offlineWindow = Duration(hours: 24);
+
   List<SerialDevice> get devices {
-    final cutoff = DateTime.now().subtract(const Duration(seconds: 15));
+    final cutoff = DateTime.now().subtract(_offlineWindow);
     _devices.removeWhere((_, d) => d.lastSeen.isBefore(cutoff));
     final list = _devices.values.toList()
       ..sort((a, b) => a.name.compareTo(b.name));
     return list;
   }
+
+  /// Only nodes currently alive — what peers should hear about for relay.
+  List<SerialDevice> get liveDevices =>
+      _devices.values.where((d) => d.online).toList();
 
   SerialDevice? byId(String id) => _devices[id];
 
@@ -204,10 +214,16 @@ class SerialBridge {
   void _dropPort(String port) {
     final open = _ports.remove(port);
     if (open == null) return;
-    debugPrint('NEXUS serial: $port went away — dropping it');
+    debugPrint('NEXUS serial: $port went away — node(s) offline until replugged');
     open.sub?.cancel();
     open.port.close();
-    _devices.removeWhere((_, d) => d.port == port);
+    // Keep the device records, but mark them offline immediately instead of
+    // waiting out the 15 s online window. They go back Online when the node
+    // is replugged and re-announces; `_offlineWindow` prunes them eventually.
+    final stale = DateTime.now().subtract(const Duration(minutes: 1));
+    for (final d in _devices.values) {
+      if (d.port == port) d.lastSeen = stale;
+    }
     onChanged();
   }
 
