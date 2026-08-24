@@ -31,10 +31,12 @@ void main() {
     tmp = await Directory.systemTemp.createTemp('nexus_test');
     storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
       ..port = 53210
-      ..clipboardSync = true;
+      ..clipboardSync = true
+      ..pullClipboard = false;
     storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
       ..port = 53211
-      ..clipboardSync = true;
+      ..clipboardSync = true
+      ..pullClipboard = false;
     await storeA.save();
     await storeB.save();
 
@@ -198,6 +200,74 @@ void main() {
     }
     expect(found, isTrue);
     expect(clipA.value, isNull); // not applied to the clipboard
+  });
+
+  test('pull-on-demand: notify arrives but text is not pushed', () async {
+    storeB.pullClipboard = true;
+    await storeB.save();
+    await meshA.start();
+    await meshB.start();
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    // B copies — in pull mode this should only notify A, not push text.
+    await meshB.broadcastClipboard('secret text');
+
+    // Wait for the notify to arrive.
+    var notified = false;
+    for (var i = 0; i < 20 && !notified; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      notified = meshA.pendingClipNotifications.isNotEmpty;
+    }
+    expect(notified, isTrue, reason: 'A never received a clipboard notify');
+
+    // The clipboard text must NOT have been pushed.
+    expect(clipA.value, isNull, reason: 'text was pushed in pull mode');
+
+    // A pulls the text.
+    final note = meshA.pendingClipNotifications.last;
+    await meshA.pullClipboardFrom(note['fromId']!);
+
+    // Now the text should arrive.
+    var received = false;
+    for (var i = 0; i < 20 && !received; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      received = clipA.value == 'secret text';
+    }
+    expect(received, isTrue, reason: 'A never received pulled text');
+    expect(meshA.pendingClipNotifications, isEmpty);
+  });
+
+  test('pull-on-demand: local copy dismisses pending notifications', () async {
+    storeB.pullClipboard = true;
+    await storeB.save();
+    await meshA.start();
+    await meshB.start();
+    final session = meshA.beginPairing();
+    await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+
+    // B copies — A gets a notification.
+    await meshB.broadcastClipboard('will be dismissed');
+    var notified = false;
+    for (var i = 0; i < 20 && !notified; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      notified = meshA.pendingClipNotifications.isNotEmpty;
+    }
+    expect(notified, isTrue);
+
+    // A copies locally — pending notifications should be dismissed.
+    clipA.value = 'local copy';
+    meshA.clearPendingClipboardNotifications();
+    expect(meshA.pendingClipNotifications, isEmpty);
   });
 
   test('pairs persist across restarts', () async {

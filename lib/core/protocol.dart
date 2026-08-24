@@ -31,6 +31,8 @@ class NexusMessage {
   static const pairReject = 'pair-reject';
   static const clipboard = 'clipboard';
   static const clipboardAck = 'clipboard.ack';
+  static const clipboardNotify = 'clipboard.notify';
+  static const clipboardPull = 'clipboard.pull';
   static const fileList = 'file.list';
   static const fileListResult = 'file.list.result';
   static const fileGet = 'file.get';
