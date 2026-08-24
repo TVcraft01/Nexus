@@ -54,6 +54,11 @@ class SerialBridge {
   /// pairing — lets the node persist the fact (LED, EEPROM flag).
   final Future<void> Function(SerialDevice device)? onPaired;
 
+  /// Called when a node sends an `up` status payload (a sensor reading, an
+  /// echo, a button press). The host relays it to whoever asked. Settable so
+  /// tests can attach a plain bridge and the mesh wires the relay in.
+  void Function(String deviceId, Map<String, dynamic> data)? onUp;
+
   final Map<String, SerialDevice> _devices = {};
   final Map<String, _OpenPort> _ports = {};
   bool _scanning = false;
@@ -62,6 +67,7 @@ class SerialBridge {
     required this.transport,
     required this.onChanged,
     this.onPaired,
+    this.onUp,
   });
 
   List<SerialDevice> get devices {
@@ -128,7 +134,10 @@ class SerialBridge {
         );
         onChanged();
       case SerialMessage.up:
-        // Status payloads from the node — surfaced to listeners later.
+        final data = msg.fields['data'];
+        if (data is Map<String, dynamic>) {
+          onUp?.call(msg.id, data);
+        }
         onChanged();
       case SerialMessage.pong:
         final d = _devices.values.where((x) => x.port == port).firstOrNull;

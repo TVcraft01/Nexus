@@ -37,6 +37,13 @@ static String chipId() {
 
 #define BAUD 115200
 #define ANNOUNCE_MS 5000
+
+// Classic ESP32 dev boards usually have the on-board LED on GPIO2; some
+// other boards use a different pin. Override with -DLED_BUILTIN if yours
+// differs.
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2
+#endif
 #define LED LED_BUILTIN
 
 static const char *NODE_NAME = "Nexus ESP32";

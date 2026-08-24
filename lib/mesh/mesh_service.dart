@@ -312,6 +312,53 @@ class MeshService extends ChangeNotifier {
   /// 15 s). These are mesh-visible but only offer what the node advertises.
   List<SerialDevice> get serialDevices => _serial?.devices ?? const [];
 
+  /// Serial nodes that live on *another* paired device's cable, learned from
+  /// that device's ping/pong announcements. Other devices can message them
+  /// through the host — multi-hop relay.
+  final Map<String, String> _serialHosts = {}; // serialId -> host peer id
+  final Map<String, String> _serialNames = {}; // serialId -> name
+  final Map<String, List<String>> _serialCaps = {}; // serialId -> caps
+  final Map<String, String> _serialRequesters = {}; // serialId -> last peer to ask
+
+  /// The last `up` payload relayed from a remote (or local) cable node:
+  /// `{from, name, data}`. Read by the UI to show what a node reported.
+  Map<String, dynamic>? lastSerialUp;
+
+  List<SerialDevice> get remoteSerialDevices {
+    final now = DateTime.now();
+    final out = <SerialDevice>[];
+    for (final entry in _serialHosts.entries) {
+      final host = _paired[entry.value];
+      if (host == null) continue; // host forgotten — drop the relay
+      out.add(SerialDevice(
+        id: entry.key,
+        name: _serialNames[entry.key] ?? entry.key,
+        port: 'remote:${entry.value}',
+        caps: _serialCaps[entry.key] ?? const ['ping', 'msg'],
+        lastSeen: now,
+      ));
+    }
+    return out;
+  }
+
+  /// The serial node with [id], wherever it lives: on our own cable, or on a
+  /// paired device's cable (relay). Null when nowhere.
+  SerialDevice? serialDeviceById(String id) {
+    final local = _serial?.byId(id);
+    if (local != null) return local;
+    final hostId = _serialHosts[id];
+    if (hostId != null && _paired.containsKey(hostId)) {
+      return SerialDevice(
+        id: id,
+        name: _serialNames[id] ?? id,
+        port: 'remote:$hostId',
+        caps: _serialCaps[id] ?? const ['ping', 'msg'],
+        lastSeen: DateTime.now(),
+      );
+    }
+    return null;
+  }
+
   /// Ensures the serial bridge exists and starts scanning the cable. Uses the
   /// platform-appropriate transport (USB-OTG on Android, /dev/ttyUSB* on
   /// Linux). No-op where neither exists.
@@ -330,6 +377,9 @@ class MeshService extends ChangeNotifier {
     final bridge = SerialBridge(
       transport: transport,
       onChanged: notifyListeners,
+      // A node on our cable reported something — relay it to whichever peer
+      // asked (multi-hop), or note it locally.
+      onUp: _relaySerialUp,
     );
     _serial = bridge;
     await bridge.startScan();
@@ -337,14 +387,100 @@ class MeshService extends ChangeNotifier {
     return bridge;
   }
 
+  /// Attaches an existing serial bridge (used by tests with a fake
+  /// transport; production goes through [ensureSerialBridge]).
+  Future<void> attachSerialBridge(SerialBridge bridge) async {
+    _serial = bridge;
+    bridge.onUp ??= _relaySerialUp;
+    await bridge.startScan();
+    notifyListeners();
+  }
+
+  /// A node on our cable reported something — relay it to whichever peer
+  /// asked (multi-hop), or note it locally.
+  void _relaySerialUp(String deviceId, Map<String, dynamic> data) {
+    final requester = _serialRequesters[deviceId];
+    if (requester != null && _paired.containsKey(requester)) {
+      unawaited(_sendEnc(
+        _paired[requester]!,
+        NexusMessage(
+          type: NexusMessage.serialUp,
+          from: deviceId,
+          to: requester,
+          payload: {'data': data, 'name': _serial?.byId(deviceId)?.name ?? deviceId},
+          id: _newId(),
+          ts: DateTime.now().millisecondsSinceEpoch,
+        ),
+      ));
+    }
+    lastSerialUp = {
+      'from': deviceId,
+      'name': _serial?.byId(deviceId)?.name ?? deviceId,
+      'data': data,
+    };
+    notifyListeners();
+  }
+
   /// Confirms a serial node as paired (persists its state on the node).
   Future<void> pairSerialDevice(String id) async {
     await _serial?.pair(id);
   }
 
-  /// Sends a small command payload to a serial node over the cable.
+  /// Sends a small command payload to a serial node — over our own cable, or
+  /// through whichever paired device hosts it (multi-hop relay).
   Future<bool> sendSerialMessage(String id, Map<String, dynamic> data) async {
-    return await _serial?.sendMessage(id, data) ?? false;
+    final local = _serial?.byId(id);
+    if (local != null) {
+      return await _serial!.sendMessage(id, data);
+    }
+    final hostId = _serialHosts[id];
+    final host = hostId == null ? null : _paired[hostId];
+    if (host == null) return false;
+    _serialRequesters[id] = identity.id;
+    return await _sendEnc(
+      host,
+      NexusMessage(
+        type: NexusMessage.serialMsg,
+        from: identity.id,
+        to: id,
+        payload: {'data': data},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
+  /// The serial devices on our cable, as announced to peers in ping/pong.
+  List<Map<String, dynamic>> _serialAnnouncement() {
+    return (_serial?.devices ?? const [])
+        .map((d) => {'id': d.id, 'name': d.name, 'caps': d.caps})
+        .toList();
+  }
+
+  /// Remembers which serial nodes a peer has on its cable. Anything not
+  /// announced anymore is forgotten.
+  void _noteSerialHosts(String peerId, Object? raw) {
+    final list = raw is List ? raw.whereType<Map>().toList() : const [];
+    final seen = <String>{};
+    for (final item in list) {
+      final id = item['id']?.toString();
+      if (id == null || id.isEmpty) continue;
+      seen.add(id);
+      _serialHosts[id] = peerId;
+      _serialNames[id] = item['name']?.toString() ?? id;
+      _serialCaps[id] =
+          (item['caps'] as List?)?.whereType<String>().toList() ??
+          const ['ping', 'msg'];
+    }
+    final stale = _serialHosts.entries
+        .where((e) => e.value == peerId && !seen.contains(e.key))
+        .map((e) => e.key)
+        .toList();
+    for (final id in stale) {
+      _serialHosts.remove(id);
+      _serialNames.remove(id);
+      _serialCaps.remove(id);
+    }
   }
 
   int get port => store.port;
@@ -736,6 +872,7 @@ class MeshService extends ChangeNotifier {
         final payload = msg.payload;
         if (_paired.containsKey(msg.from)) {
           _notePeerVersion(msg.from, payload['appVersion']);
+          _noteSerialHosts(msg.from, payload['serial']);
         }
         final name = payload['name'] as String? ?? 'Unknown device';
         final port = (payload['port'] as num?)?.toInt();
@@ -766,6 +903,7 @@ class MeshService extends ChangeNotifier {
               'appVersion': appVersion,
               'port': store.port,
               'ips': await _myIps(),
+              'serial': _serialAnnouncement(),
             },
             id: _newId(),
             ts: DateTime.now().millisecondsSinceEpoch,
@@ -778,6 +916,7 @@ class MeshService extends ChangeNotifier {
         final payload = msg.payload;
         if (_paired.containsKey(msg.from)) {
           _notePeerVersion(msg.from, payload['appVersion']);
+          _noteSerialHosts(msg.from, payload['serial']);
         }
         final name = payload['name'] as String?;
         final port = (payload['port'] as num?)?.toInt();
@@ -865,6 +1004,31 @@ class MeshService extends ChangeNotifier {
       case NexusMessage.fileError:
         if (!encrypted) return;
         await _handleFileError(msg);
+
+      case NexusMessage.serialMsg:
+        // Multi-hop: a peer wants us to forward a payload to a node on our
+        // cable. The node replies with `up`, relayed back to this peer.
+        if (!encrypted) return;
+        final target = msg.to;
+        final data = msg.payload['data'];
+        if (target == null || data is! Map<String, dynamic>) break;
+        if (_serial?.byId(target) == null) break;
+        _serialRequesters[target] = msg.from;
+        await _serial!.sendMessage(target, data);
+
+      case NexusMessage.serialUp:
+        // A node on a peer's cable answered — remember the payload so the UI
+        // can show it.
+        if (!encrypted) return;
+        final data = msg.payload['data'];
+        if (data is Map<String, dynamic>) {
+          lastSerialUp = {
+            'from': msg.from,
+            'name': msg.payload['name'] ?? msg.from,
+            'data': data,
+          };
+          notifyListeners();
+        }
     }
   }
 
@@ -2177,8 +2341,7 @@ class MeshService extends ChangeNotifier {
             localName: false,
           ),
         );
-      }
-      for (final peer in targets.values) {
+      }        for (final peer in targets.values) {
         final msg = NexusMessage(
           type: NexusMessage.ping,
           from: identity.id,
@@ -2189,6 +2352,7 @@ class MeshService extends ChangeNotifier {
             'appVersion': appVersion,
             'port': store.port,
             'ips': await _myIps(),
+            'serial': _serialAnnouncement(),
           },
           id: _newId(),
           ts: DateTime.now().millisecondsSinceEpoch,

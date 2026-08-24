@@ -5,9 +5,11 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
+import 'package:nexus/core/serial_transport.dart';
 import 'package:nexus/core/version.dart';
 import 'package:nexus/mesh/gateway.dart';
 import 'package:nexus/mesh/mesh_service.dart';
+import 'package:nexus/mesh/serial_bridge.dart';
 
 /// A clipboard that lives in memory — no platform channels needed in tests.
 class FakeClipboard implements ClipboardBackend {
@@ -1050,4 +1052,84 @@ void main() {
     expect(meshA.isOnline('device-b'), isFalse);
     expect(meshA.onlineCount, 0);
   });
+
+  test('multi-hop: a peer can message a serial node through its host', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue, reason: result.error);
+
+    // A has an ESP32 on its cable.
+    final transport = FakeSerialTransport();
+    final bridge = SerialBridge(transport: transport, onChanged: () {});
+    await bridge.startScan();
+    transport.port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+    await Future<void>.delayed(Duration.zero);
+    meshA.attachSerialBridge(bridge);
+    transport.port.written.clear(); // forget the hello the bridge sent on open
+
+    // B learns about it from A's next heartbeat announcement.
+    await _waitFor(
+      () => meshB.remoteSerialDevices.any((d) => d.id == 'esp32-abc'),
+    );
+    expect(
+      meshB.remoteSerialDevices.singleWhere((d) => d.id == 'esp32-abc').name,
+      'ESP',
+    );
+
+    // B sends a blink through A to the node.
+    expect(await meshB.sendSerialMessage('esp32-abc', {'blink': true}), isTrue);
+    await _waitFor(() => transport.port.written.isNotEmpty);
+    final sent = utf8.decode(transport.port.written.last);
+    expect(sent, contains('"t":"msg"'));
+    expect(sent, contains('"blink":true'));
+
+    // The node answers `up`; A relays it back to B.
+    transport.port.feed('{"t":"up","id":"esp32-abc","data":{"echo":"ok"}}\n');
+    await _waitFor(() => meshB.lastSerialUp != null);
+    expect(meshB.lastSerialUp!['from'], 'esp32-abc');
+    expect(meshB.lastSerialUp!['data'], {'echo': 'ok'});
+  });
+}
+
+/// Polls until [cond] is true (with a timeout), so tests don't depend on
+/// heartbeat timing.
+Future<void> _waitFor(bool Function() cond, {Duration timeout = const Duration(seconds: 6)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (cond()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+  fail('condition not met within $timeout');
+}
+
+class FakeSerialPort implements SerialPort {
+  final StreamController<List<int>> _in = StreamController.broadcast();
+  final List<List<int>> written = [];
+
+  @override
+  Stream<List<int>> get bytes => _in.stream;
+  @override
+  bool get isOpen => true;
+  @override
+  Future<void> write(List<int> data) async => written.add(data);
+  @override
+  Future<void> close() async => _in.close();
+
+  void feed(String line) => _in.add(utf8.encode(line));
+}
+
+class FakeSerialTransport implements SerialTransport {
+  final FakeSerialPort port = FakeSerialPort();
+  @override
+  Future<List<SerialPortInfo>> listPorts() async =>
+      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')];
+  @override
+  Future<SerialPort> open(SerialPortInfo info, {int baudRate = 115200}) async => port;
 }
