@@ -2837,6 +2837,8 @@ class MeshService extends ChangeNotifier {
       _neighborsDirty = false;
       _queueSave();
     }
+    await _serial?.dispose();
+    _serial = null;
     await _saveChain; // flush any pending write before we return
   }
 }

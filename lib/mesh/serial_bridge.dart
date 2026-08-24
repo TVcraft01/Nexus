@@ -50,6 +50,10 @@ class SerialBridge {
   final SerialTransport transport;
   final void Function() onChanged;
 
+  /// How often the cable is re-listed for hot-plugged boards. Injectable so
+  /// tests can run a fast rescan.
+  final Duration rescanInterval;
+
   /// Called when the user picks a node in the UI and the host confirms the
   /// pairing — lets the node persist the fact (LED, EEPROM flag).
   final Future<void> Function(SerialDevice device)? onPaired;
@@ -63,9 +67,16 @@ class SerialBridge {
   final Map<String, _OpenPort> _ports = {};
   bool _scanning = false;
 
+  /// Re-lists the cable every few seconds so a board plugged in *after* the
+  /// first scan (or replugged after being unplugged) shows up without the
+  /// user having to reopen the pairing page. Cheap: listing is a directory
+  /// read, and ports already open are skipped.
+  Timer? _rescanTimer;
+
   SerialBridge({
     required this.transport,
     required this.onChanged,
+    this.rescanInterval = const Duration(seconds: 5),
     this.onPaired,
     this.onUp,
   });
@@ -80,9 +91,17 @@ class SerialBridge {
 
   SerialDevice? byId(String id) => _devices[id];
 
-  /// Starts listening on every serial port currently present. Safe to call
-  /// repeatedly — ports already open are skipped.
+  /// Starts listening on every serial port currently present, and keeps
+  /// re-listing the cable every few seconds so hot-plugging works. Safe to
+  /// call repeatedly — ports already open are skipped.
   Future<void> startScan() async {
+    _rescanTimer ??= Timer.periodic(rescanInterval, (_) {
+      unawaited(_scanOnce());
+    });
+    await _scanOnce();
+  }
+
+  Future<void> _scanOnce() async {
     if (_scanning) return;
     _scanning = true;
     try {
@@ -190,6 +209,8 @@ class SerialBridge {
   }
 
   Future<void> dispose() async {
+    _rescanTimer?.cancel();
+    _rescanTimer = null;
     for (final open in _ports.values) {
       open.sub?.cancel();
       await open.port.close();
