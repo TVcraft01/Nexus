@@ -128,6 +128,7 @@ class SerialBridge {
     final open = _OpenPort(info, port);
     _ports[info.port] = open;
     final decoder = SerialLineDecoder();
+    debugPrint('NEXUS serial: listening on ${info.port}');
     open.sub = port.bytes.listen((chunk) {
       for (final msg in decoder.add(chunk)) {
         _handleMessage(info.port, msg);
@@ -151,6 +152,7 @@ class SerialBridge {
           lastSeen: DateTime.now(),
           paired: existing?.paired ?? false,
         );
+        debugPrint('NEXUS serial: node ${msg.id} (${msg.name}) seen on $port');
         onChanged();
       case SerialMessage.up:
         final data = msg.fields['data'];
@@ -202,6 +204,7 @@ class SerialBridge {
   void _dropPort(String port) {
     final open = _ports.remove(port);
     if (open == null) return;
+    debugPrint('NEXUS serial: $port went away — dropping it');
     open.sub?.cancel();
     open.port.close();
     _devices.removeWhere((_, d) => d.port == port);

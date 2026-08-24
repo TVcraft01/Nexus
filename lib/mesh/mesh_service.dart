@@ -531,6 +531,13 @@ class MeshService extends ChangeNotifier {
       (_) => _checkClipboard(),
     );
     unawaited(_heartbeat());
+    // On Linux, listen for cable nodes (ESP32, …) from the start so a board
+    // plugged in shows up in Devices without opening the pairing page first.
+    // Android stays lazy: opening a USB device there prompts for permission,
+    // which belongs in the explicit pairing flow.
+    if (defaultTargetPlatform == TargetPlatform.linux) {
+      unawaited(ensureSerialBridge());
+    }
     notifyListeners();
   }
 
