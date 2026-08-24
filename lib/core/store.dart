@@ -35,6 +35,13 @@ class NexusStore {
 
   set clipboardSync(bool value) => _settings()['clipboardSync'] = value;
 
+  /// When true, clipboard sync uses pull-on-demand: the sender only notifies
+  /// paired devices that something was copied, and the receiver must pull
+  /// the text explicitly. When false, text is pushed immediately.
+  bool get pullClipboard => ((_data['settings'] as Map<String, dynamic>?)?['pullClipboard'] as bool?) ?? true;
+
+  set pullClipboard(bool value) => _settings()['pullClipboard'] = value;
+
   bool get broadcastDiscovery =>
       ((_data['settings'] as Map<String, dynamic>?)?['broadcastDiscovery'] as bool?) ?? true;
 
