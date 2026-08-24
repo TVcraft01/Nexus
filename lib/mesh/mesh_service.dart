@@ -451,8 +451,9 @@ class MeshService extends ChangeNotifier {
   }
 
   /// The serial devices on our cable, as announced to peers in ping/pong.
+  /// Only live nodes: an unplugged node must not be offered for relay.
   List<Map<String, dynamic>> _serialAnnouncement() {
-    return (_serial?.devices ?? const [])
+    return (_serial?.liveDevices ?? const [])
         .map((d) => {'id': d.id, 'name': d.name, 'caps': d.caps})
         .toList();
   }
