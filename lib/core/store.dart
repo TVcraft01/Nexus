@@ -94,6 +94,20 @@ class NexusStore {
     list?.removeWhere((e) => e['id'] == deviceId);
   }
 
+  /// Serial nodes (ESP32, …) the app has seen on the cable, kept so a board
+  /// that is unplugged at startup still shows as Disconnected instead of
+  /// never appearing until it is plugged back in.
+  List<Map<String, dynamic>> get knownSerialDevices =>
+      ((_data['serialDevices'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  /// Replaces the whole known-serial-device list. The bridge owns this list
+  /// and hands us its pruned state whenever it changes.
+  void setKnownSerialDevices(List<Map<String, dynamic>> devices) {
+    _data['serialDevices'] = devices;
+  }
+
   /// Recently-seen device addresses, so discovery can say hello directly to
   /// known devices even when multicast is filtered by the router.
   List<Map<String, dynamic>> get neighbors =>

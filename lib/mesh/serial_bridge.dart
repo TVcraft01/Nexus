@@ -34,6 +34,26 @@ class SerialDevice {
 
   bool can(String cap) => caps.contains(cap);
 
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'port': port,
+    'caps': caps,
+    'lastSeen': lastSeen.toIso8601String(),
+    'paired': paired,
+  };
+
+  factory SerialDevice.fromJson(Map<String, dynamic> json) => SerialDevice(
+    id: json['id'] as String,
+    name: json['name'] as String? ?? json['id'] as String,
+    port: json['port'] as String? ?? '',
+    caps: (json['caps'] as List?)?.whereType<String>().toList() ??
+        const ['ping', 'msg'],
+    lastSeen: DateTime.tryParse(json['lastSeen'] as String? ?? '') ??
+        DateTime.fromMillisecondsSinceEpoch(0),
+    paired: json['paired'] == true,
+  );
+
   @override
   bool operator ==(Object other) => other is SerialDevice && other.id == id;
 
@@ -63,6 +83,22 @@ class SerialBridge {
   /// tests can attach a plain bridge and the mesh wires the relay in.
   void Function(String deviceId, Map<String, dynamic> data)? onUp;
 
+  /// Seeds the bridge with serial nodes remembered from a previous run, so a
+  /// board that is unplugged at startup still shows as Disconnected.
+  final List<SerialDevice> Function()? loadKnown;
+
+  /// Persists the current (pruned) list of known nodes — wired to the store
+  /// by the mesh. Settable so tests can attach a plain bridge.
+  void Function(List<SerialDevice> devices)? saveKnown;
+
+  DateTime? _lastPersist;
+
+  /// How long a node stays listed after it stops announcing (unplugged or
+  /// asleep). Longer than the 15 s "online" window, so an unplugged board
+  /// shows as Disconnected instead of vanishing — the UI keeps a memory of
+  /// nodes we have seen, like paired devices do.
+  static const _offlineWindow = Duration(hours: 24);
+
   final Map<String, SerialDevice> _devices = {};
   final Map<String, _OpenPort> _ports = {};
   bool _scanning = false;
@@ -77,15 +113,17 @@ class SerialBridge {
     required this.transport,
     required this.onChanged,
     this.rescanInterval = const Duration(seconds: 5),
+    this.loadKnown,
+    this.saveKnown,
     this.onPaired,
     this.onUp,
-  });
-
-  /// How long a node stays listed after it stops announcing (unplugged or
-  /// asleep). Longer than the 15 s "online" window, so an unplugged board
-  /// shows as Disconnected instead of vanishing — the UI keeps a memory of
-  /// nodes we have seen, like paired devices do.
-  static const _offlineWindow = Duration(hours: 24);
+  }) {
+    // Re-seed from the previous run so a board that is unplugged at startup
+    // still shows as Disconnected instead of being forgotten.
+    for (final d in loadKnown?.call() ?? const <SerialDevice>[]) {
+      _devices[d.id] = d;
+    }
+  }
 
   List<SerialDevice> get devices {
     final cutoff = DateTime.now().subtract(_offlineWindow);
@@ -100,6 +138,34 @@ class SerialBridge {
       _devices.values.where((d) => d.online).toList();
 
   SerialDevice? byId(String id) => _devices[id];
+
+  /// Writes the current known-node list to the store. Throttled: the node
+  /// announces every few seconds, so a disk write on every announce would be
+  /// wasteful — the persisted list just needs to be close enough that a
+  /// restart shows the right online/offline state. [dispose] always persists
+  /// the final state.
+  void _persist() {
+    final now = DateTime.now();
+    final last = _lastPersist;
+    if (last != null && now.difference(last) < const Duration(seconds: 30)) {
+      return;
+    }
+    _lastPersist = now;
+    final cutoff = now.subtract(_offlineWindow);
+    final list = _devices.values
+        .where((d) => d.lastSeen.isAfter(cutoff))
+        .toList();
+    saveKnown?.call(list);
+  }
+
+  void _persistNow() {
+    _lastPersist = DateTime.now();
+    final cutoff = DateTime.now().subtract(_offlineWindow);
+    final list = _devices.values
+        .where((d) => d.lastSeen.isAfter(cutoff))
+        .toList();
+    saveKnown?.call(list);
+  }
 
   /// Starts listening on every serial port currently present, and keeps
   /// re-listing the cable every few seconds so hot-plugging works. Safe to
@@ -163,6 +229,7 @@ class SerialBridge {
           paired: existing?.paired ?? false,
         );
         debugPrint('NEXUS serial: node ${msg.id} (${msg.name}) seen on $port');
+        _persist(); // remember new/changed nodes (throttled)
         onChanged();
       case SerialMessage.up:
         final data = msg.fields['data'];
@@ -191,6 +258,7 @@ class SerialBridge {
       await port.port.write(SerialMessage.pairOk(device.name).encode().codeUnits);
     }
     await onPaired?.call(device);
+    _persistNow(); // the paired flag must survive a restart
     onChanged();
   }
 
@@ -224,12 +292,14 @@ class SerialBridge {
     for (final d in _devices.values) {
       if (d.port == port) d.lastSeen = stale;
     }
+    _persistNow(); // remember the offline state before a possible restart
     onChanged();
   }
 
   Future<void> dispose() async {
     _rescanTimer?.cancel();
     _rescanTimer = null;
+    _persistNow(); // final state, including nodes currently online
     for (final open in _ports.values) {
       open.sub?.cancel();
       await open.port.close();
