@@ -1,9 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 import '../core/agent_contract.dart';
 import '../core/command_service.dart';
+import '../core/phone_actions.dart';
 import '../mesh/mesh_service.dart';
 import 'theme.dart';
 
@@ -27,6 +30,11 @@ class _AssistantViewState extends State<AssistantView> {
   AgentDispatchResult? _result;
   late final CommandService _service;
   String? _pendingKey; // a clarification is open; the next input answers it
+  String? _reply; // outcome shown on whichever plan card is open
+  bool _sending = false;
+
+  /// Runs real phone actions (dialing) on Android; elsewhere answers honestly.
+  final PhoneActionBackend _phoneBackend = RealPhoneActionBackend();
 
   @override
   void initState() {
@@ -39,6 +47,10 @@ class _AssistantViewState extends State<AssistantView> {
         online: true,
         capabilities: defaultCapabilitiesFor(widget.mesh.identity.platform),
       ),
+      // On Android this device can really place calls, so "call …" plans here.
+      locallyExecutable: defaultTargetPlatform == TargetPlatform.android
+          ? const {AgentActions.callPlace}
+          : const {},
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
         defaults: widget.mesh.store.agentDefaults,
@@ -107,7 +119,8 @@ class _AssistantViewState extends State<AssistantView> {
     final result = _service.execute(
       input,
       approval: approval,
-      requestId: 'ui-1',
+      // Unique per execution: the mesh matches the remote reply to this id.
+      requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
       answerTo: answerTo,
     );
     setState(() {
@@ -170,6 +183,76 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// Runs an action and shows its outcome on whichever plan card is open.
+  Future<void> _runAction(Future<String> Function() action) async {
+    setState(() {
+      _sending = true;
+      _reply = null;
+    });
+    final outcome = await action();
+    if (!mounted) return;
+    setState(() {
+      _sending = false;
+      _reply = outcome;
+    });
+  }
+
+  /// Sends an approved action to the routed device and shows its answer.
+  Future<void> _sendAgentRequest(AgentRequest request) async {
+    final deviceName = _buildSnapshots()
+            .where((d) => d.id == request.target)
+            .firstOrNull
+            ?.name ??
+        request.target;
+    await _runAction(() async {
+      final reply = await widget.mesh.sendAgentRequest(request.target, request);
+      return reply == null
+          ? 'Could not reach $deviceName.'
+          : 'Sent to $deviceName — ${_describeOutcome(reply)}';
+    });
+  }
+
+  String _describeOutcome(AgentDispatchResult reply) {
+    if (reply.dispatch case final AgentMessage message) {
+      return message.text;
+    }
+    if (reply.message.isNotEmpty) return reply.message;
+    return switch (reply.status) {
+      AgentResultStatus.succeeded => 'done.',
+      AgentResultStatus.denied => 'it was denied.',
+      AgentResultStatus.unavailable => 'it could not do it.',
+      AgentResultStatus.required => 'it needs approval.',
+      AgentResultStatus.needsInfo => 'it needs more information.',
+    };
+  }
+
+  /// The remote device asked us to run an action — approve or deny locally,
+  /// execute here, and send the outcome back over the mesh.
+  Future<void> _handleIncoming(AgentRequest request, String from, bool approve) async {
+    final result = approve &&
+            request.action == AgentActions.callPlace &&
+            defaultTargetPlatform == TargetPlatform.android
+        ? await executePhoneCall(_phoneBackend, request)
+        : _service.handleRemoteRequest(
+            request,
+            approval: approve ? AgentApproval.approved : AgentApproval.denied,
+          );
+    final delivered = await widget.mesh.sendAgentResult(from, request.requestId, result);
+    if (!mounted) return;
+    widget.mesh.dismissIncomingAgentRequest();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          approve
+              ? (delivered
+                  ? 'Done — ${_describeOutcome(result)}'
+                  : 'Executed locally, but the reply could not be sent back.')
+              : 'Action denied.',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -208,9 +291,12 @@ class _AssistantViewState extends State<AssistantView> {
           ),
         ),
 
-        // Result area
+        // Result area — rebuilds when an action arrives from another device.
         Expanded(
-          child: _buildResult(),
+          child: ListenableBuilder(
+            listenable: widget.mesh,
+            builder: (context, _) => _buildResult(),
+          ),
         ),
       ],
     );
@@ -218,27 +304,129 @@ class _AssistantViewState extends State<AssistantView> {
 
   Widget _buildResult() {
     final result = _result;
-    if (result == null) {
+    if (result == null && _incoming() == null) {
       return const Center(
         child: Icon(Icons.mic_none_rounded, size: 48, color: NexusColors.muted),
       );
     }
 
+    final incoming = _incoming();
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
       children: [
-        _statusChip(result.status, result.message),
-        const SizedBox(height: 12),
-        if (result.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
-        if (result.dispatch case final AgentActionPlan plan) _planView(plan),
-        if (result.dispatch case final AgentMessage message)
+        if (incoming != null) ...[_incomingRequestView(incoming), const SizedBox(height: 12)],
+        if (result != null) ...[_statusChip(result.status, result.message), const SizedBox(height: 12)],
+        if (result?.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
+        if (result?.dispatch case final AgentActionPlan plan) _planView(plan),
+        if (result?.dispatch case final AgentMessage message)
           message.live ? _liveClockView() : _messageView(message),
-        if (result.dispatch case final AgentClarification ask) _questionView(ask),
-        if (result.status == AgentResultStatus.required) ...[
+        if (result?.dispatch case final AgentClarification ask) _questionView(ask),
+        if (result?.status == AgentResultStatus.required) ...[
           const SizedBox(height: 12),
           _approvalBar(),
         ],
       ],
+    );
+  }
+
+  /// The pending incoming action from another device, if any.
+  ({String from, AgentRequest request})? _incoming() {
+    final raw = widget.mesh.lastIncomingAgentRequest;
+    if (raw == null) return null;
+    final request = raw['request'];
+    if (request is! AgentRequest) return null;
+    return (from: raw['from'] as String, request: request);
+  }
+
+  /// "My Phone wants to: Call mom" — the receiving device re-approves the
+  /// action locally before it runs here.
+  Widget _incomingRequestView(({String from, AgentRequest request}) incoming) {
+    final fromName = widget.mesh.pairedDevices
+            .where((d) => d.id == incoming.from)
+            .firstOrNull
+            ?.name ??
+        incoming.from;
+    final request = incoming.request;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: NexusColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: NexusColors.warn.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.notification_important_rounded, size: 18, color: NexusColors.warn),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '$fromName wants to: ${_describeAction(request)}',
+                  style: const TextStyle(
+                    color: NexusColors.text,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton(
+                  onPressed: () => _handleIncoming(request, incoming.from, true),
+                  child: const Text('Approve'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _handleIncoming(request, incoming.from, false),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: NexusColors.danger,
+                    side: const BorderSide(color: NexusColors.danger),
+                  ),
+                  child: const Text('Deny'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Shared scaffold for every rendered action-plan card.
+  Widget _planCard(IconData icon, String title, List<Widget> children) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: NexusColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 18, color: NexusColors.accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(color: NexusColors.text, fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+              ),
+            ],
+          ),
+          ...children,
+        ],
+      ),
     );
   }
 
@@ -370,42 +558,24 @@ class _AssistantViewState extends State<AssistantView> {
     final request = plan.request;
     if (request.action == AgentActions.clipboardWrite) {
       final text = (request.arguments['text'] as String?) ?? '';
-      return Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: NexusColors.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+      return _planCard(Icons.content_copy_rounded, 'Copy to my devices', [
+        const SizedBox(height: 6),
+        Text(
+          '\u201c$text\u201d',
+          style: const TextStyle(color: NexusColors.muted, fontSize: 12),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.content_copy_rounded, size: 18, color: NexusColors.accent),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Copy to my devices',
-                    style: const TextStyle(color: NexusColors.text, fontWeight: FontWeight.w600, fontSize: 14),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '\u201c$text\u201d',
-              style: const TextStyle(color: NexusColors.muted, fontSize: 12),
-            ),
-            const SizedBox(height: 10),
-            FilledButton.icon(
-              onPressed: () => _sendClipboard(text),
-              icon: const Icon(Icons.send_rounded, size: 16),
-              label: const Text('Copy now'),
-            ),
-          ],
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          onPressed: () => _sendClipboard(text),
+          icon: const Icon(Icons.send_rounded, size: 16),
+          label: const Text('Copy now'),
         ),
-      );
+      ]);
+    }
+    // A plan aimed at this device runs right here — no mesh round-trip.
+    if (request.target == widget.mesh.identity.id &&
+        request.action == AgentActions.callPlace) {
+      return _localCallPlanView(request);
     }
     if (request.action != AgentActions.ledBlink) {
       return _remotePlanView(request);
@@ -413,81 +583,85 @@ class _AssistantViewState extends State<AssistantView> {
     final snapshot = _buildSnapshots();
     final target = snapshot.where((d) => d.id == request.target).firstOrNull;
 
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: NexusColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+    return _planCard(Icons.bolt_rounded, 'Blink ${target?.name ?? request.target}', [
+      const SizedBox(height: 6),
+      Text(
+        'Target: ${request.target} · Action: ${request.action}',
+        style: const TextStyle(color: NexusColors.muted, fontSize: 11),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.bolt_rounded, size: 18, color: NexusColors.accent),
-              const SizedBox(width: 8),
-              Text(
-                'Blink ${target?.name ?? request.target}',
-                style: const TextStyle(color: NexusColors.text, fontWeight: FontWeight.w600, fontSize: 14),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Target: ${request.target} · Action: ${request.action}',
-            style: const TextStyle(color: NexusColors.muted, fontSize: 11),
-          ),
-          const SizedBox(height: 10),
-          FilledButton.icon(
-            onPressed: () => _sendBlink(request.target, target?.name ?? request.target),
-            icon: const Icon(Icons.bolt_rounded, size: 16),
-            label: const Text('Send blink now'),
-          ),
-        ],
+      const SizedBox(height: 10),
+      FilledButton.icon(
+        onPressed: () => _sendBlink(request.target, target?.name ?? request.target),
+        icon: const Icon(Icons.bolt_rounded, size: 16),
+        label: const Text('Send blink now'),
       ),
-    );
+    ]);
   }
 
-  /// A plan aimed at another device ("Call mom on My Phone"). Sending the
-  /// request over the mesh isn't wired up yet, so this is an honest dry run.
+  /// An approved call aimed at THIS device — executes natively via the
+  /// phone-action backend and shows the outcome inline.
+  Widget _localCallPlanView(AgentRequest request) {
+    return _planCard(Icons.call_rounded, _describeAction(request), [
+      const SizedBox(height: 6),
+      Text(
+        'right here on ${widget.mesh.identity.name}',
+        style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+      ),
+      if (_reply != null) ...[const SizedBox(height: 10), _remoteReplyView(_reply!)],
+      const SizedBox(height: 10),
+      FilledButton.icon(
+        onPressed: _sending
+            ? null
+            : () => _runAction(() async =>
+                _describeOutcome(await executePhoneCall(_phoneBackend, request))),
+        icon: const Icon(Icons.call_rounded, size: 16),
+        label: Text(_sending ? 'Calling…' : 'Call now'),
+      ),
+    ]);
+  }
+
+  /// A plan aimed at another device ("Call mom on My Phone") — sends the
+  /// approved action over the mesh and shows the remote's answer.
   Widget _remotePlanView(AgentRequest request) {
     final snapshot = _buildSnapshots();
     final target = snapshot.where((d) => d.id == request.target).firstOrNull;
     final deviceName = target?.name ?? request.target;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: NexusColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+    return _planCard(Icons.devices_rounded, _describeAction(request), [
+      const SizedBox(height: 6),
+      Text(
+        'on $deviceName',
+        style: const TextStyle(color: NexusColors.muted, fontSize: 12),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.devices_rounded, size: 18, color: NexusColors.accent),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _describeAction(request),
-                  style: const TextStyle(color: NexusColors.text, fontWeight: FontWeight.w600, fontSize: 14),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'on $deviceName',
-            style: const TextStyle(color: NexusColors.muted, fontSize: 12),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'I can\'t send actions to $deviceName yet — the plan is ready for when I can.',
-            style: const TextStyle(color: NexusColors.muted, fontSize: 11),
-          ),
-        ],
+      const SizedBox(height: 6),
+      Text(
+        'Target: ${request.target} · Action: ${request.action}',
+        style: const TextStyle(color: NexusColors.muted, fontSize: 11),
+      ),
+      if (_reply != null) ...[const SizedBox(height: 10), _remoteReplyView(_reply!)],
+      const SizedBox(height: 10),
+      FilledButton.icon(
+        onPressed: _sending ? null : () => _sendAgentRequest(request),
+        icon: const Icon(Icons.send_rounded, size: 16),
+        label: Text(_sending ? 'Sending…' : 'Send to $deviceName'),
+      ),
+    ]);
+  }
+
+  Widget _remoteReplyView(String reply) {
+    final failed = reply.startsWith('Could not reach');
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: (failed ? NexusColors.danger : NexusColors.ok).withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        reply,
+        style: TextStyle(
+          color: failed ? NexusColors.danger : NexusColors.text,
+          fontSize: 12,
+        ),
       ),
     );
   }

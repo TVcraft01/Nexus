@@ -113,6 +113,50 @@ void main() {
     });
   });
 
+  group('local execution fallback', () {
+    const self = AgentDeviceSnapshot(
+      id: 'self1',
+      name: 'This Phone',
+      online: true,
+      capabilities: [DeviceCapability(AgentActions.callPlace)],
+    );
+
+    CommandService makeSelfService() => CommandService(
+          devices: () => const [],
+          local: self,
+          locallyExecutable: const {AgentActions.callPlace},
+        );
+
+    test('a locally executable call plans on this device, gated by approval', () {
+      final service = makeSelfService();
+
+      final gated = service.execute('call mom');
+      expect(gated.status, AgentResultStatus.required);
+
+      final approved = service.execute('call mom', approval: AgentApproval.approved);
+      expect(approved.status, AgentResultStatus.succeeded);
+      final plan = (approved.dispatch! as AgentActionPlan).request;
+      expect(plan.target, 'self1'); // aimed at THIS device, not over the mesh
+      expect(plan.arguments['contact'], 'mom');
+    });
+
+    test('a denied local call is denied', () {
+      final service = makeSelfService();
+      final result = service.execute('call mom', approval: AgentApproval.denied);
+      expect(result.status, AgentResultStatus.denied);
+    });
+
+    test('without local executors the honest unwired answer stays', () {
+      // Same capability list, but nothing declared locally executable —
+      // exactly the pre-wiring behavior for alarms and friends.
+      final service = CommandService(devices: () => const [], local: self);
+      final result = service.execute('call mom', approval: AgentApproval.approved);
+      expect(result.status, AgentResultStatus.unavailable);
+      expect(result.dispatch, isNull);
+      expect(result.message, contains('calls'));
+    });
+  });
+
   group('capability defaults', () {
     test('a phone can call and text; a desktop cannot', () {
       final phoneCaps = defaultCapabilitiesFor('android').map((c) => c.id);
@@ -125,6 +169,101 @@ void main() {
         expect(caps, isNot(contains(AgentActions.messageSend)), reason: platform);
         expect(caps, contains(AgentActions.alarmSet), reason: platform);
       }
+    });
+  });
+
+  group('remote request handling (receiver side)', () {
+    test('a routed call is re-gated and answered honestly', () {
+      final service = makeService();
+      final result = service.handleRemoteRequest(
+        AgentRequest(
+          requestId: 'r1',
+          target: 'pc1',
+          action: AgentActions.callPlace,
+          arguments: const {'contact': 'mom'},
+          approval: AgentApproval.approved,
+        ),
+        approval: AgentApproval.approved,
+      );
+      expect(result.status, AgentResultStatus.unavailable);
+      expect(result.message, contains('calls'));
+    });
+
+    test('the remote approval value is never trusted — re-approved locally', () {
+      final service = makeService();
+      // The remote says "approved" but this device's UI never approved:
+      final gated = service.handleRemoteRequest(
+        AgentRequest(
+          requestId: 'r2',
+          target: 'phone1',
+          action: AgentActions.alarmSet,
+          approval: AgentApproval.approved,
+        ),
+      );
+      expect(gated.status, AgentResultStatus.required);
+
+      final denied = service.handleRemoteRequest(
+        AgentRequest(
+          requestId: 'r3',
+          target: 'phone1',
+          action: AgentActions.alarmSet,
+          approval: AgentApproval.approved,
+        ),
+        approval: AgentApproval.denied,
+      );
+      expect(denied.status, AgentResultStatus.denied);
+    });
+
+    test('led.blink to a connected node produces a plan; unknown target is unavailable', () {
+      final service = makeService(devices: const [
+        AgentDeviceSnapshot(
+          id: 'esp1',
+          name: 'ESP32',
+          online: true,
+          capabilities: [DeviceCapability(AgentActions.ledBlink)],
+        ),
+      ]);
+      final ok = service.handleRemoteRequest(
+        AgentRequest(
+          requestId: 'r4',
+          target: 'esp1',
+          action: AgentActions.ledBlink,
+          approval: AgentApproval.approved,
+        ),
+        approval: AgentApproval.approved,
+      );
+      expect(ok.status, AgentResultStatus.succeeded);
+      expect((ok.dispatch! as AgentActionPlan).request.target, 'esp1');
+
+      final missing = service.handleRemoteRequest(
+        AgentRequest(
+          requestId: 'r5',
+          target: 'nope',
+          action: AgentActions.ledBlink,
+          approval: AgentApproval.approved,
+        ),
+        approval: AgentApproval.approved,
+      );
+      expect(missing.status, AgentResultStatus.unavailable);
+    });
+
+    test('remote clipboard writes are re-approved here before dispatch', () {
+      final service = makeService();
+      final result = service.handleRemoteRequest(
+        AgentRequest(
+          requestId: 'r6',
+          target: 'local',
+          action: AgentActions.clipboardWrite,
+          arguments: const {'text': 'hello'},
+          approval: AgentApproval.approved,
+        ),
+        approval: AgentApproval.approved,
+      );
+      expect(result.status, AgentResultStatus.succeeded);
+      expect(
+        (result.dispatch! as AgentActionPlan).request.arguments['text'],
+        'hello',
+      );
     });
   });
 }

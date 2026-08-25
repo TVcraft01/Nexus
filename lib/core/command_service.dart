@@ -45,6 +45,12 @@ class CommandService {
   /// device ("Do it on My Phone?").
   final AgentDeviceSnapshot? local;
 
+  /// Actions this very device can truly execute end-to-end (calls on
+  /// Android). When such an action routes here, the plan targets this device
+  /// so the UI runs it in place; everything else keeps the honest unwired
+  /// answer.
+  final Set<String> locallyExecutable;
+
   /// The last input behind each open clarification, keyed by the
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
@@ -61,6 +67,7 @@ class CommandService {
     AgentMemory memory = const AgentMemory(),
     this.onMemoryChanged,
     this.local,
+    this.locallyExecutable = const {},
     this._interpreter = const CommandInterpreter(),
   }) : _learned = Map.of(memory.learned),
        _defaults = Map.of(memory.defaults);
@@ -381,6 +388,19 @@ class CommandService {
     // No device named: can this device do it?
     final local = this.local;
     if (local != null && _supports(local, command.action)) {
+      // Only genuinely wired-up actions get a plan targeting this device;
+      // the rest stay honestly unwired.
+      if (locallyExecutable.contains(command.action)) {
+        return _devicePlan(
+          command: ParsedCommand(
+            action: command.action,
+            target: local.id,
+            arguments: args,
+          ),
+          approval: approval,
+          requestId: requestId,
+        );
+      }
       return _unwired(command);
     }
     final candidates = _allDevices()
@@ -431,6 +451,73 @@ class CommandService {
         command.toRequest(requestId: requestId, approval: AgentApproval.approved),
       ),
     );
+  }
+
+  /// Executes an [AgentRequest] that arrived from another device over the
+  /// mesh. The receiver gates it AGAIN locally — the remote's approval value
+  /// is never trusted — so [approval] must come from this device's own UI.
+  /// Catalog actions nothing can execute yet answer honestly; the reply
+  /// travels back to the requester via [AgentResult].
+  AgentDispatchResult handleRemoteRequest(
+    AgentRequest request, {
+    AgentApproval approval = AgentApproval.required,
+  }) {
+    if (approval == AgentApproval.denied) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.denied,
+        message: 'The action was denied on this device.',
+      );
+    }
+    if (approval == AgentApproval.required) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.required,
+        message: 'This device has not approved the action yet.',
+      );
+    }
+    final command = ParsedCommand(
+      action: request.action,
+      target: request.target,
+      arguments: request.arguments,
+    );
+    switch (request.action) {
+      case AgentActions.deviceList:
+        return dispatchCommand(
+          command: command,
+          devices: devices(),
+          requestId: request.requestId,
+        );
+      case AgentActions.ledBlink:
+        final target = _resolve(request.target, devices());
+        if (target == null) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'The requested device is not connected here.',
+          );
+        }
+        return dispatchCommand(
+          command: command,
+          targetDevice: DeviceCapabilities(
+            deviceId: target.id,
+            capabilities: target.capabilities,
+          ),
+          approval: AgentApproval.approved,
+          requestId: request.requestId,
+        );
+      case AgentActions.clipboardWrite:
+        return dispatchCommand(
+          command: command,
+          approval: AgentApproval.approved,
+          requestId: request.requestId,
+        );
+      case AgentActions.greet:
+      case AgentActions.timeGet:
+      case AgentActions.mathCalc:
+        return _localAnswer(command);
+      default:
+        // The requester already routed this to us as the capable device — run
+        // it here. For now the catalog honestly says nothing is wired up.
+        return _unwired(command);
+    }
   }
 
   bool _supports(AgentDeviceSnapshot device, String action) =>

@@ -55,4 +55,7 @@ flutter {
 dependencies {
     // USB serial for ESP32/Arduino boards plugged into the phone (USB-OTG).
     implementation("com.github.mik3y:usb-serial-for-android:3.7.0")
+
+    // JVM unit tests (e.g. the contact-name matching logic in MainActivity).
+    testImplementation("junit:junit:4.13.2")
 }
