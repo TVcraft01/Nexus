@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.ContactsContract
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -26,6 +27,14 @@ class MainActivity : FlutterActivity() {
     private var pendingInstallPath: String? = null
 
     private val STORAGE_CHANNEL = "dev.nexus.nexus/storage"
+    private val PHONE_CHANNEL = "dev.nexus.nexus/phone"
+
+    // "call mom" from the assistant: resolving a contact needs READ_CONTACTS,
+    // so the dial waits for the runtime permission dialog. The MethodChannel
+    // result is held across the round-trip so the reply confirms the launch.
+    private val REQUEST_CONTACTS_PERMISSION = 42602
+    private var pendingContactName: String? = null
+    private var pendingDialResult: MethodChannel.Result? = null
 
     private lateinit var usbSerial: UsbSerialBridge
 
@@ -57,6 +66,17 @@ class MainActivity : FlutterActivity() {
                     "sharedRoot" -> result.success(
                         Environment.getExternalStorageDirectory().absolutePath
                     )
+                    else -> result.notImplemented()
+                }
+            }
+
+        // "call mom" from the assistant: resolve the contact and open the
+        // system dialer with the number prefilled (ACTION_DIAL — no call
+        // permission needed).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PHONE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "dialContact" -> dialContact(call.argument<String>("name") ?: "", result)
                     else -> result.notImplemented()
                 }
             }
@@ -130,6 +150,112 @@ class MainActivity : FlutterActivity() {
         return if (launchInstaller(path)) "launched" else "error"
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CONTACTS_PERMISSION) {
+            val name = pendingContactName
+            val result = pendingDialResult
+            pendingContactName = null
+            pendingDialResult = null
+            if (result != null) {
+                val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+                result.success(
+                    if (granted && name != null) dialContactNumber(name)
+                    else mapOf(
+                        "launched" to false,
+                        "number" to null,
+                        "message" to "Contacts permission was not granted."
+                    )
+                )
+            }
+        }
+    }
+
+    /// Resolves a contact name to a number and opens the dialer. Requests
+    /// READ_CONTACTS at runtime if needed, holding the result until the user
+    /// answers so the reply can confirm the launch.
+    private fun dialContact(name: String, result: MethodChannel.Result) {
+        val contact = name.trim()
+        if (contact.isEmpty()) {
+            result.success(
+                mapOf("launched" to false, "number" to null, "message" to "No contact name given.")
+            )
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            pendingContactName = contact
+            pendingDialResult = result
+            requestPermissions(
+                arrayOf(Manifest.permission.READ_CONTACTS),
+                REQUEST_CONTACTS_PERMISSION
+            )
+            return
+        }
+        result.success(dialContactNumber(contact))
+    }
+
+    /// Looks up the first phone number for [name] and opens the dialer with
+    /// it prefilled. The [Map] result is what the assistant sends back.
+    private fun dialContactNumber(name: String): Map<String, Any?> {
+        val number = lookupContactNumber(name)
+        if (number == null) {
+            return mapOf(
+                "launched" to false,
+                "number" to null,
+                "message" to "No contact named \"$name\" on this device."
+            )
+        }
+        return try {
+            val intent = Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", number, null)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            Log.i(TAG, "opened dialer for $name ($number)")
+            mapOf(
+                "launched" to true,
+                "number" to number,
+                "message" to "Opened the dialer for $name ($number)."
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "could not open the dialer", e)
+            mapOf(
+                "launched" to false,
+                "number" to number,
+                "message" to "Could not open the dialer."
+            )
+        }
+    }
+
+    /// Phone number of the contact whose display name best matches [name]
+    /// (exact first, ranked fallback — see [pickBestContactMatch]).
+    private fun lookupContactNumber(name: String): String? {
+        return try {
+            val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER,
+            )
+            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                // First number wins per display name, mirroring the old
+                // "moveToFirst" behavior for exact matches.
+                val numberByName = LinkedHashMap<String, String>()
+                while (cursor.moveToNext()) {
+                    val displayName = cursor.getString(0) ?: continue
+                    numberByName.putIfAbsent(displayName, cursor.getString(1))
+                }
+                val matched = pickBestContactMatch(numberByName.keys.toList(), name)
+                matched?.let { numberByName[it] }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "contact lookup failed", e)
+            null
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_INSTALL_PERMISSION) {
@@ -184,4 +310,17 @@ class MainActivity : FlutterActivity() {
             false
         }
     }
+}
+
+/// Picks the contact display name that best matches [query]:
+/// 1. exact, 2. case-insensitive full, 3. prefix, 4. contains; null when
+/// nothing matches. Pure so it is unit-testable without a contacts provider.
+fun pickBestContactMatch(candidates: List<String>, query: String): String? {
+    val q = query.trim()
+    if (q.isEmpty()) return null
+    val lower = q.lowercase()
+    return candidates.firstOrNull { it == q }
+        ?: candidates.firstOrNull { it.lowercase() == lower }
+        ?: candidates.firstOrNull { it.lowercase().startsWith(lower) }
+        ?: candidates.firstOrNull { it.lowercase().contains(lower) }
 }

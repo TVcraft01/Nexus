@@ -46,6 +46,8 @@ class NexusMessage {
   static const fileError = 'file.error';
   static const serialMsg = 'serial.msg'; // peer → host: forward a payload to a cable node
   static const serialUp = 'serial.up'; // host → peer: a payload from a cable node
+  static const agentAction = 'agent.action'; // peer → device: run an approved action
+  static const agentResult = 'agent.result'; // device → peer: the action's outcome
 
   Map<String, dynamic> toJson() => {
     'type': type,

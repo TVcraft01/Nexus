@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/core/agent_contract.dart';
+import 'package:nexus/core/command_service.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/core/serial_transport.dart';
@@ -1095,6 +1097,55 @@ void main() {
     await _waitFor(() => meshB.lastSerialUp != null);
     expect(meshB.lastSerialUp!['from'], 'esp32-abc');
     expect(meshB.lastSerialUp!['data'], {'echo': 'ok'});
+  });
+
+  test('agent action travels encrypted and the reply comes back', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    // The PC routes "call mom" to the phone.
+    final request = AgentRequest(
+      requestId: 'test-call-1',
+      target: 'device-b',
+      action: AgentActions.callPlace,
+      arguments: const {'contact': 'mom'},
+      approval: AgentApproval.approved,
+    );
+    final replyFuture = meshA.sendAgentRequest('device-b', request);
+
+    // The phone sees the incoming request (the card appears).
+    await _waitFor(() {
+      final raw = meshB.lastIncomingAgentRequest;
+      final req = raw?['request'];
+      return req is AgentRequest && req.requestId == 'test-call-1';
+    });
+
+    // The phone re-approves locally and answers honestly.
+    final incoming = meshB.lastIncomingAgentRequest!;
+    final req = incoming['request'] as AgentRequest;
+    final outcome = CommandService(
+      devices: () => const [],
+      local: const AgentDeviceSnapshot(
+        id: 'device-b',
+        name: 'Test Phone',
+        online: true,
+        capabilities: [DeviceCapability(AgentActions.callPlace)],
+      ),
+    ).handleRemoteRequest(req, approval: AgentApproval.approved);
+    await meshB.sendAgentResult('device-a', req.requestId, outcome);
+
+    final reply = await replyFuture;
+    expect(reply, isNotNull);
+    expect(reply!.status, AgentResultStatus.unavailable);
+    expect(reply.message, contains('calls'));
   });
 }
 

@@ -11,6 +11,7 @@ import 'package:flutter/services.dart'
 import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory, getExternalStorageDirectory;
 
+import '../core/agent_contract.dart';
 import '../core/crypto.dart';
 import '../core/identity.dart';
 import '../core/network_info.dart';
@@ -324,6 +325,16 @@ class MeshService extends ChangeNotifier {
   /// `{from, name, data}`. Read by the UI to show what a node reported.
   Map<String, dynamic>? lastSerialUp;
 
+  /// An action request that arrived from another device over the mesh:
+  /// `{'from': peerId, 'request': AgentRequest}`. The peer already asked its
+  /// user; THIS device re-gates before executing (its approval value is never
+  /// trusted) and answers with [sendAgentResult].
+  Map<String, dynamic>? lastIncomingAgentRequest;
+
+  /// In-flight replies keyed by request id. Completed by `agent.result` or a
+  /// timeout, so a sender can await the remote's answer.
+  final Map<String, Completer<AgentDispatchResult?>> _pendingAgentResults = {};
+
   List<SerialDevice> get remoteSerialDevices {
     final now = DateTime.now();
     final out = <SerialDevice>[];
@@ -453,6 +464,80 @@ class MeshService extends ChangeNotifier {
   /// Confirms a serial node as paired (persists its state on the node).
   Future<void> pairSerialDevice(String id) async {
     await _serial?.pair(id);
+  }
+
+  /// Sends an approved action to a paired device ("call mom" routed to the
+  /// phone). Completes with the remote device's typed reply, or null when the
+  /// request could not be delivered or the peer never answered within ten
+  /// seconds. The completer is registered BEFORE sending so an instant reply
+  /// can never be missed.
+  Future<AgentDispatchResult?> sendAgentRequest(
+    String deviceId,
+    AgentRequest request,
+  ) async {
+    final peer = _paired[deviceId];
+    if (peer == null) return null;
+    final completer = Completer<AgentDispatchResult?>();
+    _pendingAgentResults[request.requestId] = completer;
+    Timer(const Duration(seconds: 10), () {
+      final pending = _pendingAgentResults.remove(request.requestId);
+      if (pending != null && !pending.isCompleted) pending.complete(null);
+    });
+    final delivered = await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.agentAction,
+        from: identity.id,
+        to: deviceId,
+        payload: {'request': request.toJson()},
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (!delivered) {
+      final pending = _pendingAgentResults.remove(request.requestId);
+      if (pending != null && !pending.isCompleted) pending.complete(null);
+      return null;
+    }
+    return completer.future;
+  }
+
+  /// Sends the outcome of an action request back to the requesting device.
+  /// Only the status, message and (for plain answers) the text travel — the
+  /// remote does not need our device snapshots or plans.
+  Future<bool> sendAgentResult(
+    String deviceId,
+    String requestId,
+    AgentDispatchResult result,
+  ) async {
+    final peer = _paired[deviceId];
+    if (peer == null) return false;
+    final text = result.dispatch is AgentMessage
+        ? (result.dispatch! as AgentMessage).text
+        : null;
+    return await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.agentResult,
+        from: identity.id,
+        to: deviceId,
+        payload: {
+          'requestId': requestId,
+          'status': result.status.name,
+          'message': result.message,
+          if (text != null && text.isNotEmpty) 'text': text,
+        },
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
+  /// The assistant answered the incoming request (approved or denied) — clear
+  /// it so the card disappears and the next request can show.
+  void dismissIncomingAgentRequest() {
+    lastIncomingAgentRequest = null;
+    notifyListeners();
   }
 
   /// Sends a small command payload to a serial node — over our own cable, or
@@ -1065,6 +1150,41 @@ class MeshService extends ChangeNotifier {
           };
           notifyListeners();
         }
+
+      case NexusMessage.agentAction:
+        // A paired device routed an approved action here. The request's own
+        // approval value is ignored — this device re-gates via the UI before
+        // executing and replies with agent.result.
+        if (!encrypted) return;
+        final raw = msg.payload['request'];
+        if (raw is! Map<String, dynamic>) break;
+        try {
+          final request = AgentRequest.fromJson(raw);
+          lastIncomingAgentRequest = {'from': msg.from, 'request': request};
+          notifyListeners();
+        } catch (_) {
+          // Malformed request — drop it; never execute garbage.
+        }
+
+      case NexusMessage.agentResult:
+        // The remote device answered our action — complete the pending
+        // future so the sender's UI can show the outcome.
+        if (!encrypted) return;
+        final requestId = msg.payload['requestId']?.toString();
+        if (requestId == null) break;
+        final status = AgentResultStatus.values.firstWhere(
+          (s) => s.name == msg.payload['status'],
+          orElse: () => AgentResultStatus.unavailable,
+        );
+        final text = msg.payload['text']?.toString();
+        final result = AgentDispatchResult(
+          status: status,
+          message: msg.payload['message']?.toString() ?? '',
+          dispatch: text != null && text.isNotEmpty ? AgentMessage(text) : null,
+        );
+        final pending = _pendingAgentResults.remove(requestId);
+        if (pending != null && !pending.isCompleted) pending.complete(result);
+        notifyListeners();
     }
   }
 
