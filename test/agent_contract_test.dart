@@ -10,13 +10,13 @@ void main() {
 
   test('contracts round-trip', () {
     const caps = DeviceCapabilities(
-      deviceId: 'phone',
-      capabilities: [DeviceCapability(AgentActions.clipboardWrite, version: 2)],
+      deviceId: 'esp32',
+      capabilities: [DeviceCapability(AgentActions.ledBlink, version: 2)],
     );
     expect(DeviceCapabilities.fromJson(caps.toJson()).toJson(), caps.toJson());
     const request = AgentRequest(
-      requestId: 'r1', target: 'phone', action: AgentActions.clipboardWrite,
-      arguments: {'text': 'hello'}, approval: AgentApproval.approved,
+      requestId: 'r1', target: 'esp32', action: AgentActions.ledBlink,
+      arguments: {'blink': true}, approval: AgentApproval.approved,
     );
     expect(AgentRequest.fromJson(request.toJson()).toJson(), request.toJson());
   });
@@ -40,7 +40,6 @@ void main() {
     ];
     final list = dispatchCommand(
       command: const ParsedCommand(action: AgentActions.deviceList, target: 'local'),
-      localDevice: phone,
       devices: snapshots,
     );
     expect(list.status, AgentResultStatus.succeeded);
@@ -56,7 +55,6 @@ void main() {
     for (final entry in cases.entries) {
       final result = dispatchCommand(
         command: const ParsedCommand(action: AgentActions.ledBlink, target: 'esp32'),
-        localDevice: phone,
         targetDevice: entry.value.target,
         approval: entry.value.approval,
         requestId: entry.key,
@@ -67,7 +65,6 @@ void main() {
 
     final success = dispatchCommand(
       command: const ParsedCommand(action: AgentActions.ledBlink, target: 'esp32'),
-      localDevice: phone,
       targetDevice: esp,
       approval: AgentApproval.approved,
       requestId: 'blink-1',

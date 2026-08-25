@@ -5,7 +5,6 @@
 /// the target device's [DeviceCapabilities] before dispatch.
 abstract final class AgentActions {
   static const deviceList = 'device.list';
-  static const clipboardWrite = 'clipboard.write';
   static const ledBlink = 'led.blink';
 }
 
@@ -146,7 +145,7 @@ class DeviceCapabilities {
   );
 }
 
-enum AgentApproval { automatic, required, approved, denied }
+enum AgentApproval { required, approved, denied }
 
 enum AgentResultStatus { succeeded, required, denied, unavailable }
 
@@ -197,7 +196,6 @@ class AgentRequest {
 /// Converts one parsed command into a local result or a checked request.
 AgentDispatchResult dispatchCommand({
   required ParsedCommand command,
-  required DeviceCapabilities localDevice,
   List<AgentDeviceSnapshot> devices = const [],
   DeviceCapabilities? targetDevice,
   AgentApproval approval = AgentApproval.required,
