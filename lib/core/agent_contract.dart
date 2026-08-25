@@ -120,7 +120,61 @@ class AgentActionPlan extends AgentDispatch {
 class AgentMessage extends AgentDispatch {
   final String text;
 
-  const AgentMessage(this.text);
+  /// When true the UI keeps the answer fresh (e.g. a ticking clock) instead
+  /// of freezing the value from the moment the command ran.
+  final bool live;
+
+  const AgentMessage(this.text, {this.live = false});
+}
+
+/// The capabilities a device of [platform] advertises by default — a phone
+/// can make calls and send texts, a desktop usually cannot. Devices that
+/// announce richer capabilities later simply replace this default; the ids
+/// are the same [AgentActions] strings so one check serves both.
+List<DeviceCapability> defaultCapabilitiesFor(String platform) {
+  switch (platform) {
+    case 'android':
+    case 'ios':
+      return const [
+        DeviceCapability(AgentActions.callPlace),
+        DeviceCapability(AgentActions.messageSend),
+        DeviceCapability(AgentActions.alarmSet),
+        DeviceCapability(AgentActions.timerSet),
+        DeviceCapability(AgentActions.reminderSet),
+        DeviceCapability(AgentActions.mediaPlay),
+        DeviceCapability(AgentActions.musicControl),
+        DeviceCapability(AgentActions.weatherGet),
+        DeviceCapability(AgentActions.navigationRoute),
+        DeviceCapability(AgentActions.webSearch),
+        DeviceCapability(AgentActions.noteCreate),
+        DeviceCapability(AgentActions.translateText),
+        DeviceCapability(AgentActions.calendarGet),
+        DeviceCapability(AgentActions.newsGet),
+        DeviceCapability(AgentActions.homeControl),
+      ];
+    case 'linux':
+    case 'windows':
+    case 'macos':
+      // Everything a desktop usually has — except calls and texts, the
+      // canonical "only my phone can do this" actions.
+      return const [
+        DeviceCapability(AgentActions.alarmSet),
+        DeviceCapability(AgentActions.timerSet),
+        DeviceCapability(AgentActions.reminderSet),
+        DeviceCapability(AgentActions.mediaPlay),
+        DeviceCapability(AgentActions.musicControl),
+        DeviceCapability(AgentActions.weatherGet),
+        DeviceCapability(AgentActions.navigationRoute),
+        DeviceCapability(AgentActions.webSearch),
+        DeviceCapability(AgentActions.noteCreate),
+        DeviceCapability(AgentActions.translateText),
+        DeviceCapability(AgentActions.calendarGet),
+        DeviceCapability(AgentActions.newsGet),
+        DeviceCapability(AgentActions.homeControl),
+      ];
+    default:
+      return const [];
+  }
 }
 
 /// The assistant needs one more piece of information before it can act —

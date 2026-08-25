@@ -33,6 +33,12 @@ class _AssistantViewState extends State<AssistantView> {
     super.initState();
     _service = CommandService(
       devices: _buildSnapshots,
+      local: AgentDeviceSnapshot(
+        id: widget.mesh.identity.id,
+        name: widget.mesh.identity.name,
+        online: true,
+        capabilities: defaultCapabilitiesFor(widget.mesh.identity.platform),
+      ),
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
         defaults: widget.mesh.store.agentDefaults,
@@ -62,7 +68,7 @@ class _AssistantViewState extends State<AssistantView> {
         id: d.id,
         name: d.name,
         online: mesh.isOnline(d.id),
-        capabilities: const [DeviceCapability(AgentActions.deviceList)],
+        capabilities: defaultCapabilitiesFor(d.platform),
       ));
     }
 
@@ -225,7 +231,8 @@ class _AssistantViewState extends State<AssistantView> {
         const SizedBox(height: 12),
         if (result.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
         if (result.dispatch case final AgentActionPlan plan) _planView(plan),
-        if (result.dispatch case final AgentMessage message) _messageView(message),
+        if (result.dispatch case final AgentMessage message)
+          message.live ? _liveClockView() : _messageView(message),
         if (result.dispatch case final AgentClarification ask) _questionView(ask),
         if (result.status == AgentResultStatus.required) ...[
           const SizedBox(height: 12),
@@ -400,6 +407,9 @@ class _AssistantViewState extends State<AssistantView> {
         ),
       );
     }
+    if (request.action != AgentActions.ledBlink) {
+      return _remotePlanView(request);
+    }
     final snapshot = _buildSnapshots();
     final target = snapshot.where((d) => d.id == request.target).firstOrNull;
 
@@ -439,6 +449,85 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// A plan aimed at another device ("Call mom on My Phone"). Sending the
+  /// request over the mesh isn't wired up yet, so this is an honest dry run.
+  Widget _remotePlanView(AgentRequest request) {
+    final snapshot = _buildSnapshots();
+    final target = snapshot.where((d) => d.id == request.target).firstOrNull;
+    final deviceName = target?.name ?? request.target;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: NexusColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.devices_rounded, size: 18, color: NexusColors.accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _describeAction(request),
+                  style: const TextStyle(color: NexusColors.text, fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'on $deviceName',
+            style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'I can\'t send actions to $deviceName yet — the plan is ready for when I can.',
+            style: const TextStyle(color: NexusColors.muted, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _describeAction(AgentRequest request) {
+    final a = request.arguments;
+    switch (request.action) {
+      case AgentActions.callPlace:
+        return 'Call ${a['contact']}';
+      case AgentActions.messageSend:
+        return 'Message ${a['contact']}';
+      case AgentActions.mediaPlay:
+        return 'Play ${a['playlist'] ?? 'your music'}';
+      case AgentActions.musicControl:
+        return '${(a['mode'] as String? ?? 'Control')} the music';
+      case AgentActions.alarmSet:
+        return 'Set an alarm';
+      case AgentActions.timerSet:
+        return 'Set a timer';
+      case AgentActions.reminderSet:
+        return 'Set a reminder';
+      case AgentActions.weatherGet:
+        return 'Check the weather';
+      case AgentActions.navigationRoute:
+        return 'Navigate to ${a['place']}';
+      case AgentActions.webSearch:
+        return 'Search for ${a['query']}';
+      case AgentActions.noteCreate:
+        return 'Make a note';
+      case AgentActions.translateText:
+        return 'Translate';
+      case AgentActions.calendarGet:
+        return 'Check my calendar';
+      case AgentActions.newsGet:
+        return 'Get the news';
+      default:
+        return request.action;
+    }
+  }
+
   Widget _messageView(AgentMessage message) {
     return Container(
       padding: const EdgeInsets.all(14),
@@ -451,6 +540,19 @@ class _AssistantViewState extends State<AssistantView> {
         message.text,
         style: const TextStyle(color: NexusColors.text, fontSize: 13, height: 1.4),
       ),
+    );
+  }
+
+  /// The answer to "what time is it" keeps ticking instead of going stale.
+  Widget _liveClockView() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: NexusColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+      ),
+      child: const _LiveClock(),
     );
   }
 
@@ -475,6 +577,43 @@ class _AssistantViewState extends State<AssistantView> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// A ticking clock: "It's HH:MM.", refreshed every second.
+class _LiveClock extends StatefulWidget {
+  const _LiveClock();
+
+  @override
+  State<_LiveClock> createState() => _LiveClockState();
+}
+
+class _LiveClockState extends State<_LiveClock> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final hh = now.hour.toString().padLeft(2, '0');
+    final mm = now.minute.toString().padLeft(2, '0');
+    return Text(
+      'It\'s $hh:$mm.',
+      style: const TextStyle(color: NexusColors.text, fontSize: 16, fontWeight: FontWeight.w600),
     );
   }
 }

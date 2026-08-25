@@ -40,14 +40,27 @@ class CommandService {
   final Map<String, dynamic> _defaults;
   final void Function()? onMemoryChanged;
 
+  /// The device the assistant is running on (with its capabilities). Used to
+  /// decide whether an action can run here or should be offered to another
+  /// device ("Do it on My Phone?").
+  final AgentDeviceSnapshot? local;
+
   /// The last input behind each open clarification, keyed by the
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
+
+  /// The device pinned for an action ("call mom" -> My Phone), keyed by the
+  /// action. Sticky on purpose: the approval re-run of the original command
+  /// must not forget it, and "I'll remember which one" is the promise.
+  final Map<String, String> _pendingDeviceChoice = {};
+
+
 
   CommandService({
     required this.devices,
     AgentMemory memory = const AgentMemory(),
     this.onMemoryChanged,
+    this.local,
     this._interpreter = const CommandInterpreter(),
   }) : _learned = Map.of(memory.learned),
        _defaults = Map.of(memory.defaults);
@@ -90,7 +103,7 @@ class CommandService {
     final interpreted = _interpreter.interpret(normalized);
     switch (interpreted.outcome) {
       case InterpretOutcome.matched:
-        return _dispatchParsed(interpreted.command!, approval, requestId);
+        return _dispatchParsed(interpreted.command!, approval, requestId, rawInput: text);
 
       case InterpretOutcome.needsInfo:
         final key = interpreted.missingArgKey!;
@@ -163,6 +176,33 @@ class CommandService {
           ? execute(original, approval: approval, requestId: requestId)
           : null;
     }
+    if (key.startsWith('device:')) {
+      // "Do it on My Phone?" — the answer names a device (or just "yes" for
+      // the single candidate). Validate it, then re-run the original command
+      // with that device pinned.
+      final action = key.substring('device:'.length);
+      final stored = _pendingContext.remove(key);
+      if (stored == null) return null;
+      final parts = stored.split('\u0001');
+      final original = parts.first;
+      final candidate = parts.length == 2 ? parts[1] : '';
+      final resolved = _isYes(answer)
+          ? (candidate.isEmpty ? null : _resolve(candidate, _allDevices()))
+          : _resolve(answer, _allDevices());
+      if (resolved == null) {
+        _pendingContext[key] = stored; // still waiting for a good answer
+        return AgentDispatchResult(
+          status: AgentResultStatus.needsInfo,
+          dispatch: AgentClarification(
+            question: 'I don\'t see a device named "$answer".',
+            key: key,
+            hint: 'Try naming one of your devices, e.g. "My Phone".',
+          ),
+        );
+      }
+      _pendingDeviceChoice[action] = resolved.id;
+      return execute(original, approval: approval, requestId: requestId);
+    }
     return null;
   }
 
@@ -175,25 +215,32 @@ class CommandService {
     if (interpreted.outcome != InterpretOutcome.matched) {
       return const AgentDispatchResult(status: AgentResultStatus.unavailable);
     }
-    return _dispatchParsed(interpreted.command!, approval, requestId);
+    return _dispatchParsed(
+      interpreted.command!,
+      approval,
+      requestId,
+      rawInput: input,
+    );
   }
 
-  /// Routes a recognized command: device list is local, blink goes through
-  /// the target resolver + existing [dispatchCommand], and the newer intents
-  /// (media, route) report honestly that nothing is wired to them yet.
+  /// Routes a recognized command: local intents run here, blink and clipboard
+  /// go through the existing contract, and catalog intents that need a
+  /// capability this device lacks are offered to a device that has it.
   AgentDispatchResult _dispatchParsed(
     ParsedCommand command,
     AgentApproval approval,
-    String requestId,
-  ) {
-    if (command.action == AgentActions.deviceList) {
+    String requestId, {
+    String? rawInput,
+  }) {
+    final action = command.action;
+    if (action == AgentActions.deviceList) {
       return dispatchCommand(
         command: command,
         devices: devices(),
         requestId: requestId,
       );
     }
-    if (command.action == AgentActions.ledBlink) {
+    if (action == AgentActions.ledBlink) {
       final snapshot = devices();
       final target = _resolve(command.target, snapshot);
       if (target == null) {
@@ -218,18 +265,26 @@ class CommandService {
         requestId: requestId,
       );
     }
-    if (command.action == AgentActions.clipboardWrite) {
+    if (action == AgentActions.clipboardWrite) {
       return dispatchCommand(
         command: command,
         approval: approval,
         requestId: requestId,
       );
     }
-    if (command.action == AgentActions.greet ||
-        command.action == AgentActions.timeGet ||
-        command.action == AgentActions.mathCalc) {
+    if (action == AgentActions.greet ||
+        action == AgentActions.timeGet ||
+        action == AgentActions.mathCalc) {
       return _localAnswer(command);
     }
+    if (_routableActions.contains(action)) {
+      return _routeDeviceAction(command, approval, requestId, rawInput);
+    }
+    return _unwired(command);
+  }
+
+  /// Honest "I understood, but nothing can do this yet" answer.
+  AgentDispatchResult _unwired(ParsedCommand command) {
     if (command.action == AgentActions.mediaPlay) {
       final playlist = command.arguments['playlist'];
       return AgentDispatchResult(
@@ -237,7 +292,6 @@ class CommandService {
         message: 'Playing "${playlist ?? 'your music'}" isn\'t wired up yet — but I understood, and I\'ll remember your choice.',
       );
     }
-    // The rest of the catalog: understood, honestly unwired.
     final message = _notWiredMessages[command.action];
     if (message != null) {
       return AgentDispatchResult(
@@ -250,6 +304,139 @@ class CommandService {
       message: 'This command is not available yet.',
     );
   }
+
+  /// The catalog actions that may need a capability this device lacks (calls,
+  /// texts, alarms…). "turn on the lights" is deliberately excluded: "on"
+  /// there is part of the action, not a device name.
+  static const _routableActions = {
+    AgentActions.callPlace,
+    AgentActions.messageSend,
+    AgentActions.alarmSet,
+    AgentActions.timerSet,
+    AgentActions.reminderSet,
+    AgentActions.mediaPlay,
+    AgentActions.musicControl,
+    AgentActions.weatherGet,
+    AgentActions.navigationRoute,
+    AgentActions.webSearch,
+    AgentActions.noteCreate,
+    AgentActions.translateText,
+    AgentActions.calendarGet,
+    AgentActions.newsGet,
+  };
+
+  /// Finds the device an action should run on, or asks the user to pick one.
+  /// Naming a device ("call mom on my phone") pins the target and skips the
+  /// search; otherwise the local device runs it if it can, a single capable
+  /// device is offered, and several produce a "which one?" question.
+  AgentDispatchResult _routeDeviceAction(
+    ParsedCommand command,
+    AgentApproval approval,
+    String requestId,
+    String? rawInput,
+  ) {
+    final args = Map<String, dynamic>.of(command.arguments);
+    String? hint;
+    if (command.action == AgentActions.callPlace ||
+        command.action == AgentActions.messageSend) {
+      // "call mom on my phone": the contact itself carries the device.
+      final contact = (args['contact'] as String?) ?? '';
+      final split = _deviceSuffix(contact);
+      if (split != null) {
+        hint = split.$2;
+        args['contact'] = split.$1;
+      }
+    }
+    // A device named in the command wins; otherwise fall back to the one
+    // remembered for this action, then any "on my phone" suffix.
+    hint ??= _pendingDeviceChoice[command.action];
+    hint ??= rawInput == null ? null : _deviceSuffix(rawInput)?.$2;
+    if (hint != null && hint.isNotEmpty) {
+      final target = _resolve(hint, _allDevices());
+      if (target == null) {
+        return AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: 'I don\'t see a device named "$hint".',
+        );
+      }
+      if (!_supports(target, command.action)) {
+        return AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: '${target.name} can\'t do that.',
+        );
+      }
+      // Remember the choice so the approval re-run and future commands of
+      // the same kind go straight there.
+      _pendingDeviceChoice[command.action] = target.id;
+      return _devicePlan(
+        command: ParsedCommand(
+          action: command.action,
+          target: target.id,
+          arguments: args,
+        ),
+        approval: approval,
+        requestId: requestId,
+      );
+    }
+    // No device named: can this device do it?
+    final local = this.local;
+    if (local != null && _supports(local, command.action)) {
+      return _unwired(command);
+    }
+    final candidates = _allDevices()
+        .where((d) => d.online && _supports(d, command.action))
+        .toList();
+    if (candidates.isEmpty) return _unwired(command);
+    final question = candidates.length == 1
+        ? 'I can\'t do that here — do it on ${candidates.single.name}?'
+        : 'Which device should do this?';
+    final hintText = candidates.length == 1
+        ? 'Answer "yes" or name another device. I\'ll remember which one for next time.'
+        : 'Name one: ${candidates.map((d) => d.name).join(', ')}.';
+    // A single candidate is remembered inside the pending value so a plain
+    // "yes" answer can resolve to it.
+    _pendingContext['device:${command.action}'] = candidates.length == 1
+        ? '${rawInput ?? ''}\u0001${candidates.single.id}'
+        : (rawInput ?? '');
+    return AgentDispatchResult(
+      status: AgentResultStatus.needsInfo,
+      dispatch: AgentClarification(
+        question: question,
+        key: 'device:${command.action}',
+        hint: hintText,
+      ),
+    );
+  }
+
+  AgentDispatchResult _devicePlan({
+    required ParsedCommand command,
+    required AgentApproval approval,
+    required String requestId,
+  }) {
+    if (approval == AgentApproval.required) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.required,
+        message: 'Local approval is required.',
+      );
+    }
+    if (approval == AgentApproval.denied) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.denied,
+        message: 'The action was denied locally.',
+      );
+    }
+    return AgentDispatchResult(
+      status: AgentResultStatus.succeeded,
+      dispatch: AgentActionPlan(
+        command.toRequest(requestId: requestId, approval: AgentApproval.approved),
+      ),
+    );
+  }
+
+  bool _supports(AgentDeviceSnapshot device, String action) =>
+      device.capabilities.any((c) => c.id == action);
+
+  List<AgentDeviceSnapshot> _allDevices() => [?local, ...devices()];
 
   /// Locally executable intents that need no device: greeting, time, math.
   AgentDispatchResult _localAnswer(ParsedCommand command) {
@@ -264,7 +451,11 @@ class CommandService {
       case AgentActions.timeGet:
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
-          dispatch: AgentMessage(_formatTime(command.arguments['kind'])),
+          dispatch: AgentMessage(
+            _formatTime(command.arguments['kind']),
+            // The clock keeps ticking instead of freezing at the answer.
+            live: command.arguments['kind'] != 'date',
+          ),
         );
       case AgentActions.mathCalc:
         final result = evaluateMath(command.arguments['expr'] as String? ?? '');
@@ -330,6 +521,20 @@ class CommandService {
         .toList();
     return matches.length == 1 ? matches.single : null;
   }
+}
+
+/// "yes", "yep", "sure", "ok" — agreement to run on the offered device.
+bool _isYes(String answer) => const {
+  'yes', 'yep', 'yeah', 'sure', 'ok', 'okay', 'y', 'do it', 'go ahead',
+}.contains(answer.trim().toLowerCase());
+
+/// Splits "mom on my phone" into ("mom", "my phone") — the trailing device
+/// the user named. Returns null when there is no device suffix. "on the …"
+/// is never treated as a device so "turn on the lights" stays intact.
+(String, String)? _deviceSuffix(String text) {
+  final m = RegExp(r'\s+on (?!the )(.+)$').firstMatch(text.trim());
+  if (m == null) return null;
+  return (text.substring(0, m.start).trim(), m.group(1)!.trim());
 }
 
 /// Safely evaluates a small arithmetic expression: numbers, `+ - * /` and
