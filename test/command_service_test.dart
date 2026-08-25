@@ -67,4 +67,107 @@ void main() {
       expect(result.dispatch, isNull);
     }
   });
+
+  group('locally executable intents', () {
+    test('greeting answers', () {
+      final result = service.execute('hello');
+      expect(result.status, AgentResultStatus.succeeded);
+      expect((result.dispatch! as AgentMessage).text, contains('Hello'));
+    });
+
+    test('time and date answer locally', () {
+      final time = service.execute('what time is it');
+      expect(time.status, AgentResultStatus.succeeded);
+      expect((time.dispatch! as AgentMessage).text, matches(RegExp(r"It's \d{2}:\d{2}\.")));
+
+      final date = service.execute("what's the date");
+      expect(date.status, AgentResultStatus.succeeded);
+      expect((date.dispatch! as AgentMessage).text, contains(DateTime.now().year.toString()));
+    });
+
+    test('simple math computes locally', () {
+      final result = service.execute('what is 2 plus 2');
+      expect(result.status, AgentResultStatus.succeeded);
+      expect((result.dispatch! as AgentMessage).text, '2+2 = 4');
+
+      final bare = service.execute('10 / 2');
+      expect(bare.status, AgentResultStatus.succeeded);
+      expect((bare.dispatch! as AgentMessage).text, '10 / 2 = 5');
+    });
+
+    test('broken math is an honest unavailable', () {
+      final result = service.execute('calculate 1 divided by 0');
+      expect(result.status, AgentResultStatus.unavailable);
+      expect(result.dispatch, isNull);
+    });
+  });
+
+  group('clipboard.write', () {
+    test('requires approval, then produces a typed plan', () {
+      final pending = service.execute('copy hello to my phone');
+      expect(pending.status, AgentResultStatus.required);
+      expect(pending.dispatch, isNull);
+
+      final approved = service.execute(
+        'copy hello to my phone',
+        approval: AgentApproval.approved,
+        requestId: 'copy-1',
+      );
+      expect(approved.status, AgentResultStatus.succeeded);
+      final plan = (approved.dispatch! as AgentActionPlan).request;
+      expect(plan.action, AgentActions.clipboardWrite);
+      expect(plan.target, 'local');
+      expect(plan.arguments['text'], 'hello');
+      expect(plan.requestId, 'copy-1');
+    });
+
+    test('denied and empty text never plan', () {
+      final denied = service.execute('copy hello', approval: AgentApproval.denied);
+      expect(denied.status, AgentResultStatus.denied);
+      expect(denied.dispatch, isNull);
+
+      final empty = service.execute('copy to my phone', approval: AgentApproval.approved);
+      expect(empty.status, AgentResultStatus.unavailable);
+      expect(empty.dispatch, isNull);
+    });
+  });
+
+  group('recognized but unwired catalog', () {
+    test('answers honestly instead of teaching', () {
+      for (final phrase in [
+        'call mom',
+        'text john',
+        'set an alarm for 7am',
+        "what's the weather",
+        'navigate to the office',
+        'search for cats',
+        'turn on the lights',
+        'pause the music',
+      ]) {
+        final result = service.execute(phrase);
+        expect(result.status, AgentResultStatus.unavailable, reason: phrase);
+        expect(result.message, isNotEmpty, reason: phrase);
+        expect(result.dispatch, isNull, reason: phrase);
+      }
+    });
+  });
+
+  group('evaluateMath', () {
+    test('evaluates the four operations with precedence and parens', () {
+      expect(evaluateMath('2+2'), 4);
+      expect(evaluateMath('2*3+4'), 10);
+      expect(evaluateMath('10/2'), 5);
+      expect(evaluateMath('(1+2)*3'), 9);
+      expect(evaluateMath('10 - 3 - 2'), 5);
+      expect(evaluateMath('2+2+2+2'), 8);
+    });
+
+    test('rejects invalid or unsafe input', () {
+      expect(evaluateMath(''), isNull);
+      expect(evaluateMath('1/0'), isNull);
+      expect(evaluateMath('abc'), isNull);
+      expect(evaluateMath('2+'), isNull);
+      expect(evaluateMath('(2+2'), isNull);
+    });
+  });
 }

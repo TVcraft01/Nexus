@@ -50,6 +50,23 @@ void main() {
       await tester.pump();
       expect(find.text('Unavailable'), findsOneWidget);
       expect(find.text('Approve'), findsNothing);
+
+      // "what time is it" → a local answer card.
+      await tester.enterText(find.byType(TextField), 'what time is it');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('Done'), findsOneWidget);
+      expect(find.textContaining("It's "), findsOneWidget);
+
+      // "copy hello" → approval prompt, then the Copy-now plan after approval.
+      await tester.enterText(find.byType(TextField), 'copy hello to my phone');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('Approval needed'), findsOneWidget);
+      await tester.tap(find.text('Approve'));
+      await tester.pump();
+      expect(find.text('Copy to my devices'), findsOneWidget);
+      expect(find.text('Copy now'), findsOneWidget);
     } finally {
       await mesh.stop();
     }

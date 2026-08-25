@@ -149,6 +149,21 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// Pushes approved text to the other devices through the mesh clipboard.
+  Future<void> _sendClipboard(String text) async {
+    final sent = await widget.mesh.broadcastClipboard(text);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          sent > 0
+              ? 'Copied to $sent device${sent == 1 ? '' : 's'}.'
+              : 'No other device received it.',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -210,6 +225,7 @@ class _AssistantViewState extends State<AssistantView> {
         const SizedBox(height: 12),
         if (result.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
         if (result.dispatch case final AgentActionPlan plan) _planView(plan),
+        if (result.dispatch case final AgentMessage message) _messageView(message),
         if (result.dispatch case final AgentClarification ask) _questionView(ask),
         if (result.status == AgentResultStatus.required) ...[
           const SizedBox(height: 12),
@@ -345,6 +361,45 @@ class _AssistantViewState extends State<AssistantView> {
 
   Widget _planView(AgentActionPlan plan) {
     final request = plan.request;
+    if (request.action == AgentActions.clipboardWrite) {
+      final text = (request.arguments['text'] as String?) ?? '';
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: NexusColors.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.content_copy_rounded, size: 18, color: NexusColors.accent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Copy to my devices',
+                    style: const TextStyle(color: NexusColors.text, fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '\u201c$text\u201d',
+              style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: () => _sendClipboard(text),
+              icon: const Icon(Icons.send_rounded, size: 16),
+              label: const Text('Copy now'),
+            ),
+          ],
+        ),
+      );
+    }
     final snapshot = _buildSnapshots();
     final target = snapshot.where((d) => d.id == request.target).firstOrNull;
 
@@ -380,6 +435,21 @@ class _AssistantViewState extends State<AssistantView> {
             label: const Text('Send blink now'),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _messageView(AgentMessage message) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: NexusColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+      ),
+      child: Text(
+        message.text,
+        style: const TextStyle(color: NexusColors.text, fontSize: 13, height: 1.4),
       ),
     );
   }

@@ -13,6 +13,26 @@ class AgentMemory {
   const AgentMemory({this.learned = const {}, this.defaults = const {}});
 }
 
+/// Honest answers for recognized-but-unwired intents. The assistant
+/// understands the request (so it never "teaches" something it knows) but
+/// says plainly that nothing is connected to it yet.
+const Map<String, String> _notWiredMessages = {
+  AgentActions.musicControl: 'Music controls (pause, next, shuffle) aren\'t wired up yet.',
+  AgentActions.homeControl: 'Smart-home control isn\'t wired up yet — only the ESP32 blink command works for now.',
+  AgentActions.messageSend: 'Sending texts isn\'t wired up yet.',
+  AgentActions.callPlace: 'Making calls isn\'t wired up yet.',
+  AgentActions.weatherGet: 'I can\'t check the weather yet — no weather service is connected.',
+  AgentActions.reminderSet: 'Reminders aren\'t wired up yet.',
+  AgentActions.alarmSet: 'Alarms aren\'t wired up yet.',
+  AgentActions.timerSet: 'Timers aren\'t wired up yet.',
+  AgentActions.navigationRoute: 'Navigation isn\'t wired up yet — but if a phrase like "bring me home" should mean something to you, teach me and I\'ll remember.',
+  AgentActions.webSearch: 'Web search isn\'t wired up yet.',
+  AgentActions.noteCreate: 'Notes aren\'t wired up yet.',
+  AgentActions.translateText: 'Translation isn\'t wired up yet.',
+  AgentActions.calendarGet: 'Calendar isn\'t wired up yet.',
+  AgentActions.newsGet: 'News isn\'t wired up yet.',
+};
+
 class CommandService {
   final List<AgentDeviceSnapshot> Function() devices;
   final CommandInterpreter _interpreter;
@@ -198,17 +218,88 @@ class CommandService {
         requestId: requestId,
       );
     }
-    // media.play: understood, but no player is wired yet.
-    final detail = switch (command.action) {
-      AgentActions.mediaPlay =>
-        'Playing "${command.arguments['playlist'] ?? 'your music'}" isn\'t wired up yet — but I understood, and I\'ll remember it.',
-      _ => 'This command is not available yet.',
-    };
-    return AgentDispatchResult(
+    if (command.action == AgentActions.clipboardWrite) {
+      return dispatchCommand(
+        command: command,
+        approval: approval,
+        requestId: requestId,
+      );
+    }
+    if (command.action == AgentActions.greet ||
+        command.action == AgentActions.timeGet ||
+        command.action == AgentActions.mathCalc) {
+      return _localAnswer(command);
+    }
+    if (command.action == AgentActions.mediaPlay) {
+      final playlist = command.arguments['playlist'];
+      return AgentDispatchResult(
+        status: AgentResultStatus.unavailable,
+        message: 'Playing "${playlist ?? 'your music'}" isn\'t wired up yet — but I understood, and I\'ll remember your choice.',
+      );
+    }
+    // The rest of the catalog: understood, honestly unwired.
+    final message = _notWiredMessages[command.action];
+    if (message != null) {
+      return AgentDispatchResult(
+        status: AgentResultStatus.unavailable,
+        message: message,
+      );
+    }
+    return const AgentDispatchResult(
       status: AgentResultStatus.unavailable,
-      message: detail,
+      message: 'This command is not available yet.',
     );
   }
+
+  /// Locally executable intents that need no device: greeting, time, math.
+  AgentDispatchResult _localAnswer(ParsedCommand command) {
+    switch (command.action) {
+      case AgentActions.greet:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Hello! I can list your devices, blink your ESP32, tell you the time, do simple math, and copy text to your other devices. Ask me anything — and if I don\'t understand, I\'ll ask you to teach me.',
+          ),
+        );
+      case AgentActions.timeGet:
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(_formatTime(command.arguments['kind'])),
+        );
+      case AgentActions.mathCalc:
+        final result = evaluateMath(command.arguments['expr'] as String? ?? '');
+        if (result == null) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'I couldn\'t work that out — try something like "what is 2 plus 2".',
+          );
+        }
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('${command.arguments['expr']} = ${_formatNumber(result)}'),
+        );
+      default:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: 'This command is not available yet.',
+        );
+    }
+  }
+
+  String _formatTime(Object? kind) {
+    final now = DateTime.now();
+    if (kind == 'date') {
+      const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+      const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      return 'It\'s ${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}, ${now.year}.';
+    }
+    final hh = now.hour.toString().padLeft(2, '0');
+    final mm = now.minute.toString().padLeft(2, '0');
+    return 'It\'s $hh:$mm.';
+  }
+
+  String _formatNumber(double value) =>
+      value == value.roundToDouble() ? value.toInt().toString() : value.toString();
 
   ParsedCommand _withArgument(
     ParsedCommand command,
@@ -239,4 +330,66 @@ class CommandService {
         .toList();
     return matches.length == 1 ? matches.single : null;
   }
+}
+
+/// Safely evaluates a small arithmetic expression: numbers, `+ - * /` and
+/// parentheses. Returns null for anything invalid (empty, bad tokens, or
+/// division by zero). No dynamic code is ever executed.
+double? evaluateMath(String expr) {
+  final clean = expr.trim();
+  if (clean.isEmpty || RegExp(r'[^0-9+\-*/(). ]').hasMatch(clean)) return null;
+  final tokens = RegExp(r'\d+(\.\d+)?|[()+\-*/]')
+      .allMatches(clean)
+      .map((m) => m.group(0)!)
+      .toList();
+  final values = <double>[];
+  final ops = <String>[];
+
+  int precedence(String op) => op == '+' || op == '-' ? 1 : 2;
+
+  bool apply() {
+    if (values.length < 2 || ops.isEmpty) return false;
+    final b = values.removeLast();
+    final a = values.removeLast();
+    final op = ops.removeLast();
+    switch (op) {
+      case '+':
+        values.add(a + b);
+      case '-':
+        values.add(a - b);
+      case '*':
+        values.add(a * b);
+      case '/':
+        if (b == 0) return false;
+        values.add(a / b);
+    }
+    return true;
+  }
+
+  for (final token in tokens) {
+    if (RegExp(r'^\d').hasMatch(token)) {
+      values.add(double.parse(token));
+      continue;
+    }
+    if (token == '(') {
+      ops.add(token);
+      continue;
+    }
+    if (token == ')') {
+      while (ops.isNotEmpty && ops.last != '(') {
+        if (!apply()) return null;
+      }
+      if (ops.isEmpty) return null;
+      ops.removeLast();
+      continue;
+    }
+    while (ops.isNotEmpty && ops.last != '(' && precedence(ops.last) >= precedence(token)) {
+      if (!apply()) return null;
+    }
+    ops.add(token);
+  }
+  while (ops.isNotEmpty) {
+    if (!apply()) return null;
+  }
+  return values.length == 1 && ops.isEmpty ? values.single : null;
 }

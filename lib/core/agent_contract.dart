@@ -7,6 +7,24 @@ abstract final class AgentActions {
   static const deviceList = 'device.list';
   static const ledBlink = 'led.blink';
   static const mediaPlay = 'media.play';
+  static const musicControl = 'music.control';
+  static const homeControl = 'home.control';
+  static const messageSend = 'communication.message';
+  static const callPlace = 'communication.call';
+  static const weatherGet = 'info.weather';
+  static const reminderSet = 'reminder.set';
+  static const alarmSet = 'alarm.set';
+  static const timerSet = 'timer.set';
+  static const navigationRoute = 'navigation.route';
+  static const webSearch = 'search.web';
+  static const noteCreate = 'note.create';
+  static const translateText = 'translate.text';
+  static const calendarGet = 'calendar.get';
+  static const newsGet = 'info.news';
+  static const greet = 'greet';
+  static const timeGet = 'time.get';
+  static const mathCalc = 'math.calc';
+  static const clipboardWrite = 'clipboard.write';
 }
 
 class ParsedCommand {
@@ -95,6 +113,14 @@ class AgentActionPlan extends AgentDispatch {
   final AgentRequest request;
 
   const AgentActionPlan(this.request);
+}
+
+/// A plain answer, rendered as text — e.g. the time, a math result, or a
+/// greeting. No device action is involved.
+class AgentMessage extends AgentDispatch {
+  final String text;
+
+  const AgentMessage(this.text);
 }
 
 /// The assistant needs one more piece of information before it can act —
@@ -228,6 +254,36 @@ AgentDispatchResult dispatchCommand({
     return AgentDispatchResult(
       status: AgentResultStatus.succeeded,
       dispatch: AgentDeviceList(List.unmodifiable(devices)),
+    );
+  }
+  // clipboard.write: an explicit, cross-device action — it pushes text to
+  // every other device and needs the same local approval as a hardware action.
+  if (command.action == AgentActions.clipboardWrite &&
+      command.target == 'local') {
+    final text = (command.arguments['text'] as String?)?.trim() ?? '';
+    if (text.isEmpty) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.unavailable,
+        message: 'Nothing to copy. Try "copy hello to my phone".',
+      );
+    }
+    if (approval == AgentApproval.required) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.required,
+        message: 'Local approval is required.',
+      );
+    }
+    if (approval == AgentApproval.denied) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.denied,
+        message: 'The action was denied locally.',
+      );
+    }
+    return AgentDispatchResult(
+      status: AgentResultStatus.succeeded,
+      dispatch: AgentActionPlan(
+        command.toRequest(requestId: requestId, approval: AgentApproval.approved),
+      ),
     );
   }
   if (command.action != AgentActions.ledBlink) {
