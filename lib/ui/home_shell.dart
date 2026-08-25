@@ -186,7 +186,7 @@ class _HomeShellState extends State<HomeShell> {
         final views = [
           DevicesView(mesh: widget.mesh),
           FilesView(mesh: widget.mesh),
-          const AssistantView(),
+          AssistantView(mesh: widget.mesh),
           SettingsView(
             mesh: widget.mesh,
             onCheckForUpdate: () => _checkForUpdates(force: true),

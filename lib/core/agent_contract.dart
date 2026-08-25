@@ -6,6 +6,7 @@
 abstract final class AgentActions {
   static const deviceList = 'device.list';
   static const ledBlink = 'led.blink';
+  static const mediaPlay = 'media.play';
 }
 
 class ParsedCommand {
@@ -96,6 +97,28 @@ class AgentActionPlan extends AgentDispatch {
   const AgentActionPlan(this.request);
 }
 
+/// The assistant needs one more piece of information before it can act —
+/// either a missing argument ("which playlist?") or a phrase it has never
+/// heard before ("what should \"bring me home\" mean?"). The UI shows the
+/// question and sends the answer back through the same input box.
+class AgentClarification extends AgentDispatch {
+  final String question;
+
+  /// Identifies what is being asked. `arg:<key>` asks for an argument
+  /// default (e.g. `arg:media.play.playlist`); `teach:<phrase>` asks the user
+  /// to teach a new phrase by typing the command it should mean.
+  final String key;
+
+  /// Optional examples / expected shape, shown under the question.
+  final String? hint;
+
+  const AgentClarification({
+    required this.question,
+    required this.key,
+    this.hint,
+  });
+}
+
 class AgentDispatchResult {
   final AgentResultStatus status;
   final String message;
@@ -147,7 +170,7 @@ class DeviceCapabilities {
 
 enum AgentApproval { required, approved, denied }
 
-enum AgentResultStatus { succeeded, required, denied, unavailable }
+enum AgentResultStatus { succeeded, required, denied, unavailable, needsInfo }
 
 class AgentRequest {
   final int version;
@@ -216,6 +239,18 @@ AgentDispatchResult dispatchCommand({
       message: 'A target device is required.',
     );
   }
+  // Validate the target and capability BEFORE asking for approval: an
+  // approval prompt for a device that does not exist (or cannot blink) is
+  // worse than an honest "unavailable".
+  final target = targetDevice;
+  if (target == null ||
+      target.deviceId.toLowerCase() != command.target.toLowerCase() ||
+      !target.supports(AgentActions.ledBlink)) {
+    return const AgentDispatchResult(
+      status: AgentResultStatus.unavailable,
+      message: 'The target does not support led.blink.',
+    );
+  }
   if (approval == AgentApproval.required) {
     return const AgentDispatchResult(
       status: AgentResultStatus.required,
@@ -226,15 +261,6 @@ AgentDispatchResult dispatchCommand({
     return const AgentDispatchResult(
       status: AgentResultStatus.denied,
       message: 'The action was denied locally.',
-    );
-  }
-  final target = targetDevice;
-  if (target == null ||
-      target.deviceId.toLowerCase() != command.target.toLowerCase() ||
-      !target.supports(AgentActions.ledBlink)) {
-    return const AgentDispatchResult(
-      status: AgentResultStatus.unavailable,
-      message: 'The target does not support led.blink.',
     );
   }
   final request = command.toRequest(

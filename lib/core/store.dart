@@ -73,6 +73,31 @@ class NexusStore {
   Map<String, dynamic> _settings() =>
       _data.putIfAbsent('settings', () => <String, dynamic>{});
 
+  /// Phrases the user taught the assistant, mapped to the command they mean
+  /// ("bring me home" -> "show my devices"). Survives restarts.
+  Map<String, String> get agentLearned =>
+      Map<String, String>.from(
+        (_data['agent'] as Map<String, dynamic>?)?['learned'] as Map? ?? const {},
+      );
+
+  set agentLearned(Map<String, String> value) {
+    _agentSection()['learned'] = Map<String, dynamic>.of(value);
+  }
+
+  /// Remembered answers to "which …?" questions, keyed by the argument
+  /// (e.g. `media.play.playlist` -> "Chill Mix"). Survives restarts.
+  Map<String, dynamic> get agentDefaults =>
+      Map<String, dynamic>.from(
+        (_data['agent'] as Map<String, dynamic>?)?['defaults'] as Map? ?? const {},
+      );
+
+  set agentDefaults(Map<String, dynamic> value) {
+    _agentSection()['defaults'] = Map<String, dynamic>.of(value);
+  }
+
+  Map<String, dynamic> _agentSection() =>
+      _data.putIfAbsent('agent', () => <String, dynamic>{}) as Map<String, dynamic>;
+
   List<Map<String, dynamic>> get pairedDevices =>
       ((_data['paired'] as List?) ?? const [])
           .whereType<Map<String, dynamic>>()
