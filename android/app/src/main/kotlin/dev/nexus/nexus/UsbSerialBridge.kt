@@ -75,9 +75,9 @@ class UsbSerialBridge(private val activity: MainActivity) {
     }
 
     private fun listDevices(): List<Map<String, Any>> {
-        val prober = UsbSerialProber.getDefaultProber()
         val out = mutableListOf<Map<String, Any>>()
         try {
+            val prober = UsbSerialProber.getDefaultProber()
             for (driver in prober.findAllDrivers(usbManager)) {
                 out.add(
                     mapOf(

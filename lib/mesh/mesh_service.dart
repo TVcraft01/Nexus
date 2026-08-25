@@ -362,16 +362,26 @@ class MeshService extends ChangeNotifier {
   /// Ensures the serial bridge exists and starts scanning the cable. Uses the
   /// platform-appropriate transport (USB-OTG on Android, /dev/ttyUSB* on
   /// Linux). No-op where neither exists.
+  ///
+  /// This is best-effort — Android's USB stack can be temperamental during
+  /// cold starts. If it fails the app keeps running; the user can still open
+  /// the cable pair page later to retry.
   Future<SerialBridge?> ensureSerialBridge() async {
     if (_serial != null) {
-      await _serial!.startScan();
+      try {
+        await _serial!.startScan();
+      } catch (_) {}
       return _serial;
     }
     SerialTransport? transport;
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      transport = AndroidUsbSerialTransport.defaultInstance();
-    } else if (defaultTargetPlatform == TargetPlatform.linux) {
-      transport = LinuxSerialTransport();
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        transport = AndroidUsbSerialTransport.defaultInstance();
+      } else if (defaultTargetPlatform == TargetPlatform.linux) {
+        transport = LinuxSerialTransport();
+      }
+    } catch (_) {
+      return null;
     }
     if (transport == null) return null;
     final bridge = SerialBridge(
@@ -384,7 +394,12 @@ class MeshService extends ChangeNotifier {
       saveKnown: _saveKnownSerialDevices,
     );
     _serial = bridge;
-    await bridge.startScan();
+    try {
+      await bridge.startScan();
+    } catch (_) {
+      // startScan failed — the bridge is registered but has no open ports.
+      // The cable pair page will re-try startScan when the user opens it.
+    }
     notifyListeners();
     return bridge;
   }
@@ -550,7 +565,8 @@ class MeshService extends ChangeNotifier {
     // in shows up in Devices without opening the pairing page first. On
     // Android this lists USB devices immediately; the permission prompt only
     // appears when the user actually pairs (opens a device).
-    unawaited(ensureSerialBridge());
+    // Best-effort: the cable is a nice-to-have, not a boot requirement.
+    ensureSerialBridge().catchError((_) => null);
     notifyListeners();
   }
 
