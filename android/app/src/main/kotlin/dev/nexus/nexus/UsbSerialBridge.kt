@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.util.Base64
+import androidx.core.content.ContextCompat
 import android.util.Log
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
@@ -246,6 +247,6 @@ class UsbSerialBridge(private val activity: MainActivity) {
             }
         }
         permissionReceiver = receiver
-        activity.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION))
+        activity.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION), ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 }
