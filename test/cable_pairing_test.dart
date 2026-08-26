@@ -24,6 +24,13 @@ void main() {
     });
   });
 
+  group('tunnelCandidates', () {
+    test('tries the mesh port first, then consecutive free ports', () {
+      expect(CablePairing.tunnelCandidates(51820), [51820, 51821, 51822, 51823]);
+      expect(CablePairing.tunnelCandidates(9000), [9000, 9001, 9002, 9003]);
+    });
+  });
+
   group('linuxSetupScript', () {
     test('produces a runnable script mentioning install and pairing', () {
       final script = CablePairing.linuxSetupScript();

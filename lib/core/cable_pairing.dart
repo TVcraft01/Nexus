@@ -98,21 +98,31 @@ class CablePairing {
     return tag ?? 'latest';
   }
 
-  /// Maps [port] on the phone to the same port on this PC over the cable, so
-  /// the phone can reach this PC's mesh server without Wi-Fi.
-  static Future<bool> reverseTunnel(String serial, int port) async {
-    try {
-      final result = await Process.run('adb', ['-s', serial, 'reverse', 'tcp:$port', 'tcp:$port']);
-      if (result.exitCode != 0) {
-        debugPrint('NEXUS cable: adb reverse failed: ${result.stderr}');
-        return false;
+  /// Candidate phone-side ports for the cable tunnel. [pcPort] itself is
+  /// tried first (it works when the app is not yet running on the phone);
+  /// the following ports cover the common case where the phone's own mesh
+  /// is already listening on [pcPort], which makes that exact mapping fail.
+  static List<int> tunnelCandidates(int pcPort) =>
+      [pcPort, pcPort + 1, pcPort + 2, pcPort + 3];
+
+  /// Opens a reverse tunnel so the phone can reach this PC's mesh server
+  /// ([pcPort]) over the cable — no Wi-Fi needed. Maps a *free* port on the
+  /// phone to the PC's mesh port and returns the phone-side port the phone
+  /// should connect to, or null when every candidate failed.
+  static Future<int?> openTunnel(String serial, int pcPort) async {
+    for (final local in tunnelCandidates(pcPort)) {
+      try {
+        final result = await Process.run(
+          'adb',
+          ['-s', serial, 'reverse', 'tcp:$local', 'tcp:$pcPort'],
+        );
+        if (result.exitCode == 0) return local;
+        debugPrint('NEXUS cable: adb reverse tcp:$local failed: ${result.stderr}');
+      } catch (_) {
+        // adb missing or device gone — try the next candidate.
       }
-      // adb reverse silently no-ops when the target process is gone; the
-      // port mapping is what matters and it succeeded.
-      return true;
-    } catch (_) {
-      return false;
     }
+    return null;
   }
 
   /// Generates a setup script that installs the Linux build of Nexus on a
