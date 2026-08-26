@@ -189,8 +189,22 @@ class NexusStore {
     }
   }
 
+  /// Saves are chained so concurrent calls never write the same `.tmp` path
+  /// at the same time. The old code raced: a second save could write the
+  /// temp file while the first was renaming it, and the first's rename then
+  /// deleted the second's file mid-write — failing the whole save.
+  Future<void> _saveChain = Future<void>.value();
+
   Future<void> save() async {
     final file = _file ??= await _defaultFile();
+    final run = _saveChain.then((_) => _writeTo(file));
+    // The chain must never hold an error, or every later save would be
+    // skipped; callers still see failures through `run`.
+    _saveChain = run.catchError((_) {});
+    await run;
+  }
+
+  Future<void> _writeTo(File file) async {
     await file.parent.create(recursive: true);
     final tmp = File('${file.path}.tmp');
     await tmp.writeAsString(jsonEncode(_data), flush: true);
