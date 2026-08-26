@@ -287,6 +287,7 @@ class MeshService extends ChangeNotifier {
   DiscoveryService? _discovery;
   Timer? _heartbeatTimer;
   Timer? _clipboardTimer;
+  bool _foreground = true;
   bool _heartbeatRunning = false;
   bool _clipboardSending = false;
   String? _lastClipboard;
@@ -653,6 +654,19 @@ class MeshService extends ChangeNotifier {
     // Best-effort: the cable is a nice-to-have, not a boot requirement.
     ensureSerialBridge().catchError((_) => null);
     notifyListeners();
+  }
+
+  /// Battery: poll the clipboard fast only while someone is using the app;
+  /// back off when it is backgrounded. Clipboard sync still works in the
+  /// background — just with up to ~15 s of extra latency.
+  void setForeground(bool foreground) {
+    if (_foreground == foreground || _clipboardTimer == null) return;
+    _foreground = foreground;
+    _clipboardTimer!.cancel();
+    _clipboardTimer = Timer.periodic(
+      foreground ? const Duration(milliseconds: 1500) : const Duration(seconds: 15),
+      (_) => _checkClipboard(),
+    );
   }
 
   void _loadPaired() {
