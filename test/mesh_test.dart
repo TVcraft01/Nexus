@@ -1147,6 +1147,59 @@ void main() {
     expect(reply!.status, AgentResultStatus.unavailable);
     expect(reply.message, contains('calls'));
   });
+
+  test('a phrase taught on one device syncs to its paired peers', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    String? seenPhrase;
+    String? seenMeaning;
+    meshB.onLearnedPhraseReceived = (phrase, meaning) {
+      seenPhrase = phrase;
+      seenMeaning = meaning;
+    };
+
+    await meshA.broadcastLearnedPhrase('call tvcraft', 'call tvcraft01 〘✘δτκ⑤⑦〙');
+
+    await _waitFor(() => seenPhrase != null);
+    expect(seenPhrase, 'call tvcraft');
+    expect(seenMeaning, 'call tvcraft01 〘✘δτκ⑤⑦〙');
+    // Persisted on the peer, and usable right away via the live callback.
+    expect(meshB.store.agentLearned['call tvcraft'], 'call tvcraft01 〘✘δτκ⑤⑦〙');
+  });
+
+  test('a local correction wins over a conflicting synced meaning', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    // B taught "call tvcraft" -> "call bob" locally; A syncs a different one.
+    meshB.store.agentLearned = {'call tvcraft': 'call bob'};
+    var adopted = false;
+    meshB.onLearnedPhraseReceived = (_, _) => adopted = true;
+
+    await meshA.broadcastLearnedPhrase('call tvcraft', 'call alice');
+
+    // Give the mesh a moment to deliver (and be rejected) — nothing may adopt.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(adopted, isFalse);
+    expect(meshB.store.agentLearned['call tvcraft'], 'call bob');
+  });
 }
 
 /// Polls until [cond] is true (with a timeout), so tests don't depend on

@@ -244,6 +244,8 @@ class NexusApp extends StatefulWidget {
 }
 
 class _NexusAppState extends State<NexusApp> with WindowListener {
+  late final AppLifecycleListener _lifecycle;
+
   @override
   void initState() {
     super.initState();
@@ -251,10 +253,17 @@ class _NexusAppState extends State<NexusApp> with WindowListener {
       windowManager.addListener(this);
       windowManager.setPreventClose(true);
     }
+    // Battery: mesh work (clipboard polling) runs fast in the foreground and
+    // backs off when the app is backgrounded.
+    _lifecycle = AppLifecycleListener(
+      onStateChange: (state) =>
+          widget.mesh.setForeground(state == AppLifecycleState.resumed),
+    );
   }
 
   @override
   void dispose() {
+    _lifecycle.dispose();
     if (defaultTargetPlatform == TargetPlatform.linux) {
       windowManager.removeListener(this);
     }

@@ -40,6 +40,11 @@ class CommandService {
   final Map<String, dynamic> _defaults;
   final void Function()? onMemoryChanged;
 
+  /// Fired when the user teaches a phrase on THIS device, so the view can
+  /// broadcast it to paired devices. Never fired for phrases adopted from a
+  /// peer (that would re-broadcast and loop the mesh).
+  final void Function(String phrase, String meaning)? onPhraseLearned;
+
   /// The device the assistant is running on (with its capabilities). Used to
   /// decide whether an action can run here or should be offered to another
   /// device ("Do it on My Phone?").
@@ -66,6 +71,7 @@ class CommandService {
     required this.devices,
     AgentMemory memory = const AgentMemory(),
     this.onMemoryChanged,
+    this.onPhraseLearned,
     this.local,
     this.locallyExecutable = const {},
     this._interpreter = const CommandInterpreter(),
@@ -98,7 +104,7 @@ class CommandService {
       }
     }
 
-    final normalized = text.toLowerCase();
+    final normalized = CommandInterpreter.normalizePhrase(text);
 
     // 1. A taught phrase wins: the user already told us what this means.
     final taught = _learned[normalized];
@@ -140,7 +146,7 @@ class CommandService {
           dispatch: AgentClarification(
             question: 'I don\'t understand "$text" yet.',
             key: 'teach:$normalized',
-            hint: 'Teach me: type the command it should mean, e.g. "show my devices".',
+            hint: 'Teach me what it should mean — or tap "what can you do" below to see everything I know.',
           ),
         );
     }
@@ -156,7 +162,7 @@ class CommandService {
   ) {
     if (key.startsWith('teach:')) {
       final phrase = key.substring('teach:'.length);
-      final interpreted = _interpreter.interpret(answer.toLowerCase());
+      final interpreted = _interpreter.interpret(answer);
       if (interpreted.outcome != InterpretOutcome.matched) {
         _pendingContext[key] = phrase; // still waiting for a good answer
         return AgentDispatchResult(
@@ -168,8 +174,9 @@ class CommandService {
           ),
         );
       }
-      _learned[phrase] = answer.toLowerCase();
+      _learned[CommandInterpreter.normalizePhrase(phrase)] = answer;
       onMemoryChanged?.call();
+      onPhraseLearned?.call(CommandInterpreter.normalizePhrase(phrase), answer);
       return _dispatchParsed(interpreted.command!, approval, requestId);
     }
     if (key.startsWith('arg:')) {
@@ -281,7 +288,8 @@ class CommandService {
     }
     if (action == AgentActions.greet ||
         action == AgentActions.timeGet ||
-        action == AgentActions.mathCalc) {
+        action == AgentActions.mathCalc ||
+        action == AgentActions.helpGet) {
       return _localAnswer(command);
     }
     if (_routableActions.contains(action)) {
@@ -330,6 +338,9 @@ class CommandService {
     AgentActions.translateText,
     AgentActions.calendarGet,
     AgentActions.newsGet,
+    AgentActions.batteryGet,
+    AgentActions.torchToggle,
+    AgentActions.volumeSet,
   };
 
   /// Finds the device an action should run on, or asks the user to pick one.
@@ -357,6 +368,8 @@ class CommandService {
     // A device named in the command wins; otherwise fall back to the one
     // remembered for this action, then any "on my phone" suffix.
     hint ??= _pendingDeviceChoice[command.action];
+    // The choice survives restarts: asked once, remembered forever.
+    hint ??= _defaults['device:${command.action}'] as String?;
     hint ??= rawInput == null ? null : _deviceSuffix(rawInput)?.$2;
     if (hint != null && hint.isNotEmpty) {
       final target = _resolve(hint, _allDevices());
@@ -372,9 +385,13 @@ class CommandService {
           message: '${target.name} can\'t do that.',
         );
       }
-      // Remember the choice so the approval re-run and future commands of
-      // the same kind go straight there.
+      // Remember the choice so future commands of the same kind go straight
+      // there — in this session AND after a restart (via [defaults]).
       _pendingDeviceChoice[command.action] = target.id;
+      if (_defaults['device:${command.action}'] != target.id) {
+        _defaults['device:${command.action}'] = target.id;
+        onMemoryChanged?.call();
+      }
       return _devicePlan(
         command: ParsedCommand(
           action: command.action,
@@ -433,7 +450,11 @@ class CommandService {
     required AgentApproval approval,
     required String requestId,
   }) {
-    if (approval == AgentApproval.required) {
+    // Locally-executable actions (calls on Android) run immediately from
+    // typed input — no Approve/Deny prompt. Remote requests keep their own
+    // gate in handleRemoteRequest.
+    final autoRun = locallyExecutable.contains(command.action);
+    if (approval == AgentApproval.required && !autoRun) {
       return const AgentDispatchResult(
         status: AgentResultStatus.required,
         message: 'Local approval is required.',
@@ -512,12 +533,39 @@ class CommandService {
       case AgentActions.greet:
       case AgentActions.timeGet:
       case AgentActions.mathCalc:
+      case AgentActions.helpGet:
         return _localAnswer(command);
       default:
         // The requester already routed this to us as the capable device — run
         // it here. For now the catalog honestly says nothing is wired up.
         return _unwired(command);
     }
+  }
+
+  /// Teaches that [phrase] means [meaning] (a command the interpreter
+  /// knows, e.g. "call TVcraft01 〘✘ΔτΚ⑤⑦〙"), persists via [onMemoryChanged],
+  /// and runs it now — so "who did you mean?" only ever has to be answered
+  /// once per wording.
+  AgentDispatchResult learnAndRun(String phrase, String meaning) {
+    final key = CommandInterpreter.normalizePhrase(phrase);
+    if (key.isEmpty) {
+      return const AgentDispatchResult(status: AgentResultStatus.unavailable);
+    }
+    final cmd = meaning.trim().toLowerCase();
+    _learned[key] = cmd;
+    onMemoryChanged?.call();
+    onPhraseLearned?.call(key, cmd);
+    return _dispatchInput(meaning, AgentApproval.approved, 'learned-phrase');
+  }
+
+  /// Adopts a phrase taught on a paired device and synced over the mesh.
+  /// Persists like a local teach, but never fires [onPhraseLearned] — the
+  /// knowledge came FROM the mesh, broadcasting it back would loop forever.
+  void adoptLearned(String phrase, String meaning) {
+    final key = CommandInterpreter.normalizePhrase(phrase);
+    if (key.isEmpty) return;
+    _learned[key] = meaning.trim().toLowerCase();
+    onMemoryChanged?.call();
   }
 
   bool _supports(AgentDeviceSnapshot device, String action) =>
@@ -528,6 +576,25 @@ class CommandService {
   /// Locally executable intents that need no device: greeting, time, math.
   AgentDispatchResult _localAnswer(ParsedCommand command) {
     switch (command.action) {
+      case AgentActions.helpGet:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Here is what I can do:\n'
+            '"call …" — I dial straight away, and if I\'m unsure who you mean I ask once and remember\n'
+            '"set an alarm for 6:30am" / "wake me at 7" — real phone alarms\n'
+            '"timer for 5 minutes" — real phone timer\n'
+            '"how much battery" — your battery at a glance\n'
+            '"flashlight on" / "flashlight off"\n'
+            '"volume up", "volume down", "mute"\n'
+            '"search for …" — opens a web search\n'
+            '"navigate to …" — opens directions\n'
+            '"note that …" — saves a note on this device\n'
+            '"what time is it" / "what is the date" / "what is 12 times 8"\n'
+            '"copy … to my devices" / "show my devices" / "blink the ESP32"\n'
+            'If I misunderstand, just teach me once — I remember.',
+          ),
+        );
       case AgentActions.greet:
         return const AgentDispatchResult(
           status: AgentResultStatus.succeeded,

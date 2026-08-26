@@ -1,13 +1,20 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart'
+    show getApplicationDocumentsDirectory;
 
 import '../core/agent_contract.dart';
+import '../core/command_interpreter.dart';
 import '../core/command_service.dart';
+import '../core/device_actions.dart';
 import '../core/phone_actions.dart';
+import '../core/query_log.dart';
 import '../mesh/mesh_service.dart';
+import 'nexus_header.dart';
 import 'theme.dart';
 
 /// The assistant is a translator from human to machine: it asks when it
@@ -27,14 +34,21 @@ class _AssistantViewState extends State<AssistantView> {
   final _controller = TextEditingController();
   final _focus = FocusNode();
   String _lastInput = '';
-  AgentDispatchResult? _result;
+  /// The conversation: user bubbles and assistant cards, in order.
+  final List<_ThreadEntry> _thread = [];
   late final CommandService _service;
   String? _pendingKey; // a clarification is open; the next input answers it
   String? _reply; // outcome shown on whichever plan card is open
   bool _sending = false;
 
+  /// An open "who did you mean?" question after an unresolved contact.
+  ({String phrase, List<String> candidates})? _pendingContactAsk;
+
   /// Runs real phone actions (dialing) on Android; elsewhere answers honestly.
   final PhoneActionBackend _phoneBackend = RealPhoneActionBackend();
+
+  /// Runs the small device-local actions (alarms, timers, torch…).
+  final DeviceActionBackend _deviceBackend = RealDeviceActionBackend();
 
   @override
   void initState() {
@@ -47,9 +61,19 @@ class _AssistantViewState extends State<AssistantView> {
         online: true,
         capabilities: defaultCapabilitiesFor(widget.mesh.identity.platform),
       ),
-      // On Android this device can really place calls, so "call …" plans here.
+      // On Android these run natively on THIS device from typed input alone.
       locallyExecutable: defaultTargetPlatform == TargetPlatform.android
-          ? const {AgentActions.callPlace}
+          ? const {
+              AgentActions.callPlace,
+              AgentActions.alarmSet,
+              AgentActions.timerSet,
+              AgentActions.webSearch,
+              AgentActions.navigationRoute,
+              AgentActions.noteCreate,
+              AgentActions.batteryGet,
+              AgentActions.torchToggle,
+              AgentActions.volumeSet,
+            }
           : const {},
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
@@ -61,11 +85,22 @@ class _AssistantViewState extends State<AssistantView> {
         // Best-effort persist — never a boot requirement.
         unawaited(widget.mesh.store.save());
       },
+      // Teach once here, know it on every paired device: any locally taught
+      // phrase is broadcast over the mesh so the other phones learn it too.
+      onPhraseLearned: (phrase, meaning) {
+        unawaited(widget.mesh.broadcastLearnedPhrase(phrase, meaning));
+      },
     );
+    // And the other direction — adopt phrases taught on paired devices, live
+    // (not only after a restart).
+    widget.mesh.onLearnedPhraseReceived = (phrase, meaning) {
+      _service.adoptLearned(phrase, meaning);
+    };
   }
 
   @override
   void dispose() {
+    widget.mesh.onLearnedPhraseReceived = null;
     _controller.dispose();
     _focus.dispose();
     super.dispose();
@@ -115,6 +150,9 @@ class _AssistantViewState extends State<AssistantView> {
     String input, {
     AgentApproval approval = AgentApproval.required,
     String? answerTo,
+    // Approval re-runs (Approve/Deny) update the card they belong to instead
+    // of appending a new one — the exchange stays one bubble pair.
+    bool replaceLast = false,
   }) {
     final result = _service.execute(
       input,
@@ -123,15 +161,217 @@ class _AssistantViewState extends State<AssistantView> {
       requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
       answerTo: answerTo,
     );
+    _logAsk(input, result);
+    _consume(
+      result,
+      asUser: input.trim(),
+      typedPhrase: input.trim().toLowerCase(),
+      replaceLast: replaceLast,
+    );
+  }
+
+  /// Every ask and its outcome lands in the query log — raw material for
+  /// improving matching and catching bugs.
+  void _logAsk(String input, AgentDispatchResult result) {
+    final route = switch (result.dispatch) {
+      final AgentActionPlan plan => plan.request.action,
+      final AgentClarification ask => ask.key,
+      final AgentMessage _ => 'message',
+      _ => '',
+    };
+    QueryLog.i.ask(input.trim(), result.status.name, route, result.message);
+  }
+
+  /// Actions this device executes itself, straight after planning — typing
+  /// "wake me at 7" sets a real alarm with zero extra taps.
+  static const _selfRunActions = {
+    AgentActions.callPlace,
+    AgentActions.alarmSet,
+    AgentActions.timerSet,
+    AgentActions.webSearch,
+    AgentActions.navigationRoute,
+    AgentActions.noteCreate,
+    AgentActions.batteryGet,
+    AgentActions.torchToggle,
+    AgentActions.volumeSet,
+  };
+
+  /// Appends to (or, for re-runs, updates the end of) the thread. No
+  /// setState — callers own the rebuild.
+  void _appendResult(AgentDispatchResult result, {String? asUser, bool replaceLast = false}) {
+    if (replaceLast && _thread.isNotEmpty) {
+      _thread[_thread.length - 1] = _ThreadEntry.result(result);
+    } else {
+      if (asUser != null && asUser.isNotEmpty) _thread.add(_ThreadEntry.user(asUser));
+      _thread.add(_ThreadEntry.result(result));
+    }
+    _pendingKey = switch (result.dispatch) {
+      final AgentClarification clarification => clarification.key,
+      _ => null,
+    };
+  }
+
+  /// Shows a dispatch result — and starts self-run actions right away.
+  void _consume(AgentDispatchResult result, {String? asUser, String? typedPhrase, bool replaceLast = false}) {
+    setState(() => _appendResult(result, asUser: asUser, replaceLast: replaceLast));
+    if (result.dispatch case final AgentActionPlan plan
+        when plan.request.target == widget.mesh.identity.id &&
+            _selfRunActions.contains(plan.request.action)) {
+      plan.request.action == AgentActions.callPlace
+          ? unawaited(_placeLocalCall(plan.request, typedPhrase ?? ''))
+          : unawaited(_runSelfAction(plan.request));
+    }
+  }
+
+  Future<void> _runSelfAction(AgentRequest request) async {
     setState(() {
-      _result = result;
-      // A clarification asks a question: the next submission is the answer.
-      if (result.dispatch case final AgentClarification clarification) {
-        _pendingKey = clarification.key;
-      } else {
-        _pendingKey = null;
-      }
+      _sending = true;
+      _reply = null;
     });
+    // Follow-up answers arrive as plain strings ('time': '7am') — parse them
+    // into what the native side expects.
+    final prepared = Map<String, dynamic>.of(request.arguments);
+    if (request.action == AgentActions.alarmSet && prepared['hour'] == null) {
+      final parsed =
+          CommandInterpreter.parseClockTime(prepared['time']?.toString() ?? '');
+      if (parsed == null) {
+        _showSelfOutcome(false, 'I still need a time — like 7am or 18:30.');
+        return;
+      }
+      prepared
+        ..remove('time')
+        ..['hour'] = parsed.$1
+        ..['minute'] = parsed.$2;
+    }
+    if (request.action == AgentActions.timerSet && prepared['seconds'] is! int) {
+      final seconds =
+          CommandInterpreter.parseDurationSeconds(prepared['seconds']?.toString() ?? '');
+      if (seconds == null) {
+        _showSelfOutcome(false, 'How long should it run? Try "5 minutes".');
+        return;
+      }
+      prepared['seconds'] = seconds;
+    }
+    final ActionResult outcome;
+    if (request.action == AgentActions.noteCreate) {
+      outcome = await _appendNote(prepared['text']?.toString() ?? '');
+    } else {
+      outcome = await _deviceBackend.run(request.action, prepared);
+    }
+    if (!mounted) return;
+    _showSelfOutcome(outcome.ok, outcome.message);
+  }
+
+  void _showSelfOutcome(bool ok, String message) {
+    setState(() {
+      _sending = false;
+      _appendResult(
+        AgentDispatchResult(
+          status: ok ? AgentResultStatus.succeeded : AgentResultStatus.unavailable,
+          message: ok ? '' : message,
+          dispatch: ok ? AgentMessage(message) : null,
+        ),
+        replaceLast: true,
+      );
+    });
+  }
+
+  Future<ActionResult> _appendNote(String text) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final f = File('${dir.path}${Platform.pathSeparator}nexus_notes.txt');
+      await f.writeAsString(
+        '${DateTime.now().toIso8601String()}  $text\n',
+        mode: FileMode.append,
+      );
+      return const ActionResult(true, 'Noted.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not save the note on this device.');
+    }
+  }
+
+  /// Places the call natively. When no contact matches closely enough, the
+  /// closest names become a question whose answer is taught for that exact
+  /// wording — asked once, remembered forever.
+  Future<void> _placeLocalCall(AgentRequest request, String phrase) async {
+    setState(() {
+      _sending = true;
+      _reply = null;
+    });
+    final contact = request.arguments['contact']?.toString() ?? '';
+    final outcome = await _phoneBackend.callContact(contact);
+    if (!mounted) return;
+    if (!outcome.placed && !outcome.launched && outcome.candidates.isNotEmpty) {
+      QueryLog.i.call(contact, 'asked', candidates: outcome.candidates);
+      final askPhrase = phrase.isNotEmpty ? phrase : 'call ${contact.toLowerCase()}';
+      setState(() {
+        _sending = false;
+        _pendingContactAsk = (phrase: askPhrase, candidates: outcome.candidates);
+        _appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.needsInfo,
+            dispatch: AgentClarification(
+              question:
+                  'I don\'t know "$contact" on this phone. Did you mean: ${outcome.candidates.join("  ·  ")}?',
+              key: 'contact:$askPhrase',
+              hint: 'Name one — I\'ll call them and remember this wording.',
+            ),
+          ),
+          replaceLast: true,
+        );
+      });
+      return;
+    }
+    QueryLog.i.call(
+      contact,
+      outcome.placed ? 'placed' : (outcome.launched ? 'dialer' : 'failed'),
+    );
+    setState(() {
+      _sending = false;
+      _reply = outcome.message;
+    });
+  }
+
+  /// Resolves a "who did you mean?" answer against the offered candidates,
+  /// teaches the wording, and places the call.
+  void _answerContactAsk(String text) {
+    final ask = _pendingContactAsk;
+    if (ask == null) return;
+    // Claim the pending ask immediately — a double-fired tap must not
+    // submit the original wording as an "answer".
+    _pendingContactAsk = null;
+    final lower = text.trim().toLowerCase();
+    final match = ask.candidates.firstWhere(
+      (c) =>
+          c.toLowerCase() == lower ||
+          c.toLowerCase().contains(lower) ||
+          lower.contains(c.toLowerCase()),
+      orElse: () => '',
+    );
+    if (match.isEmpty) {
+      setState(() {
+        _pendingContactAsk = ask;
+        _appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.needsInfo,
+            dispatch: AgentClarification(
+              question:
+                  'I don\'t see "${text.trim()}" here. Did you mean: ${ask.candidates.join("  ·  ")}?',
+              key: 'contact:${ask.phrase}',
+              hint: 'Name one of those, and I\'ll remember it.',
+            ),
+          ),
+          replaceLast: true,
+        );
+      });
+      return;
+    }
+    QueryLog.i.learned(ask.phrase, 'call $match');
+    _consume(
+      _service.learnAndRun(ask.phrase, 'call $match'),
+      asUser: text,
+      typedPhrase: ask.phrase,
+    );
   }
 
   void _onSubmit() {
@@ -140,6 +380,10 @@ class _AssistantViewState extends State<AssistantView> {
     _lastInput = text;
     _controller.clear();
     final pending = _pendingKey;
+    if (pending != null && pending.startsWith('contact:') && _pendingContactAsk != null) {
+      _answerContactAsk(text);
+      return;
+    }
     if (pending != null) {
       _execute(text, answerTo: pending);
     } else {
@@ -148,11 +392,11 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   void _approve() {
-    _execute(_lastInput, approval: AgentApproval.approved);
+    _execute(_lastInput, approval: AgentApproval.approved, replaceLast: true);
   }
 
   void _deny() {
-    _execute(_lastInput, approval: AgentApproval.denied);
+    _execute(_lastInput, approval: AgentApproval.denied, replaceLast: true);
   }
 
   /// Sends the actual blink payload to a serial device.
@@ -229,6 +473,7 @@ class _AssistantViewState extends State<AssistantView> {
   /// The remote device asked us to run an action — approve or deny locally,
   /// execute here, and send the outcome back over the mesh.
   Future<void> _handleIncoming(AgentRequest request, String from, bool approve) async {
+    QueryLog.i.remote(from, request.action, approve ? 'approved' : 'denied', request.arguments.toString());
     final result = approve &&
             request.action == AgentActions.callPlace &&
             defaultTargetPlatform == TargetPlatform.android
@@ -253,10 +498,94 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// One-tap examples — for anyone who doesn't know what to type yet.
+  Widget _suggestionChips() {
+    const suggestions = [
+      'what can you do',
+      'what time is it',
+      'how much battery',
+      'set an alarm for 7am',
+      'timer for 5 minutes',
+      'flashlight on',
+    ];
+    return SizedBox(
+      height: 40,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
+          for (final s in suggestions)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ActionChip(
+                label: Text(s, style: const TextStyle(fontSize: 12)),
+                onPressed: () {
+                  _controller.text = s;
+                  _onSubmit();
+                },
+              ),
+            ),
+          // Room to scroll the last chip clear of the edge.
+          const SizedBox(width: 16),
+        ],
+      ),
+    );
+  }
+
+  /// First-run guidance: three steps, one screen, no jargon.
+  Widget _welcomeView() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: NexusColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+          ),
+          child: const Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Hello! I am Nexus.',
+                style: TextStyle(color: NexusColors.text, fontWeight: FontWeight.w700, fontSize: 16),
+              ),
+              SizedBox(height: 10),
+              Text(
+                'Just type what you want, like you would say it:\n'
+                '1. Try a blue word below — tap one and watch.\n'
+                '2. "call …" dials right away; if I am not sure who,\n'
+                '    I ask once and remember forever.\n'
+                '3. Pair your other devices from the Devices tab — then\n'
+                '    I can also do things on them for you.\n',
+                style: TextStyle(color: NexusColors.muted, fontSize: 13, height: 1.45),
+              ),
+              Text(
+                'If I ever misunderstand, tell me what you meant — I learn.',
+                style: TextStyle(color: NexusColors.muted, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
+        // One header for every tab.
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 24, 20, 0),
+          child: NexusHeader(
+            icon: Icons.forum_rounded,
+            title: 'Assistant',
+            subtitle: 'Type it like you\'d say it — I\'ll take care of it.',
+          ),
+        ),
+        const SizedBox(height: 16),
         // Input bar
         Container(
           margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -291,6 +620,9 @@ class _AssistantViewState extends State<AssistantView> {
           ),
         ),
 
+        // One-tap examples under the input bar.
+        _suggestionChips(),
+
         // Result area — rebuilds when an action arrives from another device.
         Expanded(
           child: ListenableBuilder(
@@ -303,29 +635,95 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   Widget _buildResult() {
-    final result = _result;
-    if (result == null && _incoming() == null) {
-      return const Center(
-        child: Icon(Icons.mic_none_rounded, size: 48, color: NexusColors.muted),
-      );
+    if (_thread.isEmpty && _incoming() == null) {
+      return widget.mesh.pairedDevices.isEmpty ? _welcomeView() : _emptyChat();
     }
 
     final incoming = _incoming();
+    // reverse:true is the chat pattern — the newest exchange pins to the
+    // bottom automatically, and the incoming-request card (last child) stays
+    // pinned at the top.
+    final entries = _thread.reversed.toList();
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      reverse: true,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       children: [
+        for (final (i, entry) in entries.indexed) ...[_entryView(entry, isLast: i == 0), const SizedBox(height: 12)],
         if (incoming != null) ...[_incomingRequestView(incoming), const SizedBox(height: 12)],
-        if (result != null) ...[_statusChip(result.status, result.message), const SizedBox(height: 12)],
-        if (result?.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
-        if (result?.dispatch case final AgentActionPlan plan) _planView(plan),
-        if (result?.dispatch case final AgentMessage message)
-          message.live ? _liveClockView() : _messageView(message),
-        if (result?.dispatch case final AgentClarification ask) _questionView(ask),
-        if (result?.status == AgentResultStatus.required) ...[
-          const SizedBox(height: 12),
-          _approvalBar(),
-        ],
       ],
+    );
+  }
+
+  /// One exchange in the thread: a user bubble, or an assistant card with its
+  /// status chip (only on the newest exchange, so history stays calm).
+  Widget _entryView(_ThreadEntry entry, {required bool isLast}) {
+    if (entry.userText case final String user) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Semantics(
+          container: true,
+          label: 'You: $user',
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 320),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: NexusColors.accent.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: NexusColors.accent.withValues(alpha: 0.3)),
+            ),
+            child: Text(
+              user,
+              style: const TextStyle(color: NexusColors.text, fontSize: 13.5, height: 1.35),
+            ),
+          ),
+        ),
+      );
+    }
+    final result = entry.result!;
+    return Semantics(
+      container: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (isLast) ...[_statusChip(result.status, result.message), const SizedBox(height: 12)],
+          if (result.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
+          if (result.dispatch case final AgentActionPlan plan) _planView(plan),
+          if (result.dispatch case final AgentMessage message)
+            isLast && message.live ? _liveClockView() : _messageView(message),
+          if (result.dispatch case final AgentClarification ask) _questionView(ask),
+          if (isLast && result.status == AgentResultStatus.required) ...[
+            const SizedBox(height: 12),
+            _approvalBar(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// A friendly prompt when devices are paired but nothing has been asked yet.
+  Widget _emptyChat() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.forum_outlined, size: 44, color: NexusColors.muted),
+            const SizedBox(height: 12),
+            const Text(
+              'Ask me anything — I listen and do.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: NexusColors.text, fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Type below, or tap a suggestion to try one.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: NexusColors.muted, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -778,9 +1176,7 @@ class _LiveClockState extends State<_LiveClock> {
   void dispose() {
     _timer?.cancel();
     super.dispose();
-  }
-
-  @override
+  }  @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
     final hh = now.hour.toString().padLeft(2, '0');
@@ -790,4 +1186,15 @@ class _LiveClockState extends State<_LiveClock> {
       style: const TextStyle(color: NexusColors.text, fontSize: 16, fontWeight: FontWeight.w600),
     );
   }
+}
+
+/// One exchange in the assistant conversation: either a user bubble or an
+/// assistant card. Approval re-runs and self-run outcomes replace the last
+/// entry instead of appending, so each exchange stays one bubble pair.
+class _ThreadEntry {
+  final String? userText;
+  final AgentDispatchResult? result;
+
+  _ThreadEntry.user(this.userText) : result = null;
+  _ThreadEntry.result(this.result) : userText = null;
 }

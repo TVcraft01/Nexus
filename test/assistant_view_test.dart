@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
+import 'package:nexus/core/query_log.dart';
 import 'package:nexus/ui/assistant_view.dart';
 import 'package:nexus/ui/theme.dart';
 
@@ -67,7 +68,57 @@ void main() {
       await tester.pump();
       expect(find.text('Copy to my devices'), findsOneWidget);
       expect(find.text('Copy now'), findsOneWidget);
+      // Approving replaced the approval card in place — no stale card remains.
+      expect(find.text('Approval needed'), findsNothing);
     } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('the conversation thread keeps every exchange, newest last', (tester) async {
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('avt2').path}/s.json',
+    )..clipboardSync = true;
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'test-device', name: 'Test PC', platform: 'linux'),
+      store: store,
+    );
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      Future<void> ask(String text) async {
+        await tester.enterText(find.byType(TextField), text);
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pump();
+      }
+
+      // User bubbles render at 13.5px, suggestion chips at 12px — this
+      // finder picks the bubble, not the chip.
+      Finder bubble(String t) => find.byWidgetPredicate(
+            (w) => w is Text && w.data == t && w.style?.fontSize == 13.5,
+          );
+
+      // Two exchanges in a row: both user bubbles survive, but only the
+      // newest exchange still carries its status chip (history stays calm).
+      await ask('what time is it');
+      expect(bubble('what time is it'), findsOneWidget);
+      await ask('show my devices');
+      expect(bubble('what time is it'), findsOneWidget);
+      expect(bubble('show my devices'), findsOneWidget);
+      expect(find.text('No devices found.'), findsOneWidget);
+      expect(find.text('Done'), findsOneWidget);
+      // The older "what time" answer is still in the thread, frozen.
+      expect(find.textContaining("It's "), findsOneWidget);
+    } finally {
+      QueryLog.i.resetForTest();
       await mesh.stop();
     }
   });

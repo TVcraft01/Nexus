@@ -61,6 +61,26 @@ void main() {
       expect(result.dispatch, isA<AgentActionPlan>());
     });
 
+    test('the chosen device is remembered across restarts', () {
+      final service = makeService();
+      service.execute('call mom on my phone', approval: AgentApproval.approved);
+      expect(service.defaultsSnapshot['device:${AgentActions.callPlace}'], 'phone1');
+
+      // A fresh service (as after a restart) seeds from the same store.
+      final reborn = CommandService(
+        devices: () => const [phone],
+        local: pc,
+        memory: AgentMemory(defaults: service.defaultsSnapshot),
+      );
+      // Straight to the approval gate — no "which device?" question.
+      final gated = reborn.execute('call mom');
+      expect(gated.status, AgentResultStatus.required);
+
+      final result = reborn.execute('call mom', approval: AgentApproval.approved);
+      expect(result.status, AgentResultStatus.succeeded);
+      expect((result.dispatch! as AgentActionPlan).request.target, 'phone1');
+    });
+
     test('unknown or incapable named devices are honest', () {
       final service = makeService();
       final unknown = service.execute('call mom on my laptop', approval: AgentApproval.approved);
@@ -127,20 +147,17 @@ void main() {
           locallyExecutable: const {AgentActions.callPlace},
         );
 
-    test('a locally executable call plans on this device, gated by approval', () {
+    test('a locally executable call runs immediately — no approval prompt', () {
       final service = makeSelfService();
 
-      final gated = service.execute('call mom');
-      expect(gated.status, AgentResultStatus.required);
-
-      final approved = service.execute('call mom', approval: AgentApproval.approved);
-      expect(approved.status, AgentResultStatus.succeeded);
-      final plan = (approved.dispatch! as AgentActionPlan).request;
+      final result = service.execute('call mom');
+      expect(result.status, AgentResultStatus.succeeded);
+      final plan = (result.dispatch! as AgentActionPlan).request;
       expect(plan.target, 'self1'); // aimed at THIS device, not over the mesh
       expect(plan.arguments['contact'], 'mom');
     });
 
-    test('a denied local call is denied', () {
+    test('an explicit denial is still honored', () {
       final service = makeSelfService();
       final result = service.execute('call mom', approval: AgentApproval.denied);
       expect(result.status, AgentResultStatus.denied);
@@ -264,6 +281,45 @@ void main() {
         (result.dispatch! as AgentActionPlan).request.arguments['text'],
         'hello',
       );
+    });
+  });
+
+  group('learned phrase sync', () {
+    test('a local teach fires onPhraseLearned for the mesh broadcast', () {
+      String? seen;
+      final service = CommandService(
+        devices: () => const [phone],
+        local: pc,
+        onPhraseLearned: (phrase, meaning) => seen = '$phrase -> $meaning',
+      );
+      final result = service.learnAndRun('Call TVcraft', 'call TVcraft01');
+      // The meaning dispatches as a call; the PC can't dial, so it offers the
+      // phone — the teach itself succeeded.
+      expect(result.status, AgentResultStatus.needsInfo);
+      // Normalized phrase, lowercased meaning — exactly what the mesh should
+      // carry to the other devices.
+      expect(seen, 'call tvcraft -> call tvcraft01');
+      expect(service.learnedSnapshot['call tvcraft'], 'call tvcraft01');
+    });
+
+    test('a remote adoption applies locally but never re-broadcasts', () {
+      var broadcast = 0;
+      final service = CommandService(
+        devices: () => const [phone],
+        local: pc,
+        onPhraseLearned: (_, _) => broadcast++,
+      );
+      service.adoptLearned('Bring Mom', 'call TVcraft01');
+      expect(broadcast, 0); // knowledge came FROM the mesh — no echo back
+      expect(service.learnedSnapshot['bring mom'], 'call tvcraft01');
+
+      // The adopted phrase now routes like any taught one: "bring mom"
+      // parses as nothing on its own, so reaching the call routing (and
+      // asking which phone) proves the adoption took effect.
+      final result = service.execute('bring mom');
+      expect(result.status, AgentResultStatus.needsInfo);
+      final ask = result.dispatch! as AgentClarification;
+      expect(ask.key, 'device:${AgentActions.callPlace}');
     });
   });
 }

@@ -168,5 +168,15 @@ void main() {
       expect(tr.command!.action, AgentActions.translateText);
       expect(tr.command!.arguments['language'], 'french');
     });
+
+    test('normalization folds accents and contractions', () {
+      expect(CommandInterpreter.normalizePhrase('  Café  Maman '), 'cafe maman');
+      expect(CommandInterpreter.normalizePhrase("what's the time"), 'what is the time');
+      // Accented input reaches the same commands as its plain form.
+      expect(
+        interpreter.interpret('call café').command!.arguments['contact'],
+        interpreter.interpret('call cafe').command!.arguments['contact'],
+      );
+    });
   });
 }

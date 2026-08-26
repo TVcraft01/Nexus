@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
+import 'nexus_header.dart';
 import 'theme.dart';
 
 class SettingsView extends StatefulWidget {
@@ -37,11 +38,10 @@ class _SettingsViewState extends State<SettingsView> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
       children: [
-        Text('Settings', style: Theme.of(context).textTheme.headlineMedium),
-        const SizedBox(height: 4),
-        Text(
-          'This device and how it behaves.',
-          style: Theme.of(context).textTheme.bodySmall,
+        const NexusHeader(
+          icon: Icons.tune_rounded,
+          title: 'Settings',
+          subtitle: 'This device and how it behaves.',
         ),
         const SizedBox(height: 20),
 

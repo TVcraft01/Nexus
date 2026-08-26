@@ -5,12 +5,20 @@ import 'package:nexus/core/phone_actions.dart';
 class FakePhoneBackend implements PhoneActionBackend {
   final Map<String, String> contacts;
   bool fail = false;
+
+  /// When true a resolved contact is called directly instead of opening the
+  /// prefilled dialer.
+  bool directCall = false;
+
+  /// Closest names offered when nothing matches — the teach-me flow's input.
+  List<String> candidatesOnMiss = const [];
+
   String? lastDialed;
 
   FakePhoneBackend(this.contacts);
 
   @override
-  Future<PhoneCallOutcome> dialContact(String name) async {
+  Future<PhoneCallOutcome> callContact(String name) async {
     lastDialed = name;
     if (fail) throw Exception('boom');
     // Mirrors the native matcher in MainActivity.kt (exact first, then
@@ -20,11 +28,20 @@ class FakePhoneBackend implements PhoneActionBackend {
     final number = matchedName == null ? null : contacts[matchedName];
     if (number == null) {
       return PhoneCallOutcome(
-        launched: false,
+        placed: false,
+        candidates: candidatesOnMiss,
         message: 'No contact named "$name" on this device.',
       );
     }
+    if (directCall) {
+      return PhoneCallOutcome(
+        placed: true,
+        number: number,
+        message: 'Calling $matchedName ($number).',
+      );
+    }
     return PhoneCallOutcome(
+      placed: false,
       launched: true,
       number: number,
       message: 'Opened the dialer for $matchedName ($number).',
@@ -129,6 +146,24 @@ void main() {
     final message = result.dispatch! as AgentMessage;
     expect(message.text, contains('0652544264'));
     expect(message.text, contains('TVcraft01'));
+  });
+
+  test('a directly-placed call maps to succeeded', () async {
+    final backend = FakePhoneBackend({'mom': '+33612345678'})..directCall = true;
+    final result = await executePhoneCall(backend, request);
+
+    expect(result.status, AgentResultStatus.succeeded);
+    expect((result.dispatch! as AgentMessage).text, contains('Calling mom'));
+  });
+
+  test('closest candidates ride along so the wording can be taught', () async {
+    final backend = FakePhoneBackend({})
+      ..candidatesOnMiss = const ['TVcraft01 〘✘ΔτΚ⑤⑦〙', 'Tonton Juju'];
+    final result = await executePhoneCall(backend, request);
+
+    expect(result.status, AgentResultStatus.unavailable);
+    expect(result.dispatch, isNull);
+    expect(backend.candidatesOnMiss, contains('TVcraft01 〘✘ΔτΚ⑤⑦〙'));
   });
 
   test('a failing backend is reported, not thrown', () async {

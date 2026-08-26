@@ -22,10 +22,14 @@
          the paired mesh. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
-    <!-- For "call mom": resolve a contact name to a number so the system
-         dialer can open with it prefilled. Requested at runtime, only when
-         the user approves a call action. -->
+    <!-- For "call mom": resolve a contact name to a number and place the
+         call directly (CALL_PHONE), opening the prefilled dialer as fallback
+         if the user declines it. Both requested at runtime on first use. -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <!-- For "wake me at 7": lets ACTION_SET_ALARM prefill the clock app
+         without opening its UI. Normal permission, user-visible in settings. -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
     <application
         android:label="Nexus"
         android:name="${applicationName}"

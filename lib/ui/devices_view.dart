@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/serial_bridge.dart';
+import 'nexus_header.dart';
 import 'pair_sheet.dart';
 import 'theme.dart';
 
@@ -117,38 +118,10 @@ class DevicesView extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
       children: [
-        Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: NexusColors.accent.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(
-                Icons.blur_on_rounded,
-                color: NexusColors.accent,
-                size: 24,
-              ),
-            ),
-            const SizedBox(width: 14),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Nexus',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Your devices, one system',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
-            const Spacer(),
-          ],
+        const NexusHeader(
+          icon: Icons.blur_on_rounded,
+          title: 'Nexus',
+          subtitle: 'Your devices, one system',
         ),
         const SizedBox(height: 24),
         _StatusStrip(online: online, total: paired.length, mesh: mesh),
