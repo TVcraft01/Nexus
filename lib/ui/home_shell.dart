@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, debugPrint;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
@@ -264,7 +265,10 @@ class _HomeShellState extends State<HomeShell> {
           // where pairing lives, so it only appears there.
           floatingActionButton: _index == 0
               ? FloatingActionButton(
-                  onPressed: () => showPairSheet(context, mesh: widget.mesh),
+                  onPressed: () {
+                    HapticFeedback.selectionClick();
+                    showPairSheet(context, mesh: widget.mesh);
+                  },
                   tooltip: 'Pair a new device',
                   backgroundColor: NexusColors.accent,
                   foregroundColor: const Color(0xFF06251F),

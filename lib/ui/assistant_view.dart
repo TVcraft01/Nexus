@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory;
 
@@ -408,6 +409,7 @@ class _AssistantViewState extends State<AssistantView> {
   void _onSubmit() {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
+    HapticFeedback.selectionClick();
     _lastInput = text;
     _controller.clear();
     final pending = _pendingKey;
@@ -423,10 +425,12 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   void _approve() {
+    HapticFeedback.lightImpact();
     _execute(_lastInput, approval: AgentApproval.approved, replaceLast: true);
   }
 
   void _deny() {
+    HapticFeedback.selectionClick();
     _execute(_lastInput, approval: AgentApproval.denied, replaceLast: true);
   }
 
