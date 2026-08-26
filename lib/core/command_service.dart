@@ -357,6 +357,8 @@ class CommandService {
     // A device named in the command wins; otherwise fall back to the one
     // remembered for this action, then any "on my phone" suffix.
     hint ??= _pendingDeviceChoice[command.action];
+    // The choice survives restarts: asked once, remembered forever.
+    hint ??= _defaults['device:${command.action}'] as String?;
     hint ??= rawInput == null ? null : _deviceSuffix(rawInput)?.$2;
     if (hint != null && hint.isNotEmpty) {
       final target = _resolve(hint, _allDevices());
@@ -372,9 +374,13 @@ class CommandService {
           message: '${target.name} can\'t do that.',
         );
       }
-      // Remember the choice so the approval re-run and future commands of
-      // the same kind go straight there.
+      // Remember the choice so future commands of the same kind go straight
+      // there — in this session AND after a restart (via [defaults]).
       _pendingDeviceChoice[command.action] = target.id;
+      if (_defaults['device:${command.action}'] != target.id) {
+        _defaults['device:${command.action}'] = target.id;
+        onMemoryChanged?.call();
+      }
       return _devicePlan(
         command: ParsedCommand(
           action: command.action,
@@ -433,7 +439,11 @@ class CommandService {
     required AgentApproval approval,
     required String requestId,
   }) {
-    if (approval == AgentApproval.required) {
+    // Locally-executable actions (calls on Android) run immediately from
+    // typed input — no Approve/Deny prompt. Remote requests keep their own
+    // gate in handleRemoteRequest.
+    final autoRun = locallyExecutable.contains(command.action);
+    if (approval == AgentApproval.required && !autoRun) {
       return const AgentDispatchResult(
         status: AgentResultStatus.required,
         message: 'Local approval is required.',
@@ -518,6 +528,20 @@ class CommandService {
         // it here. For now the catalog honestly says nothing is wired up.
         return _unwired(command);
     }
+  }
+
+  /// Teaches that [phrase] means [meaning] (a command the interpreter
+  /// knows, e.g. "call TVcraft01 〘✘ΔτΚ⑤⑦〙"), persists via [onMemoryChanged],
+  /// and runs it now — so "who did you mean?" only ever has to be answered
+  /// once per wording.
+  AgentDispatchResult learnAndRun(String phrase, String meaning) {
+    final key = phrase.trim().toLowerCase();
+    if (key.isEmpty) {
+      return const AgentDispatchResult(status: AgentResultStatus.unavailable);
+    }
+    _learned[key] = meaning.trim().toLowerCase();
+    onMemoryChanged?.call();
+    return _dispatchInput(meaning, AgentApproval.approved, 'learned-phrase');
   }
 
   bool _supports(AgentDeviceSnapshot device, String action) =>

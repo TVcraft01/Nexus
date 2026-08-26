@@ -61,6 +61,26 @@ void main() {
       expect(result.dispatch, isA<AgentActionPlan>());
     });
 
+    test('the chosen device is remembered across restarts', () {
+      final service = makeService();
+      service.execute('call mom on my phone', approval: AgentApproval.approved);
+      expect(service.defaultsSnapshot['device:${AgentActions.callPlace}'], 'phone1');
+
+      // A fresh service (as after a restart) seeds from the same store.
+      final reborn = CommandService(
+        devices: () => const [phone],
+        local: pc,
+        memory: AgentMemory(defaults: service.defaultsSnapshot),
+      );
+      // Straight to the approval gate — no "which device?" question.
+      final gated = reborn.execute('call mom');
+      expect(gated.status, AgentResultStatus.required);
+
+      final result = reborn.execute('call mom', approval: AgentApproval.approved);
+      expect(result.status, AgentResultStatus.succeeded);
+      expect((result.dispatch! as AgentActionPlan).request.target, 'phone1');
+    });
+
     test('unknown or incapable named devices are honest', () {
       final service = makeService();
       final unknown = service.execute('call mom on my laptop', approval: AgentApproval.approved);
@@ -127,20 +147,17 @@ void main() {
           locallyExecutable: const {AgentActions.callPlace},
         );
 
-    test('a locally executable call plans on this device, gated by approval', () {
+    test('a locally executable call runs immediately — no approval prompt', () {
       final service = makeSelfService();
 
-      final gated = service.execute('call mom');
-      expect(gated.status, AgentResultStatus.required);
-
-      final approved = service.execute('call mom', approval: AgentApproval.approved);
-      expect(approved.status, AgentResultStatus.succeeded);
-      final plan = (approved.dispatch! as AgentActionPlan).request;
+      final result = service.execute('call mom');
+      expect(result.status, AgentResultStatus.succeeded);
+      final plan = (result.dispatch! as AgentActionPlan).request;
       expect(plan.target, 'self1'); // aimed at THIS device, not over the mesh
       expect(plan.arguments['contact'], 'mom');
     });
 
-    test('a denied local call is denied', () {
+    test('an explicit denial is still honored', () {
       final service = makeSelfService();
       final result = service.execute('call mom', approval: AgentApproval.denied);
       expect(result.status, AgentResultStatus.denied);

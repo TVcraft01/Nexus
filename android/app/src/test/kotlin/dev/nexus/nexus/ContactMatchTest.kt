@@ -2,6 +2,7 @@ package dev.nexus.nexus
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /// Unit tests for the contact-name resolution used by "call <name>":
@@ -67,5 +68,43 @@ class ContactMatchTest {
   @Test
   fun `query whitespace is trimmed before matching`() {
     assertEquals("Mom", pickBestContactMatch(contacts, " Mom "))
+  }
+
+  // --- rankedContactMatches: the list behind the "who did you mean?" flow.
+
+  @Test
+  fun `ranked list orders exact before prefix and contains`() {
+    val ranked = rankedContactMatches(
+      listOf("Alicia TVcraft01 work", "TVcraft01 〘✘ΔτΚ⑤⑦〙", "tvcraft01"),
+      "TVcraft01",
+    )
+    // Exact tier is empty; case-insensitive full match first, then prefix,
+    // then contains.
+    assertEquals(listOf("tvcraft01", "TVcraft01 〘✘ΔτΚ⑤⑦〙", "Alicia TVcraft01 work"), ranked)
+  }
+
+  @Test
+  fun `ranked list deduplicates candidates shared across tiers`() {
+    // "Mom" matches on multiple tiers for the query "mom" but must appear
+    // exactly once. (Distinct display names like "Mom" vs "mom" are separate
+    // contacts and stay separate offers.)
+    val ranked = rankedContactMatches(listOf("Mom"), "mom", limit = 5)
+    assertEquals(listOf("Mom"), ranked)
+  }
+
+  @Test
+  fun `ranked list respects the limit`() {
+    val ranked = rankedContactMatches(
+      listOf("TVcraft01 a", "TVcraft01 b", "TVcraft01 c", "TVcraft01 d"),
+      "tvcraft01",
+      limit = 3,
+    )
+    assertEquals(3, ranked.size)
+  }
+
+  @Test
+  fun `empty query yields an empty ranked list`() {
+    assertTrue(rankedContactMatches(contacts, "").isEmpty())
+    assertTrue(rankedContactMatches(contacts, "   ").isEmpty())
   }
 }

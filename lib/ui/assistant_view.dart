@@ -33,6 +33,9 @@ class _AssistantViewState extends State<AssistantView> {
   String? _reply; // outcome shown on whichever plan card is open
   bool _sending = false;
 
+  /// An open "who did you mean?" question after an unresolved contact.
+  ({String phrase, List<String> candidates})? _pendingContactAsk;
+
   /// Runs real phone actions (dialing) on Android; elsewhere answers honestly.
   final PhoneActionBackend _phoneBackend = RealPhoneActionBackend();
 
@@ -123,15 +126,96 @@ class _AssistantViewState extends State<AssistantView> {
       requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
       answerTo: answerTo,
     );
+    _consume(result, typedPhrase: input.trim().toLowerCase());
+  }
+
+  /// Shows a dispatch result — and starts locally-executed calls right away,
+  /// so typing "call …" needs no Approve tap and no Call-now tap.
+  void _consume(AgentDispatchResult result, {String? typedPhrase}) {
     setState(() {
       _result = result;
-      // A clarification asks a question: the next submission is the answer.
-      if (result.dispatch case final AgentClarification clarification) {
-        _pendingKey = clarification.key;
-      } else {
-        _pendingKey = null;
-      }
+      _pendingKey = switch (result.dispatch) {
+        final AgentClarification clarification => clarification.key,
+        _ => null,
+      };
     });
+    if (result.dispatch case final AgentActionPlan plan
+        when plan.request.target == widget.mesh.identity.id &&
+            plan.request.action == AgentActions.callPlace) {
+      unawaited(_placeLocalCall(plan.request, typedPhrase ?? ''));
+    }
+  }
+
+  /// Places the call natively. When no contact matches closely enough, the
+  /// closest names become a question whose answer is taught for that exact
+  /// wording — asked once, remembered forever.
+  Future<void> _placeLocalCall(AgentRequest request, String phrase) async {
+    setState(() {
+      _sending = true;
+      _reply = null;
+    });
+    final contact = request.arguments['contact']?.toString() ?? '';
+    final outcome = await _phoneBackend.callContact(contact);
+    if (!mounted) return;
+    if (!outcome.placed && !outcome.launched && outcome.candidates.isNotEmpty) {
+      final askPhrase = phrase.isNotEmpty ? phrase : 'call ${contact.toLowerCase()}';
+      setState(() {
+        _sending = false;
+        _pendingContactAsk = (phrase: askPhrase, candidates: outcome.candidates);
+        _pendingKey = 'contact:$askPhrase';
+        _result = AgentDispatchResult(
+          status: AgentResultStatus.needsInfo,
+          dispatch: AgentClarification(
+            question:
+                'I don\'t know "$contact" on this phone. Did you mean: ${outcome.candidates.join("  ·  ")}?',
+            key: 'contact:$askPhrase',
+            hint: 'Name one — I\'ll call them and remember this wording.',
+          ),
+        );
+      });
+      return;
+    }
+    setState(() {
+      _sending = false;
+      _reply = outcome.message;
+    });
+  }
+
+  /// Resolves a "who did you mean?" answer against the offered candidates,
+  /// teaches the wording, and places the call.
+  void _answerContactAsk(String text) {
+    final ask = _pendingContactAsk;
+    if (ask == null) return;
+    // Claim the pending ask immediately — a double-fired tap must not
+    // submit the original wording as an "answer".
+    _pendingContactAsk = null;
+    final lower = text.trim().toLowerCase();
+    final match = ask.candidates.firstWhere(
+      (c) =>
+          c.toLowerCase() == lower ||
+          c.toLowerCase().contains(lower) ||
+          lower.contains(c.toLowerCase()),
+      orElse: () => '',
+    );
+    if (match.isEmpty) {
+      setState(() {
+        _pendingContactAsk = ask;
+        _result = AgentDispatchResult(
+          status: AgentResultStatus.needsInfo,
+          dispatch: AgentClarification(
+            question:
+                'I don\'t see "${text.trim()}" here. Did you mean: ${ask.candidates.join("  ·  ")}?',
+            key: _pendingKey!,
+            hint: 'Name one of those, and I\'ll remember it.',
+          ),
+        );
+      });
+      return;
+    }
+    _consume(
+      _service.learnAndRun(ask.phrase, 'call $match'),
+      typedPhrase: ask.phrase,
+    );
   }
 
   void _onSubmit() {
@@ -140,6 +224,10 @@ class _AssistantViewState extends State<AssistantView> {
     _lastInput = text;
     _controller.clear();
     final pending = _pendingKey;
+    if (pending != null && pending.startsWith('contact:') && _pendingContactAsk != null) {
+      _answerContactAsk(text);
+      return;
+    }
     if (pending != null) {
       _execute(text, answerTo: pending);
     } else {

@@ -4,27 +4,37 @@ import 'agent_contract.dart';
 
 /// Outcome of asking the device to call a contact.
 class PhoneCallOutcome {
-  /// True when the system dialer opened with the number prefilled.
+  /// True when the call itself was started — no further taps needed.
+  final bool placed;
+
+  /// True when only the prefilled dialer could be opened (CALL_PHONE
+  /// unavailable or the direct call failed).
   final bool launched;
 
   /// The resolved phone number, when found.
   final String? number;
 
-  /// Human-readable detail ("No contact named \"mom\"…").
+  /// Closest contact names when nothing was called. The assistant offers
+  /// these so the user can teach it which one they meant.
+  final List<String> candidates;
+
+  /// Human-readable detail ("Calling mom (+33…)").
   final String message;
 
   const PhoneCallOutcome({
-    required this.launched,
+    required this.placed,
+    this.launched = false,
     this.number,
+    this.candidates = const [],
     required this.message,
   });
 }
 
 /// The platform side of a phone action. Android resolves the contact and
-/// opens the dialer (see MainActivity); other platforms answer honestly that
-/// phone actions are unavailable.
+/// places the call; other platforms answer honestly that phone actions are
+/// unavailable.
 abstract class PhoneActionBackend {
-  Future<PhoneCallOutcome> dialContact(String name);
+  Future<PhoneCallOutcome> callContact(String name);
 }
 
 /// Real backend: talks to the `dev.nexus.nexus/phone` channel; answers
@@ -33,21 +43,25 @@ class RealPhoneActionBackend implements PhoneActionBackend {
   static const _channel = MethodChannel('dev.nexus.nexus/phone');
 
   static const _unavailable = PhoneCallOutcome(
-    launched: false,
+    placed: false,
     message: 'Phone actions are not available on this device.',
   );
 
   @override
-  Future<PhoneCallOutcome> dialContact(String name) async {
+  Future<PhoneCallOutcome> callContact(String name) async {
     try {
       final raw = await _channel.invokeMapMethod<String, dynamic>(
-        'dialContact',
+        'callContact',
         {'name': name},
       );
       if (raw == null) return _unavailable;
       return PhoneCallOutcome(
+        placed: raw['placed'] == true,
         launched: raw['launched'] == true,
         number: raw['number']?.toString(),
+        candidates: (raw['candidates'] as List<dynamic>? ?? const [])
+            .map((c) => c.toString())
+            .toList(),
         message: raw['message']?.toString() ?? '',
       );
     } catch (_) {
@@ -57,8 +71,8 @@ class RealPhoneActionBackend implements PhoneActionBackend {
 }
 
 /// Executes a `communication.call` request on this device: resolve the
-/// contact and open the dialer. The typed outcome travels back to the
-/// requester as the agent.result reply.
+/// contact and place the call (or open the dialer as fallback). The typed
+/// outcome travels back to the requester as the agent.result reply.
 Future<AgentDispatchResult> executePhoneCall(
   PhoneActionBackend backend,
   AgentRequest request,
@@ -72,18 +86,17 @@ Future<AgentDispatchResult> executePhoneCall(
   }
   final PhoneCallOutcome outcome;
   try {
-    outcome = await backend.dialContact(contact);
+    outcome = await backend.callContact(contact);
   } catch (_) {
     return const AgentDispatchResult(
       status: AgentResultStatus.unavailable,
       message: 'The call could not be placed on this device.',
     );
   }
+  final ok = outcome.placed || outcome.launched;
   return AgentDispatchResult(
-    status: outcome.launched
-        ? AgentResultStatus.succeeded
-        : AgentResultStatus.unavailable,
-    dispatch: outcome.launched ? AgentMessage(outcome.message) : null,
-    message: outcome.launched ? '' : outcome.message,
+    status: ok ? AgentResultStatus.succeeded : AgentResultStatus.unavailable,
+    dispatch: ok ? AgentMessage(outcome.message) : null,
+    message: ok ? '' : outcome.message,
   );
 }
