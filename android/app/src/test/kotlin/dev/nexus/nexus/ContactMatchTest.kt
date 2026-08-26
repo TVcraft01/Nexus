@@ -107,4 +107,11 @@ class ContactMatchTest {
     assertTrue(rankedContactMatches(contacts, "").isEmpty())
     assertTrue(rankedContactMatches(contacts, "   ").isEmpty())
   }
+
+  @Test
+  fun `accent-free query matches accented contact name`() {
+    val ranked = rankedContactMatches(listOf("Café Maman", "Papi"), "cafe maman", limit = 3)
+    assertEquals(listOf("Café Maman"), ranked)
+    assertEquals("Café Maman", pickBestContactMatch(listOf("Café Maman", "Papi"), "CAFE MAMAN"))
+  }
 }

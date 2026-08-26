@@ -98,7 +98,7 @@ class CommandService {
       }
     }
 
-    final normalized = text.toLowerCase();
+    final normalized = CommandInterpreter.normalizePhrase(text);
 
     // 1. A taught phrase wins: the user already told us what this means.
     final taught = _learned[normalized];
@@ -156,7 +156,7 @@ class CommandService {
   ) {
     if (key.startsWith('teach:')) {
       final phrase = key.substring('teach:'.length);
-      final interpreted = _interpreter.interpret(answer.toLowerCase());
+      final interpreted = _interpreter.interpret(answer);
       if (interpreted.outcome != InterpretOutcome.matched) {
         _pendingContext[key] = phrase; // still waiting for a good answer
         return AgentDispatchResult(
@@ -168,7 +168,7 @@ class CommandService {
           ),
         );
       }
-      _learned[phrase] = answer.toLowerCase();
+      _learned[CommandInterpreter.normalizePhrase(phrase)] = answer;
       onMemoryChanged?.call();
       return _dispatchParsed(interpreted.command!, approval, requestId);
     }
@@ -535,7 +535,7 @@ class CommandService {
   /// and runs it now — so "who did you mean?" only ever has to be answered
   /// once per wording.
   AgentDispatchResult learnAndRun(String phrase, String meaning) {
-    final key = phrase.trim().toLowerCase();
+    final key = CommandInterpreter.normalizePhrase(phrase);
     if (key.isEmpty) {
       return const AgentDispatchResult(status: AgentResultStatus.unavailable);
     }

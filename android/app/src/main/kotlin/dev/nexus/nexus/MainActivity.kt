@@ -392,8 +392,8 @@ class MainActivity : FlutterActivity() {
                 }
                 val names = numberByName.keys.toList()
                 val q = name.trim()
-                val lower = q.lowercase()
-                val confident = names.any { it == q } || names.any { it.lowercase() == lower }
+                val lower = contactMatchKey(q)
+                val confident = names.any { contactMatchKey(it) == lower }
                 val ranked = rankedContactMatches(names, name)
                 Pair(
                     if (confident) ranked.firstOrNull()?.let { numberByName[it] } else null,
@@ -468,18 +468,26 @@ class MainActivity : FlutterActivity() {
 fun pickBestContactMatch(candidates: List<String>, query: String): String? =
     rankedContactMatches(candidates, query, limit = 1).firstOrNull()
 
+/// Lowercased with diacritics folded ("café" -> "cafe") so typed queries
+/// without accents still match real contact names.
+fun contactMatchKey(s: String): String {
+    val folded = java.text.Normalizer.normalize(s.trim(), java.text.Normalizer.Form.NFD)
+    return folded.replace(Regex("\\p{Mn}+"), "").lowercase()
+}
+
 /// The closest matches for [query], best first (same tiers as above),
 /// deduplicated and capped at [limit] — what the assistant offers when the
 /// best guess is wrong or missing.
 fun rankedContactMatches(candidates: List<String>, query: String, limit: Int = 3): List<String> {
     val q = query.trim()
     if (q.isEmpty() || limit <= 0) return emptyList()
-    val lower = q.lowercase()
+    val lower = contactMatchKey(q)
     return sequenceOf(
         candidates.asSequence().filter { it == q },
         candidates.asSequence().filter { it.lowercase() == lower },
-        candidates.asSequence().filter { it.lowercase().startsWith(lower) },
-        candidates.asSequence().filter { it.lowercase().contains(lower) },
+        candidates.asSequence().filter { contactMatchKey(it) == lower },
+        candidates.asSequence().filter { contactMatchKey(it).startsWith(lower) },
+        candidates.asSequence().filter { contactMatchKey(it).contains(lower) },
     )
         .flatten()
         .distinct()

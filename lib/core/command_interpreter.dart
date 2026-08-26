@@ -62,15 +62,32 @@ class InterpretResult {
 class CommandInterpreter {
   const CommandInterpreter();
 
-  InterpretResult interpret(String input) {
-    final text = input.trim().toLowerCase();
+  /// Canonical form of a typed phrase: lowercased, contractions expanded,
+  /// accents folded ("café" -> "cafe"), whitespace collapsed. Matching only —
+  /// display text is never altered.
+  static String normalizePhrase(String input) {
+    var t = input.trim().toLowerCase();
+    const accents = {
+      'à': 'a', 'á': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a', 'å': 'a',
+      'è': 'e', 'é': 'e', 'ê': 'e', 'ë': 'e',
+      'ì': 'i', 'í': 'i', 'î': 'i', 'ï': 'i',
+      'ò': 'o', 'ó': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o',
+      'ù': 'u', 'ú': 'u', 'û': 'u', 'ü': 'u',
+      'ç': 'c', 'ñ': 'n', 'ý': 'y', 'ÿ': 'y',
+    };
+    t = t.replaceAllMapped(RegExp('[àáâäãåèéêëìíîïòóôöõùúûüçñýÿ]'),
+        (m) => accents[m.group(0)]!);
     // "what's" / "whats" -> "what is" so one pattern covers every contraction.
-    final norm = text
+    return t
         .replaceAll("what's", 'what is')
         .replaceAll('whats', 'what is')
         .replaceAll("'s", ' is')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+  }
+
+  InterpretResult interpret(String input) {
+    final norm = normalizePhrase(input);
 
     if (_oneOf(norm, const ['hello', 'hi', 'hey', 'yo', 'hiya', 'good morning', 'good afternoon', 'good evening', 'good night', 'how are you'])) {
       return InterpretResult.matched(
