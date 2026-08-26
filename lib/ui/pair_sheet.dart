@@ -43,7 +43,7 @@ class _PairSheet extends StatefulWidget {
 
 class _PairSheetState extends State<_PairSheet> {
   int _tab = 0; // 0 = show my code, 1 = enter a code
-  late final PairingSession _session;
+  late PairingSession _session;
   late final TextEditingController _codeController;
   late final TextEditingController _addressController;
   late final TextEditingController _portController;
