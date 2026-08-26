@@ -281,7 +281,8 @@ class CommandService {
     }
     if (action == AgentActions.greet ||
         action == AgentActions.timeGet ||
-        action == AgentActions.mathCalc) {
+        action == AgentActions.mathCalc ||
+        action == AgentActions.helpGet) {
       return _localAnswer(command);
     }
     if (_routableActions.contains(action)) {
@@ -330,6 +331,9 @@ class CommandService {
     AgentActions.translateText,
     AgentActions.calendarGet,
     AgentActions.newsGet,
+    AgentActions.batteryGet,
+    AgentActions.torchToggle,
+    AgentActions.volumeSet,
   };
 
   /// Finds the device an action should run on, or asks the user to pick one.
@@ -522,6 +526,7 @@ class CommandService {
       case AgentActions.greet:
       case AgentActions.timeGet:
       case AgentActions.mathCalc:
+      case AgentActions.helpGet:
         return _localAnswer(command);
       default:
         // The requester already routed this to us as the capable device — run

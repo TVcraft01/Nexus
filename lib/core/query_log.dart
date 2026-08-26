@@ -27,24 +27,34 @@ class QueryLog {
   Future<File?> _resolve() async {
     final cached = _file;
     if (cached != null) return cached;
-    try {
-      Directory? dir;
-      final shared = await MeshService.androidSharedRoot();
-      if (shared != null) {
-        dir = Directory('$shared/Nexus');
-      } else {
-        dir = await getApplicationDocumentsDirectory();
+    // Prefer a spot the user's PC file manager can see (all-files access);
+    // fall back to the app's own documents dir when that isn't granted yet.
+    for (final dir in await _candidateDirs()) {
+      try {
+        await dir.create(recursive: true);
+        final f = File('${dir.path}${Platform.pathSeparator}assistant_log.jsonl');
+        // One rolling page: past the cap we start fresh (the .1 keeps the old).
+        if (await f.exists() && await f.length() > _maxBytes) {
+          await f.rename('${f.path}.1');
+        }
+        return _file = f;
+      } catch (_) {
+        // Try the next candidate — logging must never break the assistant.
       }
-      await dir.create(recursive: true);
-      final f = File('${dir.path}${Platform.pathSeparator}assistant_log.jsonl');
-      // One rolling page: past the cap we start fresh (the .1 keeps the old).
-      if (await f.exists() && await f.length() > _maxBytes) {
-        await f.rename('${f.path}.1');
-      }
-      return _file = f;
-    } catch (_) {
-      return null; // logging must never break the assistant
     }
+    return null;
+  }
+
+  Future<List<Directory>> _candidateDirs() async {
+    final out = <Directory>[];
+    try {
+      final shared = await MeshService.androidSharedRoot();
+      if (shared != null && shared.isNotEmpty) out.add(Directory('$shared/Nexus'));
+    } catch (_) {}
+    try {
+      out.add(await getApplicationDocumentsDirectory());
+    } catch (_) {}
+    return out;
   }
 
   /// Records one event. Fire-and-forget by design.
