@@ -984,6 +984,15 @@ class MeshService extends ChangeNotifier {
     add(peer.address);
     peer.addresses.forEach(add);
     for (final address in candidates) {
+      // A loopback candidate on OUR OWN mesh port is a self-connection, not
+      // a route to the peer — it can happen after tunnel pairing, where the
+      // peer's announced port matches ours and its "address" was the
+      // tunnel's local endpoint. Skip it so we fall through to a real
+      // address (the peer's LAN IP). Loopback on any OTHER port is a genuine
+      // tunnel route (adb reverse) and must stay.
+      if (_isLoopback(address) && peer.port == store.port) {
+        continue;
+      }
       try {
         final socket = await Socket.connect(
           address,

@@ -180,6 +180,32 @@ void main() {
     expect(received, isTrue, reason: meshB.lastFileError);
   });
 
+  test(
+    'a loopback route on our own port is a self-connection and is skipped',
+    () async {
+      await meshA.start();
+      await meshB.start();
+      final session = meshA.beginPairing();
+      final result = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(result.ok, isTrue);
+
+      // Simulate the tunnel-pairing residue: B remembers A at loopback on
+      // B's OWN mesh port. Connecting there would reach B itself, not A —
+      // outbound must skip it and honestly report failure instead.
+      final peerA = meshB.pairedDevices.single;
+      peerA.address = '127.0.0.1';
+      peerA.port = storeB.port;
+      peerA.addresses = ['127.0.0.1'];
+
+      expect(await meshB.listRemoteFiles(peerA, ''), isNull);
+      expect(meshB.lastFileError, contains('Could not reach'));
+    },
+  );
+
   test('with clipboard sync off, incoming clips are not applied', () async {
     storeA.clipboardSync = false;
     await storeA.save();
