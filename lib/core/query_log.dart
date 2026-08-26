@@ -83,6 +83,9 @@ class QueryLog {
   void learned(String phrase, String meaning) =>
       write('learned', {'phrase': phrase, 'meaning': meaning});
 
+  void synced(String phrase, String meaning, {String? from, bool conflict = false}) =>
+      write('sync', {'phrase': phrase, 'meaning': meaning, 'from': from, 'conflict': conflict});
+
   void remote(String from, String action, String approval, String detail) =>
       write('remote', {'from': from, 'action': action, 'approval': approval, 'detail': detail});
 

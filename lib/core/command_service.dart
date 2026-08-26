@@ -40,6 +40,11 @@ class CommandService {
   final Map<String, dynamic> _defaults;
   final void Function()? onMemoryChanged;
 
+  /// Fired when the user teaches a phrase on THIS device, so the view can
+  /// broadcast it to paired devices. Never fired for phrases adopted from a
+  /// peer (that would re-broadcast and loop the mesh).
+  final void Function(String phrase, String meaning)? onPhraseLearned;
+
   /// The device the assistant is running on (with its capabilities). Used to
   /// decide whether an action can run here or should be offered to another
   /// device ("Do it on My Phone?").
@@ -66,6 +71,7 @@ class CommandService {
     required this.devices,
     AgentMemory memory = const AgentMemory(),
     this.onMemoryChanged,
+    this.onPhraseLearned,
     this.local,
     this.locallyExecutable = const {},
     this._interpreter = const CommandInterpreter(),
@@ -170,6 +176,7 @@ class CommandService {
       }
       _learned[CommandInterpreter.normalizePhrase(phrase)] = answer;
       onMemoryChanged?.call();
+      onPhraseLearned?.call(CommandInterpreter.normalizePhrase(phrase), answer);
       return _dispatchParsed(interpreted.command!, approval, requestId);
     }
     if (key.startsWith('arg:')) {
@@ -544,9 +551,21 @@ class CommandService {
     if (key.isEmpty) {
       return const AgentDispatchResult(status: AgentResultStatus.unavailable);
     }
+    final cmd = meaning.trim().toLowerCase();
+    _learned[key] = cmd;
+    onMemoryChanged?.call();
+    onPhraseLearned?.call(key, cmd);
+    return _dispatchInput(meaning, AgentApproval.approved, 'learned-phrase');
+  }
+
+  /// Adopts a phrase taught on a paired device and synced over the mesh.
+  /// Persists like a local teach, but never fires [onPhraseLearned] — the
+  /// knowledge came FROM the mesh, broadcasting it back would loop forever.
+  void adoptLearned(String phrase, String meaning) {
+    final key = CommandInterpreter.normalizePhrase(phrase);
+    if (key.isEmpty) return;
     _learned[key] = meaning.trim().toLowerCase();
     onMemoryChanged?.call();
-    return _dispatchInput(meaning, AgentApproval.approved, 'learned-phrase');
   }
 
   bool _supports(AgentDeviceSnapshot device, String action) =>

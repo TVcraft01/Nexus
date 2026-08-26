@@ -12,11 +12,13 @@ import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory, getExternalStorageDirectory;
 
 import '../core/agent_contract.dart';
+import '../core/command_interpreter.dart';
 import '../core/crypto.dart';
 import '../core/identity.dart';
 import '../core/network_info.dart';
 import '../core/pair_payload.dart';
 import '../core/protocol.dart';
+import '../core/query_log.dart';
 import '../core/serial_transport.dart';
 import '../core/store.dart';
 import '../core/version.dart';
@@ -332,6 +334,12 @@ class MeshService extends ChangeNotifier {
   /// trusted) and answers with [sendAgentResult].
   Map<String, dynamic>? lastIncomingAgentRequest;
 
+  /// Fired when a paired device teaches a phrase and syncs it here. The view
+  /// wires this into the live [CommandService] so the learned meaning is
+  /// usable immediately, not only after a restart. Receivers never re-broadcast
+  /// — that would loop the mesh forever.
+  void Function(String phrase, String meaning)? onLearnedPhraseReceived;
+
   /// In-flight replies keyed by request id. Completed by `agent.result` or a
   /// timeout, so a sender can await the remote's answer.
   final Map<String, Completer<AgentDispatchResult?>> _pendingAgentResults = {};
@@ -501,6 +509,28 @@ class MeshService extends ChangeNotifier {
       return null;
     }
     return completer.future;
+  }
+
+  /// Tells every paired device that the user taught [phrase] to mean
+  /// [meaning] (e.g. "call tvcraft" -> "call TVcraft01 〘✘ΔτΚ⑤⑦〙"), so one
+  /// teaching works on all of them. Fire-and-forget: a peer that is offline
+  /// simply misses this one — the phrase stays local until the next teach.
+  Future<void> broadcastLearnedPhrase(String phrase, String meaning) async {
+    final peers = _paired.values.toList();
+    if (peers.isEmpty) return;
+    await Future.wait(
+      peers.map((peer) => _sendEnc(
+        peer,
+        NexusMessage(
+          type: NexusMessage.agentLearned,
+          from: identity.id,
+          to: peer.id,
+          payload: {'phrase': phrase, 'meaning': meaning},
+          id: _newId(),
+          ts: DateTime.now().millisecondsSinceEpoch,
+        ),
+      )),
+    );
   }
 
   /// Sends the outcome of an action request back to the requesting device.
@@ -1198,6 +1228,30 @@ class MeshService extends ChangeNotifier {
         );
         final pending = _pendingAgentResults.remove(requestId);
         if (pending != null && !pending.isCompleted) pending.complete(result);
+        notifyListeners();
+
+      case NexusMessage.agentLearned:
+        // A paired device taught a phrase — adopt it silently (it is
+        // knowledge, not an action, so no approval gate). The phrase arrives
+        // already normalized by the sender; a local correction wins over an
+        // incoming one, and we never re-broadcast (that would loop forever).
+        if (!encrypted) return;
+        final rawPhrase = msg.payload['phrase'];
+        final rawMeaning = msg.payload['meaning'];
+        final phrase = CommandInterpreter.normalizePhrase(rawPhrase?.toString() ?? '');
+        final meaning = rawMeaning?.toString().trim().toLowerCase();
+        if (phrase.isEmpty || meaning == null || meaning.isEmpty) {
+          break;
+        }
+        final existing = store.agentLearned[phrase];
+        if (existing != null && existing != meaning) {
+          QueryLog.i.synced(phrase, meaning, from: msg.from, conflict: true);
+          break;
+        }
+        store.agentLearned = {...store.agentLearned, phrase: meaning};
+        _queueSave();
+        QueryLog.i.synced(phrase, meaning, from: msg.from);
+        onLearnedPhraseReceived?.call(phrase, meaning);
         notifyListeners();
     }
   }

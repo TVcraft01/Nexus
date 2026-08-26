@@ -48,6 +48,7 @@ class NexusMessage {
   static const serialUp = 'serial.up'; // host → peer: a payload from a cable node
   static const agentAction = 'agent.action'; // peer → device: run an approved action
   static const agentResult = 'agent.result'; // device → peer: the action's outcome
+  static const agentLearned = 'agent.learned'; // device → peers: a phrase the user just taught
 
   Map<String, dynamic> toJson() => {
     'type': type,

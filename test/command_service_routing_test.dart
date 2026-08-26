@@ -283,4 +283,43 @@ void main() {
       );
     });
   });
+
+  group('learned phrase sync', () {
+    test('a local teach fires onPhraseLearned for the mesh broadcast', () {
+      String? seen;
+      final service = CommandService(
+        devices: () => const [phone],
+        local: pc,
+        onPhraseLearned: (phrase, meaning) => seen = '$phrase -> $meaning',
+      );
+      final result = service.learnAndRun('Call TVcraft', 'call TVcraft01');
+      // The meaning dispatches as a call; the PC can't dial, so it offers the
+      // phone — the teach itself succeeded.
+      expect(result.status, AgentResultStatus.needsInfo);
+      // Normalized phrase, lowercased meaning — exactly what the mesh should
+      // carry to the other devices.
+      expect(seen, 'call tvcraft -> call tvcraft01');
+      expect(service.learnedSnapshot['call tvcraft'], 'call tvcraft01');
+    });
+
+    test('a remote adoption applies locally but never re-broadcasts', () {
+      var broadcast = 0;
+      final service = CommandService(
+        devices: () => const [phone],
+        local: pc,
+        onPhraseLearned: (_, _) => broadcast++,
+      );
+      service.adoptLearned('Bring Mom', 'call TVcraft01');
+      expect(broadcast, 0); // knowledge came FROM the mesh — no echo back
+      expect(service.learnedSnapshot['bring mom'], 'call tvcraft01');
+
+      // The adopted phrase now routes like any taught one: "bring mom"
+      // parses as nothing on its own, so reaching the call routing (and
+      // asking which phone) proves the adoption took effect.
+      final result = service.execute('bring mom');
+      expect(result.status, AgentResultStatus.needsInfo);
+      final ask = result.dispatch! as AgentClarification;
+      expect(ask.key, 'device:${AgentActions.callPlace}');
+    });
+  });
 }

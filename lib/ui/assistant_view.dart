@@ -83,11 +83,22 @@ class _AssistantViewState extends State<AssistantView> {
         // Best-effort persist — never a boot requirement.
         unawaited(widget.mesh.store.save());
       },
+      // Teach once here, know it on every paired device: any locally taught
+      // phrase is broadcast over the mesh so the other phones learn it too.
+      onPhraseLearned: (phrase, meaning) {
+        unawaited(widget.mesh.broadcastLearnedPhrase(phrase, meaning));
+      },
     );
+    // And the other direction — adopt phrases taught on paired devices, live
+    // (not only after a restart).
+    widget.mesh.onLearnedPhraseReceived = (phrase, meaning) {
+      _service.adoptLearned(phrase, meaning);
+    };
   }
 
   @override
   void dispose() {
+    widget.mesh.onLearnedPhraseReceived = null;
     _controller.dispose();
     _focus.dispose();
     super.dispose();
