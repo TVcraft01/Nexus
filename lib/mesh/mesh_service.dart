@@ -982,9 +982,7 @@ class MeshService extends ChangeNotifier {
     }
 
     add(peer.address);
-    for (final a in peer.addresses) {
-      add(a);
-    }
+    peer.addresses.forEach(add);
     for (final address in candidates) {
       try {
         final socket = await Socket.connect(
@@ -2563,7 +2561,6 @@ class MeshService extends ChangeNotifier {
             address: device.address,
             port: device.port,
             pairingSecret: '',
-            localName: false,
           ),
         );
       }        for (final peer in targets.values) {

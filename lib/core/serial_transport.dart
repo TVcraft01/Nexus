@@ -67,9 +67,9 @@ class LinuxSerialTransport implements SerialTransport {
     Future<ProcessResult> Function(String, List<String>)? run,
     Future<Process> Function(String, List<String>)? start,
     File Function(String)? openFile,
-  }) : _run = run ?? ((cmd, args) => Process.run(cmd, args)),
-       _start = start ?? ((cmd, args) => Process.start(cmd, args)),
-       _openFile = openFile ?? ((path) => File(path));
+  }) : _run = run ?? Process.run,
+       _start = start ?? Process.start,
+       _openFile = openFile ?? File.new;
 
   @override
   Future<List<SerialPortInfo>> listPorts() async {

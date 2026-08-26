@@ -82,12 +82,11 @@ class DiscoveryService {
       _socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
         discoveryPort,
-        reuseAddress: true,
       );
     } catch (_) {
       // Port busy (e.g. a second Nexus instance on this machine) — bind an
       // ephemeral port. We can still receive and announce.
-      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0, reuseAddress: true);
+      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     }
 
     await _joinGroups();

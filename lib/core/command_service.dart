@@ -260,7 +260,6 @@ class CommandService {
       if (target == null) {
         return dispatchCommand(
           command: command,
-          targetDevice: null,
           approval: approval,
           requestId: requestId,
         );

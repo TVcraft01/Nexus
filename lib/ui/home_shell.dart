@@ -235,7 +235,7 @@ class _HomeShellState extends State<HomeShell> {
                     ),
                   ],
                 )
-              : SafeArea(top: true, bottom: false, child: content),
+              : SafeArea(bottom: false, child: content),
           bottomNavigationBar: _isDesktop
               ? null
               : NavigationBar(

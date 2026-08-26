@@ -429,7 +429,6 @@ class _PairSheetState extends State<_PairSheet> {
               ),
               const SizedBox(width: 10),
               Expanded(
-                flex: 1,
                 child: TextField(
                   controller: _portController,
                   keyboardType: TextInputType.number,

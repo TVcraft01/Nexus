@@ -894,7 +894,7 @@ class _EntryRow extends StatelessWidget {
                         children: [
                           CircularProgressIndicator(
                             strokeWidth: 2.5,
-                            value: progress!,
+                            value: progress,
                             color: NexusColors.accent,
                             backgroundColor: NexusColors.surfaceHi,
                           ),

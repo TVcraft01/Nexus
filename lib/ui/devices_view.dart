@@ -158,7 +158,7 @@ class DevicesView extends StatelessWidget {
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
-          ...serial.map((d) => _SerialCard(mesh: mesh, device: d, hostName: null)),
+          ...serial.map((d) => _SerialCard(mesh: mesh, device: d)),
           ...remoteSerial.map((d) {
             final hostId = d.port.startsWith('remote:')
                 ? d.port.substring(7)
