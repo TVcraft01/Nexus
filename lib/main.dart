@@ -228,11 +228,6 @@ class _TrayListener extends TrayListener {
   void onTrayIconMouseDown() {
     _showWindow();
   }
-
-  @override
-  void onTrayIconRightMouseDown() {
-    // Right-click shows the context menu (handled by tray_manager).
-  }
 }
 
 class NexusApp extends StatefulWidget {

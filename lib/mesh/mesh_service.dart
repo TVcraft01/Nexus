@@ -2141,8 +2141,9 @@ class MeshService extends ChangeNotifier {
           );
           if (copied == null) return null;
         }
-        if (move && await deleteRemoteFile(source, sourcePath))
+        if (move && await deleteRemoteFile(source, sourcePath)) {
           return destinationPath;
+        }
         if (move) return null;
         return destinationPath;
       }
@@ -2785,16 +2786,18 @@ class MeshService extends ChangeNotifier {
     socket.listen(
       handleChunk,
       onError: (_) {
-        if (!completer.isCompleted)
+        if (!completer.isCompleted) {
           completer.complete(
             PairResult.failure('Connection was lost during pairing.'),
           );
+        }
       },
       onDone: () {
-        if (!completer.isCompleted)
+        if (!completer.isCompleted) {
           completer.complete(
             PairResult.failure('Connection closed before pairing finished.'),
           );
+        }
       },
     );
 
@@ -3012,12 +3015,6 @@ class MeshService extends ChangeNotifier {
       fromName: (msg.payload['fromName'] as String?) ?? 'Another device',
     );
     notifyListeners();
-  }
-
-  Future<void> copyText(String text) async {
-    _lastClipboard = text;
-    await clipboard.writeText(text);
-    await broadcastClipboard(text);
   }
 
   // ---------------------------------------------------------------------
