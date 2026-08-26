@@ -1,12 +1,18 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart'
+    show getApplicationDocumentsDirectory;
 
 import '../core/agent_contract.dart';
+import '../core/command_interpreter.dart';
 import '../core/command_service.dart';
+import '../core/device_actions.dart';
 import '../core/phone_actions.dart';
+import '../core/query_log.dart';
 import '../mesh/mesh_service.dart';
 import 'theme.dart';
 
@@ -39,6 +45,9 @@ class _AssistantViewState extends State<AssistantView> {
   /// Runs real phone actions (dialing) on Android; elsewhere answers honestly.
   final PhoneActionBackend _phoneBackend = RealPhoneActionBackend();
 
+  /// Runs the small device-local actions (alarms, timers, torch…).
+  final DeviceActionBackend _deviceBackend = RealDeviceActionBackend();
+
   @override
   void initState() {
     super.initState();
@@ -50,9 +59,19 @@ class _AssistantViewState extends State<AssistantView> {
         online: true,
         capabilities: defaultCapabilitiesFor(widget.mesh.identity.platform),
       ),
-      // On Android this device can really place calls, so "call …" plans here.
+      // On Android these run natively on THIS device from typed input alone.
       locallyExecutable: defaultTargetPlatform == TargetPlatform.android
-          ? const {AgentActions.callPlace}
+          ? const {
+              AgentActions.callPlace,
+              AgentActions.alarmSet,
+              AgentActions.timerSet,
+              AgentActions.webSearch,
+              AgentActions.navigationRoute,
+              AgentActions.noteCreate,
+              AgentActions.batteryGet,
+              AgentActions.torchToggle,
+              AgentActions.volumeSet,
+            }
           : const {},
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
@@ -126,11 +145,37 @@ class _AssistantViewState extends State<AssistantView> {
       requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
       answerTo: answerTo,
     );
+    _logAsk(input, result);
     _consume(result, typedPhrase: input.trim().toLowerCase());
   }
 
-  /// Shows a dispatch result — and starts locally-executed calls right away,
-  /// so typing "call …" needs no Approve tap and no Call-now tap.
+  /// Every ask and its outcome lands in the query log — raw material for
+  /// improving matching and catching bugs.
+  void _logAsk(String input, AgentDispatchResult result) {
+    final route = switch (result.dispatch) {
+      final AgentActionPlan plan => plan.request.action,
+      final AgentClarification ask => ask.key,
+      final AgentMessage _ => 'message',
+      _ => '',
+    };
+    QueryLog.i.ask(input.trim(), result.status.name, route, result.message);
+  }
+
+  /// Actions this device executes itself, straight after planning — typing
+  /// "wake me at 7" sets a real alarm with zero extra taps.
+  static const _selfRunActions = {
+    AgentActions.callPlace,
+    AgentActions.alarmSet,
+    AgentActions.timerSet,
+    AgentActions.webSearch,
+    AgentActions.navigationRoute,
+    AgentActions.noteCreate,
+    AgentActions.batteryGet,
+    AgentActions.torchToggle,
+    AgentActions.volumeSet,
+  };
+
+  /// Shows a dispatch result — and starts self-run actions right away.
   void _consume(AgentDispatchResult result, {String? typedPhrase}) {
     setState(() {
       _result = result;
@@ -141,8 +186,74 @@ class _AssistantViewState extends State<AssistantView> {
     });
     if (result.dispatch case final AgentActionPlan plan
         when plan.request.target == widget.mesh.identity.id &&
-            plan.request.action == AgentActions.callPlace) {
-      unawaited(_placeLocalCall(plan.request, typedPhrase ?? ''));
+            _selfRunActions.contains(plan.request.action)) {
+      plan.request.action == AgentActions.callPlace
+          ? unawaited(_placeLocalCall(plan.request, typedPhrase ?? ''))
+          : unawaited(_runSelfAction(plan.request));
+    }
+  }
+
+  Future<void> _runSelfAction(AgentRequest request) async {
+    setState(() {
+      _sending = true;
+      _reply = null;
+    });
+    // Follow-up answers arrive as plain strings ('time': '7am') — parse them
+    // into what the native side expects.
+    final prepared = Map<String, dynamic>.of(request.arguments);
+    if (request.action == AgentActions.alarmSet && prepared['hour'] == null) {
+      final parsed =
+          CommandInterpreter.parseClockTime(prepared['time']?.toString() ?? '');
+      if (parsed == null) {
+        _showSelfOutcome(false, 'I still need a time — like 7am or 18:30.');
+        return;
+      }
+      prepared
+        ..remove('time')
+        ..['hour'] = parsed.$1
+        ..['minute'] = parsed.$2;
+    }
+    if (request.action == AgentActions.timerSet && prepared['seconds'] is! int) {
+      final seconds =
+          CommandInterpreter.parseDurationSeconds(prepared['seconds']?.toString() ?? '');
+      if (seconds == null) {
+        _showSelfOutcome(false, 'How long should it run? Try "5 minutes".');
+        return;
+      }
+      prepared['seconds'] = seconds;
+    }
+    final ActionResult outcome;
+    if (request.action == AgentActions.noteCreate) {
+      outcome = await _appendNote(prepared['text']?.toString() ?? '');
+    } else {
+      outcome = await _deviceBackend.run(request.action, prepared);
+    }
+    if (!mounted) return;
+    _showSelfOutcome(outcome.ok, outcome.message);
+  }
+
+  void _showSelfOutcome(bool ok, String message) {
+    setState(() {
+      _sending = false;
+      _result = AgentDispatchResult(
+        status: ok ? AgentResultStatus.succeeded : AgentResultStatus.unavailable,
+        message: ok ? '' : message,
+        dispatch: ok ? AgentMessage(message) : null,
+      );
+    });
+  }
+
+  Future<ActionResult> _appendNote(String text) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final f = File('${dir.path}${Platform.pathSeparator}nexus_notes.txt');
+      await f.writeAsString(
+        '${DateTime.now().toIso8601String()}  $text\n',
+        mode: FileMode.append,
+      );
+      return const ActionResult(true, 'Noted.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not save the note on this device.');
     }
   }
 
@@ -158,6 +269,7 @@ class _AssistantViewState extends State<AssistantView> {
     final outcome = await _phoneBackend.callContact(contact);
     if (!mounted) return;
     if (!outcome.placed && !outcome.launched && outcome.candidates.isNotEmpty) {
+      QueryLog.i.call(contact, 'asked', candidates: outcome.candidates);
       final askPhrase = phrase.isNotEmpty ? phrase : 'call ${contact.toLowerCase()}';
       setState(() {
         _sending = false;
@@ -175,6 +287,10 @@ class _AssistantViewState extends State<AssistantView> {
       });
       return;
     }
+    QueryLog.i.call(
+      contact,
+      outcome.placed ? 'placed' : (outcome.launched ? 'dialer' : 'failed'),
+    );
     setState(() {
       _sending = false;
       _reply = outcome.message;
@@ -212,6 +328,7 @@ class _AssistantViewState extends State<AssistantView> {
       });
       return;
     }
+    QueryLog.i.learned(ask.phrase, 'call $match');
     _consume(
       _service.learnAndRun(ask.phrase, 'call $match'),
       typedPhrase: ask.phrase,
@@ -317,6 +434,7 @@ class _AssistantViewState extends State<AssistantView> {
   /// The remote device asked us to run an action — approve or deny locally,
   /// execute here, and send the outcome back over the mesh.
   Future<void> _handleIncoming(AgentRequest request, String from, bool approve) async {
+    QueryLog.i.remote(from, request.action, approve ? 'approved' : 'denied', request.arguments.toString());
     final result = approve &&
             request.action == AgentActions.callPlace &&
             defaultTargetPlatform == TargetPlatform.android
@@ -338,6 +456,78 @@ class _AssistantViewState extends State<AssistantView> {
               : 'Action denied.',
         ),
       ),
+    );
+  }
+
+  /// One-tap examples — for anyone who doesn't know what to type yet.
+  Widget _suggestionChips() {
+    const suggestions = [
+      'what can you do',
+      'what time is it',
+      'how much battery',
+      'set an alarm for 7am',
+      'timer for 5 minutes',
+      'flashlight on',
+    ];
+    return SizedBox(
+      height: 40,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
+          for (final s in suggestions)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ActionChip(
+                label: Text(s, style: const TextStyle(fontSize: 12)),
+                onPressed: () {
+                  _controller.text = s;
+                  _onSubmit();
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// First-run guidance: three steps, one screen, no jargon.
+  Widget _welcomeView() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: NexusColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+          ),
+          child: const Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Hello! I am Nexus.',
+                style: TextStyle(color: NexusColors.text, fontWeight: FontWeight.w700, fontSize: 16),
+              ),
+              SizedBox(height: 10),
+              Text(
+                'Just type what you want, like you would say it:\n'
+                '1. Try a blue word below — tap one and watch.\n'
+                '2. "call …" dials right away; if I am not sure who,\n'
+                '    I ask once and remember forever.\n'
+                '3. Pair your other devices from the Devices tab — then\n'
+                '    I can also do things on them for you.\n',
+                style: TextStyle(color: NexusColors.muted, fontSize: 13, height: 1.45),
+              ),
+              Text(
+                'If I ever misunderstand, tell me what you meant — I learn.',
+                style: TextStyle(color: NexusColors.muted, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -379,6 +569,9 @@ class _AssistantViewState extends State<AssistantView> {
           ),
         ),
 
+        // One-tap examples under the input bar.
+        _suggestionChips(),
+
         // Result area — rebuilds when an action arrives from another device.
         Expanded(
           child: ListenableBuilder(
@@ -393,9 +586,11 @@ class _AssistantViewState extends State<AssistantView> {
   Widget _buildResult() {
     final result = _result;
     if (result == null && _incoming() == null) {
-      return const Center(
-        child: Icon(Icons.mic_none_rounded, size: 48, color: NexusColors.muted),
-      );
+      return widget.mesh.pairedDevices.isEmpty
+          ? _welcomeView()
+          : const Center(
+              child: Icon(Icons.mic_none_rounded, size: 48, color: NexusColors.muted),
+            );
     }
 
     final incoming = _incoming();

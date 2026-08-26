@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
+import 'package:nexus/core/query_log.dart';
 import 'package:nexus/ui/assistant_view.dart';
 import 'package:nexus/ui/theme.dart';
 
@@ -68,6 +69,7 @@ void main() {
       expect(find.text('Copy to my devices'), findsOneWidget);
       expect(find.text('Copy now'), findsOneWidget);
     } finally {
+      QueryLog.i.resetForTest();
       await mesh.stop();
     }
   });

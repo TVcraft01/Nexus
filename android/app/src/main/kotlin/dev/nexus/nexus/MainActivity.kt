@@ -1,9 +1,15 @@
 package dev.nexus.nexus
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.media.AudioManager
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.provider.ContactsContract
@@ -28,6 +34,7 @@ class MainActivity : FlutterActivity() {
 
     private val STORAGE_CHANNEL = "dev.nexus.nexus/storage"
     private val PHONE_CHANNEL = "dev.nexus.nexus/phone"
+    private val DEVICE_CHANNEL = "dev.nexus.nexus/device"
 
     // "call mom" from the assistant: resolving a contact needs READ_CONTACTS
     // and placing the call needs CALL_PHONE — both requested at runtime on
@@ -81,6 +88,14 @@ class MainActivity : FlutterActivity() {
                     "callContact" -> callContact(call.argument<String>("name") ?: "", result)
                     else -> result.notImplemented()
                 }
+            }
+
+        // Small device-local actions: alarms, timers, search, navigation,
+        // torch, battery, volume. All fire-and-report — no runtime
+        // permissions needed beyond the normal SET_ALARM.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                result.success(runDeviceAction(call.method, call.arguments))
             }
 
         // USB-OTG serial: microcontrollers (ESP32, …) plugged into the phone.
@@ -182,6 +197,113 @@ class MainActivity : FlutterActivity() {
                 else openDialer(name ?: "", number)
             )
         }
+    }
+
+    /// Runs a device-local action and returns {ok, message}. Everything is
+    /// an intent or a public API — nothing here needs a runtime permission.
+    private fun runDeviceAction(method: String, arguments: Any?): Map<String, Any?> {
+        val args = arguments as? Map<*, *>
+        return try {
+            when (method) {
+                "setAlarm" -> setAlarm(
+                    (args?.get("hour") as Number).toInt(),
+                    (args["minute"] as Number).toInt(),
+                )
+                "setTimer" -> setTimer((args?.get("seconds") as Number).toInt())
+                "webSearch" -> startActionIntent(
+                    Intent(Intent.ACTION_WEB_SEARCH).apply {
+                        putExtra("query", args?.get("query")?.toString() ?: "")
+                    },
+                    "searched the web",
+                )
+                "navigateTo" -> startActionIntent(
+                    Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" +
+                        Uri.encode(args?.get("place")?.toString() ?: ""))),
+                    "opened directions",
+                )
+                "torch" -> setTorch(args?.get("mode")?.toString() != "off")
+                "battery" -> batteryStatus()
+                "volume" -> adjustVolume(args?.get("mode")?.toString() ?: "up")
+                else -> mapOf("ok" to false, "message" to "Not available on this device.")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "$method failed", e)
+            mapOf("ok" to false, "message" to "That didn't work: ${e.message ?: method}")
+        }
+    }
+
+    private fun setAlarm(hour: Int, minute: Int): Map<String, Any?> {
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+            putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+        return mapOf("ok" to true, "message" to "Alarm set for %02d:%02d.".format(hour, minute))
+    }
+
+    private fun setTimer(seconds: Int): Map<String, Any?> {
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_TIMER).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_LENGTH, seconds)
+            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+        val m = seconds / 60
+        val s = seconds % 60
+        val pretty = if (m > 0) "$m min${if (s > 0) " $s s" else ""}" else "$s s"
+        return mapOf("ok" to true, "message" to "Timer running for $pretty.")
+    }
+
+    private fun startActionIntent(intent: Intent, done: String): Map<String, Any?> {
+        startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        return mapOf("ok" to true, "message" to done.replaceFirstChar { it.uppercase() } + ".")
+    }
+
+    private fun setTorch(on: Boolean): Map<String, Any?> {
+        val cm = getSystemService(CameraManager::class.java)
+        val back = cm.cameraIdList.firstOrNull { id ->
+            cm.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
+                CameraCharacteristics.LENS_FACING_BACK
+        } ?: throw IllegalStateException("no flashlight on this phone")
+        cm.setTorchMode(back, on)
+        return mapOf("ok" to true, "message" to if (on) "Flashlight on." else "Flashlight off.")
+    }
+
+    private fun batteryStatus(): Map<String, Any?> {
+        val bm = getSystemService(BatteryManager::class.java)
+        val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val status = sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
+        val plugged = sticky?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        val source = when {
+            plugged == BatteryManager.BATTERY_PLUGGED_USB -> " (on USB)"
+            plugged == BatteryManager.BATTERY_PLUGGED_AC -> " (charging)"
+            plugged != 0 -> " (charging)"
+            else -> ""
+        }
+        return mapOf(
+            "ok" to true,
+            "message" to "Battery at $level%${if (charging) "$source — charging" else ""}.",
+            "level" to level,
+            "charging" to charging,
+        )
+    }
+
+    private fun adjustVolume(mode: String): Map<String, Any?> {
+        val am = getSystemService(AudioManager::class.java)
+        when (mode) {
+            "mute" -> am.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
+            "down" -> am.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
+            else -> am.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
+        }
+        return mapOf("ok" to true, "message" to "Volume $mode.")
     }
 
     /// Resolves a contact name and places the call directly (ACTION_CALL).

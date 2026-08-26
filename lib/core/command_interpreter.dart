@@ -196,16 +196,53 @@ class CommandInterpreter {
         const ParsedCommand(action: AgentActions.reminderSet, target: 'local'),
       );
     }
-    if (RegExp(r'^set (an |the )?alarm').hasMatch(norm) ||
-        RegExp(r'^wake me up').hasMatch(norm)) {
+    // --- alarms: an inline time runs at once; without one we ask once and
+    // remember the answer.
+    final alarm = RegExp(
+      r'^(set (?:an |the )?alarm|wake me up)(?: (?:for|at|by) (.+))?$',
+    ).firstMatch(norm);
+    if (alarm != null) {
+      final time = alarm.group(2)?.trim();
+      final parsed = time == null ? null : parseClockTime(time);
+      if (parsed == null) {
+        return InterpretResult.needsInfo(
+          'alarm.set.time',
+          time == null
+              ? 'What time should the alarm ring?'
+              : 'I didn\'t understand "$time" as a time — try "7am" or "18:30".',
+          const ParsedCommand(action: AgentActions.alarmSet, target: 'local'),
+        );
+      }
       return InterpretResult.matched(
-        const ParsedCommand(action: AgentActions.alarmSet, target: 'local'),
+        ParsedCommand(
+          action: AgentActions.alarmSet,
+          target: 'local',
+          arguments: {'hour': parsed.$1, 'minute': parsed.$2},
+        ),
       );
     }
-    if (RegExp(r'^set (a |the )?timer').hasMatch(norm) ||
-        RegExp(r'^(start|begin) (a |the )?timer').hasMatch(norm)) {
+    // --- timers: same deal, with a length instead of a clock time.
+    final timer = RegExp(
+      r'^((?:set|start|begin) (?:a |the )?timer|(?:a )?timer)(?: for (.+))?$',
+    ).firstMatch(norm);
+    if (timer != null) {
+      final length = timer.group(2)?.trim();
+      final seconds = length == null ? null : parseDurationSeconds(length);
+      if (seconds == null) {
+        return InterpretResult.needsInfo(
+          'timer.set.seconds',
+          length == null
+              ? 'How long should the timer run?'
+              : 'How long is "$length"? Try "5 minutes" or "1 hour 30 minutes".',
+          const ParsedCommand(action: AgentActions.timerSet, target: 'local'),
+        );
+      }
       return InterpretResult.matched(
-        const ParsedCommand(action: AgentActions.timerSet, target: 'local'),
+        ParsedCommand(
+          action: AgentActions.timerSet,
+          target: 'local',
+          arguments: {'seconds': seconds},
+        ),
       );
     }
 
@@ -381,10 +418,107 @@ class CommandInterpreter {
       );
     }
 
+    // --- help: the gentle "what can I even say?" door.
+    if (_oneOf(norm, const [
+      'help', 'i need help', 'what can you do', 'what can i do', 'commands',
+      'what do you know', 'abilities', 'how do you work',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.helpGet, target: 'local'),
+      );
+    }
+
+    // --- battery.
+    if (_oneOf(norm, const [
+      'battery', 'battery level', 'battery status', 'how much battery',
+      'how much battery do i have', 'is my phone charged', 'charge',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.batteryGet, target: 'local'),
+      );
+    }
+
+    // --- flashlight / torch.
+    final torch = RegExp(
+      r'^(?:(?:turn|switch) (?:the )?(?:torch|flashlight)(?: light)?|(?:torch|flashlight)(?: light)?)(?: (on|off))?$',
+    ).firstMatch(norm);
+    if (torch != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.torchToggle,
+          target: 'local',
+          arguments: {'mode': torch.group(1) ?? 'on'},
+        ),
+      );
+    }
+
+    // --- volume.
+    final volume = RegExp(
+      r'^(?:volume (up|down)|turn (?:the volume |it )(up|down)|(?:make it )?(louder|quieter|quiet)|mute)$',
+    ).firstMatch(norm);
+    if (volume != null) {
+      final word = (volume.group(1) ?? volume.group(2) ?? volume.group(3) ?? 'mute')
+          .toLowerCase();
+      final mode = switch (word) {
+        'up' || 'louder' => 'up',
+        'down' || 'quieter' || 'quiet' => 'down',
+        _ => 'mute',
+      };
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.volumeSet,
+          target: 'local',
+          arguments: {'mode': mode},
+        ),
+      );
+    }
+
     // Everything else — including context-dependent phrases like "bring me
     // home" — is a teaching opportunity. The user tells us what it should
     // mean once, and we remember it.
     return InterpretResult.unknown();
+  }
+
+  /// Parses "7", "7am", "7:30pm", "19:45", "noon", "midnight" into
+  /// (hour, minute), or null when it isn't a recognizable time of day.
+  static (int, int)? parseClockTime(String raw) {
+    final t = raw.trim().toLowerCase().replaceAll('.', '');
+    if (t == 'noon') return (12, 0);
+    if (t == 'midnight') return (0, 0);
+    final m = RegExp(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$').firstMatch(t);
+    if (m == null) return null;
+    var hour = int.tryParse(m.group(1)!);
+    final minute = m.group(2) == null ? 0 : (int.tryParse(m.group(2)!) ?? 0);
+    final suffix = m.group(3);
+    if (hour == null || minute > 59) return null;
+    if (suffix != null) {
+      if (hour < 1 || hour > 12) return null;
+      if (suffix == 'pm' && hour != 12) hour += 12;
+      if (suffix == 'am' && hour == 12) hour = 0;
+    } else if (hour > 23) {
+      return null;
+    }
+    return (hour, minute);
+  }
+
+  /// Sums "1 hour 30 minutes", "90 seconds", "5 min"… into seconds, or null
+  /// when no length is present.
+  static int? parseDurationSeconds(String raw) {
+    final matches = RegExp(r'(\d+)\s*(hours?|hrs?|h|min(?:utes?)?|m|seconds?|secs?|s)\b')
+        .allMatches(raw.trim().toLowerCase())
+        .toList();
+    if (matches.isEmpty) return null;
+    var total = 0;
+    for (final m in matches) {
+      final n = int.tryParse(m.group(1)!);
+      if (n == null) return null;
+      total += switch (m.group(2)![0]) {
+        'h' => n * 3600,
+        'm' => n * 60,
+        _ => n,
+      };
+    }
+    return total > 0 ? total : null;
   }
 
   bool _oneOf(String norm, List<String> forms) => forms.contains(norm);

@@ -25,6 +25,10 @@ abstract final class AgentActions {
   static const timeGet = 'time.get';
   static const mathCalc = 'math.calc';
   static const clipboardWrite = 'clipboard.write';
+  static const helpGet = 'help.get';
+  static const batteryGet = 'device.battery';
+  static const torchToggle = 'device.torch';
+  static const volumeSet = 'device.volume';
 }
 
 class ParsedCommand {
@@ -151,6 +155,9 @@ List<DeviceCapability> defaultCapabilitiesFor(String platform) {
         DeviceCapability(AgentActions.calendarGet),
         DeviceCapability(AgentActions.newsGet),
         DeviceCapability(AgentActions.homeControl),
+        DeviceCapability(AgentActions.batteryGet),
+        DeviceCapability(AgentActions.torchToggle),
+        DeviceCapability(AgentActions.volumeSet),
       ];
     case 'linux':
     case 'windows':
@@ -171,6 +178,8 @@ List<DeviceCapability> defaultCapabilitiesFor(String platform) {
         DeviceCapability(AgentActions.calendarGet),
         DeviceCapability(AgentActions.newsGet),
         DeviceCapability(AgentActions.homeControl),
+        DeviceCapability(AgentActions.batteryGet),
+        DeviceCapability(AgentActions.volumeSet),
       ];
     default:
       return const [];

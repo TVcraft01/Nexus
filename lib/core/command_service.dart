@@ -140,7 +140,7 @@ class CommandService {
           dispatch: AgentClarification(
             question: 'I don\'t understand "$text" yet.',
             key: 'teach:$normalized',
-            hint: 'Teach me: type the command it should mean, e.g. "show my devices".',
+            hint: 'Teach me what it should mean — or tap "what can you do" below to see everything I know.',
           ),
         );
     }
@@ -552,6 +552,25 @@ class CommandService {
   /// Locally executable intents that need no device: greeting, time, math.
   AgentDispatchResult _localAnswer(ParsedCommand command) {
     switch (command.action) {
+      case AgentActions.helpGet:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Here is what I can do:\n'
+            '"call …" — I dial straight away, and if I\'m unsure who you mean I ask once and remember\n'
+            '"set an alarm for 6:30am" / "wake me at 7" — real phone alarms\n'
+            '"timer for 5 minutes" — real phone timer\n'
+            '"how much battery" — your battery at a glance\n'
+            '"flashlight on" / "flashlight off"\n'
+            '"volume up", "volume down", "mute"\n'
+            '"search for …" — opens a web search\n'
+            '"navigate to …" — opens directions\n'
+            '"note that …" — saves a note on this device\n'
+            '"what time is it" / "what is the date" / "what is 12 times 8"\n'
+            '"copy … to my devices" / "show my devices" / "blink the ESP32"\n'
+            'If I misunderstand, just teach me once — I remember.',
+          ),
+        );
       case AgentActions.greet:
         return const AgentDispatchResult(
           status: AgentResultStatus.succeeded,
