@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../mesh/mesh_service.dart';
 import 'devices_view.dart' show platformIcon;
+import 'nexus_header.dart';
 import 'theme.dart';
 
 /// Browse files on any device in the mesh over the encrypted channel.
@@ -478,20 +479,14 @@ class _FilesViewState extends State<FilesView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
-          child: Text(
-            'Files',
-            style: Theme.of(context).textTheme.headlineMedium,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Text(
-            'Browse, download and delete files on your devices, and send files '
-            'to them — over LAN at home, or from anywhere via a Tailscale address.',
-            style: Theme.of(context).textTheme.bodySmall,
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 24, 20, 0),
+          child: NexusHeader(
+            icon: Icons.folder_rounded,
+            title: 'Files',
+            subtitle:
+                'Browse, download and send files on your devices — over LAN at '
+                'home, or from anywhere via a Tailscale address.',
           ),
         ),
         const SizedBox(height: 14),

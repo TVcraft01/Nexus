@@ -14,6 +14,7 @@ import '../core/device_actions.dart';
 import '../core/phone_actions.dart';
 import '../core/query_log.dart';
 import '../mesh/mesh_service.dart';
+import 'nexus_header.dart';
 import 'theme.dart';
 
 /// The assistant is a translator from human to machine: it asks when it
@@ -33,7 +34,8 @@ class _AssistantViewState extends State<AssistantView> {
   final _controller = TextEditingController();
   final _focus = FocusNode();
   String _lastInput = '';
-  AgentDispatchResult? _result;
+  /// The conversation: user bubbles and assistant cards, in order.
+  final List<_ThreadEntry> _thread = [];
   late final CommandService _service;
   String? _pendingKey; // a clarification is open; the next input answers it
   String? _reply; // outcome shown on whichever plan card is open
@@ -148,6 +150,9 @@ class _AssistantViewState extends State<AssistantView> {
     String input, {
     AgentApproval approval = AgentApproval.required,
     String? answerTo,
+    // Approval re-runs (Approve/Deny) update the card they belong to instead
+    // of appending a new one — the exchange stays one bubble pair.
+    bool replaceLast = false,
   }) {
     final result = _service.execute(
       input,
@@ -157,7 +162,12 @@ class _AssistantViewState extends State<AssistantView> {
       answerTo: answerTo,
     );
     _logAsk(input, result);
-    _consume(result, typedPhrase: input.trim().toLowerCase());
+    _consume(
+      result,
+      asUser: input.trim(),
+      typedPhrase: input.trim().toLowerCase(),
+      replaceLast: replaceLast,
+    );
   }
 
   /// Every ask and its outcome lands in the query log — raw material for
@@ -186,15 +196,24 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.volumeSet,
   };
 
+  /// Appends to (or, for re-runs, updates the end of) the thread. No
+  /// setState — callers own the rebuild.
+  void _appendResult(AgentDispatchResult result, {String? asUser, bool replaceLast = false}) {
+    if (replaceLast && _thread.isNotEmpty) {
+      _thread[_thread.length - 1] = _ThreadEntry.result(result);
+    } else {
+      if (asUser != null && asUser.isNotEmpty) _thread.add(_ThreadEntry.user(asUser));
+      _thread.add(_ThreadEntry.result(result));
+    }
+    _pendingKey = switch (result.dispatch) {
+      final AgentClarification clarification => clarification.key,
+      _ => null,
+    };
+  }
+
   /// Shows a dispatch result — and starts self-run actions right away.
-  void _consume(AgentDispatchResult result, {String? typedPhrase}) {
-    setState(() {
-      _result = result;
-      _pendingKey = switch (result.dispatch) {
-        final AgentClarification clarification => clarification.key,
-        _ => null,
-      };
-    });
+  void _consume(AgentDispatchResult result, {String? asUser, String? typedPhrase, bool replaceLast = false}) {
+    setState(() => _appendResult(result, asUser: asUser, replaceLast: replaceLast));
     if (result.dispatch case final AgentActionPlan plan
         when plan.request.target == widget.mesh.identity.id &&
             _selfRunActions.contains(plan.request.action)) {
@@ -246,10 +265,13 @@ class _AssistantViewState extends State<AssistantView> {
   void _showSelfOutcome(bool ok, String message) {
     setState(() {
       _sending = false;
-      _result = AgentDispatchResult(
-        status: ok ? AgentResultStatus.succeeded : AgentResultStatus.unavailable,
-        message: ok ? '' : message,
-        dispatch: ok ? AgentMessage(message) : null,
+      _appendResult(
+        AgentDispatchResult(
+          status: ok ? AgentResultStatus.succeeded : AgentResultStatus.unavailable,
+          message: ok ? '' : message,
+          dispatch: ok ? AgentMessage(message) : null,
+        ),
+        replaceLast: true,
       );
     });
   }
@@ -285,15 +307,17 @@ class _AssistantViewState extends State<AssistantView> {
       setState(() {
         _sending = false;
         _pendingContactAsk = (phrase: askPhrase, candidates: outcome.candidates);
-        _pendingKey = 'contact:$askPhrase';
-        _result = AgentDispatchResult(
-          status: AgentResultStatus.needsInfo,
-          dispatch: AgentClarification(
-            question:
-                'I don\'t know "$contact" on this phone. Did you mean: ${outcome.candidates.join("  ·  ")}?',
-            key: 'contact:$askPhrase',
-            hint: 'Name one — I\'ll call them and remember this wording.',
+        _appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.needsInfo,
+            dispatch: AgentClarification(
+              question:
+                  'I don\'t know "$contact" on this phone. Did you mean: ${outcome.candidates.join("  ·  ")}?',
+              key: 'contact:$askPhrase',
+              hint: 'Name one — I\'ll call them and remember this wording.',
+            ),
           ),
+          replaceLast: true,
         );
       });
       return;
@@ -327,14 +351,17 @@ class _AssistantViewState extends State<AssistantView> {
     if (match.isEmpty) {
       setState(() {
         _pendingContactAsk = ask;
-        _result = AgentDispatchResult(
-          status: AgentResultStatus.needsInfo,
-          dispatch: AgentClarification(
-            question:
-                'I don\'t see "${text.trim()}" here. Did you mean: ${ask.candidates.join("  ·  ")}?',
-            key: _pendingKey!,
-            hint: 'Name one of those, and I\'ll remember it.',
+        _appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.needsInfo,
+            dispatch: AgentClarification(
+              question:
+                  'I don\'t see "${text.trim()}" here. Did you mean: ${ask.candidates.join("  ·  ")}?',
+              key: 'contact:${ask.phrase}',
+              hint: 'Name one of those, and I\'ll remember it.',
+            ),
           ),
+          replaceLast: true,
         );
       });
       return;
@@ -342,6 +369,7 @@ class _AssistantViewState extends State<AssistantView> {
     QueryLog.i.learned(ask.phrase, 'call $match');
     _consume(
       _service.learnAndRun(ask.phrase, 'call $match'),
+      asUser: text,
       typedPhrase: ask.phrase,
     );
   }
@@ -364,11 +392,11 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   void _approve() {
-    _execute(_lastInput, approval: AgentApproval.approved);
+    _execute(_lastInput, approval: AgentApproval.approved, replaceLast: true);
   }
 
   void _deny() {
-    _execute(_lastInput, approval: AgentApproval.denied);
+    _execute(_lastInput, approval: AgentApproval.denied, replaceLast: true);
   }
 
   /// Sends the actual blink payload to a serial device.
@@ -497,6 +525,8 @@ class _AssistantViewState extends State<AssistantView> {
                 },
               ),
             ),
+          // Room to scroll the last chip clear of the edge.
+          const SizedBox(width: 16),
         ],
       ),
     );
@@ -546,6 +576,16 @@ class _AssistantViewState extends State<AssistantView> {
   Widget build(BuildContext context) {
     return Column(
       children: [
+        // One header for every tab.
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 24, 20, 0),
+          child: NexusHeader(
+            icon: Icons.forum_rounded,
+            title: 'Assistant',
+            subtitle: 'Type it like you\'d say it — I\'ll take care of it.',
+          ),
+        ),
+        const SizedBox(height: 16),
         // Input bar
         Container(
           margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -595,31 +635,95 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   Widget _buildResult() {
-    final result = _result;
-    if (result == null && _incoming() == null) {
-      return widget.mesh.pairedDevices.isEmpty
-          ? _welcomeView()
-          : const Center(
-              child: Icon(Icons.mic_none_rounded, size: 48, color: NexusColors.muted),
-            );
+    if (_thread.isEmpty && _incoming() == null) {
+      return widget.mesh.pairedDevices.isEmpty ? _welcomeView() : _emptyChat();
     }
 
     final incoming = _incoming();
+    // reverse:true is the chat pattern — the newest exchange pins to the
+    // bottom automatically, and the incoming-request card (last child) stays
+    // pinned at the top.
+    final entries = _thread.reversed.toList();
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      reverse: true,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       children: [
+        for (final (i, entry) in entries.indexed) ...[_entryView(entry, isLast: i == 0), const SizedBox(height: 12)],
         if (incoming != null) ...[_incomingRequestView(incoming), const SizedBox(height: 12)],
-        if (result != null) ...[_statusChip(result.status, result.message), const SizedBox(height: 12)],
-        if (result?.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
-        if (result?.dispatch case final AgentActionPlan plan) _planView(plan),
-        if (result?.dispatch case final AgentMessage message)
-          message.live ? _liveClockView() : _messageView(message),
-        if (result?.dispatch case final AgentClarification ask) _questionView(ask),
-        if (result?.status == AgentResultStatus.required) ...[
-          const SizedBox(height: 12),
-          _approvalBar(),
-        ],
       ],
+    );
+  }
+
+  /// One exchange in the thread: a user bubble, or an assistant card with its
+  /// status chip (only on the newest exchange, so history stays calm).
+  Widget _entryView(_ThreadEntry entry, {required bool isLast}) {
+    if (entry.userText case final String user) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Semantics(
+          container: true,
+          label: 'You: $user',
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 320),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: NexusColors.accent.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: NexusColors.accent.withValues(alpha: 0.3)),
+            ),
+            child: Text(
+              user,
+              style: const TextStyle(color: NexusColors.text, fontSize: 13.5, height: 1.35),
+            ),
+          ),
+        ),
+      );
+    }
+    final result = entry.result!;
+    return Semantics(
+      container: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (isLast) ...[_statusChip(result.status, result.message), const SizedBox(height: 12)],
+          if (result.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
+          if (result.dispatch case final AgentActionPlan plan) _planView(plan),
+          if (result.dispatch case final AgentMessage message)
+            isLast && message.live ? _liveClockView() : _messageView(message),
+          if (result.dispatch case final AgentClarification ask) _questionView(ask),
+          if (isLast && result.status == AgentResultStatus.required) ...[
+            const SizedBox(height: 12),
+            _approvalBar(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// A friendly prompt when devices are paired but nothing has been asked yet.
+  Widget _emptyChat() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.forum_outlined, size: 44, color: NexusColors.muted),
+            const SizedBox(height: 12),
+            const Text(
+              'Ask me anything — I listen and do.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: NexusColors.text, fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Type below, or tap a suggestion to try one.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: NexusColors.muted, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1072,9 +1176,7 @@ class _LiveClockState extends State<_LiveClock> {
   void dispose() {
     _timer?.cancel();
     super.dispose();
-  }
-
-  @override
+  }  @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
     final hh = now.hour.toString().padLeft(2, '0');
@@ -1084,4 +1186,15 @@ class _LiveClockState extends State<_LiveClock> {
       style: const TextStyle(color: NexusColors.text, fontSize: 16, fontWeight: FontWeight.w600),
     );
   }
+}
+
+/// One exchange in the assistant conversation: either a user bubble or an
+/// assistant card. Approval re-runs and self-run outcomes replace the last
+/// entry instead of appending, so each exchange stays one bubble pair.
+class _ThreadEntry {
+  final String? userText;
+  final AgentDispatchResult? result;
+
+  _ThreadEntry.user(this.userText) : result = null;
+  _ThreadEntry.result(this.result) : userText = null;
 }

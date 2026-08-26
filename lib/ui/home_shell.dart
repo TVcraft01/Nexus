@@ -148,8 +148,8 @@ class _HomeShellState extends State<HomeShell> {
       label: Text('Files'),
     ),
     NavigationRailDestination(
-      icon: Icon(Icons.mic_none_rounded),
-      selectedIcon: Icon(Icons.mic_none_rounded),
+      icon: Icon(Icons.forum_rounded),
+      selectedIcon: Icon(Icons.forum_rounded),
       label: Text('Assistant'),
     ),
     NavigationRailDestination(
@@ -251,7 +251,7 @@ class _HomeShellState extends State<HomeShell> {
                       label: 'Files',
                     ),
                     NavigationDestination(
-                      icon: Icon(Icons.mic_none_rounded),
+                      icon: Icon(Icons.forum_rounded),
                       label: 'Assistant',
                     ),
                     NavigationDestination(
@@ -260,14 +260,17 @@ class _HomeShellState extends State<HomeShell> {
                     ),
                   ],
                 ),
-          // A + button to pair a new device, on every platform.
-          floatingActionButton: FloatingActionButton(
-            onPressed: () => showPairSheet(context, mesh: widget.mesh),
-            tooltip: 'Pair a new device',
-            backgroundColor: NexusColors.accent,
-            foregroundColor: const Color(0xFF06251F),
-            child: const Icon(Icons.add_rounded),
-          ),
+          // A + button to pair a new device — it belongs to the Devices tab,
+          // where pairing lives, so it only appears there.
+          floatingActionButton: _index == 0
+              ? FloatingActionButton(
+                  onPressed: () => showPairSheet(context, mesh: widget.mesh),
+                  tooltip: 'Pair a new device',
+                  backgroundColor: NexusColors.accent,
+                  foregroundColor: const Color(0xFF06251F),
+                  child: const Icon(Icons.add_rounded),
+                )
+              : null,
         );
       },
     );
