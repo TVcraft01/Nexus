@@ -2456,7 +2456,12 @@ class MeshService extends ChangeNotifier {
         peer.address = address;
         changed = true;
       }
-      if (peer.port != port) {
+      // A loopback source means the frame arrived through a local tunnel
+      // (adb reverse): the announced port is the peer's real listening
+      // port, which is NOT reachable from here — the route that works is
+      // the tunnel endpoint pairWith stored. Keep that port; on a same-host
+      // connection the announced port equals the stored one anyway.
+      if (!_isLoopback(address) && peer.port != port) {
         peer.port = port;
         changed = true;
       }
@@ -2498,6 +2503,9 @@ class MeshService extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  bool _isLoopback(String address) =>
+      address == '127.0.0.1' || address == '::1' || address == 'localhost';
 
   bool _sameList(List<String> a, List<String> b) {
     if (a.length != b.length) return false;
@@ -2751,8 +2759,12 @@ class MeshService extends ChangeNotifier {
                 id: msg.from,
                 name: (msg.payload['name'] as String?) ?? 'Paired device',
                 platform: (msg.payload['platform'] as String?) ?? 'other',
+                // The address/port we actually reached the peer through —
+                // when pairing over a tunnel (adb reverse) this differs
+                // from the port the peer announces, and reconnecting on
+                // the announced one would hit our own mesh instead.
                 address: address,
-                port: (msg.payload['port'] as num?)?.toInt() ?? port,
+                port: port,
                 pairingSecret: cleanCode,
                 lastVerified: DateTime.now(),
               );
