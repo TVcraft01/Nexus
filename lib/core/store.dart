@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
 import 'identity.dart';
@@ -195,13 +196,22 @@ class NexusStore {
   /// deleted the second's file mid-write — failing the whole save.
   Future<void> _saveChain = Future<void>.value();
 
+  /// Persistence is best-effort: a failed write is logged and swallowed,
+  /// never thrown at callers (settings toggles and the assistant save with
+  /// `unawaited(...)` — an error here would become an unhandled async
+  /// exception and could take the app down). The chain stays clean so the
+  /// next save always retries.
   Future<void> save() async {
     final file = _file ??= await _defaultFile();
     final run = _saveChain.then((_) => _writeTo(file));
     // The chain must never hold an error, or every later save would be
     // skipped; callers still see failures through `run`.
     _saveChain = run.catchError((_) {});
-    await run;
+    try {
+      await run;
+    } catch (e) {
+      debugPrint('NEXUS store: save failed ($e)');
+    }
   }
 
   Future<void> _writeTo(File file) async {

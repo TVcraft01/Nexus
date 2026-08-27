@@ -21,4 +21,37 @@ void main() {
     await reloaded.load();
     expect(reloaded.clipboardSync, isFalse);
   });
+
+  test('a failed save is swallowed and later saves still persist', () async {
+    final tmp = await Directory.systemTemp.createTemp('nexus_store_fail');
+    addTearDown(() => tmp.delete(recursive: true));
+    final path = '${tmp.path}/state.json';
+    final store = NexusStore(explicitPath: path)..clipboardSync = true;
+    await store.save();
+    expect(File(path).existsSync(), isTrue);
+
+    // Block the atomic rename: a directory now occupies the target path,
+    // so the next save's tmp -> final rename fails on POSIX.
+    await File(path).delete();
+    await Directory(path).create();
+
+    // Persistence is best-effort — a failed write must never throw at
+    // callers (they save with `unawaited(...)`).
+    var threw = false;
+    try {
+      await store.save();
+    } catch (_) {
+      threw = true;
+    }
+    expect(threw, isFalse, reason: 'best-effort save must not throw');
+
+    // Remove the blocker: the next save must land. A poisoned chain would
+    // have silently skipped every later save forever.
+    await Directory(path).delete();
+    store.clipboardSync = false;
+    await store.save();
+    final reloaded = NexusStore(explicitPath: path);
+    await reloaded.load();
+    expect(reloaded.clipboardSync, isFalse);
+  });
 }

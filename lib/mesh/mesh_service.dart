@@ -3062,6 +3062,8 @@ class MeshService extends ChangeNotifier {
     _started = false;
     _heartbeatTimer?.cancel();
     _clipboardTimer?.cancel();
+    // A pending smart-sync must not fire after the mesh is stopped.
+    _clipboardDelayTimer?.cancel();
     _neighborSaveTimer?.cancel();
     _neighborSaveTimer = null;
     await _discovery?.stop();
