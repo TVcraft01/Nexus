@@ -81,9 +81,6 @@ class SerialMessage {
   static SerialMessage msgTo(String? to, Map<String, dynamic> data) =>
       SerialMessage(msg, {if (to != null && to.isNotEmpty) 'to': to, 'data': data});
 
-  static SerialMessage upFrom(Map<String, dynamic> data) =>
-      SerialMessage(up, {'data': data});
-
   static SerialMessage pairOk(String name) => SerialMessage(pair, {'ok': true, 'name': name});
 }
 

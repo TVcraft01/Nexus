@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
@@ -158,7 +159,7 @@ class DevicesView extends StatelessWidget {
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
-          ...serial.map((d) => _SerialCard(mesh: mesh, device: d, hostName: null)),
+          ...serial.map((d) => _SerialCard(mesh: mesh, device: d)),
           ...remoteSerial.map((d) {
             final hostId = d.port.startsWith('remote:')
                 ? d.port.substring(7)
@@ -301,6 +302,125 @@ class _DeviceCard extends StatelessWidget {
 
   const _DeviceCard({required this.mesh, required this.device});
 
+  /// Opens the same menu the ⋮ button shows. The whole card is tappable so
+  /// users don't have to aim at the tiny icon.
+  void _showMenu(BuildContext context) {
+    HapticFeedback.selectionClick();
+    showMenu<String>(
+      context: context,
+      color: NexusColors.surfaceHi,
+      position: RelativeRect.fromLTRB(
+        MediaQuery.sizeOf(context).width - 220,
+        80,
+        20,
+        20,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: 'edit_name',
+          child: Text('Edit name'),
+        ),
+        PopupMenuItem(
+          value: 'details',
+          child: Text('Details'),
+        ),
+        PopupMenuItem(
+          value: 'forget',
+          child: Text(
+            'Forget device',
+            style: TextStyle(color: NexusColors.danger),
+          ),
+        ),
+      ],
+    ).then((value) async {
+      if (value == null || !context.mounted) return;
+      await _onMenuValue(context, value);
+    });
+  }
+
+  Future<void> _onMenuValue(BuildContext context, String value) async {
+    switch (value) {
+      case 'details':
+        await _showDetails(context);
+      case 'edit_name':
+        await _renamePairedDevice(context, mesh, device);
+      case 'forget':
+        final confirmed = await _confirmForget(context);
+        if (confirmed == true) {
+          await mesh.forgetDevice(device.id);
+        }
+    }
+  }
+
+  Future<void> _showDetails(BuildContext context) {
+    final online = mesh.isOnline(device.id);
+    final visible = mesh.isVisible(device.id);
+    final lastSeen = mesh.lastSeenAt(device.id);
+    final statusText = online
+        ? 'Online'
+        : visible
+        ? 'Nearby · not reachable'
+        : 'Offline · last seen ${_timeAgo(lastSeen)}';
+    return showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: NexusColors.surface,
+        title: Text(
+          device.name,
+          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _DetailRow(label: 'Status', value: statusText),
+            _DetailRow(label: 'Platform', value: platformLabel(device.platform)),
+            _DetailRow(label: 'Address', value: '${device.address}:${device.port}'),
+            _DetailRow(label: 'Paired', value: 'Encrypted · direct'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool?> _confirmForget(BuildContext context) {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: NexusColors.surface,
+        title: const Text(
+          'Forget this device?',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        content: Text(
+          'Careful — ${device.name} will be removed and must be paired '
+          'again from scratch to reconnect. This can\'t be undone.',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: NexusColors.danger,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Forget device'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final online = mesh.isOnline(device.id);
@@ -316,144 +436,50 @@ class _DeviceCard extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              _Avatar(name: device.name),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      device.name,
-                      style: Theme.of(context).textTheme.titleMedium,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 3),
-                    Row(
-                      children: [
-                        _PulseDot(color: dotColor),
-                        const SizedBox(width: 6),
-                        Text(
-                          '$statusText · ${platformLabel(device.platform)}',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                  ],
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => _showMenu(context),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                _Avatar(name: device.name),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        device.name,
+                        style: Theme.of(context).textTheme.titleMedium,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          _PulseDot(color: dotColor),
+                          const SizedBox(width: 6),
+                          Text(
+                            '$statusText · ${platformLabel(device.platform)}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              PopupMenuButton<String>(
-                color: NexusColors.surfaceHi,
+              IconButton(
+                onPressed: () => _showMenu(context),
                 icon: const Icon(
                   Icons.more_vert,
                   color: NexusColors.muted,
                   size: 20,
                 ),
-                onSelected: (value) async {
-                  switch (value) {
-                    case 'details':
-                      showDialog(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          backgroundColor: NexusColors.surface,
-                          title: Text(
-                            device.name,
-                            style: const TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          content: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _DetailRow(label: 'Status', value: statusText),
-                              _DetailRow(
-                                label: 'Platform',
-                                value: platformLabel(device.platform),
-                              ),
-                              _DetailRow(
-                                label: 'Address',
-                                value: '${device.address}:${device.port}',
-                              ),
-                              _DetailRow(
-                                label: 'Paired',
-                                value: 'Encrypted · direct',
-                              ),
-                            ],
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: const Text('Close'),
-                            ),
-                          ],
-                        ),
-                      );
-                    case 'edit_name':
-                      await _renamePairedDevice(context, mesh, device);
-                    case 'forget':
-                      final confirmed = await showDialog<bool>(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          backgroundColor: NexusColors.surface,
-                          title: const Text(
-                            'Forget this device?',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          content: Text(
-                            'Careful — ${device.name} will be removed and must be paired '
-                            'again from scratch to reconnect. This can\'t be undone.',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context, false),
-                              child: const Text('Cancel'),
-                            ),
-                            FilledButton(
-                              style: FilledButton.styleFrom(
-                                backgroundColor: NexusColors.danger,
-                                foregroundColor: Colors.white,
-                              ),
-                              onPressed: () => Navigator.pop(context, true),
-                              child: const Text('Forget device'),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (confirmed == true) {
-                        await mesh.forgetDevice(device.id);
-                      }
-                  }
-                },
-                itemBuilder: (context) => [
-                  const PopupMenuItem(
-                    value: 'edit_name',
-                    child: Text('Edit name'),
-                  ),
-                  const PopupMenuItem(
-                    value: 'details',
-                    child: Text('Details'),
-                  ),
-                  PopupMenuItem(
-                    value: 'forget',
-                    child: Text(
-                      'Forget device',
-                      style: TextStyle(color: NexusColors.danger),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+                tooltip: 'Device actions',
+              ),            ],
           ),
         ),
+      ),
       ),
     );
   }

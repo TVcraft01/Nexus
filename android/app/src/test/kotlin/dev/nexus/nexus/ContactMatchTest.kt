@@ -5,6 +5,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/// Test-side mirror of the production matcher: exact, case-insensitive full,
+/// prefix, contains — null when nothing matches. Lives here because nothing
+/// in production calls it (callContact uses rankedContactMatches directly).
+private fun pickBestContactMatch(candidates: List<String>, query: String): String? =
+    rankedContactMatches(candidates, query, limit = 1).firstOrNull()
+
 /// Unit tests for the contact-name resolution used by "call <name>":
 /// an exact display-name match must always win, then a case-insensitive
 /// fallback picks prefix over contains — enough to resolve real contacts

@@ -100,8 +100,8 @@ class QueryLog {
       final f = await _resolve();
       await f?.writeAsString(
         '${batch.join('\n')}\n',
+        // no fsync per line — battery over durability here
         mode: FileMode.append,
-        flush: false, // no fsync per line — battery over durability here
       );
     } catch (_) {
       // Never crash or nag for logging.

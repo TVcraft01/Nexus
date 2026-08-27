@@ -28,6 +28,7 @@ class _CablePairPageState extends State<CablePairPage> {
   String? _installError;
   String? _installedVersion;
   bool _tunnelOk = false;
+  int? _cablePort; // phone-side port the tunnel mapped (may differ from mesh port)
   String? _guide; // fallback guide for non-Android devices
   Timer? _poll;
   int _pairedAtStart = 0;
@@ -112,11 +113,17 @@ class _CablePairPageState extends State<CablePairPage> {
   Future<void> _openTunnelAndShowCode() async {
     final serial = _device;
     if (serial == null) return;
-    setState(() => _tunnelOk = false);
-    final ok = await CablePairing.reverseTunnel(serial, widget.mesh.port);
+    setState(() {
+      _tunnelOk = false;
+      _cablePort = null;
+    });
+    final cablePort = await CablePairing.openTunnel(serial, widget.mesh.port);
     if (!mounted) return;
-    setState(() => _tunnelOk = ok);
-    if (!ok) return;
+    setState(() {
+      _tunnelOk = cablePort != null;
+      _cablePort = cablePort;
+    });
+    if (cablePort == null) return;
 
     setState(() {
       _session = widget.mesh.beginPairing();
@@ -341,7 +348,7 @@ class _CablePairPageState extends State<CablePairPage> {
           const SizedBox(height: 6),
           Center(
             child: Text(
-              'port ${widget.mesh.port} · expires in 5 minutes',
+              'port ${_cablePort ?? widget.mesh.port} · expires in 5 minutes',
               style: const TextStyle(fontSize: 12, color: NexusColors.muted),
             ),
           ),

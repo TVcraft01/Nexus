@@ -462,12 +462,6 @@ class MainActivity : FlutterActivity() {
     }
 }
 
-/// Picks the contact display name that best matches [query]:
-/// 1. exact, 2. case-insensitive full, 3. prefix, 4. contains; null when
-/// nothing matches. Pure so it is unit-testable without a contacts provider.
-fun pickBestContactMatch(candidates: List<String>, query: String): String? =
-    rankedContactMatches(candidates, query, limit = 1).firstOrNull()
-
 /// Lowercased with diacritics folded ("café" -> "cafe") so typed queries
 /// without accents still match real contact names.
 fun contactMatchKey(s: String): String {

@@ -176,7 +176,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.webSearch,
           target: 'local',
-          arguments: {'query': what.group(2)!},
+          arguments: {'query': what.group(2)},
         ),
       );
     }
@@ -270,7 +270,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.callPlace,
           target: 'local',
-          arguments: {'contact': call.group(1)!},
+          arguments: {'contact': call.group(1)},
         ),
       );
     }
@@ -281,7 +281,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.messageSend,
           target: 'local',
-          arguments: {'contact': directMessage.group(2)!},
+          arguments: {'contact': directMessage.group(2)},
         ),
       );
     }
@@ -293,7 +293,7 @@ class CommandInterpreter {
           action: AgentActions.messageSend,
           target: 'local',
           arguments: {
-            if (sendMessage.group(4)?.isNotEmpty ?? false) 'contact': sendMessage.group(4)!,
+            if (sendMessage.group(4)?.isNotEmpty ?? false) 'contact': sendMessage.group(4),
           },
         ),
       );
@@ -368,8 +368,8 @@ class CommandInterpreter {
           action: AgentActions.homeControl,
           target: 'local',
           arguments: {
-            'state': switchDevice.group(2)!,
-            'device': switchDevice.group(4)!,
+            'state': switchDevice.group(2),
+            'device': switchDevice.group(4),
           },
         ),
       );
@@ -406,7 +406,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.noteCreate,
           target: 'local',
-          arguments: {'text': note.group(note.groupCount)!},
+          arguments: {'text': note.group(note.groupCount)},
         ),
       );
     }
@@ -418,7 +418,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.translateText,
           target: 'local',
-          arguments: {'text': translate.group(1)!, 'language': translate.group(3)!},
+          arguments: {'text': translate.group(1), 'language': translate.group(3)},
         ),
       );
     }
@@ -430,7 +430,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.webSearch,
           target: 'local',
-          arguments: {'query': search.group(3)!},
+          arguments: {'query': search.group(3)},
         ),
       );
     }

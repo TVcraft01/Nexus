@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory;
 
@@ -48,7 +49,7 @@ class _AssistantViewState extends State<AssistantView> {
   final PhoneActionBackend _phoneBackend = RealPhoneActionBackend();
 
   /// Runs the small device-local actions (alarms, timers, torch…).
-  final DeviceActionBackend _deviceBackend = RealDeviceActionBackend();
+  final DeviceActionBackend _deviceBackend = deviceActionBackend();
 
   @override
   void initState() {
@@ -61,7 +62,9 @@ class _AssistantViewState extends State<AssistantView> {
         online: true,
         capabilities: defaultCapabilitiesFor(widget.mesh.identity.platform),
       ),
-      // On Android these run natively on THIS device from typed input alone.
+      // Locally-executable actions run immediately from typed input — no
+      // Approve/Deny prompt. Android runs the catalog natively; the desktop
+      // runs what a Linux box can do (battery, timers, alarms, notes, search).
       locallyExecutable: defaultTargetPlatform == TargetPlatform.android
           ? const {
               AgentActions.callPlace,
@@ -74,7 +77,16 @@ class _AssistantViewState extends State<AssistantView> {
               AgentActions.torchToggle,
               AgentActions.volumeSet,
             }
-          : const {},
+          : defaultTargetPlatform == TargetPlatform.linux
+              ? const {
+                  AgentActions.batteryGet,
+                  AgentActions.timerSet,
+                  AgentActions.alarmSet,
+                  AgentActions.reminderSet,
+                  AgentActions.noteCreate,
+                  AgentActions.webSearch,
+                }
+              : const {},
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
         defaults: widget.mesh.store.agentDefaults,
@@ -183,8 +195,17 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   /// Actions this device executes itself, straight after planning — typing
-  /// "wake me at 7" sets a real alarm with zero extra taps.
-  static const _selfRunActions = {
+  /// "wake me at 7" sets a real alarm with zero extra taps. Mirrors
+  /// [CommandService.locallyExecutable]: Android runs the catalog natively,
+  /// the desktop runs what a Linux box can do.
+  Set<String> get _selfRunActions =>
+      defaultTargetPlatform == TargetPlatform.android
+          ? _androidSelfRun
+          : defaultTargetPlatform == TargetPlatform.linux
+              ? _desktopSelfRun
+              : const {};
+
+  static const _androidSelfRun = {
     AgentActions.callPlace,
     AgentActions.alarmSet,
     AgentActions.timerSet,
@@ -194,6 +215,15 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.batteryGet,
     AgentActions.torchToggle,
     AgentActions.volumeSet,
+  };
+
+  static const _desktopSelfRun = {
+    AgentActions.batteryGet,
+    AgentActions.timerSet,
+    AgentActions.alarmSet,
+    AgentActions.reminderSet,
+    AgentActions.noteCreate,
+    AgentActions.webSearch,
   };
 
   /// Appends to (or, for re-runs, updates the end of) the thread. No
@@ -228,15 +258,22 @@ class _AssistantViewState extends State<AssistantView> {
       _sending = true;
       _reply = null;
     });
-    // Follow-up answers arrive as plain strings ('time': '7am') — parse them
-    // into what the native side expects.
+    final outcome = await _prepareAndRun(request);
+    if (!mounted) return;
+    _showSelfOutcome(outcome.ok, outcome.message);
+  }
+
+  /// Parses follow-up answers ('time': '7am') into what the native side
+  /// expects, then runs the action through the platform backend (or the
+  /// Dart-side note append). Shared by local typed actions and remote
+  /// requests that were approved on this device.
+  Future<ActionResult> _prepareAndRun(AgentRequest request) async {
     final prepared = Map<String, dynamic>.of(request.arguments);
     if (request.action == AgentActions.alarmSet && prepared['hour'] == null) {
       final parsed =
           CommandInterpreter.parseClockTime(prepared['time']?.toString() ?? '');
       if (parsed == null) {
-        _showSelfOutcome(false, 'I still need a time — like 7am or 18:30.');
-        return;
+        return const ActionResult(false, 'I still need a time — like 7am or 18:30.');
       }
       prepared
         ..remove('time')
@@ -247,19 +284,14 @@ class _AssistantViewState extends State<AssistantView> {
       final seconds =
           CommandInterpreter.parseDurationSeconds(prepared['seconds']?.toString() ?? '');
       if (seconds == null) {
-        _showSelfOutcome(false, 'How long should it run? Try "5 minutes".');
-        return;
+        return const ActionResult(false, 'How long should it run? Try "5 minutes".');
       }
       prepared['seconds'] = seconds;
     }
-    final ActionResult outcome;
     if (request.action == AgentActions.noteCreate) {
-      outcome = await _appendNote(prepared['text']?.toString() ?? '');
-    } else {
-      outcome = await _deviceBackend.run(request.action, prepared);
+      return _appendNote(prepared['text']?.toString() ?? '');
     }
-    if (!mounted) return;
-    _showSelfOutcome(outcome.ok, outcome.message);
+    return _deviceBackend.run(request.action, prepared);
   }
 
   void _showSelfOutcome(bool ok, String message) {
@@ -377,6 +409,7 @@ class _AssistantViewState extends State<AssistantView> {
   void _onSubmit() {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
+    HapticFeedback.selectionClick();
     _lastInput = text;
     _controller.clear();
     final pending = _pendingKey;
@@ -392,10 +425,12 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   void _approve() {
+    HapticFeedback.lightImpact();
     _execute(_lastInput, approval: AgentApproval.approved, replaceLast: true);
   }
 
   void _deny() {
+    HapticFeedback.selectionClick();
     _execute(_lastInput, approval: AgentApproval.denied, replaceLast: true);
   }
 
@@ -474,14 +509,31 @@ class _AssistantViewState extends State<AssistantView> {
   /// execute here, and send the outcome back over the mesh.
   Future<void> _handleIncoming(AgentRequest request, String from, bool approve) async {
     QueryLog.i.remote(from, request.action, approve ? 'approved' : 'denied', request.arguments.toString());
-    final result = approve &&
-            request.action == AgentActions.callPlace &&
-            defaultTargetPlatform == TargetPlatform.android
-        ? await executePhoneCall(_phoneBackend, request)
-        : _service.handleRemoteRequest(
-            request,
-            approval: approve ? AgentApproval.approved : AgentApproval.denied,
-          );
+    final AgentDispatchResult result;
+    if (!approve) {
+      result = _service.handleRemoteRequest(
+        request,
+        approval: AgentApproval.denied,
+      );
+    } else if (request.action == AgentActions.callPlace &&
+        defaultTargetPlatform == TargetPlatform.android) {
+      result = await executePhoneCall(_phoneBackend, request);
+    } else if (_selfRunActions.contains(request.action)) {
+      // Actions this device can genuinely run get executed here; everything
+      // else answers honestly via the service's catalog.
+      final outcome = await _prepareAndRun(request);
+      result = AgentDispatchResult(
+        status:
+            outcome.ok ? AgentResultStatus.succeeded : AgentResultStatus.unavailable,
+        message: outcome.message,
+        dispatch: outcome.ok ? AgentMessage(outcome.message) : null,
+      );
+    } else {
+      result = _service.handleRemoteRequest(
+        request,
+        approval: AgentApproval.approved,
+      );
+    }
     final delivered = await widget.mesh.sendAgentResult(from, request.requestId, result);
     if (!mounted) return;
     widget.mesh.dismissIncomingAgentRequest();

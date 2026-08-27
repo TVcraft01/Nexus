@@ -64,7 +64,7 @@ class Updater {
     String repo = 'Nexus',
     Future<String> Function(String url)? fetch,
   }) async {
-    final fetcher = fetch ?? (url) => _httpGet(url);
+    final fetcher = fetch ?? _httpGet;
     try {
       final json = await _latestReleaseJson(fetcher, owner: owner, repo: repo);
       if (json == null) return null;
@@ -117,7 +117,7 @@ class Updater {
     String repo = 'Nexus',
     Future<String> Function(String url)? fetch,
   }) async {
-    final fetcher = fetch ?? (url) => _httpGet(url);
+    final fetcher = fetch ?? _httpGet;
     try {
       final json = await _latestReleaseJson(fetcher, owner: owner, repo: repo);
       if (json == null) return null;

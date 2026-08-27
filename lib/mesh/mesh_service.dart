@@ -982,10 +982,17 @@ class MeshService extends ChangeNotifier {
     }
 
     add(peer.address);
-    for (final a in peer.addresses) {
-      add(a);
-    }
+    peer.addresses.forEach(add);
     for (final address in candidates) {
+      // A loopback candidate on OUR OWN mesh port is a self-connection, not
+      // a route to the peer — it can happen after tunnel pairing, where the
+      // peer's announced port matches ours and its "address" was the
+      // tunnel's local endpoint. Skip it so we fall through to a real
+      // address (the peer's LAN IP). Loopback on any OTHER port is a genuine
+      // tunnel route (adb reverse) and must stay.
+      if (_isLoopback(address) && peer.port == store.port) {
+        continue;
+      }
       try {
         final socket = await Socket.connect(
           address,
@@ -2141,8 +2148,9 @@ class MeshService extends ChangeNotifier {
           );
           if (copied == null) return null;
         }
-        if (move && await deleteRemoteFile(source, sourcePath))
+        if (move && await deleteRemoteFile(source, sourcePath)) {
           return destinationPath;
+        }
         if (move) return null;
         return destinationPath;
       }
@@ -2457,7 +2465,12 @@ class MeshService extends ChangeNotifier {
         peer.address = address;
         changed = true;
       }
-      if (peer.port != port) {
+      // A loopback source means the frame arrived through a local tunnel
+      // (adb reverse): the announced port is the peer's real listening
+      // port, which is NOT reachable from here — the route that works is
+      // the tunnel endpoint pairWith stored. Keep that port; on a same-host
+      // connection the announced port equals the stored one anyway.
+      if (!_isLoopback(address) && peer.port != port) {
         peer.port = port;
         changed = true;
       }
@@ -2499,6 +2512,9 @@ class MeshService extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  bool _isLoopback(String address) =>
+      address == '127.0.0.1' || address == '::1' || address == 'localhost';
 
   bool _sameList(List<String> a, List<String> b) {
     if (a.length != b.length) return false;
@@ -2562,7 +2578,6 @@ class MeshService extends ChangeNotifier {
             address: device.address,
             port: device.port,
             pairingSecret: '',
-            localName: false,
           ),
         );
       }        for (final peer in targets.values) {
@@ -2753,8 +2768,12 @@ class MeshService extends ChangeNotifier {
                 id: msg.from,
                 name: (msg.payload['name'] as String?) ?? 'Paired device',
                 platform: (msg.payload['platform'] as String?) ?? 'other',
+                // The address/port we actually reached the peer through —
+                // when pairing over a tunnel (adb reverse) this differs
+                // from the port the peer announces, and reconnecting on
+                // the announced one would hit our own mesh instead.
                 address: address,
-                port: (msg.payload['port'] as num?)?.toInt() ?? port,
+                port: port,
                 pairingSecret: cleanCode,
                 lastVerified: DateTime.now(),
               );
@@ -2785,16 +2804,18 @@ class MeshService extends ChangeNotifier {
     socket.listen(
       handleChunk,
       onError: (_) {
-        if (!completer.isCompleted)
+        if (!completer.isCompleted) {
           completer.complete(
             PairResult.failure('Connection was lost during pairing.'),
           );
+        }
       },
       onDone: () {
-        if (!completer.isCompleted)
+        if (!completer.isCompleted) {
           completer.complete(
             PairResult.failure('Connection closed before pairing finished.'),
           );
+        }
       },
     );
 
@@ -3014,12 +3035,6 @@ class MeshService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> copyText(String text) async {
-    _lastClipboard = text;
-    await clipboard.writeText(text);
-    await broadcastClipboard(text);
-  }
-
   // ---------------------------------------------------------------------
   // Misc
   // ---------------------------------------------------------------------
@@ -3047,6 +3062,8 @@ class MeshService extends ChangeNotifier {
     _started = false;
     _heartbeatTimer?.cancel();
     _clipboardTimer?.cancel();
+    // A pending smart-sync must not fire after the mesh is stopped.
+    _clipboardDelayTimer?.cancel();
     _neighborSaveTimer?.cancel();
     _neighborSaveTimer = null;
     await _discovery?.stop();

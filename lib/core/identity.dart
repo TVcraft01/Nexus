@@ -58,7 +58,7 @@ String generatePairingCode() {
 }
 
 String sanitizeDeviceName(String raw) {
-  var name = raw.trim();
+  final name = raw.trim();
   if (name.isEmpty) return 'My device';
   return name.length > 24 ? name.substring(0, 24) : name;
 }

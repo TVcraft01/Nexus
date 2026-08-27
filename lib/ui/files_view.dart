@@ -305,6 +305,7 @@ class _FilesViewState extends State<FilesView> {
         _entries?.removeWhere((e) => e.path == entry.path);
       }
       await _load();
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -472,23 +473,32 @@ class _FilesViewState extends State<FilesView> {
       });
     }
 
+    // The header belongs to the tab, not to the file listing — show it even
+    // when there is nothing paired yet (the empty state below it).
+    final header = const Padding(
+      padding: EdgeInsets.fromLTRB(20, 24, 20, 0),
+      child: NexusHeader(
+        icon: Icons.folder_rounded,
+        title: 'Files',
+        subtitle:
+            'Browse, download and send files on your devices — over LAN at '
+            'home, or from anywhere via a Tailscale address.',
+      ),
+    );
+
     if (devices.isEmpty) {
-      return _EmptyFiles(mesh: widget.mesh);
+      return Column(
+        children: [
+          header,
+          Expanded(child: _EmptyFiles(mesh: widget.mesh)),
+        ],
+      );
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(20, 24, 20, 0),
-          child: NexusHeader(
-            icon: Icons.folder_rounded,
-            title: 'Files',
-            subtitle:
-                'Browse, download and send files on your devices — over LAN at '
-                'home, or from anywhere via a Tailscale address.',
-          ),
-        ),
+        header,
         const SizedBox(height: 14),
         // Device picker: one chip per paired device, online ones first.
         SizedBox(
@@ -893,7 +903,7 @@ class _EntryRow extends StatelessWidget {
                         children: [
                           CircularProgressIndicator(
                             strokeWidth: 2.5,
-                            value: progress!,
+                            value: progress,
                             color: NexusColors.accent,
                             backgroundColor: NexusColors.surfaceHi,
                           ),
@@ -987,8 +997,9 @@ class _EntryRow extends StatelessWidget {
 String _size(int bytes) {
   if (bytes < 1024) return '$bytes B';
   if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  if (bytes < 1024 * 1024 * 1024)
+  if (bytes < 1024 * 1024 * 1024) {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
   return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
 }
 

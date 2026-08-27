@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData, HapticFeedback;
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/network_info.dart';
@@ -43,7 +43,7 @@ class _PairSheet extends StatefulWidget {
 
 class _PairSheetState extends State<_PairSheet> {
   int _tab = 0; // 0 = show my code, 1 = enter a code
-  late final PairingSession _session;
+  late PairingSession _session;
   late final TextEditingController _codeController;
   late final TextEditingController _addressController;
   late final TextEditingController _portController;
@@ -142,6 +142,7 @@ class _PairSheetState extends State<_PairSheet> {
       return;
     }
 
+    HapticFeedback.selectionClick();
     setState(() {
       _pairing = true;
       _error = null;
@@ -150,6 +151,7 @@ class _PairSheetState extends State<_PairSheet> {
     if (!mounted) return;
     setState(() => _pairing = false);
     if (result.ok) {
+      HapticFeedback.lightImpact();
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Paired with ${result.peerName ?? 'device'}. 🎉'),
@@ -429,7 +431,6 @@ class _PairSheetState extends State<_PairSheet> {
               ),
               const SizedBox(width: 10),
               Expanded(
-                flex: 1,
                 child: TextField(
                   controller: _portController,
                   keyboardType: TextInputType.number,

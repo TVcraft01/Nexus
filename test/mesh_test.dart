@@ -180,6 +180,32 @@ void main() {
     expect(received, isTrue, reason: meshB.lastFileError);
   });
 
+  test(
+    'a loopback route on our own port is a self-connection and is skipped',
+    () async {
+      await meshA.start();
+      await meshB.start();
+      final session = meshA.beginPairing();
+      final result = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(result.ok, isTrue);
+
+      // Simulate the tunnel-pairing residue: B remembers A at loopback on
+      // B's OWN mesh port. Connecting there would reach B itself, not A —
+      // outbound must skip it and honestly report failure instead.
+      final peerA = meshB.pairedDevices.single;
+      peerA.address = '127.0.0.1';
+      peerA.port = storeB.port;
+      peerA.addresses = ['127.0.0.1'];
+
+      expect(await meshB.listRemoteFiles(peerA, ''), isNull);
+      expect(meshB.lastFileError, contains('Could not reach'));
+    },
+  );
+
   test('with clipboard sync off, incoming clips are not applied', () async {
     storeA.clipboardSync = false;
     await storeA.save();
@@ -202,6 +228,39 @@ void main() {
     }
     expect(found, isTrue);
     expect(clipA.value, isNull); // not applied to the clipboard
+  });
+
+  test('a pending smart-clipboard hold must not leak stale sync after stop()', () async {
+    await meshA.start();
+    await meshB.start();
+    final session = meshA.beginPairing();
+    final paired = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(paired.ok, isTrue);
+
+    // Smart mode: a copy is held for 3 s, not pushed immediately.
+    storeA.alwaysMerge = false;
+    clipA.value = 'stale-copy';
+    // Wait for the clipboard poll (1.5 s) to schedule the 3 s hold.
+    await Future<void>.delayed(const Duration(milliseconds: 2100));
+
+    // Shut the mesh down while the hold is still pending. The fix cancels
+    // the hold timer here; without it, the timer fires after stop and a
+    // later restart flushes the stale copy to B.
+    await meshA.stop();
+    await meshA.start();
+
+    // Give the full expiry + flush + poll cycle time to misbehave.
+    await Future<void>.delayed(const Duration(milliseconds: 4500));
+    expect(
+      clipB.value,
+      isNot('stale-copy'),
+      reason: 'B must never receive a clipboard hold that was pending when '
+          'A stopped — stale state must not survive the restart',
+    );
   });
 
   test('smart clipboard: skips inactive devices', () async {
