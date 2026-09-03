@@ -107,9 +107,8 @@ main() {
             info "Downloading macOS build..."
             download "$url" "$archive"
             info "Extracting..."
-            unzip -qo "$archive" -d "$INSTALL_DIR"
+            unzip -qo "$archive" -C "$INSTALL_DIR"
             rm -f "$archive"
-            chmod +x "$INSTALL_DIR/Nexus.app/Contents/MacOS/nexus" 2>/dev/null || \
             chmod +x "$INSTALL_DIR/nexus" 2>/dev/null || true
             ;;
 
@@ -119,7 +118,7 @@ main() {
             info "Downloading Windows build..."
             download "$url" "$archive"
             info "Extracting..."
-            unzip -qo "$archive" -d "$INSTALL_DIR"
+            unzip -qo "$archive" -C "$INSTALL_DIR"
             rm -f "$archive"
             ;;
     esac
@@ -139,6 +138,25 @@ main() {
         fi
     fi
 
+    # Create .desktop file so the app shows in the app menu
+    if [ "$os" = "linux" ]; then
+        local desktop_dir="$HOME/.local/share/applications"
+        mkdir -p "$desktop_dir"
+        cat > "$desktop_dir/nexus.desktop" <<DESKTOP
+[Desktop Entry]
+Name=Nexus
+Comment=Your devices, one system
+Exec=$INSTALL_DIR/nexus
+Icon=$INSTALL_DIR/data/flutter_assets/assets/tray_icon.png
+Terminal=false
+Type=Application
+Categories=Utility;Network;
+StartupNotify=false
+DESKTOP
+        chmod +x "$desktop_dir/nexus.desktop"
+        ok "Added Nexus to your app menu"
+    fi
+
     ok "Installed to $INSTALL_DIR/nexus"
     echo ""
     echo -e "  ${GREEN}To run now:${NC}"
@@ -149,7 +167,8 @@ main() {
         echo -e "    ${CYAN}nexus${NC}"
     fi
     echo ""
-    echo -e "  The app will appear in your system tray on Linux."
+    echo -e "  On Linux: look for ${CYAN}Nexus${NC} in your app menu."
+    echo -e "  The app runs in the system tray — close the window and it keeps running."
     echo ""
 }
 
