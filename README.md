@@ -46,7 +46,17 @@ LAN, VPN, Tailscale — Nexus adapts to your network. Your devices can talk from
 curl -fsSL https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.sh | bash
 ```
 
-Detects your OS (Linux, macOS, or Windows) and installs the latest release. Done in seconds.
+Detects your OS (Linux, macOS, or Windows) and installs the latest release to `~/.nexus/`.
+
+After install:
+
+```bash
+~/.nexus/nexus        # run it now
+# or restart your terminal, then just:
+nexus
+```
+
+On Linux, Nexus runs in the system tray — close the window and it keeps running.
 
 **Or build from source:**
 
@@ -57,7 +67,7 @@ git clone https://github.com/TVcraft01/Nexus.git && cd Nexus && flutter pub get 
 **Try it on one machine:**
 
 ```bash
-./nexus &  NEXUS_DATA_DIR=/tmp/nexus2 ./nexus
+~/.nexus/nexus &  NEXUS_DATA_DIR=/tmp/nexus2 ~/.nexus/nexus
 ```
 
 Both windows discover each other. Pair them. Copy something. Watch it appear.

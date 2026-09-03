@@ -141,11 +141,15 @@ main() {
 
     ok "Installed to $INSTALL_DIR/nexus"
     echo ""
-    echo -e "  Run it:"
-    echo -e "    ${CYAN}nexus${NC}"
-    echo ""
-    echo -e "  Or directly:"
+    echo -e "  ${GREEN}To run now:${NC}"
     echo -e "    ${CYAN}$INSTALL_DIR/nexus${NC}"
+    echo ""
+    if [ -n "$shell_profile" ]; then
+        echo -e "  ${YELLOW}After restarting your terminal (or running source $shell_profile):${NC}"
+        echo -e "    ${CYAN}nexus${NC}"
+    fi
+    echo ""
+    echo -e "  The app will appear in your system tray on Linux."
     echo ""
 }
 
