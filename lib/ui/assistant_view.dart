@@ -406,15 +406,45 @@ class _AssistantViewState extends State<AssistantView> {
       return const ActionResult(false, 'What app should I open?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // Try launching via monkey (doesn't need exact package name)
-        final result = await Process.run('monkey', [
+        // Launch via am start — monkey isn't in the app's PATH on Android
+        final pkg = _androidPackageName(query);
+        final result = await Process.run('/system/bin/am', [
+          'start',
+          '-a',
+          'android.intent.action.MAIN',
+          '-c',
+          'android.intent.category.LAUNCHER',
+          '-n',
+          '$pkg/android.activity.Main',
+        ]);
+        if (result.exitCode == 0 &&
+            !result.stdout.toString().contains('Error')) {
+          return ActionResult(true, 'Opened $query.');
+        }
+        // Fallback: try without specifying the activity name
+        final result2 = await Process.run('/system/bin/am', [
+          'start',
+          '-a',
+          'android.intent.action.MAIN',
+          '-c',
+          'android.intent.category.LAUNCHER',
+          '--activity-single-top',
           '-p',
-          _androidPackageName(query),
+          pkg,
+        ]);
+        if (result2.exitCode == 0 &&
+            !result2.stdout.toString().contains('Error')) {
+          return ActionResult(true, 'Opened $query.');
+        }
+        // Last fallback: use monkey with full path
+        final result3 = await Process.run('/system/bin/monkey', [
+          '-p',
+          pkg,
           '-c',
           'android.intent.category.LAUNCHER',
           '1',
         ]);
-        if (result.exitCode == 0) return ActionResult(true, 'Opened $query.');
+        if (result3.exitCode == 0) return ActionResult(true, 'Opened $query.');
         return ActionResult(false, 'Could not open $query.');
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
@@ -493,7 +523,7 @@ class _AssistantViewState extends State<AssistantView> {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         final pkg = _androidPackageName(query);
-        await Process.run('am', ['force-stop', pkg]);
+        await Process.run('/system/bin/am', ['force-stop', pkg]);
         return ActionResult(true, 'Closed $query.');
       }
       return ActionResult(
@@ -511,7 +541,7 @@ class _AssistantViewState extends State<AssistantView> {
         final dir = await getApplicationDocumentsDirectory();
         final path =
             '${dir.path}/screenshot_${DateTime.now().millisecondsSinceEpoch}.png';
-        final result = await Process.run('screencap', ['-p', path]);
+        final result = await Process.run('/system/bin/screencap', ['-p', path]);
         if (result.exitCode == 0) {
           return ActionResult(true, 'Screenshot saved to $path');
         }
@@ -564,7 +594,7 @@ class _AssistantViewState extends State<AssistantView> {
         if (mode == 'set') {
           final level = args['level'] as int? ?? 50;
           final value = (level / 100 * 255).round();
-          await Process.run('settings', [
+          await Process.run('/system/bin/settings', [
             'put',
             'system',
             'screen_brightness',
@@ -573,7 +603,7 @@ class _AssistantViewState extends State<AssistantView> {
           return ActionResult(true, 'Brightness set to $level%.');
         }
         // Read current brightness
-        final current = await Process.run('settings', [
+        final current = await Process.run('/system/bin/settings', [
           'get',
           'system',
           'screen_brightness',
@@ -582,7 +612,7 @@ class _AssistantViewState extends State<AssistantView> {
             int.tryParse(current.stdout.toString().trim()) ?? 128;
         final delta = mode == 'up' ? 26 : -26;
         final newVal = (currentVal + delta).clamp(0, 255);
-        await Process.run('settings', [
+        await Process.run('/system/bin/settings', [
           'put',
           'system',
           'screen_brightness',
@@ -618,9 +648,12 @@ class _AssistantViewState extends State<AssistantView> {
             ? 'enable'
             : (state == 'off' ? 'disable' : 'toggle');
         if (enable == 'toggle') {
-          await Process.run('svc', ['wifi', 'enable']); // just enable for now
+          await Process.run('/system/bin/svc', [
+            'wifi',
+            'enable',
+          ]); // just enable for now
         } else {
-          await Process.run('svc', ['wifi', enable]);
+          await Process.run('/system/bin/svc', ['wifi', enable]);
         }
         return ActionResult(true, 'WiFi ${state ?? 'toggled'}.');
       }
@@ -639,9 +672,9 @@ class _AssistantViewState extends State<AssistantView> {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         if (state == 'on') {
-          await Process.run('svc', ['bluetooth', 'enable']);
+          await Process.run('/system/bin/svc', ['bluetooth', 'enable']);
         } else if (state == 'off') {
-          await Process.run('svc', ['bluetooth', 'disable']);
+          await Process.run('/system/bin/svc', ['bluetooth', 'disable']);
         }
         return ActionResult(true, 'Bluetooth ${state ?? 'toggled'}.');
       }
@@ -654,7 +687,7 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _lockScreen() async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        await Process.run('input', ['keyevent', 'KEYCODE_POWER']);
+        await Process.run('/system/bin/input', ['keyevent', 'KEYCODE_POWER']);
         return const ActionResult(true, 'Screen locked.');
       }
       return const ActionResult(false, 'Lock screen not available.');
@@ -668,7 +701,7 @@ class _AssistantViewState extends State<AssistantView> {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Open dialer with the contact name (user selects the right one)
-        await Process.run('am', [
+        await Process.run('/system/bin/am', [
           'start',
           '-a',
           'android.intent.action.DIAL',
@@ -700,7 +733,7 @@ class _AssistantViewState extends State<AssistantView> {
         if (body != null && body.isNotEmpty) {
           args.addAll(['--es', 'sms_body', body]);
         }
-        await Process.run('am', args);
+        await Process.run('/system/bin/am', args);
         return ActionResult(true, 'Opening text to $contact...');
       }
       return const ActionResult(
@@ -723,7 +756,7 @@ class _AssistantViewState extends State<AssistantView> {
           'repeat' => 'KEYCODE_MEDIA_REWIND',
           _ => 'KEYCODE_MEDIA_PLAY_PAUSE',
         };
-        await Process.run('input', ['keyevent', keyEvent]);
+        await Process.run('/system/bin/input', ['keyevent', keyEvent]);
         return ActionResult(true, 'Media: $action.');
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
@@ -747,7 +780,7 @@ class _AssistantViewState extends State<AssistantView> {
     final minute = args['minute'] as int? ?? 0;
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        await Process.run('am', [
+        await Process.run('/system/bin/am', [
           'start',
           '-a',
           'android.intent.action.SET_ALARM',
