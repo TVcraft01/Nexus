@@ -537,21 +537,8 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _getBattery() async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        final result = await Process.run('dumpsys', ['battery']);
-        if (result.exitCode == 0) {
-          final output = result.stdout.toString();
-          final level = RegExp(r'level: (\d+)').firstMatch(output)?.group(1);
-          final status = RegExp(r'status: (\d+)').firstMatch(output)?.group(1);
-          if (level != null) {
-            final statusText = switch (status) {
-              '2' => ' (charging)',
-              '5' => ' (full)',
-              '3' => ' (not charging)',
-              _ => '',
-            };
-            return ActionResult(true, 'Battery: $level%$statusText');
-          }
-        }
+        // Use MethodChannel → Kotlin BatteryManager (works without root)
+        return await _deviceBackend.run(AgentActions.batteryGet, {});
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
         final result = await Process.run('cat', [
@@ -613,18 +600,12 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _toggleFlashlight(String? state) async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // Use camera flashlight via settings or su
-        final result = await Process.run('cmd', [
-          'cameraserver',
-          'camera',
-          'set-torch-mode',
-          state == 'off' ? 'false' : 'true',
-        ]);
-        if (result.exitCode == 0) {
-          return ActionResult(true, 'Flashlight ${state ?? 'toggled'}.');
-        }
+        // Use MethodChannel → Kotlin CameraManager torch (works without root)
+        return await _deviceBackend.run(AgentActions.flashlightToggle, {
+          'mode': state ?? 'on',
+        });
       }
-      return ActionResult(false, 'Flashlight control not available.');
+      return const ActionResult(false, 'Flashlight control not available.');
     } catch (_) {
       return const ActionResult(false, 'Could not control flashlight.');
     }
@@ -908,6 +889,11 @@ class _AssistantViewState extends State<AssistantView> {
   /// Sets system volume.
   Future<ActionResult> _setVolume(String mode) async {
     try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        // Use MethodChannel → Kotlin AudioManager (works without root)
+        return await _deviceBackend.run(AgentActions.volumeSet, {'mode': mode});
+      }
+      // Linux: use PulseAudio pactl
       switch (mode) {
         case 'up':
           await Process.run('pactl', [
@@ -1758,6 +1744,62 @@ class _AssistantViewState extends State<AssistantView> {
         return 'What can you do?';
       case AgentActions.deviceList:
         return 'List devices';
+      case AgentActions.appOpen:
+        return 'Open ${a['query']}';
+      case AgentActions.appClose:
+        return 'Close ${a['query']}';
+      case AgentActions.screenshot:
+        return 'Take a screenshot';
+      case AgentActions.batteryGet:
+        return 'Check battery';
+      case AgentActions.brightnessSet:
+        return 'Adjust brightness';
+      case AgentActions.flashlightToggle:
+        return 'Toggle flashlight';
+      case AgentActions.wifiToggle:
+        return 'Toggle WiFi';
+      case AgentActions.bluetoothToggle:
+        return 'Toggle Bluetooth';
+      case AgentActions.lockScreen:
+        return 'Lock screen';
+      case AgentActions.callPlace:
+        return 'Call ${a['contact']}';
+      case AgentActions.messageSend:
+        return 'Text ${a['contact']}';
+      case AgentActions.mediaPlay:
+        return 'Play music';
+      case AgentActions.mediaPause:
+        return 'Pause music';
+      case AgentActions.mediaNext:
+        return 'Next track';
+      case AgentActions.mediaPrev:
+        return 'Previous track';
+      case AgentActions.mediaShuffle:
+        return 'Toggle shuffle';
+      case AgentActions.mediaRepeat:
+        return 'Toggle repeat';
+      case AgentActions.alarmSet:
+        return 'Set an alarm';
+      case AgentActions.reminderSet:
+        return 'Set a reminder';
+      case AgentActions.defineWord:
+        return 'Define ${a['word']}';
+      case AgentActions.translateText:
+        return 'Translate';
+      case AgentActions.unitConvert:
+        return 'Convert units';
+      case AgentActions.randomDice:
+        return 'Roll a dice';
+      case AgentActions.randomCoin:
+        return 'Flip a coin';
+      case AgentActions.randomNumber:
+        return 'Pick a random number';
+      case AgentActions.tellJoke:
+        return 'Tell a joke';
+      case AgentActions.findDevice:
+        return 'Find ${request.target}';
+      case AgentActions.ringDevice:
+        return 'Ring ${request.target}';
       default:
         return request.action;
     }

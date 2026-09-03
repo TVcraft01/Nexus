@@ -72,6 +72,26 @@ class CommandInterpreter {
       RegExp('[àáâäãåèéêëìíîïòóôöõùúûüçñýÿ]'),
       (m) => accents[m.group(0)]!,
     );
+    // Strip conversational prefixes that friends naturally type
+    t = t
+        .replaceAll(
+          RegExp(
+            r'^(?:can you|could you|would you|will you|please|hey|yo|uh|um|so|okay|ok|alright|right)\s+',
+          ),
+          '',
+        )
+        .replaceAll(
+          RegExp(
+            "^(?:i want to|i would like to|i'd like to|i need to|i need you to|help me|go ahead and|just|try to)\\s+",
+          ),
+          '',
+        )
+        .replaceAll(RegExp(r'^(?:can you|could you|would you)\s+'), '');
+    // Strip trailing filler
+    t = t
+        .replaceAll(RegExp(r'\s+(?:please|thanks|thank you|pls|thx|ty)$'), '')
+        .replaceAll(RegExp(r'\s+for me$'), '')
+        .replaceAll(RegExp(r'\s+for me\s*$'), '');
     return t
         .replaceAll("what's", 'what is')
         .replaceAll('whats', 'what is')
@@ -90,11 +110,18 @@ class CommandInterpreter {
       'hey',
       'yo',
       'hiya',
+      'sup',
+      'what\'s up',
+      'whats up',
       'good morning',
       'good afternoon',
       'good evening',
       'good night',
       'how are you',
+      'how\'s it going',
+      'how are you doing',
+      'what\'s good',
+      'how do you do',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.greet, target: 'local'),
@@ -125,9 +152,17 @@ class CommandInterpreter {
       'current time',
       'time now',
       'tell me the time',
+      'tell me the time please',
       'what time',
       'time',
       'now',
+      'what is it now',
+      'what time do you have',
+      'do you have the time',
+      'got the time',
+      'check the time',
+      'what time is it right now',
+      'what time is it currently',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(
@@ -146,6 +181,9 @@ class CommandInterpreter {
       'todays date',
       'date',
       'day',
+      'what day is today',
+      'what is today date',
+      'check the date',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(
@@ -333,10 +371,20 @@ class CommandInterpreter {
       'battery',
       'battery level',
       'how much battery',
+      'how much charge',
       'power left',
       'battery percentage',
       'charge level',
       'battery status',
+      'what is my battery',
+      'how charged is my phone',
+      'how charged is my battery',
+      'how full is the battery',
+      'am i running low',
+      'battery life',
+      'what is my battery level',
+      'check battery',
+      'battery check',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.batteryGet, target: 'local'),
