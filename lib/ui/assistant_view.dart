@@ -12,9 +12,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/agent_contract.dart';
 import '../core/command_interpreter.dart';
 import '../core/command_service.dart';
-import '../core/device_actions.dart';
-import '../core/phone_actions.dart';
-import '../core/query_log.dart';
 import '../mesh/mesh_service.dart';
 import 'nexus_header.dart';
 import 'theme.dart';
@@ -45,10 +42,8 @@ class _AssistantViewState extends State<AssistantView> {
   bool _sending = false;
 
   /// An open "who did you mean?" question after an unresolved contact.
-  ({String phrase, List<String> candidates})? _pendingContactAsk;
 
   /// Runs real phone actions (dialing) on Android; elsewhere answers honestly.
-  final PhoneActionBackend _phoneBackend = RealPhoneActionBackend();
 
   /// Runs the small device-local actions (alarms, timers, torch…).
   final DeviceActionBackend _deviceBackend = deviceActionBackend();
@@ -234,9 +229,7 @@ class _AssistantViewState extends State<AssistantView> {
     if (result.dispatch case final AgentActionPlan plan
         when plan.request.target == widget.mesh.identity.id &&
             _selfRunActions.contains(plan.request.action)) {
-      plan.request.action == AgentActions.callPlace
-          ? unawaited(_placeLocalCall(plan.request, typedPhrase ?? ''))
-          : unawaited(_runSelfAction(plan.request));
+      unawaited(_runSelfAction(plan.request));
     }
   }
 
@@ -421,91 +414,6 @@ class _AssistantViewState extends State<AssistantView> {
   /// Places the call natively. When no contact matches closely enough, the
   /// closest names become a question whose answer is taught for that exact
   /// wording — asked once, remembered forever.
-  Future<void> _placeLocalCall(AgentRequest request, String phrase) async {
-    setState(() {
-      _sending = true;
-      _reply = null;
-    });
-    final contact = request.arguments['contact']?.toString() ?? '';
-    final outcome = await _phoneBackend.callContact(contact);
-    if (!mounted) return;
-    if (!outcome.placed && !outcome.launched && outcome.candidates.isNotEmpty) {
-      QueryLog.i.call(contact, 'asked', candidates: outcome.candidates);
-      final askPhrase = phrase.isNotEmpty
-          ? phrase
-          : 'call ${contact.toLowerCase()}';
-      setState(() {
-        _sending = false;
-        _pendingContactAsk = (
-          phrase: askPhrase,
-          candidates: outcome.candidates,
-        );
-        _appendResult(
-          AgentDispatchResult(
-            status: AgentResultStatus.needsInfo,
-            dispatch: AgentClarification(
-              question:
-                  'I don\'t know "$contact" on this phone. Did you mean: ${outcome.candidates.join("  ·  ")}?',
-              key: 'contact:$askPhrase',
-              hint: 'Name one — I\'ll call them and remember this wording.',
-            ),
-          ),
-          replaceLast: true,
-        );
-      });
-      return;
-    }
-    QueryLog.i.call(
-      contact,
-      outcome.placed ? 'placed' : (outcome.launched ? 'dialer' : 'failed'),
-    );
-    setState(() {
-      _sending = false;
-      _reply = outcome.message;
-    });
-  }
-
-  /// Resolves a "who did you mean?" answer against the offered candidates,
-  /// teaches the wording, and places the call.
-  void _answerContactAsk(String text) {
-    final ask = _pendingContactAsk;
-    if (ask == null) return;
-    // Claim the pending ask immediately — a double-fired tap must not
-    // submit the original wording as an "answer".
-    _pendingContactAsk = null;
-    final lower = text.trim().toLowerCase();
-    final match = ask.candidates.firstWhere(
-      (c) =>
-          c.toLowerCase() == lower ||
-          c.toLowerCase().contains(lower) ||
-          lower.contains(c.toLowerCase()),
-      orElse: () => '',
-    );
-    if (match.isEmpty) {
-      setState(() {
-        _pendingContactAsk = ask;
-        _appendResult(
-          AgentDispatchResult(
-            status: AgentResultStatus.needsInfo,
-            dispatch: AgentClarification(
-              question:
-                  'I don\'t see "${text.trim()}" here. Did you mean: ${ask.candidates.join("  ·  ")}?',
-              key: 'contact:${ask.phrase}',
-              hint: 'Name one of those, and I\'ll remember it.',
-            ),
-          ),
-          replaceLast: true,
-        );
-      });
-      return;
-    }
-    QueryLog.i.learned(ask.phrase, 'call $match');
-    _consume(
-      _service.learnAndRun(ask.phrase, 'call $match'),
-      asUser: text,
-      typedPhrase: ask.phrase,
-    );
-  }
 
   void _onSubmit() {
     final text = _controller.text.trim();
@@ -514,12 +422,6 @@ class _AssistantViewState extends State<AssistantView> {
     _lastInput = text;
     _controller.clear();
     final pending = _pendingKey;
-    if (pending != null &&
-        pending.startsWith('contact:') &&
-        _pendingContactAsk != null) {
-      _answerContactAsk(text);
-      return;
-    }
     if (pending != null) {
       _execute(text, answerTo: pending);
     } else {
@@ -628,9 +530,6 @@ class _AssistantViewState extends State<AssistantView> {
         request,
         approval: AgentApproval.denied,
       );
-    } else if (request.action == AgentActions.callPlace &&
-        defaultTargetPlatform == TargetPlatform.android) {
-      result = await executePhoneCall(_phoneBackend, request);
     } else if (_selfRunActions.contains(request.action)) {
       // Actions this device can genuinely run get executed here; everything
       // else answers honestly via the service's catalog.
@@ -1224,10 +1123,6 @@ class _AssistantViewState extends State<AssistantView> {
       ]);
     }
     // A plan aimed at this device runs right here — no mesh round-trip.
-    if (request.target == widget.mesh.identity.id &&
-        request.action == AgentActions.callPlace) {
-      return _localCallPlanView(request);
-    }
     if (request.action != AgentActions.ledBlink) {
       return _remotePlanView(request);
     }
@@ -1252,34 +1147,6 @@ class _AssistantViewState extends State<AssistantView> {
         ),
       ],
     );
-  }
-
-  /// An approved call aimed at THIS device — executes natively via the
-  /// phone-action backend and shows the outcome inline.
-  Widget _localCallPlanView(AgentRequest request) {
-    return _planCard(Icons.call_rounded, _describeAction(request), [
-      const SizedBox(height: 6),
-      Text(
-        'right here on ${widget.mesh.identity.name}',
-        style: const TextStyle(color: NexusColors.muted, fontSize: 12),
-      ),
-      if (_reply != null) ...[
-        const SizedBox(height: 10),
-        _remoteReplyView(_reply!),
-      ],
-      const SizedBox(height: 10),
-      FilledButton.icon(
-        onPressed: _sending
-            ? null
-            : () => _runAction(
-                () async => _describeOutcome(
-                  await executePhoneCall(_phoneBackend, request),
-                ),
-              ),
-        icon: const Icon(Icons.call_rounded, size: 16),
-        label: Text(_sending ? 'Calling…' : 'Call now'),
-      ),
-    ]);
   }
 
   /// A plan aimed at another device ("Call mom on My Phone") — sends the
@@ -1336,34 +1203,18 @@ class _AssistantViewState extends State<AssistantView> {
   String _describeAction(AgentRequest request) {
     final a = request.arguments;
     switch (request.action) {
-      case AgentActions.callPlace:
-        return 'Call ${a['contact']}';
-      case AgentActions.messageSend:
-        return 'Message ${a['contact']}';
-      case AgentActions.mediaPlay:
-        return 'Play ${a['playlist'] ?? 'your music'}';
-      case AgentActions.musicControl:
-        return '${(a['mode'] as String? ?? 'Control')} the music';
-      case AgentActions.alarmSet:
-        return 'Set an alarm';
       case AgentActions.timerSet:
         return 'Set a timer';
-      case AgentActions.reminderSet:
-        return 'Set a reminder';
-      case AgentActions.weatherGet:
-        return 'Check the weather';
-      case AgentActions.navigationRoute:
-        return 'Navigate to ${a['place']}';
       case AgentActions.webSearch:
         return 'Search for ${a['query']}';
       case AgentActions.noteCreate:
         return 'Make a note';
-      case AgentActions.translateText:
-        return 'Translate';
-      case AgentActions.calendarGet:
-        return 'Check my calendar';
-      case AgentActions.newsGet:
-        return 'Get the news';
+      case AgentActions.openUrl:
+        return 'Open ${a['url']}';
+      case AgentActions.systemInfo:
+        return 'Show system info';
+      case AgentActions.volumeSet:
+        return 'Volume ${a['mode']}';
       default:
         return request.action;
     }

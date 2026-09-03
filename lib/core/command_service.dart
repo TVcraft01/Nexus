@@ -286,23 +286,7 @@ class CommandService {
     return _unwired(command);
   }
 
-  /// Honest "I understood, but nothing can do this yet" answer.
   AgentDispatchResult _unwired(ParsedCommand command) {
-    if (command.action == AgentActions.mediaPlay) {
-      final playlist = command.arguments['playlist'];
-      return AgentDispatchResult(
-        status: AgentResultStatus.unavailable,
-        message:
-            'Playing "${playlist ?? 'your music'}" isn\'t wired up yet — but I understood, and I\'ll remember your choice.',
-      );
-    }
-    final message = _notWiredMessages[command.action];
-    if (message != null) {
-      return AgentDispatchResult(
-        status: AgentResultStatus.unavailable,
-        message: message,
-      );
-    }
     return const AgentDispatchResult(
       status: AgentResultStatus.unavailable,
       message: 'This command is not available yet.',
@@ -323,16 +307,6 @@ class CommandService {
   ) {
     final args = Map<String, dynamic>.of(command.arguments);
     String? hint;
-    if (command.action == AgentActions.callPlace ||
-        command.action == AgentActions.messageSend) {
-      // "call mom on my phone": the contact itself carries the device.
-      final contact = (args['contact'] as String?) ?? '';
-      final split = _deviceSuffix(contact);
-      if (split != null) {
-        hint = split.$2;
-        args['contact'] = split.$1;
-      }
-    }
     // A device named in the command wins; otherwise fall back to the one
     // remembered for this action, then any "on my phone" suffix.
     hint ??= _pendingDeviceChoice[command.action];
