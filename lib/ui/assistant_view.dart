@@ -228,10 +228,30 @@ class _AssistantViewState extends State<AssistantView> {
     setState(
       () => _appendResult(result, asUser: asUser, replaceLast: replaceLast),
     );
+    // Path 1: A routed action plan targeting this device — e.g. ledBlink
+    // resolved to a local serial device, or clipboardWrite.
     if (result.dispatch case final AgentActionPlan plan
         when plan.request.target == widget.mesh.identity.id &&
             _selfRunActions.contains(plan.request.action)) {
       unawaited(_runSelfAction(plan.request));
+    }
+    // Path 2: A message with an attached action — these come from
+    // _localAnswer() for webSearch, noteCreate, timerSet, openUrl,
+    // systemInfo, volumeSet. The message is shown immediately and the
+    // side-effect (open browser, save note, etc.) runs in the background.
+    if (result.dispatch case final AgentMessage message
+        when message.action != null &&
+            _selfRunActions.contains(message.action)) {
+      unawaited(
+        _runSelfAction(
+          AgentRequest(
+            requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
+            target: widget.mesh.identity.id,
+            action: message.action!,
+            arguments: message.arguments ?? const {},
+          ),
+        ),
+      );
     }
   }
 
@@ -1217,6 +1237,23 @@ class _AssistantViewState extends State<AssistantView> {
         return 'Show system info';
       case AgentActions.volumeSet:
         return 'Volume ${a['mode']}';
+      case AgentActions.ledBlink:
+        final target = a['target']?.toString() ?? request.target;
+        return 'Blink $target';
+      case AgentActions.clipboardWrite:
+        final text = (a['text']?.toString() ?? '').replaceAll('\\n', ' ');
+        final preview = text.length > 40 ? '${text.substring(0, 40)}…' : text;
+        return 'Copy "$preview"';
+      case AgentActions.greet:
+        return 'Say hello';
+      case AgentActions.timeGet:
+        return 'What time is it?';
+      case AgentActions.mathCalc:
+        return 'Calculate ${a['expr']}';
+      case AgentActions.helpGet:
+        return 'What can you do?';
+      case AgentActions.deviceList:
+        return 'List devices';
       default:
         return request.action;
     }

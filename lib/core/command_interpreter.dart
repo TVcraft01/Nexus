@@ -352,26 +352,6 @@ class CommandInterpreter {
     return InterpretResult.unknown();
   }
 
-  static (int, int)? parseClockTime(String raw) {
-    final t = raw.trim().toLowerCase().replaceAll('.', '');
-    if (t == 'noon') return (12, 0);
-    if (t == 'midnight') return (0, 0);
-    final m = RegExp(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$').firstMatch(t);
-    if (m == null) return null;
-    var hour = int.tryParse(m.group(1)!);
-    final minute = m.group(2) == null ? 0 : (int.tryParse(m.group(2)!) ?? 0);
-    final suffix = m.group(3);
-    if (hour == null || minute > 59) return null;
-    if (suffix != null) {
-      if (hour < 1 || hour > 12) return null;
-      if (suffix == 'pm' && hour != 12) hour += 12;
-      if (suffix == 'am' && hour == 12) hour = 0;
-    } else if (hour > 23) {
-      return null;
-    }
-    return (hour, minute);
-  }
-
   static int? parseDurationSeconds(String raw) {
     final matches = RegExp(
       r'(\d+)\s*(hours?|hrs?|h|min(?:utes?)?|m|seconds?|secs?|s)\b',
