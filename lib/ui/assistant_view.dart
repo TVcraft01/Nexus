@@ -1241,7 +1241,7 @@ class _AssistantViewState extends State<AssistantView> {
         final target = a['target']?.toString() ?? request.target;
         return 'Blink $target';
       case AgentActions.clipboardWrite:
-        final text = (a['text']?.toString() ?? '').replaceAll('\\n', ' ');
+        final text = (a['text']?.toString() ?? '').replaceAll('\n', ' ');
         final preview = text.length > 40 ? '${text.substring(0, 40)}…' : text;
         return 'Copy "$preview"';
       case AgentActions.greet:
