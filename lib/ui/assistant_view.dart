@@ -12,6 +12,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/agent_contract.dart';
 import '../core/command_interpreter.dart';
 import '../core/command_service.dart';
+import '../core/device_actions.dart';
+import '../core/query_log.dart';
 import '../mesh/mesh_service.dart';
 import 'nexus_header.dart';
 import 'theme.dart';
