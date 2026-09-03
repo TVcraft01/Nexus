@@ -1,8 +1,10 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData, HapticFeedback;
+import 'package:flutter/services.dart'
+    show Clipboard, ClipboardData, HapticFeedback;
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/network_info.dart';
@@ -67,8 +69,12 @@ class _PairSheetState extends State<_PairSheet> {
     super.initState();
     _session = widget.mesh.beginPairing();
     _codeController = TextEditingController();
-    _addressController = TextEditingController(text: widget.nearby?.address ?? '');
-    _portController = TextEditingController(text: '${widget.nearby?.port ?? widget.mesh.port}');
+    _addressController = TextEditingController(
+      text: widget.nearby?.address ?? '',
+    );
+    _portController = TextEditingController(
+      text: '${widget.nearby?.port ?? widget.mesh.port}',
+    );
     if (widget.nearby != null) _tab = 1;
     // Add our LAN IP to the QR as soon as we know it, so the other device can
     // connect straight from a scan without typing an address.
@@ -76,7 +82,7 @@ class _PairSheetState extends State<_PairSheet> {
   }
 
   Future<void> _refreshQrWithIp() async {
-    final ip = await detectLanIpv4();
+    final ips = await detectAllIpv4s();
     if (!mounted) return;
     setState(() {
       _session = PairingSession(
@@ -86,7 +92,8 @@ class _PairSheetState extends State<_PairSheet> {
           name: widget.mesh.identity.name,
           port: widget.mesh.port,
           code: _session.code,
-          ip: ip,
+          ip: ips.isNotEmpty ? ips.first : null,
+          ips: ips,
         ),
         expiresAt: _session.expiresAt,
       );
@@ -101,23 +108,34 @@ class _PairSheetState extends State<_PairSheet> {
     );
     if (payload == null || !mounted) return;
     if (payload.id == widget.mesh.identity.id) {
-      setState(() => _error = 'That is this device’s own code — scan the other device.');
+      setState(
+        () =>
+            _error = 'That is this device’s own code — scan the other device.',
+      );
       return;
+    }
+    // Build the full candidate list: the primary IP first, then every
+    // announced IP, then any address we already know for this device.
+    final candidates = <String>[];
+    void add(String a) {
+      if (a.isNotEmpty && !candidates.contains(a)) candidates.add(a);
+    }
+
+    add(payload.ip ?? '');
+    for (final a in payload.ips) add(a);
+    for (final a
+        in widget.mesh.pairedDevices
+            .where((d) => d.id == payload.id)
+            .expand((d) => [d.address, ...d.addresses])) {
+      add(a);
     }
     setState(() {
       _codeController.text = payload.code;
       _portController.text = '${payload.port}';
-      _addressController.text = payload.ip ?? _addressForId(payload.id);
+      _addressController.text = candidates.isNotEmpty ? candidates.first : '';
       _error = null;
     });
     await _pair();
-  }
-
-  String _addressForId(String id) {
-    for (final d in widget.mesh.nearbyDevices) {
-      if (d.id == id) return d.address;
-    }
-    return '';
   }
 
   @override
@@ -138,7 +156,9 @@ class _PairSheetState extends State<_PairSheet> {
       return;
     }
     if (address.isEmpty || port == null || port <= 0 || port > 65535) {
-      setState(() => _error = 'Enter the address and port of the other device.');
+      setState(
+        () => _error = 'Enter the address and port of the other device.',
+      );
       return;
     }
 
@@ -147,15 +167,21 @@ class _PairSheetState extends State<_PairSheet> {
       _pairing = true;
       _error = null;
     });
-    final result = await widget.mesh.pairWith(address: address, port: port, code: code);
+    final result = await widget.mesh.pairWith(
+      address: address,
+      port: port,
+      code: code,
+    );
     if (!mounted) return;
     setState(() => _pairing = false);
     if (result.ok) {
       HapticFeedback.lightImpact();
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Paired with ${result.peerName ?? 'device'}. 🎉'),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Paired with ${result.peerName ?? 'device'}. 🎉'),
+        ),
+      );
     } else {
       setState(() => _error = result.error);
     }
@@ -181,26 +207,47 @@ class _PairSheetState extends State<_PairSheet> {
                 child: Container(
                   width: 40,
                   height: 4,
-                  decoration: BoxDecoration(color: NexusColors.border, borderRadius: BorderRadius.circular(2)),
+                  decoration: BoxDecoration(
+                    color: NexusColors.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
               const SizedBox(height: 18),
               Row(
                 children: [
-                  Text('Pair a device', style: Theme.of(context).textTheme.titleLarge),
+                  Text(
+                    'Pair a device',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
                   const Spacer(),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close_rounded, color: NexusColors.muted),
+                    icon: const Icon(
+                      Icons.close_rounded,
+                      color: NexusColors.muted,
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 10),
               SegmentedButton<int>(
                 segments: [
-                  const ButtonSegment(value: 0, label: Text('Show my code'), icon: Icon(Icons.qr_code_2_rounded, size: 16)),
-                  const ButtonSegment(value: 1, label: Text('Enter a code'), icon: Icon(Icons.keyboard_rounded, size: 16)),
-                  const ButtonSegment(value: 2, label: Text('Pair over cable'), icon: Icon(Icons.usb_rounded, size: 16)),
+                  const ButtonSegment(
+                    value: 0,
+                    label: Text('Show my code'),
+                    icon: Icon(Icons.qr_code_2_rounded, size: 16),
+                  ),
+                  const ButtonSegment(
+                    value: 1,
+                    label: Text('Enter a code'),
+                    icon: Icon(Icons.keyboard_rounded, size: 16),
+                  ),
+                  const ButtonSegment(
+                    value: 2,
+                    label: Text('Pair over cable'),
+                    icon: Icon(Icons.usb_rounded, size: 16),
+                  ),
                 ],
                 selected: {_tab},
                 onSelectionChanged: (s) => setState(() => _tab = s.first),
@@ -208,12 +255,20 @@ class _PairSheetState extends State<_PairSheet> {
                   backgroundColor: NexusColors.surface,
                   foregroundColor: NexusColors.muted,
                   selectedForegroundColor: NexusColors.accent,
-                  selectedBackgroundColor: NexusColors.accent.withValues(alpha: 0.12),
+                  selectedBackgroundColor: NexusColors.accent.withValues(
+                    alpha: 0.12,
+                  ),
                   side: const BorderSide(color: NexusColors.border),
                 ),
               ),
               const SizedBox(height: 16),
-              Expanded(child: _tab == 0 ? _buildShowTab(context) : _tab == 1 ? _buildEnterTab(context) : _buildCableTab(context)),
+              Expanded(
+                child: _tab == 0
+                    ? _buildShowTab(context)
+                    : _tab == 1
+                    ? _buildEnterTab(context)
+                    : _buildCableTab(context),
+              ),
             ],
           ),
         ),
@@ -238,8 +293,14 @@ class _PairSheetState extends State<_PairSheet> {
                 data: _session.qrPayload,
                 size: 200,
                 backgroundColor: Colors.white,
-                eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: Color(0xFF0B0F14)),
-                dataModuleStyle: const QrDataModuleStyle(dataModuleShape: QrDataModuleShape.square, color: Color(0xFF0B0F14)),
+                eyeStyle: const QrEyeStyle(
+                  eyeShape: QrEyeShape.square,
+                  color: Color(0xFF0B0F14),
+                ),
+                dataModuleStyle: const QrDataModuleStyle(
+                  dataModuleShape: QrDataModuleShape.square,
+                  color: Color(0xFF0B0F14),
+                ),
               ),
             ),
           ),
@@ -268,11 +329,15 @@ class _PairSheetState extends State<_PairSheet> {
             'Code expires in 5 minutes. It is the only secret needed to pair — '
             'don’t share it with strangers.',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: NexusColors.muted),
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: NexusColors.muted),
           ),
+          const SizedBox(height: 10),
+          _TailscaleBanner(),
           const SizedBox(height: 14),
           OutlinedButton.icon(
-            onPressed: () => Clipboard.setData(ClipboardData(text: _session.code)),
+            onPressed: () =>
+                Clipboard.setData(ClipboardData(text: _session.code)),
             icon: const Icon(Icons.copy_rounded, size: 16),
             label: const Text('Copy code'),
           ),
@@ -296,7 +361,9 @@ class _PairSheetState extends State<_PairSheet> {
               decoration: BoxDecoration(
                 color: NexusColors.accent.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: NexusColors.accent.withValues(alpha: 0.3)),
+                border: Border.all(
+                  color: NexusColors.accent.withValues(alpha: 0.3),
+                ),
               ),
               child: const Row(
                 children: [
@@ -314,14 +381,20 @@ class _PairSheetState extends State<_PairSheet> {
               ),
             ),
             const SizedBox(height: 16),
-            Text('1.  On the PC: open Nexus → Pair a device → Pair over cable.',
-                style: Theme.of(context).textTheme.bodyMedium),
+            Text(
+              '1.  On the PC: open Nexus → Pair a device → Pair over cable.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
             const SizedBox(height: 8),
-            Text('2.  Plug this phone in with the cable and follow the PC’s prompts.',
-                style: Theme.of(context).textTheme.bodyMedium),
+            Text(
+              '2.  Plug this phone in with the cable and follow the PC’s prompts.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
             const SizedBox(height: 8),
-            Text('3.  When the PC says it’s paired, you’re done — no code needed.',
-                style: Theme.of(context).textTheme.bodyMedium),
+            Text(
+              '3.  When the PC says it’s paired, you’re done — no code needed.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
           ],
         ),
       );
@@ -336,7 +409,9 @@ class _PairSheetState extends State<_PairSheet> {
             decoration: BoxDecoration(
               color: NexusColors.accent.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: NexusColors.accent.withValues(alpha: 0.3)),
+              border: Border.all(
+                color: NexusColors.accent.withValues(alpha: 0.3),
+              ),
             ),
             child: const Row(
               children: [
@@ -365,9 +440,11 @@ class _PairSheetState extends State<_PairSheet> {
               );
               if (paired == true && mounted) {
                 Navigator.pop(this.context);
-                ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(
-                  content: Text('Device paired over the cable. 🎉'),
-                ));
+                ScaffoldMessenger.of(this.context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Device paired over the cable. 🎉'),
+                  ),
+                );
               }
             },
             icon: const Icon(Icons.usb_rounded, size: 18),
@@ -377,7 +454,8 @@ class _PairSheetState extends State<_PairSheet> {
           Text(
             'Only runs when you start it — nothing is detected or installed '
             'until you tap the button.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: NexusColors.muted),
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: NexusColors.muted),
           ),
         ],
       ),
@@ -396,11 +474,17 @@ class _PairSheetState extends State<_PairSheet> {
               decoration: BoxDecoration(
                 color: NexusColors.accent.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: NexusColors.accent.withValues(alpha: 0.3)),
+                border: Border.all(
+                  color: NexusColors.accent.withValues(alpha: 0.3),
+                ),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.wifi_rounded, size: 18, color: NexusColors.accent),
+                  const Icon(
+                    Icons.wifi_rounded,
+                    size: 18,
+                    color: NexusColors.accent,
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
@@ -414,8 +498,16 @@ class _PairSheetState extends State<_PairSheet> {
           TextField(
             controller: _codeController,
             textCapitalization: TextCapitalization.characters,
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, letterSpacing: 4, color: NexusColors.text),
-            decoration: const InputDecoration(labelText: 'Code', hintText: 'XXXX-XXXX'),
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 4,
+              color: NexusColors.text,
+            ),
+            decoration: const InputDecoration(
+              labelText: 'Code',
+              hintText: 'XXXX-XXXX',
+            ),
             onSubmitted: (_) => _pair(),
           ),
           const SizedBox(height: 12),
@@ -425,7 +517,10 @@ class _PairSheetState extends State<_PairSheet> {
                 flex: 3,
                 child: TextField(
                   controller: _addressController,
-                  decoration: const InputDecoration(labelText: 'Address', hintText: '192.168.1.23'),
+                  decoration: const InputDecoration(
+                    labelText: 'Address',
+                    hintText: '192.168.1.23',
+                  ),
                   onSubmitted: (_) => _pair(),
                 ),
               ),
@@ -453,13 +548,27 @@ class _PairSheetState extends State<_PairSheet> {
               decoration: BoxDecoration(
                 color: NexusColors.danger.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: NexusColors.danger.withValues(alpha: 0.4)),
+                border: Border.all(
+                  color: NexusColors.danger.withValues(alpha: 0.4),
+                ),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.error_outline_rounded, size: 18, color: NexusColors.danger),
+                  const Icon(
+                    Icons.error_outline_rounded,
+                    size: 18,
+                    color: NexusColors.danger,
+                  ),
                   const SizedBox(width: 10),
-                  Expanded(child: Text(_error!, style: const TextStyle(color: NexusColors.danger, fontSize: 13))),
+                  Expanded(
+                    child: Text(
+                      _error!,
+                      style: const TextStyle(
+                        color: NexusColors.danger,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -475,9 +584,102 @@ class _PairSheetState extends State<_PairSheet> {
           FilledButton.icon(
             onPressed: _pairing ? null : _pair,
             icon: _pairing
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF06251F)))
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Color(0xFF06251F),
+                    ),
+                  )
                 : const Icon(Icons.link_rounded, size: 18),
             label: Text(_pairing ? 'Pairing…' : 'Pair'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shows Tailscale status in the pairing UI so users know their device
+/// is reachable across the internet (not just on the same WiFi).
+class _TailscaleBanner extends StatefulWidget {
+  const _TailscaleBanner();
+
+  @override
+  State<_TailscaleBanner> createState() => _TailscaleBannerState();
+}
+
+class _TailscaleBannerState extends State<_TailscaleBanner> {
+  bool _loading = true;
+  TailscaleInfo? _info;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    final info = await detectTailscaleInfo();
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _info = info;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const SizedBox.shrink();
+    if (_info == null || !_info!.online) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: NexusColors.surface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: NexusColors.border),
+        ),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.wifi_off_rounded,
+              size: 14,
+              color: NexusColors.muted,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'No Tailscale — devices must be on the same network.',
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: NexusColors.muted),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: NexusColors.ok.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: NexusColors.ok.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.check_circle_rounded,
+            size: 14,
+            color: NexusColors.ok,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Tailscale active — paired devices can connect from anywhere.',
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: NexusColors.ok),
+            ),
           ),
         ],
       ),

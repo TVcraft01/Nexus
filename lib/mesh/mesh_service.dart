@@ -225,7 +225,7 @@ class MeshService extends ChangeNotifier {
     this.visibleWindow = const Duration(seconds: 12),
     this.heartbeatInterval = const Duration(seconds: 8),
     this.nearbyWindow = const Duration(seconds: 60),
-    this.connectTimeout = const Duration(seconds: 3),
+    this.connectTimeout = const Duration(seconds: 5),
     this.fileRoot,
   }) : clipboard = clipboard ?? _RealClipboard();
 
@@ -280,6 +280,7 @@ class MeshService extends ChangeNotifier {
 
   List<String>? _ipsCache;
   DateTime? _ipsCacheAt;
+  TailscaleInfo? _tailscale;
 
   String? pendingCode;
   DateTime? pendingCodeExpiry;
@@ -322,7 +323,8 @@ class MeshService extends ChangeNotifier {
   final Map<String, String> _serialHosts = {}; // serialId -> host peer id
   final Map<String, String> _serialNames = {}; // serialId -> name
   final Map<String, List<String>> _serialCaps = {}; // serialId -> caps
-  final Map<String, String> _serialRequesters = {}; // serialId -> last peer to ask
+  final Map<String, String> _serialRequesters =
+      {}; // serialId -> last peer to ask
 
   /// The last `up` payload relayed from a remote (or local) cable node:
   /// `{from, name, data}`. Read by the UI to show what a node reported.
@@ -350,13 +352,15 @@ class MeshService extends ChangeNotifier {
     for (final entry in _serialHosts.entries) {
       final host = _paired[entry.value];
       if (host == null) continue; // host forgotten — drop the relay
-      out.add(SerialDevice(
-        id: entry.key,
-        name: _serialNames[entry.key] ?? entry.key,
-        port: 'remote:${entry.value}',
-        caps: _serialCaps[entry.key] ?? const ['ping', 'msg'],
-        lastSeen: now,
-      ));
+      out.add(
+        SerialDevice(
+          id: entry.key,
+          name: _serialNames[entry.key] ?? entry.key,
+          port: 'remote:${entry.value}',
+          caps: _serialCaps[entry.key] ?? const ['ping', 'msg'],
+          lastSeen: now,
+        ),
+      );
     }
     return out;
   }
@@ -436,9 +440,8 @@ class MeshService extends ChangeNotifier {
 
   /// Serial nodes remembered from earlier runs, so a board that is unplugged
   /// at startup still shows as Disconnected.
-  List<SerialDevice> _knownSerialDevices() => store.knownSerialDevices
-      .map(SerialDevice.fromJson)
-      .toList();
+  List<SerialDevice> _knownSerialDevices() =>
+      store.knownSerialDevices.map(SerialDevice.fromJson).toList();
 
   void _saveKnownSerialDevices(List<SerialDevice> devices) {
     store.setKnownSerialDevices(devices.map((d) => d.toJson()).toList());
@@ -450,17 +453,22 @@ class MeshService extends ChangeNotifier {
   void _relaySerialUp(String deviceId, Map<String, dynamic> data) {
     final requester = _serialRequesters[deviceId];
     if (requester != null && _paired.containsKey(requester)) {
-      unawaited(_sendEnc(
-        _paired[requester]!,
-        NexusMessage(
-          type: NexusMessage.serialUp,
-          from: deviceId,
-          to: requester,
-          payload: {'data': data, 'name': _serial?.byId(deviceId)?.name ?? deviceId},
-          id: _newId(),
-          ts: DateTime.now().millisecondsSinceEpoch,
+      unawaited(
+        _sendEnc(
+          _paired[requester]!,
+          NexusMessage(
+            type: NexusMessage.serialUp,
+            from: deviceId,
+            to: requester,
+            payload: {
+              'data': data,
+              'name': _serial?.byId(deviceId)?.name ?? deviceId,
+            },
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
         ),
-      ));
+      );
     }
     lastSerialUp = {
       'from': deviceId,
@@ -488,7 +496,7 @@ class MeshService extends ChangeNotifier {
     if (peer == null) return null;
     final completer = Completer<AgentDispatchResult?>();
     _pendingAgentResults[request.requestId] = completer;
-    Timer(const Duration(seconds: 10), () {
+    Timer(const Duration(seconds: 15), () {
       final pending = _pendingAgentResults.remove(request.requestId);
       if (pending != null && !pending.isCompleted) pending.complete(null);
     });
@@ -519,17 +527,19 @@ class MeshService extends ChangeNotifier {
     final peers = _paired.values.toList();
     if (peers.isEmpty) return;
     await Future.wait(
-      peers.map((peer) => _sendEnc(
-        peer,
-        NexusMessage(
-          type: NexusMessage.agentLearned,
-          from: identity.id,
-          to: peer.id,
-          payload: {'phrase': phrase, 'meaning': meaning},
-          id: _newId(),
-          ts: DateTime.now().millisecondsSinceEpoch,
+      peers.map(
+        (peer) => _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.agentLearned,
+            from: identity.id,
+            to: peer.id,
+            payload: {'phrase': phrase, 'meaning': meaning},
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
         ),
-      )),
+      ),
     );
   }
 
@@ -631,6 +641,10 @@ class MeshService extends ChangeNotifier {
 
   int get port => store.port;
 
+  /// Tailscale status for this device, or null if Tailscale is not running.
+  /// Used by the UI to show cross-network pairing availability.
+  TailscaleInfo? get tailscaleInfo => _tailscale;
+
   String? get latestPeerUpdateVersion => _latestPeerUpdateVersion;
 
   List<PairedDevice> get pairedDevices => _paired.values.toList();
@@ -694,7 +708,9 @@ class MeshService extends ChangeNotifier {
     _foreground = foreground;
     _clipboardTimer!.cancel();
     _clipboardTimer = Timer.periodic(
-      foreground ? const Duration(milliseconds: 1500) : const Duration(seconds: 15),
+      foreground
+          ? const Duration(milliseconds: 1500)
+          : const Duration(seconds: 15),
       (_) => _checkClipboard(),
     );
   }
@@ -758,6 +774,15 @@ class MeshService extends ChangeNotifier {
     }
     _server!.listen(_onClientSocket);
     debugPrint('NEXUS mesh: listening on 0.0.0.0:${_server!.port}');
+    // Detect Tailscale in the background so it never blocks startup.
+    detectTailscaleInfo().then((info) {
+      _tailscale = info;
+      if (info != null && info.online) {
+        debugPrint(
+          'NEXUS mesh: Tailscale detected — ${info.ipv4} (${info.hostname})',
+        );
+      }
+    });
   }
 
   void _startDiscovery() {
@@ -1076,6 +1101,11 @@ class MeshService extends ChangeNotifier {
               'port': store.port,
               'ips': await _myIps(),
               'serial': _serialAnnouncement(),
+              if (_tailscale != null)
+                'tailscale': {
+                  'online': _tailscale!.online,
+                  if (_tailscale!.ipv4 != null) 'ipv4': _tailscale!.ipv4,
+                },
             },
             id: _newId(),
             ts: DateTime.now().millisecondsSinceEpoch,
@@ -1245,7 +1275,9 @@ class MeshService extends ChangeNotifier {
         if (!encrypted) return;
         final rawPhrase = msg.payload['phrase'];
         final rawMeaning = msg.payload['meaning'];
-        final phrase = CommandInterpreter.normalizePhrase(rawPhrase?.toString() ?? '');
+        final phrase = CommandInterpreter.normalizePhrase(
+          rawPhrase?.toString() ?? '',
+        );
         final meaning = rawMeaning?.toString().trim().toLowerCase();
         if (phrase.isEmpty || meaning == null || meaning.isEmpty) {
           break;
@@ -2580,7 +2612,8 @@ class MeshService extends ChangeNotifier {
             pairingSecret: '',
           ),
         );
-      }        for (final peer in targets.values) {
+      }
+      for (final peer in targets.values) {
         final msg = NexusMessage(
           type: NexusMessage.ping,
           from: identity.id,
@@ -2592,6 +2625,11 @@ class MeshService extends ChangeNotifier {
             'port': store.port,
             'ips': await _myIps(),
             'serial': _serialAnnouncement(),
+            if (_tailscale != null)
+              'tailscale': {
+                'online': _tailscale!.online,
+                if (_tailscale!.ipv4 != null) 'ipv4': _tailscale!.ipv4,
+              },
           },
           id: _newId(),
           ts: DateTime.now().millisecondsSinceEpoch,
@@ -2710,7 +2748,7 @@ class MeshService extends ChangeNotifier {
       );
     } catch (_) {
       return PairResult.failure(
-        'Could not reach $address:$port. Is that device on and on the same network?',
+        'Could not reach $address:$port. Is that device on, and are both devices reachable from each other?',
       );
     }
 
@@ -2922,7 +2960,10 @@ class MeshService extends ChangeNotifier {
 
   /// Whether a device is actively being used (not just reachable).
   /// A device counts as active if it was seen within the last [threshold].
-  bool isActiveDevice(String id, {Duration threshold = const Duration(seconds: 10)}) {
+  bool isActiveDevice(
+    String id, {
+    Duration threshold = const Duration(seconds: 10),
+  }) {
     final seen = _lastSeen[id];
     if (seen == null) return false;
     return DateTime.now().difference(seen) <= threshold;
@@ -2979,13 +3020,14 @@ class MeshService extends ChangeNotifier {
           );
         }
       }
-      if (store.alwaysMerge && _paired.keys.every(_clipboardDeliveredTo.contains)) {
+      if (store.alwaysMerge &&
+          _paired.keys.every(_clipboardDeliveredTo.contains)) {
         // All devices delivered in always-merge mode — clear pending.
         _pendingClipboard = null;
         _clipboardDeliveredTo.clear();
       } else if (!store.alwaysMerge &&
           (_paired.keys.every(_clipboardDeliveredTo.contains) ||
-          _paired.keys.every((id) => !isActiveDevice(id)))) {
+              _paired.keys.every((id) => !isActiveDevice(id)))) {
         // Smart mode: all active devices delivered, or none are active — clear pending.
         _pendingClipboard = null;
         _clipboardDeliveredTo.clear();

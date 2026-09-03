@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../mesh/discovery.dart';
+import '../core/network_info.dart' show isTailscaleIp;
 import '../mesh/mesh_service.dart';
 import '../mesh/serial_bridge.dart';
 import 'nexus_header.dart';
@@ -377,6 +378,8 @@ class _DeviceCard extends StatelessWidget {
             _DetailRow(label: 'Platform', value: platformLabel(device.platform)),
             _DetailRow(label: 'Address', value: '${device.address}:${device.port}'),
             _DetailRow(label: 'Paired', value: 'Encrypted · direct'),
+            if (device.addresses.any((a) => isTailscaleIp(a)))
+              _DetailRow(label: 'Tailscale', value: 'Reachable across networks'),
           ],
         ),
         actions: [

@@ -35,6 +35,7 @@ class _AssistantViewState extends State<AssistantView> {
   final _controller = TextEditingController();
   final _focus = FocusNode();
   String _lastInput = '';
+
   /// The conversation: user bubbles and assistant cards, in order.
   final List<_ThreadEntry> _thread = [];
   late final CommandService _service;
@@ -77,16 +78,17 @@ class _AssistantViewState extends State<AssistantView> {
               AgentActions.torchToggle,
               AgentActions.volumeSet,
             }
-          : defaultTargetPlatform == TargetPlatform.linux
-              ? const {
-                  AgentActions.batteryGet,
-                  AgentActions.timerSet,
-                  AgentActions.alarmSet,
-                  AgentActions.reminderSet,
-                  AgentActions.noteCreate,
-                  AgentActions.webSearch,
-                }
-              : const {},
+          : defaultTargetPlatform == TargetPlatform.linux ||
+                defaultTargetPlatform == TargetPlatform.windows
+          ? const {
+              AgentActions.batteryGet,
+              AgentActions.timerSet,
+              AgentActions.alarmSet,
+              AgentActions.reminderSet,
+              AgentActions.noteCreate,
+              AgentActions.webSearch,
+            }
+          : const {},
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
         defaults: widget.mesh.store.agentDefaults,
@@ -123,36 +125,42 @@ class _AssistantViewState extends State<AssistantView> {
     final out = <AgentDeviceSnapshot>[];
 
     for (final d in mesh.pairedDevices) {
-      out.add(AgentDeviceSnapshot(
-        id: d.id,
-        name: d.name,
-        online: mesh.isOnline(d.id),
-        capabilities: defaultCapabilitiesFor(d.platform),
-      ));
+      out.add(
+        AgentDeviceSnapshot(
+          id: d.id,
+          name: d.name,
+          online: mesh.isOnline(d.id),
+          capabilities: defaultCapabilitiesFor(d.platform),
+        ),
+      );
     }
 
     for (final d in mesh.serialDevices) {
-      out.add(AgentDeviceSnapshot(
-        id: d.id,
-        name: d.name,
-        online: d.online,
-        capabilities: d.caps
-            .where((c) => c == 'msg')
-            .map((_) => const DeviceCapability(AgentActions.ledBlink))
-            .toList(),
-      ));
+      out.add(
+        AgentDeviceSnapshot(
+          id: d.id,
+          name: d.name,
+          online: d.online,
+          capabilities: d.caps
+              .where((c) => c == 'msg')
+              .map((_) => const DeviceCapability(AgentActions.ledBlink))
+              .toList(),
+        ),
+      );
     }
 
     for (final d in mesh.remoteSerialDevices) {
-      out.add(AgentDeviceSnapshot(
-        id: d.id,
-        name: d.name,
-        online: d.online,
-        capabilities: d.caps
-            .where((c) => c == 'msg')
-            .map((_) => const DeviceCapability(AgentActions.ledBlink))
-            .toList(),
-      ));
+      out.add(
+        AgentDeviceSnapshot(
+          id: d.id,
+          name: d.name,
+          online: d.online,
+          capabilities: d.caps
+              .where((c) => c == 'msg')
+              .map((_) => const DeviceCapability(AgentActions.ledBlink))
+              .toList(),
+        ),
+      );
     }
 
     return out;
@@ -200,10 +208,12 @@ class _AssistantViewState extends State<AssistantView> {
   /// the desktop runs what a Linux box can do.
   Set<String> get _selfRunActions =>
       defaultTargetPlatform == TargetPlatform.android
-          ? _androidSelfRun
-          : defaultTargetPlatform == TargetPlatform.linux
-              ? _desktopSelfRun
-              : const {};
+      ? _androidSelfRun
+      : defaultTargetPlatform == TargetPlatform.linux
+      ? _desktopSelfRun
+      : defaultTargetPlatform == TargetPlatform.windows
+      ? _windowsSelfRun
+      : const {};
 
   static const _androidSelfRun = {
     AgentActions.callPlace,
@@ -226,13 +236,26 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.webSearch,
   };
 
+  static const _windowsSelfRun = {
+    AgentActions.timerSet,
+    AgentActions.alarmSet,
+    AgentActions.reminderSet,
+    AgentActions.noteCreate,
+    AgentActions.webSearch,
+  };
+
   /// Appends to (or, for re-runs, updates the end of) the thread. No
   /// setState — callers own the rebuild.
-  void _appendResult(AgentDispatchResult result, {String? asUser, bool replaceLast = false}) {
+  void _appendResult(
+    AgentDispatchResult result, {
+    String? asUser,
+    bool replaceLast = false,
+  }) {
     if (replaceLast && _thread.isNotEmpty) {
       _thread[_thread.length - 1] = _ThreadEntry.result(result);
     } else {
-      if (asUser != null && asUser.isNotEmpty) _thread.add(_ThreadEntry.user(asUser));
+      if (asUser != null && asUser.isNotEmpty)
+        _thread.add(_ThreadEntry.user(asUser));
       _thread.add(_ThreadEntry.result(result));
     }
     _pendingKey = switch (result.dispatch) {
@@ -242,8 +265,15 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   /// Shows a dispatch result — and starts self-run actions right away.
-  void _consume(AgentDispatchResult result, {String? asUser, String? typedPhrase, bool replaceLast = false}) {
-    setState(() => _appendResult(result, asUser: asUser, replaceLast: replaceLast));
+  void _consume(
+    AgentDispatchResult result, {
+    String? asUser,
+    String? typedPhrase,
+    bool replaceLast = false,
+  }) {
+    setState(
+      () => _appendResult(result, asUser: asUser, replaceLast: replaceLast),
+    );
     if (result.dispatch case final AgentActionPlan plan
         when plan.request.target == widget.mesh.identity.id &&
             _selfRunActions.contains(plan.request.action)) {
@@ -270,21 +300,30 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _prepareAndRun(AgentRequest request) async {
     final prepared = Map<String, dynamic>.of(request.arguments);
     if (request.action == AgentActions.alarmSet && prepared['hour'] == null) {
-      final parsed =
-          CommandInterpreter.parseClockTime(prepared['time']?.toString() ?? '');
+      final parsed = CommandInterpreter.parseClockTime(
+        prepared['time']?.toString() ?? '',
+      );
       if (parsed == null) {
-        return const ActionResult(false, 'I still need a time — like 7am or 18:30.');
+        return const ActionResult(
+          false,
+          'I still need a time — like 7am or 18:30.',
+        );
       }
       prepared
         ..remove('time')
         ..['hour'] = parsed.$1
         ..['minute'] = parsed.$2;
     }
-    if (request.action == AgentActions.timerSet && prepared['seconds'] is! int) {
-      final seconds =
-          CommandInterpreter.parseDurationSeconds(prepared['seconds']?.toString() ?? '');
+    if (request.action == AgentActions.timerSet &&
+        prepared['seconds'] is! int) {
+      final seconds = CommandInterpreter.parseDurationSeconds(
+        prepared['seconds']?.toString() ?? '',
+      );
       if (seconds == null) {
-        return const ActionResult(false, 'How long should it run? Try "5 minutes".');
+        return const ActionResult(
+          false,
+          'How long should it run? Try "5 minutes".',
+        );
       }
       prepared['seconds'] = seconds;
     }
@@ -299,7 +338,9 @@ class _AssistantViewState extends State<AssistantView> {
       _sending = false;
       _appendResult(
         AgentDispatchResult(
-          status: ok ? AgentResultStatus.succeeded : AgentResultStatus.unavailable,
+          status: ok
+              ? AgentResultStatus.succeeded
+              : AgentResultStatus.unavailable,
           message: ok ? '' : message,
           dispatch: ok ? AgentMessage(message) : null,
         ),
@@ -318,7 +359,10 @@ class _AssistantViewState extends State<AssistantView> {
       );
       return const ActionResult(true, 'Noted.');
     } catch (_) {
-      return const ActionResult(false, 'Could not save the note on this device.');
+      return const ActionResult(
+        false,
+        'Could not save the note on this device.',
+      );
     }
   }
 
@@ -335,10 +379,15 @@ class _AssistantViewState extends State<AssistantView> {
     if (!mounted) return;
     if (!outcome.placed && !outcome.launched && outcome.candidates.isNotEmpty) {
       QueryLog.i.call(contact, 'asked', candidates: outcome.candidates);
-      final askPhrase = phrase.isNotEmpty ? phrase : 'call ${contact.toLowerCase()}';
+      final askPhrase = phrase.isNotEmpty
+          ? phrase
+          : 'call ${contact.toLowerCase()}';
       setState(() {
         _sending = false;
-        _pendingContactAsk = (phrase: askPhrase, candidates: outcome.candidates);
+        _pendingContactAsk = (
+          phrase: askPhrase,
+          candidates: outcome.candidates,
+        );
         _appendResult(
           AgentDispatchResult(
             status: AgentResultStatus.needsInfo,
@@ -413,7 +462,9 @@ class _AssistantViewState extends State<AssistantView> {
     _lastInput = text;
     _controller.clear();
     final pending = _pendingKey;
-    if (pending != null && pending.startsWith('contact:') && _pendingContactAsk != null) {
+    if (pending != null &&
+        pending.startsWith('contact:') &&
+        _pendingContactAsk != null) {
       _answerContactAsk(text);
       return;
     }
@@ -478,7 +529,8 @@ class _AssistantViewState extends State<AssistantView> {
 
   /// Sends an approved action to the routed device and shows its answer.
   Future<void> _sendAgentRequest(AgentRequest request) async {
-    final deviceName = _buildSnapshots()
+    final deviceName =
+        _buildSnapshots()
             .where((d) => d.id == request.target)
             .firstOrNull
             ?.name ??
@@ -507,8 +559,17 @@ class _AssistantViewState extends State<AssistantView> {
 
   /// The remote device asked us to run an action — approve or deny locally,
   /// execute here, and send the outcome back over the mesh.
-  Future<void> _handleIncoming(AgentRequest request, String from, bool approve) async {
-    QueryLog.i.remote(from, request.action, approve ? 'approved' : 'denied', request.arguments.toString());
+  Future<void> _handleIncoming(
+    AgentRequest request,
+    String from,
+    bool approve,
+  ) async {
+    QueryLog.i.remote(
+      from,
+      request.action,
+      approve ? 'approved' : 'denied',
+      request.arguments.toString(),
+    );
     final AgentDispatchResult result;
     if (!approve) {
       result = _service.handleRemoteRequest(
@@ -523,8 +584,9 @@ class _AssistantViewState extends State<AssistantView> {
       // else answers honestly via the service's catalog.
       final outcome = await _prepareAndRun(request);
       result = AgentDispatchResult(
-        status:
-            outcome.ok ? AgentResultStatus.succeeded : AgentResultStatus.unavailable,
+        status: outcome.ok
+            ? AgentResultStatus.succeeded
+            : AgentResultStatus.unavailable,
         message: outcome.message,
         dispatch: outcome.ok ? AgentMessage(outcome.message) : null,
       );
@@ -534,7 +596,11 @@ class _AssistantViewState extends State<AssistantView> {
         approval: AgentApproval.approved,
       );
     }
-    final delivered = await widget.mesh.sendAgentResult(from, request.requestId, result);
+    final delivered = await widget.mesh.sendAgentResult(
+      from,
+      request.requestId,
+      result,
+    );
     if (!mounted) return;
     widget.mesh.dismissIncomingAgentRequest();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -542,8 +608,8 @@ class _AssistantViewState extends State<AssistantView> {
         content: Text(
           approve
               ? (delivered
-                  ? 'Done — ${_describeOutcome(result)}'
-                  : 'Executed locally, but the reply could not be sent back.')
+                    ? 'Done — ${_describeOutcome(result)}'
+                    : 'Executed locally, but the reply could not be sent back.')
               : 'Action denied.',
         ),
       ),
@@ -594,14 +660,20 @@ class _AssistantViewState extends State<AssistantView> {
           decoration: BoxDecoration(
             color: NexusColors.surface,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+            border: Border.all(
+              color: NexusColors.accent.withValues(alpha: 0.35),
+            ),
           ),
           child: const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 'Hello! I am Nexus.',
-                style: TextStyle(color: NexusColors.text, fontWeight: FontWeight.w700, fontSize: 16),
+                style: TextStyle(
+                  color: NexusColors.text,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                ),
               ),
               SizedBox(height: 10),
               Text(
@@ -611,7 +683,11 @@ class _AssistantViewState extends State<AssistantView> {
                 '    I ask once and remember forever.\n'
                 '3. Pair your other devices from the Devices tab — then\n'
                 '    I can also do things on them for you.\n',
-                style: TextStyle(color: NexusColors.muted, fontSize: 13, height: 1.45),
+                style: TextStyle(
+                  color: NexusColors.muted,
+                  fontSize: 13,
+                  height: 1.45,
+                ),
               ),
               Text(
                 'If I ever misunderstand, tell me what you meant — I learn.',
@@ -658,7 +734,10 @@ class _AssistantViewState extends State<AssistantView> {
                         ? 'Ask anything — "play my playlist", "bring me home"…'
                         : 'Type your answer…',
                     border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
                   ),
                   style: const TextStyle(color: NexusColors.text, fontSize: 14),
                 ),
@@ -700,8 +779,14 @@ class _AssistantViewState extends State<AssistantView> {
       reverse: true,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       children: [
-        for (final (i, entry) in entries.indexed) ...[_entryView(entry, isLast: i == 0), const SizedBox(height: 12)],
-        if (incoming != null) ...[_incomingRequestView(incoming), const SizedBox(height: 12)],
+        for (final (i, entry) in entries.indexed) ...[
+          _entryView(entry, isLast: i == 0),
+          const SizedBox(height: 12),
+        ],
+        if (incoming != null) ...[
+          _incomingRequestView(incoming),
+          const SizedBox(height: 12),
+        ],
       ],
     );
   }
@@ -721,11 +806,17 @@ class _AssistantViewState extends State<AssistantView> {
             decoration: BoxDecoration(
               color: NexusColors.accent.withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: NexusColors.accent.withValues(alpha: 0.3)),
+              border: Border.all(
+                color: NexusColors.accent.withValues(alpha: 0.3),
+              ),
             ),
             child: Text(
               user,
-              style: const TextStyle(color: NexusColors.text, fontSize: 13.5, height: 1.35),
+              style: const TextStyle(
+                color: NexusColors.text,
+                fontSize: 13.5,
+                height: 1.35,
+              ),
             ),
           ),
         ),
@@ -737,12 +828,17 @@ class _AssistantViewState extends State<AssistantView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (isLast) ...[_statusChip(result.status, result.message), const SizedBox(height: 12)],
-          if (result.dispatch case final AgentDeviceList list) _deviceListView(list.devices),
+          if (isLast) ...[
+            _statusChip(result.status, result.message),
+            const SizedBox(height: 12),
+          ],
+          if (result.dispatch case final AgentDeviceList list)
+            _deviceListView(list.devices),
           if (result.dispatch case final AgentActionPlan plan) _planView(plan),
           if (result.dispatch case final AgentMessage message)
             isLast && message.live ? _liveClockView() : _messageView(message),
-          if (result.dispatch case final AgentClarification ask) _questionView(ask),
+          if (result.dispatch case final AgentClarification ask)
+            _questionView(ask),
           if (isLast && result.status == AgentResultStatus.required) ...[
             const SizedBox(height: 12),
             _approvalBar(),
@@ -760,12 +856,20 @@ class _AssistantViewState extends State<AssistantView> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.forum_outlined, size: 44, color: NexusColors.muted),
+            const Icon(
+              Icons.forum_outlined,
+              size: 44,
+              color: NexusColors.muted,
+            ),
             const SizedBox(height: 12),
             const Text(
               'Ask me anything — I listen and do.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: NexusColors.text, fontSize: 15, fontWeight: FontWeight.w600),
+              style: TextStyle(
+                color: NexusColors.text,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 6),
             const Text(
@@ -791,7 +895,8 @@ class _AssistantViewState extends State<AssistantView> {
   /// "My Phone wants to: Call mom" — the receiving device re-approves the
   /// action locally before it runs here.
   Widget _incomingRequestView(({String from, AgentRequest request}) incoming) {
-    final fromName = widget.mesh.pairedDevices
+    final fromName =
+        widget.mesh.pairedDevices
             .where((d) => d.id == incoming.from)
             .firstOrNull
             ?.name ??
@@ -809,7 +914,11 @@ class _AssistantViewState extends State<AssistantView> {
         children: [
           Row(
             children: [
-              const Icon(Icons.notification_important_rounded, size: 18, color: NexusColors.warn),
+              const Icon(
+                Icons.notification_important_rounded,
+                size: 18,
+                color: NexusColors.warn,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -828,14 +937,16 @@ class _AssistantViewState extends State<AssistantView> {
             children: [
               Expanded(
                 child: FilledButton(
-                  onPressed: () => _handleIncoming(request, incoming.from, true),
+                  onPressed: () =>
+                      _handleIncoming(request, incoming.from, true),
                   child: const Text('Approve'),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton(
-                  onPressed: () => _handleIncoming(request, incoming.from, false),
+                  onPressed: () =>
+                      _handleIncoming(request, incoming.from, false),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: NexusColors.danger,
                     side: const BorderSide(color: NexusColors.danger),
@@ -869,7 +980,11 @@ class _AssistantViewState extends State<AssistantView> {
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(color: NexusColors.text, fontWeight: FontWeight.w600, fontSize: 14),
+                  style: const TextStyle(
+                    color: NexusColors.text,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
                 ),
               ),
             ],
@@ -908,12 +1023,22 @@ class _AssistantViewState extends State<AssistantView> {
             color: color.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
         if (message.isNotEmpty) ...[
           const SizedBox(width: 8),
           Expanded(
-            child: Text(message, style: const TextStyle(color: NexusColors.muted, fontSize: 12)),
+            child: Text(
+              message,
+              style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+            ),
           ),
         ],
       ],
@@ -933,7 +1058,11 @@ class _AssistantViewState extends State<AssistantView> {
         children: [
           Row(
             children: [
-              const Icon(Icons.help_outline_rounded, size: 18, color: NexusColors.warn),
+              const Icon(
+                Icons.help_outline_rounded,
+                size: 18,
+                color: NexusColors.warn,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -947,7 +1076,13 @@ class _AssistantViewState extends State<AssistantView> {
               ),
             ],
           ),
-          if (ask.hint != null) ...[const SizedBox(height: 6), Text(ask.hint!, style: const TextStyle(color: NexusColors.muted, fontSize: 12))],
+          if (ask.hint != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              ask.hint!,
+              style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+            ),
+          ],
         ],
       ),
     );
@@ -955,52 +1090,66 @@ class _AssistantViewState extends State<AssistantView> {
 
   Widget _deviceListView(List<AgentDeviceSnapshot> devices) {
     if (devices.isEmpty) {
-      return const Text('No devices found.', style: TextStyle(color: NexusColors.muted));
+      return const Text(
+        'No devices found.',
+        style: TextStyle(color: NexusColors.muted),
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: devices.map((d) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: NexusColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: NexusColors.border),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 10,
-                height: 10,
+      children: devices
+          .map(
+            (d) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: d.online ? NexusColors.ok : NexusColors.muted,
+                  color: NexusColors.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: NexusColors.border),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: d.online ? NexusColors.ok : NexusColors.muted,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        d.name,
+                        style: const TextStyle(
+                          color: NexusColors.text,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      d.id,
+                      style: const TextStyle(
+                        color: NexusColors.muted,
+                        fontSize: 11,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      d.online ? 'Online' : 'Offline',
+                      style: TextStyle(
+                        color: d.online ? NexusColors.ok : NexusColors.muted,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  d.name,
-                  style: const TextStyle(color: NexusColors.text, fontSize: 14, fontWeight: FontWeight.w600),
-                ),
-              ),
-              Text(
-                d.id,
-                style: const TextStyle(color: NexusColors.muted, fontSize: 11),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                d.online ? 'Online' : 'Offline',
-                style: TextStyle(
-                  color: d.online ? NexusColors.ok : NexusColors.muted,
-                  fontSize: 11,
-                ),
-              ),
-            ],
-          ),
-        ),
-      )).toList(),
+            ),
+          )
+          .toList(),
     );
   }
 
@@ -1033,19 +1182,24 @@ class _AssistantViewState extends State<AssistantView> {
     final snapshot = _buildSnapshots();
     final target = snapshot.where((d) => d.id == request.target).firstOrNull;
 
-    return _planCard(Icons.bolt_rounded, 'Blink ${target?.name ?? request.target}', [
-      const SizedBox(height: 6),
-      Text(
-        'Target: ${request.target} · Action: ${request.action}',
-        style: const TextStyle(color: NexusColors.muted, fontSize: 11),
-      ),
-      const SizedBox(height: 10),
-      FilledButton.icon(
-        onPressed: () => _sendBlink(request.target, target?.name ?? request.target),
-        icon: const Icon(Icons.bolt_rounded, size: 16),
-        label: const Text('Send blink now'),
-      ),
-    ]);
+    return _planCard(
+      Icons.bolt_rounded,
+      'Blink ${target?.name ?? request.target}',
+      [
+        const SizedBox(height: 6),
+        Text(
+          'Target: ${request.target} · Action: ${request.action}',
+          style: const TextStyle(color: NexusColors.muted, fontSize: 11),
+        ),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          onPressed: () =>
+              _sendBlink(request.target, target?.name ?? request.target),
+          icon: const Icon(Icons.bolt_rounded, size: 16),
+          label: const Text('Send blink now'),
+        ),
+      ],
+    );
   }
 
   /// An approved call aimed at THIS device — executes natively via the
@@ -1057,13 +1211,19 @@ class _AssistantViewState extends State<AssistantView> {
         'right here on ${widget.mesh.identity.name}',
         style: const TextStyle(color: NexusColors.muted, fontSize: 12),
       ),
-      if (_reply != null) ...[const SizedBox(height: 10), _remoteReplyView(_reply!)],
+      if (_reply != null) ...[
+        const SizedBox(height: 10),
+        _remoteReplyView(_reply!),
+      ],
       const SizedBox(height: 10),
       FilledButton.icon(
         onPressed: _sending
             ? null
-            : () => _runAction(() async =>
-                _describeOutcome(await executePhoneCall(_phoneBackend, request))),
+            : () => _runAction(
+                () async => _describeOutcome(
+                  await executePhoneCall(_phoneBackend, request),
+                ),
+              ),
         icon: const Icon(Icons.call_rounded, size: 16),
         label: Text(_sending ? 'Calling…' : 'Call now'),
       ),
@@ -1087,7 +1247,10 @@ class _AssistantViewState extends State<AssistantView> {
         'Target: ${request.target} · Action: ${request.action}',
         style: const TextStyle(color: NexusColors.muted, fontSize: 11),
       ),
-      if (_reply != null) ...[const SizedBox(height: 10), _remoteReplyView(_reply!)],
+      if (_reply != null) ...[
+        const SizedBox(height: 10),
+        _remoteReplyView(_reply!),
+      ],
       const SizedBox(height: 10),
       FilledButton.icon(
         onPressed: _sending ? null : () => _sendAgentRequest(request),
@@ -1103,7 +1266,9 @@ class _AssistantViewState extends State<AssistantView> {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: (failed ? NexusColors.danger : NexusColors.ok).withValues(alpha: 0.1),
+        color: (failed ? NexusColors.danger : NexusColors.ok).withValues(
+          alpha: 0.1,
+        ),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Text(
@@ -1162,7 +1327,11 @@ class _AssistantViewState extends State<AssistantView> {
       ),
       child: Text(
         message.text,
-        style: const TextStyle(color: NexusColors.text, fontSize: 13, height: 1.4),
+        style: const TextStyle(
+          color: NexusColors.text,
+          fontSize: 13,
+          height: 1.4,
+        ),
       ),
     );
   }
@@ -1228,14 +1397,20 @@ class _LiveClockState extends State<_LiveClock> {
   void dispose() {
     _timer?.cancel();
     super.dispose();
-  }  @override
+  }
+
+  @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
     final hh = now.hour.toString().padLeft(2, '0');
     final mm = now.minute.toString().padLeft(2, '0');
     return Text(
       'It\'s $hh:$mm.',
-      style: const TextStyle(color: NexusColors.text, fontSize: 16, fontWeight: FontWeight.w600),
+      style: const TextStyle(
+        color: NexusColors.text,
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+      ),
     );
   }
 }
