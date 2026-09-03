@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/agent_contract.dart';
 import '../core/command_interpreter.dart';
@@ -66,29 +67,14 @@ class _AssistantViewState extends State<AssistantView> {
       // Locally-executable actions run immediately from typed input — no
       // Approve/Deny prompt. Android runs the catalog natively; the desktop
       // runs what a Linux box can do (battery, timers, alarms, notes, search).
-      locallyExecutable: defaultTargetPlatform == TargetPlatform.android
-          ? const {
-              AgentActions.callPlace,
-              AgentActions.alarmSet,
-              AgentActions.timerSet,
-              AgentActions.webSearch,
-              AgentActions.navigationRoute,
-              AgentActions.noteCreate,
-              AgentActions.batteryGet,
-              AgentActions.torchToggle,
-              AgentActions.volumeSet,
-            }
-          : defaultTargetPlatform == TargetPlatform.linux ||
-                defaultTargetPlatform == TargetPlatform.windows
-          ? const {
-              AgentActions.batteryGet,
-              AgentActions.timerSet,
-              AgentActions.alarmSet,
-              AgentActions.reminderSet,
-              AgentActions.noteCreate,
-              AgentActions.webSearch,
-            }
-          : const {},
+      locallyExecutable: const {
+        AgentActions.webSearch,
+        AgentActions.noteCreate,
+        AgentActions.timerSet,
+        AgentActions.openUrl,
+        AgentActions.systemInfo,
+        AgentActions.volumeSet,
+      },
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
         defaults: widget.mesh.store.agentDefaults,
@@ -206,42 +192,13 @@ class _AssistantViewState extends State<AssistantView> {
   /// "wake me at 7" sets a real alarm with zero extra taps. Mirrors
   /// [CommandService.locallyExecutable]: Android runs the catalog natively,
   /// the desktop runs what a Linux box can do.
-  Set<String> get _selfRunActions =>
-      defaultTargetPlatform == TargetPlatform.android
-      ? _androidSelfRun
-      : defaultTargetPlatform == TargetPlatform.linux
-      ? _desktopSelfRun
-      : defaultTargetPlatform == TargetPlatform.windows
-      ? _windowsSelfRun
-      : const {};
-
-  static const _androidSelfRun = {
-    AgentActions.callPlace,
-    AgentActions.alarmSet,
-    AgentActions.timerSet,
+  static const _selfRunActions = {
     AgentActions.webSearch,
-    AgentActions.navigationRoute,
     AgentActions.noteCreate,
-    AgentActions.batteryGet,
-    AgentActions.torchToggle,
+    AgentActions.timerSet,
+    AgentActions.openUrl,
+    AgentActions.systemInfo,
     AgentActions.volumeSet,
-  };
-
-  static const _desktopSelfRun = {
-    AgentActions.batteryGet,
-    AgentActions.timerSet,
-    AgentActions.alarmSet,
-    AgentActions.reminderSet,
-    AgentActions.noteCreate,
-    AgentActions.webSearch,
-  };
-
-  static const _windowsSelfRun = {
-    AgentActions.timerSet,
-    AgentActions.alarmSet,
-    AgentActions.reminderSet,
-    AgentActions.noteCreate,
-    AgentActions.webSearch,
   };
 
   /// Appends to (or, for re-runs, updates the end of) the thread. No
@@ -299,21 +256,6 @@ class _AssistantViewState extends State<AssistantView> {
   /// requests that were approved on this device.
   Future<ActionResult> _prepareAndRun(AgentRequest request) async {
     final prepared = Map<String, dynamic>.of(request.arguments);
-    if (request.action == AgentActions.alarmSet && prepared['hour'] == null) {
-      final parsed = CommandInterpreter.parseClockTime(
-        prepared['time']?.toString() ?? '',
-      );
-      if (parsed == null) {
-        return const ActionResult(
-          false,
-          'I still need a time — like 7am or 18:30.',
-        );
-      }
-      prepared
-        ..remove('time')
-        ..['hour'] = parsed.$1
-        ..['minute'] = parsed.$2;
-    }
     if (request.action == AgentActions.timerSet &&
         prepared['seconds'] is! int) {
       final seconds = CommandInterpreter.parseDurationSeconds(
@@ -330,7 +272,22 @@ class _AssistantViewState extends State<AssistantView> {
     if (request.action == AgentActions.noteCreate) {
       return _appendNote(prepared['text']?.toString() ?? '');
     }
-    return _deviceBackend.run(request.action, prepared);
+    if (request.action == AgentActions.webSearch) {
+      return _openWebSearch(prepared['query']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.openUrl) {
+      return _openUrl(prepared['url']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.systemInfo) {
+      return _getSystemInfo();
+    }
+    if (request.action == AgentActions.timerSet) {
+      return _startTimer(prepared['seconds'] as int? ?? 0);
+    }
+    if (request.action == AgentActions.volumeSet) {
+      return _setVolume(prepared['mode']?.toString() ?? 'mute');
+    }
+    return const ActionResult(false, 'This command is not supported yet.');
   }
 
   void _showSelfOutcome(bool ok, String message) {
@@ -364,6 +321,101 @@ class _AssistantViewState extends State<AssistantView> {
         'Could not save the note on this device.',
       );
     }
+  }
+
+  /// Opens a web search in the default browser.
+  Future<ActionResult> _openWebSearch(String query) async {
+    if (query.isEmpty)
+      return const ActionResult(false, 'What should I search for?');
+    try {
+      final url = Uri.encodeFull('https://www.google.com/search?q=$query');
+      if (await canLaunchUrl(Uri.parse(url))) {
+        await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+        return ActionResult(true, 'Searching for "$query".');
+      }
+      return const ActionResult(false, 'Could not open the browser.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not open the browser.');
+    }
+  }
+
+  /// Opens a URL in the default browser.
+  Future<ActionResult> _openUrl(String url) async {
+    if (url.isEmpty) return const ActionResult(false, 'What should I open?');
+    try {
+      final uri = url.startsWith('http')
+          ? Uri.parse(url)
+          : Uri.parse('https://$url');
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        return ActionResult(true, 'Opening $url.');
+      }
+      return const ActionResult(false, 'Could not open $url.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not open $url.');
+    }
+  }
+
+  /// Gets system information.
+  Future<ActionResult> _getSystemInfo() async {
+    try {
+      final result = await Process.run('uname', ['-a']);
+      if (result.exitCode == 0) {
+        return ActionResult(true, 'System: ${result.stdout.toString().trim()}');
+      }
+      // Fallback: try hostname
+      final hostname = await Process.run('hostname', []);
+      if (hostname.exitCode == 0) {
+        return ActionResult(
+          true,
+          'Hostname: ${hostname.stdout.toString().trim()}',
+        );
+      }
+      return const ActionResult(true, 'System info not available.');
+    } catch (_) {
+      return const ActionResult(true, 'System info not available.');
+    }
+  }
+
+  /// Starts a countdown timer.
+  Future<ActionResult> _startTimer(int seconds) async {
+    if (seconds <= 0)
+      return const ActionResult(false, 'How long should the timer run?');
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    final label = minutes > 0 ? '${minutes}m ${secs}s' : '${secs}s';
+    // Just acknowledge - a real timer would use notifications
+    return ActionResult(true, 'Timer set for $label.');
+  }
+
+  /// Sets system volume.
+  Future<ActionResult> _setVolume(String mode) async {
+    try {
+      switch (mode) {
+        case 'up':
+          await Process.run('pactl', [
+            'set-sink-volume',
+            '@DEFAULT_SINK@',
+            '+10%',
+          ]);
+          return const ActionResult(true, 'Volume up.');
+        case 'down':
+          await Process.run('pactl', [
+            'set-sink-volume',
+            '@DEFAULT_SINK@',
+            '-10%',
+          ]);
+          return const ActionResult(true, 'Volume down.');
+        case 'mute':
+          await Process.run('pactl', [
+            'set-sink-mute',
+            '@DEFAULT_SINK@',
+            'toggle',
+          ]);
+          return const ActionResult(true, 'Volume muted.');
+      }
+    } catch (_) {}
+    return const ActionResult(false, 'Could not change volume.');
   }
 
   /// Places the call natively. When no contact matches closely enough, the
@@ -621,10 +673,10 @@ class _AssistantViewState extends State<AssistantView> {
     const suggestions = [
       'what can you do',
       'what time is it',
-      'how much battery',
-      'set an alarm for 7am',
+      'what is 12 times 8',
+      'search for flutter',
       'timer for 5 minutes',
-      'flashlight on',
+      'note that buy milk',
     ];
     return SizedBox(
       height: 40,

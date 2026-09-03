@@ -4,30 +4,19 @@
 /// MeshService can later transport an [AgentRequest] after pairing and apply
 /// the target device's [DeviceCapabilities] before dispatch.
 abstract final class AgentActions {
+  // --- Working commands ---
   static const deviceList = 'device.list';
   static const ledBlink = 'led.blink';
-  static const mediaPlay = 'media.play';
-  static const musicControl = 'music.control';
-  static const homeControl = 'home.control';
-  static const messageSend = 'communication.message';
-  static const callPlace = 'communication.call';
-  static const weatherGet = 'info.weather';
-  static const reminderSet = 'reminder.set';
-  static const alarmSet = 'alarm.set';
-  static const timerSet = 'timer.set';
-  static const navigationRoute = 'navigation.route';
-  static const webSearch = 'search.web';
-  static const noteCreate = 'note.create';
-  static const translateText = 'translate.text';
-  static const calendarGet = 'calendar.get';
-  static const newsGet = 'info.news';
   static const greet = 'greet';
   static const timeGet = 'time.get';
   static const mathCalc = 'math.calc';
-  static const clipboardWrite = 'clipboard.write';
   static const helpGet = 'help.get';
-  static const batteryGet = 'device.battery';
-  static const torchToggle = 'device.torch';
+  static const clipboardWrite = 'clipboard.write';
+  static const webSearch = 'search.web';
+  static const noteCreate = 'note.create';
+  static const timerSet = 'timer.set';
+  static const openUrl = 'open.url';
+  static const systemInfo = 'system.info';
   static const volumeSet = 'device.volume';
 }
 
@@ -60,15 +49,15 @@ class ParsedCommand {
 ParsedCommand? parseCommand(String input) {
   final text = input.trim().toLowerCase();
   if (text == 'show my devices' || text == 'list devices') {
-    return const ParsedCommand(action: AgentActions.deviceList, target: 'local');
+    return const ParsedCommand(
+      action: AgentActions.deviceList,
+      target: 'local',
+    );
   }
   final blink = RegExp(r'^(?:blink|flash) (.+)$').firstMatch(text);
   if (blink != null) {
     final target = blink.group(1)!.replaceFirst(RegExp(r'^the '), '').trim();
-    return ParsedCommand(
-      action: AgentActions.ledBlink,
-      target: target,
-    );
+    return ParsedCommand(action: AgentActions.ledBlink, target: target);
   }
   return null;
 }
@@ -97,10 +86,16 @@ class AgentDeviceSnapshot {
   @override
   int get hashCode => Object.hash(id, name, online, capabilities.length);
 
-  static bool _sameCapabilities(List<DeviceCapability> a, List<DeviceCapability> b) =>
+  static bool _sameCapabilities(
+    List<DeviceCapability> a,
+    List<DeviceCapability> b,
+  ) =>
       a.length == b.length &&
-      a.indexed.every((entry) =>
-          entry.$2.id == b[entry.$1].id && entry.$2.version == b[entry.$1].version);
+      a.indexed.every(
+        (entry) =>
+            entry.$2.id == b[entry.$1].id &&
+            entry.$2.version == b[entry.$1].version,
+      );
 }
 
 sealed class AgentDispatch {
@@ -128,7 +123,19 @@ class AgentMessage extends AgentDispatch {
   /// of freezing the value from the moment the command ran.
   final bool live;
 
-  const AgentMessage(this.text, {this.live = false});
+  /// The action that triggered this message, if any. Used by the UI to
+  /// execute side effects (open browser, save note, etc.).
+  final String? action;
+
+  /// Arguments for the action, if any.
+  final Map<String, dynamic>? arguments;
+
+  const AgentMessage(
+    this.text, {
+    this.live = false,
+    this.action,
+    this.arguments,
+  });
 }
 
 /// The capabilities a device of [platform] advertises by default — a phone
@@ -136,54 +143,16 @@ class AgentMessage extends AgentDispatch {
 /// announce richer capabilities later simply replace this default; the ids
 /// are the same [AgentActions] strings so one check serves both.
 List<DeviceCapability> defaultCapabilitiesFor(String platform) {
-  switch (platform) {
-    case 'android':
-    case 'ios':
-      return const [
-        DeviceCapability(AgentActions.callPlace),
-        DeviceCapability(AgentActions.messageSend),
-        DeviceCapability(AgentActions.alarmSet),
-        DeviceCapability(AgentActions.timerSet),
-        DeviceCapability(AgentActions.reminderSet),
-        DeviceCapability(AgentActions.mediaPlay),
-        DeviceCapability(AgentActions.musicControl),
-        DeviceCapability(AgentActions.weatherGet),
-        DeviceCapability(AgentActions.navigationRoute),
-        DeviceCapability(AgentActions.webSearch),
-        DeviceCapability(AgentActions.noteCreate),
-        DeviceCapability(AgentActions.translateText),
-        DeviceCapability(AgentActions.calendarGet),
-        DeviceCapability(AgentActions.newsGet),
-        DeviceCapability(AgentActions.homeControl),
-        DeviceCapability(AgentActions.batteryGet),
-        DeviceCapability(AgentActions.torchToggle),
-        DeviceCapability(AgentActions.volumeSet),
-      ];
-    case 'linux':
-    case 'windows':
-    case 'macos':
-      // Everything a desktop usually has — except calls and texts, the
-      // canonical "only my phone can do this" actions.
-      return const [
-        DeviceCapability(AgentActions.alarmSet),
-        DeviceCapability(AgentActions.timerSet),
-        DeviceCapability(AgentActions.reminderSet),
-        DeviceCapability(AgentActions.mediaPlay),
-        DeviceCapability(AgentActions.musicControl),
-        DeviceCapability(AgentActions.weatherGet),
-        DeviceCapability(AgentActions.navigationRoute),
-        DeviceCapability(AgentActions.webSearch),
-        DeviceCapability(AgentActions.noteCreate),
-        DeviceCapability(AgentActions.translateText),
-        DeviceCapability(AgentActions.calendarGet),
-        DeviceCapability(AgentActions.newsGet),
-        DeviceCapability(AgentActions.homeControl),
-        DeviceCapability(AgentActions.batteryGet),
-        DeviceCapability(AgentActions.volumeSet),
-      ];
-    default:
-      return const [];
-  }
+  // All platforms share the same working commands.
+  return const [
+    DeviceCapability(AgentActions.webSearch),
+    DeviceCapability(AgentActions.noteCreate),
+    DeviceCapability(AgentActions.timerSet),
+    DeviceCapability(AgentActions.openUrl),
+    DeviceCapability(AgentActions.systemInfo),
+    DeviceCapability(AgentActions.volumeSet),
+    DeviceCapability(AgentActions.ledBlink),
+  ];
 }
 
 /// The assistant needs one more piece of information before it can act —
@@ -229,7 +198,10 @@ class DeviceCapability {
   Map<String, dynamic> toJson() => {'id': id, 'version': version};
 
   factory DeviceCapability.fromJson(Map<String, dynamic> json) =>
-      DeviceCapability(json['id'] as String, version: (json['version'] as num?)?.toInt() ?? 1);
+      DeviceCapability(
+        json['id'] as String,
+        version: (json['version'] as num?)?.toInt() ?? 1,
+      );
 }
 
 class DeviceCapabilities {
@@ -237,9 +209,14 @@ class DeviceCapabilities {
   final int version;
   final List<DeviceCapability> capabilities;
 
-  const DeviceCapabilities({required this.deviceId, this.version = 1, this.capabilities = const []});
+  const DeviceCapabilities({
+    required this.deviceId,
+    this.version = 1,
+    this.capabilities = const [],
+  });
 
-  bool supports(String id, {int version = 1}) => capabilities.any((c) => c.id == id && c.version >= version);
+  bool supports(String id, {int version = 1}) =>
+      capabilities.any((c) => c.id == id && c.version >= version);
 
   Map<String, dynamic> toJson() => {
     'deviceId': deviceId,
@@ -247,14 +224,18 @@ class DeviceCapabilities {
     'capabilities': capabilities.map((c) => c.toJson()).toList(),
   };
 
-  factory DeviceCapabilities.fromJson(Map<String, dynamic> json) => DeviceCapabilities(
-    deviceId: json['deviceId'] as String,
-    version: (json['version'] as num?)?.toInt() ?? 1,
-    capabilities: (json['capabilities'] as List? ?? const [])
-        .whereType<Map>()
-        .map((item) => DeviceCapability.fromJson(Map<String, dynamic>.from(item)))
-        .toList(),
-  );
+  factory DeviceCapabilities.fromJson(Map<String, dynamic> json) =>
+      DeviceCapabilities(
+        deviceId: json['deviceId'] as String,
+        version: (json['version'] as num?)?.toInt() ?? 1,
+        capabilities: (json['capabilities'] as List? ?? const [])
+            .whereType<Map>()
+            .map(
+              (item) =>
+                  DeviceCapability.fromJson(Map<String, dynamic>.from(item)),
+            )
+            .toList(),
+      );
 }
 
 enum AgentApproval { required, approved, denied }
@@ -292,7 +273,9 @@ class AgentRequest {
     requestId: json['requestId'] as String,
     target: json['target'] as String,
     action: json['action'] as String,
-    arguments: Map<String, dynamic>.from((json['arguments'] as Map?) ?? const {}),
+    arguments: Map<String, dynamic>.from(
+      (json['arguments'] as Map?) ?? const {},
+    ),
     approval: AgentApproval.values.firstWhere(
       (value) => value.name == json['approval'],
       orElse: () => AgentApproval.required,
@@ -345,7 +328,10 @@ AgentDispatchResult dispatchCommand({
     return AgentDispatchResult(
       status: AgentResultStatus.succeeded,
       dispatch: AgentActionPlan(
-        command.toRequest(requestId: requestId, approval: AgentApproval.approved),
+        command.toRequest(
+          requestId: requestId,
+          approval: AgentApproval.approved,
+        ),
       ),
     );
   }

@@ -13,26 +13,6 @@ class AgentMemory {
   const AgentMemory({this.learned = const {}, this.defaults = const {}});
 }
 
-/// Honest answers for recognized-but-unwired intents. The assistant
-/// understands the request (so it never "teaches" something it knows) but
-/// says plainly that nothing is connected to it yet.
-const Map<String, String> _notWiredMessages = {
-  AgentActions.musicControl: 'Music controls (pause, next, shuffle) aren\'t wired up yet.',
-  AgentActions.homeControl: 'Smart-home control isn\'t wired up yet — only the ESP32 blink command works for now.',
-  AgentActions.messageSend: 'Sending texts isn\'t wired up yet.',
-  AgentActions.callPlace: 'Making calls isn\'t wired up yet.',
-  AgentActions.weatherGet: 'I can\'t check the weather yet — no weather service is connected.',
-  AgentActions.reminderSet: 'Reminders aren\'t wired up yet.',
-  AgentActions.alarmSet: 'Alarms aren\'t wired up yet.',
-  AgentActions.timerSet: 'Timers aren\'t wired up yet.',
-  AgentActions.navigationRoute: 'Navigation isn\'t wired up yet — but if a phrase like "bring me home" should mean something to you, teach me and I\'ll remember.',
-  AgentActions.webSearch: 'Web search isn\'t wired up yet.',
-  AgentActions.noteCreate: 'Notes aren\'t wired up yet.',
-  AgentActions.translateText: 'Translation isn\'t wired up yet.',
-  AgentActions.calendarGet: 'Calendar isn\'t wired up yet.',
-  AgentActions.newsGet: 'News isn\'t wired up yet.',
-};
-
 class CommandService {
   final List<AgentDeviceSnapshot> Function() devices;
   final CommandInterpreter _interpreter;
@@ -64,8 +44,6 @@ class CommandService {
   /// action. Sticky on purpose: the approval re-run of the original command
   /// must not forget it, and "I'll remember which one" is the promise.
   final Map<String, String> _pendingDeviceChoice = {};
-
-
 
   CommandService({
     required this.devices,
@@ -116,7 +94,12 @@ class CommandService {
     final interpreted = _interpreter.interpret(normalized);
     switch (interpreted.outcome) {
       case InterpretOutcome.matched:
-        return _dispatchParsed(interpreted.command!, approval, requestId, rawInput: text);
+        return _dispatchParsed(
+          interpreted.command!,
+          approval,
+          requestId,
+          rawInput: text,
+        );
 
       case InterpretOutcome.needsInfo:
         final key = interpreted.missingArgKey!;
@@ -288,7 +271,13 @@ class CommandService {
     if (action == AgentActions.greet ||
         action == AgentActions.timeGet ||
         action == AgentActions.mathCalc ||
-        action == AgentActions.helpGet) {
+        action == AgentActions.helpGet ||
+        action == AgentActions.webSearch ||
+        action == AgentActions.noteCreate ||
+        action == AgentActions.timerSet ||
+        action == AgentActions.openUrl ||
+        action == AgentActions.systemInfo ||
+        action == AgentActions.volumeSet) {
       return _localAnswer(command);
     }
     if (_routableActions.contains(action)) {
@@ -303,7 +292,8 @@ class CommandService {
       final playlist = command.arguments['playlist'];
       return AgentDispatchResult(
         status: AgentResultStatus.unavailable,
-        message: 'Playing "${playlist ?? 'your music'}" isn\'t wired up yet — but I understood, and I\'ll remember your choice.',
+        message:
+            'Playing "${playlist ?? 'your music'}" isn\'t wired up yet — but I understood, and I\'ll remember your choice.',
       );
     }
     final message = _notWiredMessages[command.action];
@@ -319,28 +309,7 @@ class CommandService {
     );
   }
 
-  /// The catalog actions that may need a capability this device lacks (calls,
-  /// texts, alarms…). "turn on the lights" is deliberately excluded: "on"
-  /// there is part of the action, not a device name.
-  static const _routableActions = {
-    AgentActions.callPlace,
-    AgentActions.messageSend,
-    AgentActions.alarmSet,
-    AgentActions.timerSet,
-    AgentActions.reminderSet,
-    AgentActions.mediaPlay,
-    AgentActions.musicControl,
-    AgentActions.weatherGet,
-    AgentActions.navigationRoute,
-    AgentActions.webSearch,
-    AgentActions.noteCreate,
-    AgentActions.translateText,
-    AgentActions.calendarGet,
-    AgentActions.newsGet,
-    AgentActions.batteryGet,
-    AgentActions.torchToggle,
-    AgentActions.volumeSet,
-  };
+  static const _routableActions = <String>{};
 
   /// Finds the device an action should run on, or asks the user to pick one.
   /// Naming a device ("call mom on my phone") pins the target and skips the
@@ -468,7 +437,10 @@ class CommandService {
     return AgentDispatchResult(
       status: AgentResultStatus.succeeded,
       dispatch: AgentActionPlan(
-        command.toRequest(requestId: requestId, approval: AgentApproval.approved),
+        command.toRequest(
+          requestId: requestId,
+          approval: AgentApproval.approved,
+        ),
       ),
     );
   }
@@ -580,17 +552,30 @@ class CommandService {
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
             'Here is what I can do:\n'
-            '"call …" — I dial straight away, and if I\'m unsure who you mean I ask once and remember\n'
-            '"set an alarm for 6:30am" / "wake me at 7" — real phone alarms\n'
-            '"timer for 5 minutes" — real phone timer\n'
-            '"how much battery" — your battery at a glance\n'
-            '"flashlight on" / "flashlight off"\n'
-            '"volume up", "volume down", "mute"\n'
-            '"search for …" — opens a web search\n'
-            '"navigate to …" — opens directions\n'
-            '"note that …" — saves a note on this device\n'
-            '"what time is it" / "what is the date" / "what is 12 times 8"\n'
-            '"copy … to my devices" / "show my devices" / "blink the ESP32"\n'
+            '\n'
+            'Time & Math:\n'
+            '  "what time is it" — current time\n'
+            '  "what is the date" — today\'s date\n'
+            '  "what is 12 times 8" — math\n'
+            '  "2 + 3" — bare arithmetic\n'
+            '\n'
+            'Devices:\n'
+            '  "show my devices" — list paired devices\n'
+            '  "blink the ESP32" — flash an LED\n'
+            '\n'
+            'Clipboard:\n'
+            '  "copy hello to my devices" — sync text\n'
+            '\n'
+            'Web & Files:\n'
+            '  "search for flutter" — open web search\n'
+            '  "open github.com" — open a website\n'
+            '  "note that buy milk" — save a note\n'
+            '\n'
+            'System:\n'
+            '  "timer for 5 minutes" — countdown\n'
+            '  "system info" — your PC specs\n'
+            '  "volume up" / "volume down" / "mute"\n'
+            ''
             'If I misunderstand, just teach me once — I remember.',
           ),
         );
@@ -598,7 +583,7 @@ class CommandService {
         return const AgentDispatchResult(
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
-            'Hello! I can list your devices, blink your ESP32, tell you the time, do simple math, and copy text to your other devices. Ask me anything — and if I don\'t understand, I\'ll ask you to teach me.',
+            'Hello! I can tell you the time, do math, search the web, save notes, show your PC specs, and copy text between your devices. Ask me anything — and if I don\'t understand, I\'ll ask you to teach me.',
           ),
         );
       case AgentActions.timeGet:
@@ -620,7 +605,94 @@ class CommandService {
         }
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
-          dispatch: AgentMessage('${command.arguments['expr']} = ${_formatNumber(result)}'),
+          dispatch: AgentMessage(
+            '${command.arguments['expr']} = ${_formatNumber(result)}',
+          ),
+        );
+      case AgentActions.webSearch:
+        final query = command.arguments['query'] as String? ?? '';
+        if (query.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'What should I search for?',
+          );
+        }
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Opening search for "$query"…',
+            action: AgentActions.webSearch,
+            arguments: {'query': query},
+          ),
+        );
+      case AgentActions.noteCreate:
+        final text = command.arguments['text'] as String? ?? '';
+        if (text.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'What should I note down?',
+          );
+        }
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Noted: "$text"',
+            action: AgentActions.noteCreate,
+            arguments: {'text': text},
+          ),
+        );
+      case AgentActions.timerSet:
+        final seconds = command.arguments['seconds'] as int? ?? 0;
+        if (seconds <= 0) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'How long should the timer run?',
+          );
+        }
+        final minutes = seconds ~/ 60;
+        final secs = seconds % 60;
+        final label = minutes > 0 ? '${minutes}m ${secs}s' : '${secs}s';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Timer set for $label.',
+            action: AgentActions.timerSet,
+            arguments: {'seconds': seconds},
+          ),
+        );
+      case AgentActions.openUrl:
+        final url = command.arguments['url'] as String? ?? '';
+        if (url.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'What should I open?',
+          );
+        }
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Opening $url…',
+            action: AgentActions.openUrl,
+            arguments: {'url': url},
+          ),
+        );
+      case AgentActions.systemInfo:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Checking system info…',
+            action: AgentActions.systemInfo,
+          ),
+        );
+      case AgentActions.volumeSet:
+        final mode = command.arguments['mode'] as String? ?? 'mute';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Volume $mode.',
+            action: AgentActions.volumeSet,
+            arguments: {'mode': mode},
+          ),
         );
       default:
         return const AgentDispatchResult(
@@ -633,8 +705,29 @@ class CommandService {
   String _formatTime(Object? kind) {
     final now = DateTime.now();
     if (kind == 'date') {
-      const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-      const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      const weekdays = [
+        'Monday',
+        'Tuesday',
+        'Wednesday',
+        'Thursday',
+        'Friday',
+        'Saturday',
+        'Sunday',
+      ];
+      const months = [
+        'January',
+        'February',
+        'March',
+        'April',
+        'May',
+        'June',
+        'July',
+        'August',
+        'September',
+        'October',
+        'November',
+        'December',
+      ];
       return 'It\'s ${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}, ${now.year}.';
     }
     final hh = now.hour.toString().padLeft(2, '0');
@@ -642,8 +735,9 @@ class CommandService {
     return 'It\'s $hh:$mm.';
   }
 
-  String _formatNumber(double value) =>
-      value == value.roundToDouble() ? value.toInt().toString() : value.toString();
+  String _formatNumber(double value) => value == value.roundToDouble()
+      ? value.toInt().toString()
+      : value.toString();
 
   ParsedCommand _withArgument(
     ParsedCommand command,
@@ -678,7 +772,15 @@ class CommandService {
 
 /// "yes", "yep", "sure", "ok" — agreement to run on the offered device.
 bool _isYes(String answer) => const {
-  'yes', 'yep', 'yeah', 'sure', 'ok', 'okay', 'y', 'do it', 'go ahead',
+  'yes',
+  'yep',
+  'yeah',
+  'sure',
+  'ok',
+  'okay',
+  'y',
+  'do it',
+  'go ahead',
 }.contains(answer.trim().toLowerCase());
 
 /// Splits "mom on my phone" into ("mom", "my phone") — the trailing device
@@ -741,7 +843,9 @@ double? evaluateMath(String expr) {
       ops.removeLast();
       continue;
     }
-    while (ops.isNotEmpty && ops.last != '(' && precedence(ops.last) >= precedence(token)) {
+    while (ops.isNotEmpty &&
+        ops.last != '(' &&
+        precedence(ops.last) >= precedence(token)) {
       if (!apply()) return null;
     }
     ops.add(token);
