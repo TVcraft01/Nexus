@@ -38,38 +38,40 @@ LAN, VPN, Tailscale — Nexus adapts to your network. Your devices can talk from
 
 ---
 
-## Get Started
+## Install
+
+**One command. Any platform.**
 
 ```bash
-git clone https://github.com/TVcraft01/Nexus.git
-cd Nexus
-flutter pub get
-flutter run
+curl -fsSL https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.sh | bash
 ```
 
-That's it. Two devices on the same network will find each other automatically.
+Detects your OS (Linux, macOS, or Windows) and installs the latest release. Done in seconds.
 
-**Want to try it on one machine?**
+**Or build from source:**
 
 ```bash
-# Terminal 1
-./build/linux/x64/release/bundle/nexus
+git clone https://github.com/TVcraft01/Nexus.git && cd Nexus && flutter pub get && flutter run
+```
 
-# Terminal 2 (separate identity)
-NEXUS_DATA_DIR=/tmp/nexus2 ./build/linux/x64/release/bundle/nexus
+**Try it on one machine:**
+
+```bash
+./nexus &  NEXUS_DATA_DIR=/tmp/nexus2 ./nexus
 ```
 
 Both windows discover each other. Pair them. Copy something. Watch it appear.
 
 ---
 
-## Build for Your Platform
+## Build from Source
 
-| Platform | Command | Output |
-|----------|---------|--------|
-| Linux | `flutter build linux --release` | `build/linux/x64/release/bundle/nexus` |
-| Android | `flutter build apk --debug` | `build/app/outputs/flutter-apk/app-debug.apk` |
-| Windows | `flutter build windows` | `build/windows/x64/runner/Release/nexus.exe` |
+```bash
+flutter pub get
+flutter build linux --release    # Linux
+flutter build apk --debug        # Android
+flutter build windows            # Windows
+```
 
 ---
 
