@@ -172,7 +172,6 @@ class CommandInterpreter {
           ),
         );
       }
-      // Non-math "what is" -> web search
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.webSearch,
@@ -267,7 +266,6 @@ class CommandInterpreter {
     final open = RegExp(r'^(open|go to|launch|start) (.+)$').firstMatch(norm);
     if (open != null) {
       final target = open.group(2)!.trim();
-      // If it looks like a URL or domain, open it
       if (target.contains('.') || target.startsWith('http')) {
         return InterpretResult.matched(
           ParsedCommand(
@@ -277,6 +275,26 @@ class CommandInterpreter {
           ),
         );
       }
+      // "open calculator" / "open youtube" -> app open
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.appOpen,
+          target: 'local',
+          arguments: {'query': target},
+        ),
+      );
+    }
+
+    // --- Close/kill app
+    final close = RegExp(r'^(?:close|kill|stop|quit) (.+)$').firstMatch(norm);
+    if (close != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.appClose,
+          target: 'local',
+          arguments: {'query': close.group(1)!.trim()},
+        ),
+      );
     }
 
     // --- Notes: "note that X" / "save X"
@@ -310,9 +328,129 @@ class CommandInterpreter {
       );
     }
 
+    // --- Battery
+    if (_oneOf(norm, const [
+      'battery',
+      'battery level',
+      'how much battery',
+      'power left',
+      'battery percentage',
+      'charge level',
+      'battery status',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.batteryGet, target: 'local'),
+      );
+    }
+
+    // --- Screenshot
+    if (_oneOf(norm, const [
+      'take a screenshot',
+      'screenshot',
+      'capture screen',
+      'screen capture',
+      'take screenshot',
+      'grab screen',
+      'snap',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.screenshot, target: 'local'),
+      );
+    }
+
+    // --- Flashlight
+    if (_oneOf(norm, const [
+      'flashlight on',
+      'torch on',
+      'turn on flashlight',
+      'turn on torch',
+      'enable flashlight',
+      'enable torch',
+      'light on',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.flashlightToggle,
+          target: 'local',
+          arguments: {'state': 'on'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'flashlight off',
+      'torch off',
+      'turn off flashlight',
+      'turn off torch',
+      'disable flashlight',
+      'disable torch',
+      'light off',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.flashlightToggle,
+          target: 'local',
+          arguments: {'state': 'off'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'flashlight',
+      'torch',
+      'toggle flashlight',
+      'toggle torch',
+      'flip flashlight',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.flashlightToggle,
+          target: 'local',
+        ),
+      );
+    }
+
+    // --- Brightness
+    final brightUp = RegExp(
+      r'^(?:brightness (?:up|higher|increase)|brighter|(?:make it )?(?:more )?bright)',
+    ).firstMatch(norm);
+    if (brightUp != null) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.brightnessSet,
+          target: 'local',
+          arguments: {'mode': 'up'},
+        ),
+      );
+    }
+    final brightDown = RegExp(
+      r'^(?:brightness (?:down|lower|decrease)|dimmer|darker|(?:make it )?(?:more )?dim|(?:make it )?(?:more )?dark)',
+    ).firstMatch(norm);
+    if (brightDown != null) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.brightnessSet,
+          target: 'local',
+          arguments: {'mode': 'down'},
+        ),
+      );
+    }
+    final brightNum = RegExp(r'^brightness (?:to )?(\d{1,3})(?:\s*%?)?$')
+        .firstMatch(norm);
+    if (brightNum != null) {
+      final level = int.tryParse(brightNum.group(1)!);
+      if (level != null && level >= 0 && level <= 100) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.brightnessSet,
+            target: 'local',
+            arguments: {'mode': 'set', 'level': level},
+          ),
+        );
+      }
+    }
+
     // --- Volume
     final volume = RegExp(
-      r'^(?:volume (up|down)|turn (?:the volume |it )(up|down)|(?:make it )?(louder|quieter|quiet)|mute)$',
+      r'^(?:volume (up|down)|turn (?:the volume |it )(up|down)|(?:make it )?(louder|quieter|quiet)|mute|unmute|volume up and down|toggle volume)$',
     ).firstMatch(norm);
     if (volume != null) {
       final word =
@@ -321,6 +459,7 @@ class CommandInterpreter {
       final mode = switch (word) {
         'up' || 'louder' => 'up',
         'down' || 'quieter' || 'quiet' => 'down',
+        'unmute' || 'toggle volume' => 'toggle',
         _ => 'mute',
       };
       return InterpretResult.matched(
@@ -328,6 +467,367 @@ class CommandInterpreter {
           action: AgentActions.volumeSet,
           target: 'local',
           arguments: {'mode': mode},
+        ),
+      );
+    }
+
+    // --- WiFi
+    if (_oneOf(norm, const [
+      'wifi on',
+      'turn on wifi',
+      'enable wifi',
+      'turn on the wifi',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.wifiToggle,
+          target: 'local',
+          arguments: {'state': 'on'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'wifi off',
+      'turn off wifi',
+      'disable wifi',
+      'turn off the wifi',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.wifiToggle,
+          target: 'local',
+          arguments: {'state': 'off'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const ['toggle wifi', 'wifi', 'switch wifi'])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.wifiToggle, target: 'local'),
+      );
+    }
+
+    // --- Bluetooth
+    if (_oneOf(norm, const [
+      'bluetooth on',
+      'turn on bluetooth',
+      'enable bluetooth',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.bluetoothToggle,
+          target: 'local',
+          arguments: {'state': 'on'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'bluetooth off',
+      'turn off bluetooth',
+      'disable bluetooth',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.bluetoothToggle,
+          target: 'local',
+          arguments: {'state': 'off'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'bluetooth',
+      'toggle bluetooth',
+      'switch bluetooth',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.bluetoothToggle,
+          target: 'local',
+        ),
+      );
+    }
+
+    // --- Lock screen
+    if (_oneOf(norm, const [
+      'lock screen',
+      'lock my phone',
+      'lock the phone',
+      'lock this device',
+      'lock the device',
+      'lock my device',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.lockScreen, target: 'local'),
+      );
+    }
+
+    // --- Call
+    final call = RegExp(r'^(?:call|dial|phone|ring) (.+)$').firstMatch(norm);
+    if (call != null) {
+      final who = call.group(1)!.trim();
+      // Strip trailing "on my phone" etc.
+      final cleaned = who.replaceAll(
+        RegExp(r'\s+(?:on|from)\s+(?:my\s+)?(?:phone|device|cell)$'),
+        '',
+      );
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.callPlace,
+          target: 'local',
+          arguments: {'contact': cleaned},
+        ),
+      );
+    }
+
+    // --- Send text / SMS
+    final textMsg = RegExp(
+      r'^(?:text|sms|message|send (?:a )?message to) (.+?)(?:\s+saying\s+(.+))?$',
+    ).firstMatch(norm);
+    if (textMsg != null) {
+      final contact = textMsg.group(1)!.trim();
+      final body = textMsg.group(2)?.trim();
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.messageSend,
+          target: 'local',
+          arguments: {'contact': contact, if (body != null) 'body': body},
+        ),
+      );
+    }
+
+    // --- Media controls
+    if (_oneOf(norm, const [
+      'play',
+      'play music',
+      'resume',
+      'resume music',
+      'start playing',
+      'unpause',
+      'continue playing',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.mediaPlay, target: 'local'),
+      );
+    }
+    if (_oneOf(norm, const [
+      'pause',
+      'pause music',
+      'stop music',
+      'stop playing',
+      'pause playing',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.mediaPause, target: 'local'),
+      );
+    }
+    if (_oneOf(norm, const [
+      'next',
+      'next track',
+      'next song',
+      'skip',
+      'skip track',
+      'skip song',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.mediaNext, target: 'local'),
+      );
+    }
+    if (_oneOf(norm, const [
+      'previous',
+      'previous track',
+      'previous song',
+      'go back',
+      'last track',
+      'last song',
+      'back a track',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.mediaPrev, target: 'local'),
+      );
+    }
+    if (_oneOf(norm, const [
+      'shuffle',
+      'toggle shuffle',
+      'randomize',
+      'shuffle songs',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.mediaShuffle, target: 'local'),
+      );
+    }
+    if (_oneOf(norm, const [
+      'repeat',
+      'toggle repeat',
+      'repeat song',
+      'repeat track',
+      'loop',
+      'loop song',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.mediaRepeat, target: 'local'),
+      );
+    }
+
+    // --- Alarm
+    final alarm = RegExp(r'^(?:set )?(?:an? )?alarm (?:for )?(.+)$')
+        .firstMatch(norm);
+    if (alarm != null) {
+      final timeStr = alarm.group(1)!.trim();
+      final parsed = parseClockTime(timeStr);
+      if (parsed != null) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.alarmSet,
+            target: 'local',
+            arguments: {'hour': parsed.$1, 'minute': parsed.$2},
+          ),
+        );
+      }
+      return InterpretResult.needsInfo(
+        'alarm.set.time',
+        'What time should the alarm be? Try "7am" or "14:30".',
+        const ParsedCommand(action: AgentActions.alarmSet, target: 'local'),
+      );
+    }
+
+    // --- Reminder
+    final remind = RegExp(
+      r'^(?:remind me|set a reminder|remember to|reminder)(?: to| at| for)? (.+)$',
+    ).firstMatch(norm);
+    if (remind != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.reminderSet,
+          target: 'local',
+          arguments: {'text': remind.group(1)!.trim()},
+        ),
+      );
+    }
+
+    // --- Define word
+    final defWord = RegExp(
+      r'^(?:what does|define|definition of|meaning of|look up) (.+?)(?:\s+mean)?$',
+    ).firstMatch(norm);
+    if (defWord != null) {
+      final word = defWord.group(1)!.trim();
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.defineWord,
+          target: 'local',
+          arguments: {'word': word},
+        ),
+      );
+    }
+
+    // --- Translate
+    final trans = RegExp(
+      r'^(?:translate|how do you say) (.+?)(?:\s+(?:to|into|in) (.+))?$',
+    ).firstMatch(norm);
+    if (trans != null) {
+      final text = trans.group(1)!.trim();
+      final lang = trans.group(2)?.trim();
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.translateText,
+          target: 'local',
+          arguments: {'text': text, if (lang != null) 'language': lang},
+        ),
+      );
+    }
+
+    // --- Unit conversion
+    final convert = RegExp(
+      r'^(?:convert|how (?:many|much)|what is) (\d+(?:\.\d+)?)\s*(\w+)\s+(?:to|in|into) (\w+)$',
+    ).firstMatch(norm);
+    if (convert != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.unitConvert,
+          target: 'local',
+          arguments: {
+            'value': double.tryParse(convert.group(1)!) ?? 0,
+            'from': convert.group(2)!,
+            'to': convert.group(3)!,
+          },
+        ),
+      );
+    }
+
+    // --- Roll dice
+    if (_oneOf(norm, const [
+      'roll a dice',
+      'roll dice',
+      'roll the dice',
+      'roll a die',
+      'dice',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.randomDice, target: 'local'),
+      );
+    }
+
+    // --- Flip coin
+    if (_oneOf(norm, const [
+      'flip a coin',
+      'flip coin',
+      'flip the coin',
+      'coin flip',
+      'coin',
+      'heads or tails',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.randomCoin, target: 'local'),
+      );
+    }
+
+    // --- Random number
+    final randNum = RegExp(
+      r'^(?:random|pick a number|give me a number|number between) (?:number )?(?:between )?(\d+)\s*(?:and|to|-)\s*(\d+)$',
+    ).firstMatch(norm);
+    if (randNum != null) {
+      final a = int.tryParse(randNum.group(1)!) ?? 1;
+      final b = int.tryParse(randNum.group(2)!) ?? 100;
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.randomNumber,
+          target: 'local',
+          arguments: {'min': a < b ? a : b, 'max': a < b ? b : a},
+        ),
+      );
+    }
+
+    // --- Tell me a joke
+    if (_oneOf(norm, const [
+      'tell me a joke',
+      'tell a joke',
+      'joke',
+      'say something funny',
+      'make me laugh',
+      'funny',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.tellJoke, target: 'local'),
+      );
+    }
+
+    // --- Find my device / ring
+    final findDev = RegExp(r'^(?:find|where is|locate) (?:my )?(.+)$')
+        .firstMatch(norm);
+    if (findDev != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.findDevice,
+          target: findDev.group(1)!.trim(),
+        ),
+      );
+    }
+    final ringDev = RegExp(
+      r'^(?:ring|make .+ ring|play sound on|make noise on) (?:my )?(.+)$',
+    ).firstMatch(norm);
+    if (ringDev != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.ringDevice,
+          target: ringDev.group(1)!.trim(),
         ),
       );
     }
@@ -343,6 +843,7 @@ class CommandInterpreter {
       'abilities',
       'how do you work',
       'options',
+      'what are your commands',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.helpGet, target: 'local'),
@@ -350,6 +851,26 @@ class CommandInterpreter {
     }
 
     return InterpretResult.unknown();
+  }
+
+  static (int, int)? parseClockTime(String raw) {
+    final t = raw.trim().toLowerCase().replaceAll('.', '');
+    if (t == 'noon') return (12, 0);
+    if (t == 'midnight') return (0, 0);
+    final m = RegExp(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$').firstMatch(t);
+    if (m == null) return null;
+    var hour = int.tryParse(m.group(1)!);
+    final minute = m.group(2) == null ? 0 : (int.tryParse(m.group(2)!) ?? 0);
+    final suffix = m.group(3);
+    if (hour == null || minute > 59) return null;
+    if (suffix != null) {
+      if (hour < 1 || hour > 12) return null;
+      if (suffix == 'pm' && hour != 12) hour += 12;
+      if (suffix == 'am' && hour == 12) hour = 0;
+    } else if (hour > 23) {
+      return null;
+    }
+    return (hour, minute);
   }
 
   static int? parseDurationSeconds(String raw) {

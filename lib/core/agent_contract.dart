@@ -4,7 +4,7 @@
 /// MeshService can later transport an [AgentRequest] after pairing and apply
 /// the target device's [DeviceCapabilities] before dispatch.
 abstract final class AgentActions {
-  // --- Working commands ---
+  // --- Core ---
   static const deviceList = 'device.list';
   static const ledBlink = 'led.blink';
   static const greet = 'greet';
@@ -18,6 +18,48 @@ abstract final class AgentActions {
   static const openUrl = 'open.url';
   static const systemInfo = 'system.info';
   static const volumeSet = 'device.volume';
+
+  // --- System ---
+  static const appOpen = 'app.open';
+  static const appClose = 'app.close';
+  static const screenshot = 'device.screenshot';
+  static const batteryGet = 'device.battery';
+  static const brightnessSet = 'device.brightness';
+  static const flashlightToggle = 'device.flashlight';
+  static const airplaneModeSet = 'device.airplane';
+  static const wifiToggle = 'device.wifi';
+  static const bluetoothToggle = 'device.bluetooth';
+  static const lockScreen = 'device.lock';
+  static const deviceRestart = 'device.restart';
+
+  // --- Communication ---
+  static const callPlace = 'comm.call';
+  static const messageSend = 'comm.message';
+
+  // --- Media ---
+  static const mediaPlay = 'media.play';
+  static const mediaPause = 'media.pause';
+  static const mediaNext = 'media.next';
+  static const mediaPrev = 'media.prev';
+  static const mediaShuffle = 'media.shuffle';
+  static const mediaRepeat = 'media.repeat';
+
+  // --- Productivity ---
+  static const alarmSet = 'alarm.set';
+  static const reminderSet = 'reminder.set';
+  static const defineWord = 'define.word';
+  static const translateText = 'translate.text';
+  static const unitConvert = 'convert.unit';
+
+  // --- Fun ---
+  static const randomDice = 'random.dice';
+  static const randomCoin = 'random.coin';
+  static const randomNumber = 'random.number';
+  static const tellJoke = 'tell.joke';
+
+  // --- Cross-device (mesh) ---
+  static const findDevice = 'device.find';
+  static const ringDevice = 'device.ring';
 }
 
 class ParsedCommand {
@@ -143,7 +185,42 @@ class AgentMessage extends AgentDispatch {
 /// announce richer capabilities later simply replace this default; the ids
 /// are the same [AgentActions] strings so one check serves both.
 List<DeviceCapability> defaultCapabilitiesFor(String platform) {
-  // All platforms share the same working commands.
+  if (platform == 'android') {
+    return const [
+      // Core
+      DeviceCapability(AgentActions.webSearch),
+      DeviceCapability(AgentActions.noteCreate),
+      DeviceCapability(AgentActions.timerSet),
+      DeviceCapability(AgentActions.openUrl),
+      DeviceCapability(AgentActions.systemInfo),
+      DeviceCapability(AgentActions.volumeSet),
+      DeviceCapability(AgentActions.ledBlink),
+      // System
+      DeviceCapability(AgentActions.appOpen),
+      DeviceCapability(AgentActions.appClose),
+      DeviceCapability(AgentActions.screenshot),
+      DeviceCapability(AgentActions.batteryGet),
+      DeviceCapability(AgentActions.brightnessSet),
+      DeviceCapability(AgentActions.flashlightToggle),
+      DeviceCapability(AgentActions.wifiToggle),
+      DeviceCapability(AgentActions.bluetoothToggle),
+      DeviceCapability(AgentActions.lockScreen),
+      // Communication
+      DeviceCapability(AgentActions.callPlace),
+      DeviceCapability(AgentActions.messageSend),
+      // Media
+      DeviceCapability(AgentActions.mediaPlay),
+      DeviceCapability(AgentActions.mediaPause),
+      DeviceCapability(AgentActions.mediaNext),
+      DeviceCapability(AgentActions.mediaPrev),
+      DeviceCapability(AgentActions.mediaShuffle),
+      DeviceCapability(AgentActions.mediaRepeat),
+      // Productivity
+      DeviceCapability(AgentActions.alarmSet),
+      DeviceCapability(AgentActions.reminderSet),
+    ];
+  }
+  // Desktop (Linux, macOS, Windows) — no phone hardware.
   return const [
     DeviceCapability(AgentActions.webSearch),
     DeviceCapability(AgentActions.noteCreate),
@@ -152,6 +229,13 @@ List<DeviceCapability> defaultCapabilitiesFor(String platform) {
     DeviceCapability(AgentActions.systemInfo),
     DeviceCapability(AgentActions.volumeSet),
     DeviceCapability(AgentActions.ledBlink),
+    DeviceCapability(AgentActions.appOpen),
+    DeviceCapability(AgentActions.screenshot),
+    DeviceCapability(AgentActions.batteryGet),
+    DeviceCapability(AgentActions.mediaPlay),
+    DeviceCapability(AgentActions.mediaPause),
+    DeviceCapability(AgentActions.mediaNext),
+    DeviceCapability(AgentActions.mediaPrev),
   ];
 }
 
@@ -344,9 +428,6 @@ AgentDispatchResult dispatchCommand({
       message: 'A target device is required.',
     );
   }
-  // Validate the target and capability BEFORE asking for approval: an
-  // approval prompt for a device that does not exist (or cannot blink) is
-  // worse than an honest "unavailable".
   final target = targetDevice;
   if (target == null ||
       target.deviceId.toLowerCase() != command.target.toLowerCase() ||

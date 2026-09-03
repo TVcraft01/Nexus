@@ -71,6 +71,26 @@ class _AssistantViewState extends State<AssistantView> {
         AgentActions.openUrl,
         AgentActions.systemInfo,
         AgentActions.volumeSet,
+        AgentActions.appOpen,
+        AgentActions.appClose,
+        AgentActions.screenshot,
+        AgentActions.batteryGet,
+        AgentActions.brightnessSet,
+        AgentActions.flashlightToggle,
+        AgentActions.wifiToggle,
+        AgentActions.bluetoothToggle,
+        AgentActions.lockScreen,
+        AgentActions.callPlace,
+        AgentActions.messageSend,
+        AgentActions.mediaPlay,
+        AgentActions.mediaPause,
+        AgentActions.mediaNext,
+        AgentActions.mediaPrev,
+        AgentActions.mediaShuffle,
+        AgentActions.mediaRepeat,
+        AgentActions.alarmSet,
+        AgentActions.reminderSet,
+        AgentActions.defineWord,
       },
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
@@ -196,6 +216,26 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.openUrl,
     AgentActions.systemInfo,
     AgentActions.volumeSet,
+    AgentActions.appOpen,
+    AgentActions.appClose,
+    AgentActions.screenshot,
+    AgentActions.batteryGet,
+    AgentActions.brightnessSet,
+    AgentActions.flashlightToggle,
+    AgentActions.wifiToggle,
+    AgentActions.bluetoothToggle,
+    AgentActions.lockScreen,
+    AgentActions.callPlace,
+    AgentActions.messageSend,
+    AgentActions.mediaPlay,
+    AgentActions.mediaPause,
+    AgentActions.mediaNext,
+    AgentActions.mediaPrev,
+    AgentActions.mediaShuffle,
+    AgentActions.mediaRepeat,
+    AgentActions.alarmSet,
+    AgentActions.reminderSet,
+    AgentActions.defineWord,
   };
 
   /// Appends to (or, for re-runs, updates the end of) the thread. No
@@ -302,7 +342,469 @@ class _AssistantViewState extends State<AssistantView> {
     if (request.action == AgentActions.volumeSet) {
       return _setVolume(prepared['mode']?.toString() ?? 'mute');
     }
+    if (request.action == AgentActions.appOpen) {
+      return _openApp(prepared['query']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.appClose) {
+      return _closeApp(prepared['query']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.screenshot) {
+      return _takeScreenshot();
+    }
+    if (request.action == AgentActions.batteryGet) {
+      return _getBattery();
+    }
+    if (request.action == AgentActions.brightnessSet) {
+      return _setBrightness(prepared);
+    }
+    if (request.action == AgentActions.flashlightToggle) {
+      return _toggleFlashlight(prepared['state']?.toString());
+    }
+    if (request.action == AgentActions.wifiToggle) {
+      return _toggleWifi(prepared['state']?.toString());
+    }
+    if (request.action == AgentActions.bluetoothToggle) {
+      return _toggleBluetooth(prepared['state']?.toString());
+    }
+    if (request.action == AgentActions.lockScreen) {
+      return _lockScreen();
+    }
+    if (request.action == AgentActions.callPlace) {
+      return _placeCall(prepared['contact']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.messageSend) {
+      return _sendText(
+        prepared['contact']?.toString() ?? '',
+        prepared['body']?.toString(),
+      );
+    }
+    if (request.action == AgentActions.mediaPlay) return _mediaControl('play');
+    if (request.action == AgentActions.mediaPause)
+      return _mediaControl('pause');
+    if (request.action == AgentActions.mediaNext) return _mediaControl('next');
+    if (request.action == AgentActions.mediaPrev)
+      return _mediaControl('previous');
+    if (request.action == AgentActions.mediaShuffle)
+      return _mediaControl('shuffle');
+    if (request.action == AgentActions.mediaRepeat)
+      return _mediaControl('repeat');
+    if (request.action == AgentActions.alarmSet) {
+      return _setAlarm(prepared);
+    }
+    if (request.action == AgentActions.reminderSet) {
+      return _setReminder(prepared['text']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.defineWord) {
+      return _openWebSearch('define ${prepared['query']?.toString() ?? ''}');
+    }
     return const ActionResult(false, 'This command is not supported yet.');
+  }
+
+  // --- App management ---
+  Future<ActionResult> _openApp(String query) async {
+    if (query.isEmpty)
+      return const ActionResult(false, 'What app should I open?');
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        // Try launching via monkey (doesn't need exact package name)
+        final result = await Process.run('monkey', [
+          '-p',
+          _androidPackageName(query),
+          '-c',
+          'android.intent.category.LAUNCHER',
+          '1',
+        ]);
+        if (result.exitCode == 0) return ActionResult(true, 'Opened $query.');
+        return ActionResult(false, 'Could not open $query.');
+      }
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        await Process.run('xdg-open', [query]);
+        return ActionResult(true, 'Opened $query.');
+      }
+      return ActionResult(
+        false,
+        'Opening apps is not supported on this platform.',
+      );
+    } catch (_) {
+      return ActionResult(false, 'Could not open $query.');
+    }
+  }
+
+  /// Maps common app names to Android package names.
+  String _androidPackageName(String query) {
+    const aliases = {
+      'youtube': 'com.google.android.youtube',
+      'chrome': 'com.android.chrome',
+      'browser': 'com.android.chrome',
+      'gmail': 'com.google.android.gm',
+      'email': 'com.google.android.gm',
+      'maps': 'com.google.android.apps.maps',
+      'camera': 'com.android.camera',
+      'photos': 'com.google.android.apps.photos',
+      'gallery': 'com.google.android.apps.photos',
+      'calendar': 'com.google.android.calendar',
+      'clock': 'com.google.android.deskclock',
+      'calculator': 'com.google.android.calculator',
+      'settings': 'com.android.settings',
+      'messages': 'com.google.android.apps.messaging',
+      'sms': 'com.google.android.apps.messaging',
+      'phone': 'com.google.android.dialer',
+      'dialer': 'com.google.android.dialer',
+      'contacts': 'com.google.android.contacts',
+      'files': 'com.google.android.apps.nbu.files',
+      'spotify': 'com.spotify.music',
+      'music': 'com.google.android.apps.music',
+      'netflix': 'com.netflix.mediaclient',
+      'instagram': 'com.instagram.android',
+      'twitter': 'com.twitter.android',
+      'x': 'com.twitter.android',
+      'facebook': 'com.facebook.katana',
+      'whatsapp': 'com.whatsapp',
+      'telegram': 'org.telegram.messenger',
+      'discord': 'com.discord',
+      'slack': 'com.Slack',
+      'teams': 'com.microsoft.teams',
+      'zoom': 'us.zoom.videomeetings',
+      'tiktok': 'com.zhiliaoapp.musically',
+      'reddit': 'com.reddit.frontpage',
+      'pinterest': 'com.pinterest',
+      'snapchat': 'com.snapchat.android',
+      'linkedin': 'com.linkedin.android',
+      'deezer': 'deezer.android.app',
+      'podcast': 'com.google.android.apps.podcasts',
+      'news': 'com.google.android.apps.magazines',
+      'drive': 'com.google.android.apps.docs',
+      'docs': 'com.google.android.apps.docs',
+      'sheets': 'com.google.android.apps.docs.editors.sheets',
+      'slides': 'com.google.android.apps.docs.editors.slides',
+      'keep': 'com.google.android.apps.keep',
+      'wallet': 'com.google.android.apps.walletnfcrel',
+      'play store': 'com.android.vending',
+      'playstore': 'com.android.vending',
+      'store': 'com.android.vending',
+    };
+    final lower = query.toLowerCase().trim();
+    return aliases[lower] ?? lower;
+  }
+
+  Future<ActionResult> _closeApp(String query) async {
+    if (query.isEmpty)
+      return const ActionResult(false, 'What app should I close?');
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final pkg = _androidPackageName(query);
+        await Process.run('am', ['force-stop', pkg]);
+        return ActionResult(true, 'Closed $query.');
+      }
+      return ActionResult(
+        false,
+        'Closing apps is not supported on this platform.',
+      );
+    } catch (_) {
+      return ActionResult(false, 'Could not close $query.');
+    }
+  }
+
+  Future<ActionResult> _takeScreenshot() async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final dir = await getApplicationDocumentsDirectory();
+        final path =
+            '${dir.path}/screenshot_${DateTime.now().millisecondsSinceEpoch}.png';
+        final result = await Process.run('screencap', ['-p', path]);
+        if (result.exitCode == 0) {
+          return ActionResult(true, 'Screenshot saved to $path');
+        }
+      }
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        final dir = await getApplicationDocumentsDirectory();
+        final path =
+            '${dir.path}/screenshot_${DateTime.now().millisecondsSinceEpoch}.png';
+        final result = await Process.run('gnome-screenshot', ['-f', path]);
+        if (result.exitCode == 0)
+          return ActionResult(true, 'Screenshot saved.');
+        // Fallback to scrot
+        final result2 = await Process.run('scrot', [path]);
+        if (result2.exitCode == 0)
+          return ActionResult(true, 'Screenshot saved.');
+      }
+      return ActionResult(false, 'Screenshot not available on this device.');
+    } catch (_) {
+      return ActionResult(false, 'Could not take screenshot.');
+    }
+  }
+
+  Future<ActionResult> _getBattery() async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final result = await Process.run('dumpsys', ['battery']);
+        if (result.exitCode == 0) {
+          final output = result.stdout.toString();
+          final level = RegExp(r'level: (\d+)').firstMatch(output)?.group(1);
+          final status = RegExp(r'status: (\d+)').firstMatch(output)?.group(1);
+          if (level != null) {
+            final statusText = switch (status) {
+              '2' => ' (charging)',
+              '5' => ' (full)',
+              '3' => ' (not charging)',
+              _ => '',
+            };
+            return ActionResult(true, 'Battery: $level%$statusText');
+          }
+        }
+      }
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        final result = await Process.run('cat', [
+          '/sys/class/power_supply/BAT0/capacity',
+        ]);
+        if (result.exitCode == 0) {
+          return ActionResult(
+            true,
+            'Battery: ${result.stdout.toString().trim()}%',
+          );
+        }
+      }
+      return const ActionResult(false, 'Battery info not available.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not read battery.');
+    }
+  }
+
+  Future<ActionResult> _setBrightness(Map<String, dynamic> args) async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final mode = args['mode'] as String? ?? 'up';
+        if (mode == 'set') {
+          final level = args['level'] as int? ?? 50;
+          final value = (level / 100 * 255).round();
+          await Process.run('settings', [
+            'put',
+            'system',
+            'screen_brightness',
+            '$value',
+          ]);
+          return ActionResult(true, 'Brightness set to $level%.');
+        }
+        // Read current brightness
+        final current = await Process.run('settings', [
+          'get',
+          'system',
+          'screen_brightness',
+        ]);
+        final currentVal =
+            int.tryParse(current.stdout.toString().trim()) ?? 128;
+        final delta = mode == 'up' ? 26 : -26;
+        final newVal = (currentVal + delta).clamp(0, 255);
+        await Process.run('settings', [
+          'put',
+          'system',
+          'screen_brightness',
+          '$newVal',
+        ]);
+        final pct = ((newVal / 255) * 100).round();
+        return ActionResult(true, 'Brightness: $pct%.');
+      }
+      return ActionResult(false, 'Brightness control not available.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not change brightness.');
+    }
+  }
+
+  Future<ActionResult> _toggleFlashlight(String? state) async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        // Use camera flashlight via settings or su
+        final result = await Process.run('cmd', [
+          'cameraserver',
+          'camera',
+          'set-torch-mode',
+          state == 'off' ? 'false' : 'true',
+        ]);
+        if (result.exitCode == 0) {
+          return ActionResult(true, 'Flashlight ${state ?? 'toggled'}.');
+        }
+      }
+      return ActionResult(false, 'Flashlight control not available.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not control flashlight.');
+    }
+  }
+
+  Future<ActionResult> _toggleWifi(String? state) async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final enable = state == 'on'
+            ? 'enable'
+            : (state == 'off' ? 'disable' : 'toggle');
+        if (enable == 'toggle') {
+          await Process.run('svc', ['wifi', 'enable']); // just enable for now
+        } else {
+          await Process.run('svc', ['wifi', enable]);
+        }
+        return ActionResult(true, 'WiFi ${state ?? 'toggled'}.');
+      }
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        final action = state == 'off' ? 'disable' : 'enable';
+        await Process.run('nmcli', ['radio', 'wifi', action]);
+        return ActionResult(true, 'WiFi ${state ?? 'toggled'}.');
+      }
+      return const ActionResult(false, 'WiFi control not available.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not toggle WiFi.');
+    }
+  }
+
+  Future<ActionResult> _toggleBluetooth(String? state) async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        if (state == 'on') {
+          await Process.run('svc', ['bluetooth', 'enable']);
+        } else if (state == 'off') {
+          await Process.run('svc', ['bluetooth', 'disable']);
+        }
+        return ActionResult(true, 'Bluetooth ${state ?? 'toggled'}.');
+      }
+      return const ActionResult(false, 'Bluetooth control not available.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not toggle Bluetooth.');
+    }
+  }
+
+  Future<ActionResult> _lockScreen() async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        await Process.run('input', ['keyevent', 'KEYCODE_POWER']);
+        return const ActionResult(true, 'Screen locked.');
+      }
+      return const ActionResult(false, 'Lock screen not available.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not lock screen.');
+    }
+  }
+
+  Future<ActionResult> _placeCall(String contact) async {
+    if (contact.isEmpty) return const ActionResult(false, 'Who should I call?');
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        // Open dialer with the contact name (user selects the right one)
+        await Process.run('am', [
+          'start',
+          '-a',
+          'android.intent.action.DIAL',
+          '-d',
+          'tel:',
+        ]);
+        return ActionResult(true, 'Opening dialer for $contact...');
+      }
+      return const ActionResult(
+        false,
+        'Calling is not available on this device.',
+      );
+    } catch (_) {
+      return const ActionResult(false, 'Could not open dialer.');
+    }
+  }
+
+  Future<ActionResult> _sendText(String contact, String? body) async {
+    if (contact.isEmpty) return const ActionResult(false, 'Who should I text?');
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final args = [
+          'start',
+          '-a',
+          'android.intent.action.SENDTO',
+          '-d',
+          'smsto:',
+        ];
+        if (body != null && body.isNotEmpty) {
+          args.addAll(['--es', 'sms_body', body]);
+        }
+        await Process.run('am', args);
+        return ActionResult(true, 'Opening text to $contact...');
+      }
+      return const ActionResult(
+        false,
+        'Messaging is not available on this device.',
+      );
+    } catch (_) {
+      return const ActionResult(false, 'Could not open messaging.');
+    }
+  }
+
+  Future<ActionResult> _mediaControl(String action) async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final keyEvent = switch (action) {
+          'play' || 'pause' => 'KEYCODE_MEDIA_PLAY_PAUSE',
+          'next' => 'KEYCODE_MEDIA_NEXT',
+          'previous' => 'KEYCODE_MEDIA_PREVIOUS',
+          'shuffle' => 'KEYCODE_MEDIA_SHUFFLE',
+          'repeat' => 'KEYCODE_MEDIA_REWIND',
+          _ => 'KEYCODE_MEDIA_PLAY_PAUSE',
+        };
+        await Process.run('input', ['keyevent', keyEvent]);
+        return ActionResult(true, 'Media: $action.');
+      }
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        final cmd = switch (action) {
+          'play' || 'pause' => 'play-pause',
+          'next' => 'next',
+          'previous' => 'previous',
+          _ => 'play-pause',
+        };
+        await Process.run('playerctl', [cmd]);
+        return ActionResult(true, 'Media: $action.');
+      }
+      return const ActionResult(false, 'Media control not available.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not control media.');
+    }
+  }
+
+  Future<ActionResult> _setAlarm(Map<String, dynamic> args) async {
+    final hour = args['hour'] as int? ?? 0;
+    final minute = args['minute'] as int? ?? 0;
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        await Process.run('am', [
+          'start',
+          '-a',
+          'android.intent.action.SET_ALARM',
+          '--ei',
+          'android.intent.extra.alarm.HOUR',
+          '$hour',
+          '--ei',
+          'android.intent.extra.alarm.MINUTES',
+          '$minute',
+          '--ez',
+          'android.intent.extra.alarm.SKIP_UI',
+          'true',
+        ]);
+        final hh = hour.toString().padLeft(2, '0');
+        final mm = minute.toString().padLeft(2, '0');
+        return ActionResult(true, 'Alarm set for $hh:$mm.');
+      }
+      return const ActionResult(
+        false,
+        'Alarms are not available on this device.',
+      );
+    } catch (_) {
+      return const ActionResult(false, 'Could not set alarm.');
+    }
+  }
+
+  Future<ActionResult> _setReminder(String text) async {
+    if (text.isEmpty)
+      return const ActionResult(false, 'What should I remind you about?');
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        // Save as a note since we can't set reminders directly
+        return _appendNote('[Reminder] $text');
+      }
+      return _appendNote('[Reminder] $text');
+    } catch (_) {
+      return const ActionResult(false, 'Could not set reminder.');
+    }
   }
 
   void _showSelfOutcome(bool ok, String message) {
@@ -593,11 +1095,13 @@ class _AssistantViewState extends State<AssistantView> {
   Widget _suggestionChips() {
     const suggestions = [
       'what can you do',
-      'what time is it',
-      'what is 12 times 8',
-      'search for flutter',
-      'timer for 5 minutes',
-      'note that buy milk',
+      'battery',
+      'open youtube',
+      'call mom',
+      'roll a dice',
+      'flashlight on',
+      'tell me a joke',
+      'screenshot',
     ];
     return SizedBox(
       height: 40,

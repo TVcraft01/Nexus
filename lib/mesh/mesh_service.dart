@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart'
 
 import '../core/agent_contract.dart';
 import '../core/command_interpreter.dart';
+import '../core/relay_client.dart';
 import '../core/crypto.dart';
 import '../core/identity.dart';
 import '../core/network_info.dart';
@@ -281,6 +282,8 @@ class MeshService extends ChangeNotifier {
   List<String>? _ipsCache;
   DateTime? _ipsCacheAt;
   TailscaleInfo? _tailscale;
+  late final RelayClient _relay;
+  late final RelayClient _relay;
 
   String? pendingCode;
   DateTime? pendingCodeExpiry;

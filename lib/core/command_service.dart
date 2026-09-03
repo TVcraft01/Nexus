@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'agent_contract.dart';
 import 'command_interpreter.dart';
 
@@ -277,7 +279,33 @@ class CommandService {
         action == AgentActions.timerSet ||
         action == AgentActions.openUrl ||
         action == AgentActions.systemInfo ||
-        action == AgentActions.volumeSet) {
+        action == AgentActions.volumeSet ||
+        action == AgentActions.appOpen ||
+        action == AgentActions.appClose ||
+        action == AgentActions.screenshot ||
+        action == AgentActions.batteryGet ||
+        action == AgentActions.brightnessSet ||
+        action == AgentActions.flashlightToggle ||
+        action == AgentActions.wifiToggle ||
+        action == AgentActions.bluetoothToggle ||
+        action == AgentActions.lockScreen ||
+        action == AgentActions.callPlace ||
+        action == AgentActions.messageSend ||
+        action == AgentActions.mediaPlay ||
+        action == AgentActions.mediaPause ||
+        action == AgentActions.mediaNext ||
+        action == AgentActions.mediaPrev ||
+        action == AgentActions.mediaShuffle ||
+        action == AgentActions.mediaRepeat ||
+        action == AgentActions.alarmSet ||
+        action == AgentActions.reminderSet ||
+        action == AgentActions.defineWord ||
+        action == AgentActions.translateText ||
+        action == AgentActions.unitConvert ||
+        action == AgentActions.randomDice ||
+        action == AgentActions.randomCoin ||
+        action == AgentActions.randomNumber ||
+        action == AgentActions.tellJoke) {
       return _localAnswer(command);
     }
     if (_routableActions.contains(action)) {
@@ -479,6 +507,15 @@ class CommandService {
       case AgentActions.timeGet:
       case AgentActions.mathCalc:
       case AgentActions.helpGet:
+      case AgentActions.batteryGet:
+      case AgentActions.screenshot:
+      case AgentActions.randomDice:
+      case AgentActions.randomCoin:
+      case AgentActions.randomNumber:
+      case AgentActions.tellJoke:
+      case AgentActions.defineWord:
+      case AgentActions.translateText:
+      case AgentActions.unitConvert:
         return _localAnswer(command);
       default:
         // The requester already routed this to us as the capable device — run
@@ -528,28 +565,42 @@ class CommandService {
             'Here is what I can do:\n'
             '\n'
             'Time & Math:\n'
-            '  "what time is it" — current time\n'
-            '  "what is the date" — today\'s date\n'
-            '  "what is 12 times 8" — math\n'
-            '  "2 + 3" — bare arithmetic\n'
-            '\n'
-            'Devices:\n'
-            '  "show my devices" — list paired devices\n'
-            '  "blink the ESP32" — flash an LED\n'
-            '\n'
-            'Clipboard:\n'
-            '  "copy hello to my devices" — sync text\n'
-            '\n'
-            'Web & Files:\n'
-            '  "search for flutter" — open web search\n'
-            '  "open github.com" — open a website\n'
-            '  "note that buy milk" — save a note\n'
+            '  \"what time is it\" / \"what is the date\"\n'
+            '  \"what is 12 times 8\" / \"2 + 3\"\n'
             '\n'
             'System:\n'
-            '  "timer for 5 minutes" — countdown\n'
-            '  "system info" — your PC specs\n'
-            '  "volume up" / "volume down" / "mute"\n'
-            ''
+            '  \"open youtube\" — launch any app\n'
+            '  \"battery\" / \"screenshot\"\n'
+            '  \"flashlight on\" / \"brightness 50\"\n'
+            '  \"volume up\" / \"volume down\" / \"mute\"\n'
+            '  \"wifi on\" / \"bluetooth off\"\n'
+            '  \"lock screen\"\n'
+            '\n'
+            'Communication:\n'
+            '  \"call mom\" — open dialer\n'
+            '  \"text dad saying hello\" — send SMS\n'
+            '\n'
+            'Media:\n'
+            '  \"play\" / \"pause\" / \"next\" / \"previous\"\n'
+            '  \"shuffle\" / \"repeat\"\n'
+            '\n'
+            'Productivity:\n'
+            '  \"alarm for 7am\" / \"remind me to buy milk\"\n'
+            '  \"define serendipity\" / \"translate hello to French\"\n'
+            '  \"convert 5 miles to km\"\n'
+            '\n'
+            'Fun:\n'
+            '  \"roll a dice\" / \"flip a coin\" / \"random 1 to 100\"\n'
+            '  \"tell me a joke\"\n'
+            '\n'
+            'Clipboard & Devices:\n'
+            '  \"copy hello to my devices\"\n'
+            '  \"show my devices\" / \"blink the ESP32\"\n'
+            '\n'
+            'Web:\n'
+            '  \"search for flutter\" / \"open github.com\"\n'
+            '  \"note that buy milk\"\n'
+            '\n'
             'If I misunderstand, just teach me once — I remember.',
           ),
         );
@@ -667,6 +718,272 @@ class CommandService {
             action: AgentActions.volumeSet,
             arguments: {'mode': mode},
           ),
+        );
+      // --- System ---
+      case AgentActions.appOpen:
+        final query = command.arguments['query'] as String? ?? '';
+        if (query.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'What app should I open?',
+          );
+        }
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Opening $query...',
+            action: AgentActions.appOpen,
+            arguments: {'query': query},
+          ),
+        );
+      case AgentActions.appClose:
+        final query = command.arguments['query'] as String? ?? '';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Closing $query...',
+            action: AgentActions.appClose,
+            arguments: {'query': query},
+          ),
+        );
+      case AgentActions.screenshot:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Taking screenshot...',
+            action: AgentActions.screenshot,
+          ),
+        );
+      case AgentActions.batteryGet:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Checking battery...',
+            action: AgentActions.batteryGet,
+          ),
+        );
+      case AgentActions.brightnessSet:
+        final mode = command.arguments['mode'] as String? ?? 'up';
+        final level = command.arguments['level'];
+        final label = level != null ? 'to $level%' : mode;
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Brightness $label.',
+            action: AgentActions.brightnessSet,
+            arguments: {'mode': mode, if (level != null) 'level': level},
+          ),
+        );
+      case AgentActions.flashlightToggle:
+        final state = command.arguments['state'] as String?;
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            state != null ? 'Flashlight $state.' : 'Toggling flashlight.',
+            action: AgentActions.flashlightToggle,
+            arguments: {if (state != null) 'state': state},
+          ),
+        );
+      case AgentActions.wifiToggle:
+        final state = command.arguments['state'] as String?;
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            state != null ? 'WiFi $state.' : 'Toggling WiFi.',
+            action: AgentActions.wifiToggle,
+            arguments: {if (state != null) 'state': state},
+          ),
+        );
+      case AgentActions.bluetoothToggle:
+        final state = command.arguments['state'] as String?;
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            state != null ? 'Bluetooth $state.' : 'Toggling Bluetooth.',
+            action: AgentActions.bluetoothToggle,
+            arguments: {if (state != null) 'state': state},
+          ),
+        );
+      case AgentActions.lockScreen:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Locking screen.',
+            action: AgentActions.lockScreen,
+          ),
+        );
+      // --- Communication ---
+      case AgentActions.callPlace:
+        final contact = command.arguments['contact'] as String? ?? '';
+        if (contact.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'Who should I call?',
+          );
+        }
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Calling $contact...',
+            action: AgentActions.callPlace,
+            arguments: {'contact': contact},
+          ),
+        );
+      case AgentActions.messageSend:
+        final contact = command.arguments['contact'] as String? ?? '';
+        if (contact.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'Who should I text?',
+          );
+        }
+        final body = command.arguments['body'] as String?;
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            body != null
+                ? 'Texting $contact: "$body"'
+                : 'Opening text to $contact...',
+            action: AgentActions.messageSend,
+            arguments: {'contact': contact, if (body != null) 'body': body},
+          ),
+        );
+      // --- Media ---
+      case AgentActions.mediaPlay:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('Playing.', action: AgentActions.mediaPlay),
+        );
+      case AgentActions.mediaPause:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('Paused.', action: AgentActions.mediaPause),
+        );
+      case AgentActions.mediaNext:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('Next track.', action: AgentActions.mediaNext),
+        );
+      case AgentActions.mediaPrev:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Previous track.',
+            action: AgentActions.mediaPrev,
+          ),
+        );
+      case AgentActions.mediaShuffle:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Shuffle toggled.',
+            action: AgentActions.mediaShuffle,
+          ),
+        );
+      case AgentActions.mediaRepeat:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Repeat toggled.',
+            action: AgentActions.mediaRepeat,
+          ),
+        );
+      // --- Productivity ---
+      case AgentActions.alarmSet:
+        final hour = command.arguments['hour'] as int? ?? 0;
+        final minute = command.arguments['minute'] as int? ?? 0;
+        final hh = hour.toString().padLeft(2, '0');
+        final mm = minute.toString().padLeft(2, '0');
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Alarm set for $hh:$mm.',
+            action: AgentActions.alarmSet,
+            arguments: {'hour': hour, 'minute': minute},
+          ),
+        );
+      case AgentActions.reminderSet:
+        final text = command.arguments['text'] as String? ?? '';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Reminder: "$text"',
+            action: AgentActions.reminderSet,
+            arguments: {'text': text},
+          ),
+        );
+      case AgentActions.defineWord:
+        final word = command.arguments['word'] as String? ?? '';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Looking up "$word"...',
+            action: AgentActions.defineWord,
+            arguments: {'query': 'define $word'},
+          ),
+        );
+      case AgentActions.translateText:
+        final text = command.arguments['text'] as String? ?? '';
+        final lang = command.arguments['language'] as String?;
+        final target = lang != null ? ' to $lang' : '';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Translating "$text"$target...',
+            action: AgentActions.webSearch,
+            arguments: {'query': 'translate $text$target'},
+          ),
+        );
+      case AgentActions.unitConvert:
+        final value = command.arguments['value'] ?? 0;
+        final from = command.arguments['from'] as String? ?? '';
+        final to = command.arguments['to'] as String? ?? '';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Converting $value $from to $to...',
+            action: AgentActions.webSearch,
+            arguments: {'query': 'convert $value $from to $to'},
+          ),
+        );
+      // --- Fun ---
+      case AgentActions.randomDice:
+        final result = Random().nextInt(6) + 1;
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('Rolled a $result!'),
+        );
+      case AgentActions.randomCoin:
+        final result = Random().nextBool() ? 'Heads' : 'Tails';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('$result!'),
+        );
+      case AgentActions.randomNumber:
+        final min = command.arguments['min'] as int? ?? 1;
+        final max = command.arguments['max'] as int? ?? 100;
+        final result = min + Random().nextInt(max - min + 1);
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('$result'),
+        );
+      case AgentActions.tellJoke:
+        const jokes = [
+          'Why do programmers prefer dark mode? Because light attracts bugs!',
+          'There are 10 types of people in the world: those who understand binary and those who don\'t.',
+          'A SQL query walks into a bar, sees two tables and asks... "Can I join you?"',
+          'Why was the JavaScript developer sad? Because he didn\'t Node how to Express himself.',
+          'What\'s a programmer\'s favorite hangout place? Foo Bar.',
+          'Why do Java developers wear glasses? Because they can\'t C#.',
+          'How many programmers does it take to change a light bulb? None, that\'s a hardware problem.',
+          'What do you call a group of 8 hobbits? A hobbyte.',
+          'Why did the developer go broke? Because he used up all his cache.',
+          'What do you call a computer that sings? A-Dell.',
+        ];
+        final joke = jokes[Random().nextInt(jokes.length)];
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(joke),
         );
       default:
         return const AgentDispatchResult(
