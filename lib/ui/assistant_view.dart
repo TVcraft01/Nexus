@@ -345,9 +345,9 @@ class _AssistantViewState extends State<AssistantView> {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
         return ActionResult(true, 'Opening $url.');
       }
-      return const ActionResult(false, 'Could not open $url.');
+      return ActionResult(false, 'Could not open $url.');
     } catch (_) {
-      return const ActionResult(false, 'Could not open $url.');
+      return ActionResult(false, 'Could not open $url.');
     }
   }
 
