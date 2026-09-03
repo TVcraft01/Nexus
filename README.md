@@ -1,144 +1,182 @@
-# Nexus — your devices, one system
+# Nexus
 
-A local-first mesh where your devices find each other, pair in seconds, and talk
-to each other directly. **No cloud, no account, no third-party server** —
-everything stays on your own devices and your own network.
+**Your devices, one system.**
 
-The heart of the vision is a voice-first personal assistant that lives on your
-hardware and acts across your devices. The mesh below is the ground that
-assistant stands on: without devices that can find, trust, and talk to each
-other, nothing else works.
+A local-first mesh that lets your devices find each other, pair in seconds, and talk directly — no cloud, no account, no third-party server.
 
-One Flutter codebase: Android + Linux today, Windows next, then macOS and web.
-
-## What works right now (v0.1 — the mesh)
-
-- **Devices find each other** on the same network automatically (multicast
-  discovery). No configuration, no server.
-- **Honest presence.** A device shows *Online* only when we have actually
-  talked to it directly over TCP in the last few seconds. Discovery only makes
-  a device *visible* — the app says so when something is "Seen on network" but
-  not reachable. Nothing ever claims to work when it doesn't.
-- **Pairing in seconds.** One device shows a QR code + an 8-character code
-  (valid 5 minutes). The other enters it (or scans the QR on Android later).
-  The code *is* the shared secret: the pairing handshake and everything after
-  it is encrypted with a key derived from it (AES-GCM + HKDF). A stranger on
-  your network can't pair with you and can't read your traffic. A device that
-  sends a wrong code is rejected.
-- **Clipboard everywhere.** One switch in Settings: copy text on any device
-  and it lands on every paired device's clipboard, ready to paste anywhere —
-  encrypted end to end.
-- **Address re-finding.** If a paired device's IP changes (router reboot),
-  the next successful contact updates its stored address automatically.
-- **Files across devices.** The Files tab and the Linux file-manager mount
-  browse paired devices over the encrypted mesh. Rename, copy, move, create
-  folders, and delete in place; cross-device copy and move stream through the
-  running app and keep the source until the destination is confirmed.
-- **Everything persists on-device** — identity, pairing secrets, and
-  settings — in the app's private data directory. Nothing leaves your device.
-
-## What's verified
-
-- 41 automated tests pass, including a **real two-instance pairing and
-  encrypted clipboard exchange over localhost** (two `MeshService` instances
-  on the same machine), wrong-code rejection, tamper/truncation rejection,
-  offline honesty, and persistence across restarts.
-- The Linux release binary runs clean and announces itself on the network
-  (verified with an external UDP probe).
-- The Android debug APK builds successfully.
-
-What has **not** been verified yet: real Wi-Fi pairing between two physical
-devices, and the UI end to end on a phone. That's the first thing to test.
-
-## Try it (one machine, two windows)
-
-You can test the whole mesh on a single computer:
-
-```bash
-# terminal 1 — first instance (default data)
-./build/linux/x64/release/bundle/nexus
-
-# terminal 2 — second instance with its own identity
-NEXUS_DATA_DIR=/tmp/nexus2 ./build/linux/x64/release/bundle/nexus
+```
+  ┌─────────┐         ┌─────────┐         ┌─────────┐
+  │  Phone  │◄──encrypted──►│   PC   │◄──encrypted──►│  Pi   │
+  └─────────┘    mesh    └─────────┘    mesh    └─────────┘
 ```
 
-Both windows discover each other ("Nearby"), then pair: on one, *Pair a
-device → Show my code*; on the other, *Pair a device → Enter a code* (address
-should be prefilled as 127.0.0.1). After pairing, copy text in one window and
-watch it land directly on the other's clipboard.
+---
 
-> The second instance may note "Port 51820 was busy — using port X". That's
-> the app being honest, not a bug.
+## Features
 
-## Use the Linux file-manager mount
+| Feature | Description |
+|---------|-------------|
+| **Auto-discovery** | Devices find each other on the network automatically — no configuration needed. |
+| **End-to-end encrypted** | Every message, file, and clipboard sync is encrypted with AES-GCM. No plaintext ever leaves your device. |
+| **Pair in seconds** | Scan a QR code or enter an 8-character code. That code *is* the encryption key. |
+| **Clipboard sync** | Copy on one device, paste on any paired device. |
+| **File access** | Browse, copy, rename, and delete files across paired devices. |
+| **Cross-network** | Works over LAN, VPN, and Tailscale — your devices can talk from anywhere. |
+| **Honest presence** | A device shows "Online" only when it's actually reachable right now, not just "seen on the network." |
+| **On-device everything** | Identity, pairing secrets, and settings live in the app's private directory. Nothing leaves your device. |
 
-With the Linux app running and `fusepy` installed, mount paired devices as
-folders in Nemo, Nautilus, or another FUSE-capable file manager:
+---
+
+## Quick Start
+
+### Prerequisites
+
+- [Flutter SDK](https://flutter.dev/docs/get-started/install) (3.x or later)
+- For Windows: `flutter create --platforms=windows .` (run once)
+
+### Run from source
 
 ```bash
-pip3 install --user --break-system-packages fusepy
-tools/mount-nexus.sh
+git clone https://github.com/TVcraft01/Nexus.git
+cd Nexus
+flutter pub get
+flutter run
 ```
 
-The default mount point is `~/Nexus Devices`; set `NEXUS_MOUNT` to choose a
-different location. Normal file-manager rename, copy/paste, drag-and-drop,
-folder creation, and delete operations are sent through the encrypted app
-connection. Unmount with `tools/mount-nexus.sh --umount`.
+### One-liner (with mise)
 
-The mount must be run on the same Linux user that runs Nexus, because it reads
-the app's local gateway token from the user's state file.
+```bash
+git clone https://github.com/TVcraft01/Nexus.git && cd Nexus && mise install && mise exec -- flutter pub get && mise exec -- flutter run
+```
 
-## Try it (phone + PC)
+---
 
-1. Plug your Android phone in and run `flutter run -d <device>`, or install
-   `build/app/outputs/flutter-apk/app-debug.apk`.
-2. Run the Linux app on your PC. Both devices are on the same Wi-Fi.
-3. Pair as above. Copy something on the phone; it lands on the PC's clipboard
-   and vice versa.
+## Platforms
 
-## Auto-update
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **Linux** | ✅ Stable | Full support, auto-update, system tray, file-manager mount |
+| **Android** | ✅ Stable | Full support, auto-update, USB-OTG serial |
+| **Windows** | 🚧 Next | Same codebase, build with `flutter build windows` |
+| **macOS** | 📋 Planned | |
+| **iOS** | 📋 Planned | |
 
-Both platforms update themselves from GitHub releases on startup:
+---
 
-- **Linux**: the app shows an **"Update & restart"** banner, downloads the new
-  build, swaps it in, and relaunches.
-- **Android**: the app shows an **"Update & install"** banner, downloads the APK,
-  and hands it to the system installer (you confirm in the OS dialog).
-
-Every push to `main` builds both the Linux bundle and Android APK on GitHub
-Actions and publishes them as a release. `./update.sh` for manual rebuilds.
-
-## Building
+## Build
 
 ```bash
 flutter pub get
-flutter build linux --release   # → build/linux/x64/release/bundle/nexus
-flutter build apk --debug        # → build/app/outputs/flutter-apk/app-debug.apk
-flutter analyze && flutter test  # checks + all tests
+
+# Linux
+flutter build linux --release
+# → build/linux/x64/release/bundle/nexus
+
+# Android APK
+flutter build apk --debug
+# → build/app/outputs/flutter-apk/app-debug.apk
+
+# Windows
+flutter build windows
+# → build/windows/x64/runner/Release/nexus.exe
 ```
 
-## Roadmap (in order)
+---
 
-1. **The mesh** — ✅ done (v0.1): discovery, honest presence, pairing,
-   encrypted messaging, clipboard everywhere.
-2. **Files & photos** — send files between paired devices with progress,
-   encrypted, direct device-to-device.
-3. **The brain on your PC** — a local AI (downloaded once, runs entirely on
-   your machine) that your phone reaches over the mesh. Your PC thinks, your
-   phone is the voice and face.
-4. **Voice in, voice out** — talk to the assistant, it answers aloud. Fully
-   offline.
-5. **Memory, reminders, notes** — the assistant knows you: "remind me to call
-   Sam at 7", "remember this fact", "what did I save last week?".
-6. **Control & agents** — open apps and answer questions about your PC;
-   hand a task to your PC's coding agent from your phone and get the result
-   back.
-7. **Windows, then macOS and web** — same codebase.
+## Try it on one machine
 
-## Honesty rules (the spec that matters)
+You can test the full mesh with two windows on one computer:
 
-- If a feature isn't working, the app **says so**, clearly and calmly — no
-  silent "it should work" claims.
-- "Online" means reachable *right now*, verified by a direct connection.
-- Your data and your pairing secrets never leave your devices.
-- Everything here is on-device first; the internet is an opt-in you control.
+```bash
+# Terminal 1 — first instance
+./build/linux/x64/release/bundle/nexus
+
+# Terminal 2 — second instance with its own identity
+NEXUS_DATA_DIR=/tmp/nexus2 ./build/linux/x64/release/bundle/nexus
+```
+
+Both windows discover each other under **Nearby**. Pair them: on one, tap *Pair a device → Show my code*; on the other, tap *Pair a device → Enter a code* (address fills in automatically). Copy text in one window and it lands on the other's clipboard.
+
+---
+
+## File Manager Mount (Linux)
+
+Mount paired devices as folders in your file manager:
+
+```bash
+pip3 install --user fusepy
+tools/mount-nexus.sh
+```
+
+Default mount point: `~/Nexus Devices`. Set `NEXUS_MOUNT` to change it. Unmount with `tools/mount-nexus.sh --umount`.
+
+---
+
+## Auto-Update
+
+Both Linux and Android update themselves from GitHub releases on startup:
+
+- **Linux** — "Update & restart" banner: downloads, swaps, relaunches.
+- **Android** — "Update & install" banner: downloads the APK, hands it to the system installer.
+
+Every push to `main` builds both platforms on GitHub Actions and publishes a release. Use `./update.sh` for manual rebuilds.
+
+---
+
+## How It Works
+
+```
+Device A                         Device B
+────────                         ────────
+1. Announce (UDP multicast)
+                                  2. Hear announcement
+3. Pair: show QR + code
+                                  4. Scan QR / enter code
+5. Encrypted handshake (AES-GCM + HKDF)
+                                  6. Trust established
+7. ──── encrypted TCP ────────►
+   clipboard, files, commands
+                                  8. ◄── encrypted TCP ─────
+```
+
+- **Discovery** uses UDP multicast (LAN) and direct unicast (VPN/Tailscale).
+- **Pairing** derives an encryption key from the 8-character code. No code, no connection.
+- **All traffic** after pairing is encrypted end-to-end. The mesh is just the transport.
+
+---
+
+## Roadmap
+
+1. ✅ **Mesh** — discovery, honest presence, pairing, encrypted messaging, clipboard sync
+2. ✅ **Files & photos** — cross-device file browsing, copy, move, delete
+3. 🔜 **Windows** — same codebase, native build
+4. 🔜 **Local AI assistant** — voice-first, runs on your PC, your phone is the interface
+5. 📋 **Voice I/O** — talk to the assistant, get spoken answers. Fully offline.
+6. 📋 **Memory & reminders** — "remind me to call Sam at 7", "what did I save last week?"
+7. 📋 **Control & agents** — open apps, answer questions, hand tasks between devices
+
+---
+
+## Philosophy
+
+Nexus is built on a few non-negotiable principles:
+
+- **Honesty over optimism.** If something isn't working, the app says so — no silent failures, no "it should work" promises.
+- **On-device first.** Your data stays on your device. The internet is an opt-in you control.
+- **No cloud, no account.** Your devices talk to each other directly. No servers, no subscriptions, no lock-in.
+
+---
+
+## Contributing
+
+Nexus is open source. Contributions are welcome — open an issue or submit a pull request.
+
+```bash
+flutter analyze && flutter test   # run checks before submitting
+```
+
+---
+
+## License
+
+See [LICENSE](LICENSE) for details.
