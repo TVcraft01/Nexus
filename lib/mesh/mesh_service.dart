@@ -283,7 +283,6 @@ class MeshService extends ChangeNotifier {
   DateTime? _ipsCacheAt;
   TailscaleInfo? _tailscale;
   late final RelayClient _relay;
-  late final RelayClient _relay;
 
   String? pendingCode;
   DateTime? pendingCodeExpiry;
