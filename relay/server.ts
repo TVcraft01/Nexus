@@ -1,9 +1,7 @@
 // Nexus Relay Server — lightweight WebSocket relay for cross-network pairing.
 //
-// Deploy to Deno Deploy (free tier) or run locally with: deno run --allow-net relay/server.ts
-//
-// The relay only forwards encrypted bytes between two paired devices.
-// It never reads, stores, or logs the TCP payload — it's just a pipe.
+// Deploy: flyctl deploy, or deno run --allow-net relay/server.ts
+// The relay only forwards encrypted bytes — it cannot read the payload.
 
 interface Device {
   id: string;
@@ -24,17 +22,15 @@ function handleUpgrade(request: Request): Response {
   socket.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data as string);
-      handleMessage(socket, msg);
+      handleMessage(socket, msg, event.data as string);
     } catch (e) {
       console.error(`[relay] bad message: ${e}`);
     }
   };
 
   socket.onclose = () => {
-    // Remove any device associated with this socket
     for (const [id, device] of devices) {
       if (device.socket === socket) {
-        // Notify paired device
         if (device.pairedWith) {
           const peer = devices.get(device.pairedWith);
           if (peer && peer.socket.readyState === WebSocket.OPEN) {
@@ -55,7 +51,7 @@ function handleUpgrade(request: Request): Response {
   return response;
 }
 
-function handleMessage(sender: WebSocket, msg: Record<string, unknown>) {
+function handleMessage(sender: WebSocket, msg: Record<string, unknown>, raw: string) {
   const type = msg.type as string;
 
   switch (type) {
@@ -63,9 +59,8 @@ function handleMessage(sender: WebSocket, msg: Record<string, unknown>) {
       const deviceId = msg.deviceId as string;
       const token = msg.token as string;
       if (!deviceId || !token) return;
-
       devices.set(deviceId, { id: deviceId, token, socket: sender });
-      console.log(`[relay] device registered: ${deviceId}`);
+      console.log(`[relay] registered: ${deviceId} (total: ${devices.size})`);
       break;
     }
 
@@ -78,15 +73,13 @@ function handleMessage(sender: WebSocket, msg: Record<string, unknown>) {
       const to = devices.get(toId);
 
       if (!from || !to) {
-        sender.send(JSON.stringify({ type: 'error', message: 'Target device not found' }));
+        sender.send(JSON.stringify({ type: 'error', message: 'Target device not online on relay' }));
         return;
       }
 
-      // Pair them
       from.pairedWith = toId;
       to.pairedWith = fromId;
 
-      // Notify both
       from.socket.send(JSON.stringify({ type: 'paired' }));
       to.socket.send(JSON.stringify({ type: 'paired' }));
       console.log(`[relay] paired: ${fromId} <-> ${toId}`);
@@ -94,7 +87,7 @@ function handleMessage(sender: WebSocket, msg: Record<string, unknown>) {
     }
 
     case 'data': {
-      // Forward encrypted data to the paired peer
+      // Forward the raw WebSocket frame (encrypted bytes) to the paired peer.
       const fromDevice = findDeviceBySocket(sender);
       if (!fromDevice || !fromDevice.pairedWith) {
         sender.send(JSON.stringify({ type: 'error', message: 'Not paired' }));
@@ -102,7 +95,8 @@ function handleMessage(sender: WebSocket, msg: Record<string, unknown>) {
       }
       const peer = devices.get(fromDevice.pairedWith);
       if (peer && peer.socket.readyState === WebSocket.OPEN) {
-        peer.socket.send(event.data);
+        // Forward the original raw frame — the relay never decrypts.
+        peer.socket.send(raw);
       }
       break;
     }
@@ -132,7 +126,6 @@ Deno.serve({ port: parseInt(Deno.env.get('PORT') ?? '8080') }, (request) => {
     return new Response(JSON.stringify({
       status: 'ok',
       devices: devices.size,
-      uptime: Date.now(),
     }), {
       headers: { 'content-type': 'application/json' },
     });
