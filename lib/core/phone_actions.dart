@@ -36,9 +36,9 @@ class PhoneCallOutcome {
 abstract class PhoneActionBackend {
   Future<PhoneCallOutcome> callContact(String name);
 
-  /// Video call in the app the user named. Only WhatsApp, Telegram and
-  /// Skype can land on a callable contact; other apps (and no app at all)
-  /// are answered honestly.
+  /// Video call in the app the user named. Only WhatsApp and Telegram can
+  /// land on a callable contact; other apps (and no app at all) are
+  /// answered honestly.
   Future<PhoneCallOutcome> videoCall(String name, String? app);
 }
 

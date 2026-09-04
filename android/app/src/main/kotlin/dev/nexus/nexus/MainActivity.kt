@@ -529,7 +529,7 @@ class MainActivity : FlutterActivity() {
             result.success(mapOf(
                 "ok" to false,
                 "message" to "I only start video calls in an app you name — try \"video call " +
-                    "$name on whatsapp\" (WhatsApp, Telegram or Skype).",
+                    "$name on whatsapp\" (WhatsApp or Telegram).",
             ))
             return
         }
@@ -553,25 +553,27 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    /// Opens the named app pointed at [number]. Only WhatsApp, Telegram and
-    /// Skype have a deep link that lands on a callable contact; everything
-    /// else is answered honestly instead of pretending.
+    /// Opens the named app pointed at [number]. WhatsApp (wa.me) and Telegram
+    /// (tg://resolve) have deep links that land on a callable contact; the
+    /// number is normalized to full international form first (see
+    /// [e164Number]). Everything else — including Skype, whose consumer
+    /// service was retired in 2025 — is answered honestly instead of
+    /// pretending.
     private fun openVideoApp(name: String, app: String, number: String): Map<String, Any?> {
-        val digits = number.filter { it.isDigit() || it == '+' }
+        val e164 = e164Number(number, simCountryIso())
+        val digits = e164.removePrefix("+") // wa.me / tg:// resolve want no + sign
         val uri = when (app) {
             "whatsapp", "wa" -> "https://wa.me/$digits"
-            "telegram", "tg" -> "tg://msg?to=$digits"
-            "skype" -> "skype:$digits?call&video=true"
+            "telegram", "tg" -> "tg://resolve?phone=$digits"
             else -> null
         }
         if (uri != null) {
             return try {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                val message = if (app == "skype")
-                    "Started a Skype video call to $name."
-                else
-                    "Opened ${displayAppName(app)} with $name — tap the video icon to start the call."
-                mapOf("ok" to true, "message" to message)
+                mapOf(
+                    "ok" to true,
+                    "message" to "Opened ${displayAppName(app)} with $name — tap the video icon to start the call.",
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "could not open $app for $name", e)
                 mapOf("ok" to false, "message" to "Could not open ${displayAppName(app)}.")
@@ -580,14 +582,42 @@ class MainActivity : FlutterActivity() {
         val label = displayAppName(app)
         val message = when (app) {
             "facetime" -> "FaceTime is Apple-only — on this Android, try \"video call " +
-                "$name on whatsapp\" (WhatsApp, Telegram or Skype)."
+                "$name on whatsapp\" (WhatsApp or Telegram)."
+            "skype" -> "Skype was retired in 2025 — try \"video call $name on whatsapp\" " +
+                "(WhatsApp or Telegram)."
             "meet", "googlemeet", "zoom", "teams", "discord", "signal" ->
                 "I can't start a $label video call to a phone number — open $label " +
-                    "and start the call yourself. I can do WhatsApp, Telegram or Skype."
+                    "and start the call yourself. I can do WhatsApp or Telegram."
             else -> "I don't know how to video call on \"$label\" — I can open " +
-                "WhatsApp, Telegram or Skype with $name."
+                "WhatsApp or Telegram with $name."
         }
         return mapOf("ok" to false, "message" to message)
+    }
+
+    /// Normalizes a stored contact number to international form with a
+    /// leading "+" and digits only: trims spaces/dashes/parens/dots,
+    /// converts a "00" trunk prefix to "+", and prefixes the device's own
+    /// country code when the number is national (a French "06 09 33 06 28"
+    /// becomes +33609330628). Numbers that are already international or that
+    /// carry an unknown country code are passed through as-is.
+    private fun e164Number(raw: String, countryIso: String?): String {
+        var t = raw.trim()
+        if (t.startsWith("00") && t.length > 2) t = "+" + t.substring(2)
+        val cleaned = t.filter { it.isDigit() || it == '+' }
+        if (cleaned.startsWith("+")) return cleaned
+        val code = countryIso?.let { COUNTRY_CALLING_CODES[it] } ?: return cleaned
+        // Most countries drop the trunk "0" in international form; Italy
+        // keeps it in E.164 mobile numbers, so leave it there.
+        val national = if (code == "39") cleaned else cleaned.removePrefix("0")
+        return "+$code$national"
+    }
+
+    private fun simCountryIso(): String? = try {
+        val tm = getSystemService(TelephonyManager::class.java)
+        (tm.simCountryIso?.takeIf { it.isNotBlank() }
+            ?: tm.networkCountryIso?.takeIf { it.isNotBlank() })?.lowercase()
+    } catch (e: Exception) {
+        null
     }
 
     /// Friendly display name for an app key ("wa" -> "WhatsApp").
@@ -866,6 +896,59 @@ class MainActivity : FlutterActivity() {
         }
     }
 }
+
+/// ISO-3166 alpha-2 country codes (lowercase) to international calling
+/// codes, used to turn national contact numbers ("06 09 33 06 28") into the
+/// full international form wa.me and tg:// resolve require.
+val COUNTRY_CALLING_CODES: Map<String, String> = mapOf(
+    // NANP (+1)
+    "us" to "1", "ca" to "1", "ag" to "1", "ai" to "1", "bb" to "1", "bs" to "1",
+    "dm" to "1", "do" to "1", "gd" to "1", "jm" to "1", "kn" to "1", "ky" to "1",
+    "lc" to "1", "tt" to "1",
+    // +7
+    "ru" to "7", "kz" to "7",
+    // +20 - +39
+    "eg" to "20", "za" to "27", "gr" to "30", "nl" to "31", "be" to "32",
+    "fr" to "33", "es" to "34", "hu" to "36", "it" to "39",
+    // +40 - +58
+    "ro" to "40", "ch" to "41", "at" to "43", "gb" to "44", "dk" to "45",
+    "se" to "46", "no" to "47", "pl" to "48", "de" to "49", "pe" to "51",
+    "mx" to "52", "cu" to "53", "ar" to "54", "br" to "55", "cl" to "56",
+    "co" to "57", "ve" to "58",
+    // +60 - +98
+    "my" to "60", "au" to "61", "id" to "62", "ph" to "63", "nz" to "64",
+    "sg" to "65", "th" to "66", "jp" to "81", "kr" to "82", "vn" to "84",
+    "cn" to "86", "tr" to "90", "in" to "91", "pk" to "92", "af" to "93",
+    "lk" to "94", "mm" to "95", "ir" to "98",
+    // +212 - +299
+    "ma" to "212", "dz" to "213", "tn" to "216", "ly" to "218", "gm" to "220",
+    "sn" to "221", "mr" to "222", "ml" to "223", "gn" to "224", "ci" to "225",
+    "bf" to "226", "ne" to "227", "tg" to "228", "bj" to "229", "mu" to "230",
+    "lr" to "231", "sl" to "232", "gh" to "233", "ng" to "234", "td" to "235",
+    "cf" to "236", "cm" to "237", "cv" to "238", "st" to "239", "gq" to "240",
+    "ga" to "241", "cg" to "242", "cd" to "243", "ao" to "244", "gw" to "245",
+    "sc" to "248", "sd" to "249", "rw" to "250", "et" to "251", "so" to "252",
+    "dj" to "253", "ke" to "254", "tz" to "255", "ug" to "256", "bi" to "257",
+    "mz" to "258", "zm" to "260", "mg" to "261", "zw" to "263", "na" to "264",
+    "mw" to "265", "ls" to "266", "bw" to "267", "sz" to "268", "km" to "269",
+    // +350 - +389
+    "gi" to "350", "pt" to "351", "lu" to "352", "ie" to "353", "is" to "354",
+    "al" to "355", "mt" to "356", "cy" to "357", "fi" to "358", "bg" to "359",
+    "lt" to "370", "lv" to "371", "ee" to "372", "md" to "373", "am" to "374",
+    "by" to "375", "ad" to "376", "mc" to "377", "sm" to "378", "va" to "379",
+    "ua" to "380", "rs" to "381", "me" to "382", "xk" to "383", "hr" to "385",
+    "si" to "386", "ba" to "387", "mk" to "389",
+    // +420 - +995
+    "cz" to "420", "sk" to "421", "ge" to "995", "az" to "994",
+    "tj" to "992", "tm" to "993", "uz" to "998", "kg" to "996", "mn" to "976",
+    "kh" to "855", "la" to "856", "bt" to "975", "mv" to "960", "bd" to "880",
+    "np" to "977", "il" to "972", "jo" to "962", "lb" to "961", "sa" to "966",
+    "ae" to "971", "qa" to "974", "kw" to "965", "bh" to "973", "om" to "968",
+    "ye" to "967", "iq" to "964", "sy" to "963",
+    // Asia / Oceania
+    "hk" to "852", "mo" to "853", "tw" to "886", "fj" to "679", "pg" to "675",
+    "sb" to "677", "vu" to "678", "ws" to "685", "to" to "676",
+)
 
 /// Lowercased with diacritics folded ("café" -> "cafe") so typed queries
 /// without accents still match real contact names.

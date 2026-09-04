@@ -1140,7 +1140,7 @@ class _AssistantViewState extends State<AssistantView> {
       return ActionResult(
         false,
         'I only start video calls in an app you name — say "video call '
-        '$contact on whatsapp" (WhatsApp, Telegram or Skype).',
+        '$contact on whatsapp" (WhatsApp or Telegram).',
       );
     }
     try {
