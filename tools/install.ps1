@@ -12,8 +12,7 @@
 $ErrorActionPreference = 'Stop'
 
 # PowerShell 5.1 defaults to TLS 1.0 on some Windows builds; GitHub needs TLS 1.2+.
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor
-    [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $Repo     = 'TVcraft01/Nexus'
 $InstallDir = Join-Path $HOME '.nexus'
@@ -23,12 +22,14 @@ Write-Host '  Nexus - your devices, one system.' -ForegroundColor Cyan
 Write-Host ''
 
 # --- Detect architecture ------------------------------------------------
-switch ($env:PROCESSOR_ARCHITECTURE) {
-    'AMD64' { $Arch = 'x64' }
-    'ARM64' { $Arch = 'arm64' }
-    'x86'   { $Arch = 'x86' }
-    default { Write-Host "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" -ForegroundColor Red; exit 1 }
+# PROCESSOR_ARCHITEW6432 is set when 32-bit PowerShell runs on a 64-bit OS,
+# so read it first to get the real OS architecture.
+$OsArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($OsArch -ne 'AMD64') {
+    Write-Host "Only 64-bit x86 builds are published right now; this machine is $OsArch." -ForegroundColor Red
+    exit 1
 }
+$Arch = 'x64'
 Write-Host "  Detected platform: windows-$Arch"
 
 # --- Find the latest release --------------------------------------------
@@ -43,7 +44,14 @@ $Url     = "https://github.com/$Repo/releases/download/$Version/nexus-windows-$A
 $ZipPath = Join-Path $env:TEMP "nexus-windows-$Arch.zip"
 
 Write-Host "  Downloading Windows build..."
-Invoke-WebRequest -Uri $Url -OutFile $ZipPath -Headers @{ 'User-Agent' = 'nexus-installer' }
+try {
+    Invoke-WebRequest -Uri $Url -OutFile $ZipPath -Headers @{ 'User-Agent' = 'nexus-installer' }
+} catch {
+    Write-Host "Download failed: $Url" -ForegroundColor Red
+    Write-Host "$($_.Exception.Message)" -ForegroundColor Red
+    Write-Host 'Check your connection, or that this release actually has a Windows build.' -ForegroundColor Yellow
+    exit 1
+}
 
 Write-Host '  Extracting...'
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
