@@ -193,8 +193,18 @@ class CommandService {
         onPhraseLearned?.call(phrase, suggested);
         return _dispatchInput(suggested, approval, requestId);
       }
+      // The re-ask must keep the suggested meaning stored — if the next
+      // answer is a plain "yes" it has to run the suggestion, not the
+      // original phrase (which would dead-end as unavailable).
       _pendingContext[key] = suggested;
-      return _applyTeachAnswer(key, phrase, answer, approval, requestId);
+      return _applyTeachAnswer(
+        key,
+        phrase,
+        answer,
+        approval,
+        requestId,
+        retryValue: suggested,
+      );
     }
     if (key.startsWith('arg:')) {
       // Capture the original input before clearing the pending state, so we
@@ -261,11 +271,16 @@ class CommandService {
     String phrase,
     String answer,
     AgentApproval approval,
-    String requestId,
-  ) {
+    String requestId, {
+    // What the pending value should hold while the question stays open.
+    // The teach loop stores the phrase itself; the "did you mean" loop must
+    // keep the suggested meaning, or a later plain "yes" would run the
+    // original phrase instead of the suggestion.
+    String? retryValue,
+  }) {
     final interpreted = _interpreter.interpret(answer);
     if (interpreted.outcome != InterpretOutcome.matched) {
-      _pendingContext[key] = phrase; // still waiting for a good answer
+      _pendingContext[key] = retryValue ?? phrase; // still waiting
       return AgentDispatchResult(
         status: AgentResultStatus.needsInfo,
         dispatch: AgentClarification(
