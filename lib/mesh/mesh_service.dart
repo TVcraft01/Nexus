@@ -922,7 +922,6 @@ class MeshService extends ChangeNotifier {
     try {
       clear = await decryptFromB64(enc, key);
     } catch (_) {
-      debugPrint('RECVENC-DBG decrypt FAILED for peer $peerId');
       return; // wrong key or tampered — drop, never trust it
     }
     NexusMessage msg;
@@ -933,7 +932,6 @@ class MeshService extends ChangeNotifier {
     } catch (_) {
       return;
     }
-    debugPrint('RECVENC-DBG type=${msg.type} from=${msg.from}');
     await _handleMessage(msg, socket, encrypted: true);
   }
 
@@ -2583,10 +2581,6 @@ class MeshService extends ChangeNotifier {
     final frame = FrameDecoder.encodeFrame(encodeJson({'enc': enc}));
     final cached = _outbound[peer.id];
     if (cached != null) return _writeFrame(cached, frame);
-    debugPrint(
-      'SENDENC-DBG peer=${peer.id} cached=null inbound='
-      '${_inboundPeer.entries.where((e) => e.value == peer.id).length}',
-    );
 
     // Tunnel fallback: when the peer reached us through a one-way link
     // (adb reverse over a cable), only the peer holds an outbound socket —
@@ -2597,10 +2591,8 @@ class MeshService extends ChangeNotifier {
     // Snapshot: a failed write drops the socket (mutating the map) while we
     // are looking for another live one.
     for (final entry in _inboundPeer.entries.toList()) {
-      if (entry.value == peer.id) {
-        final ok = await _writeFrame(entry.key, frame);
-        debugPrint('SENDENC-DBG inbound write ok=$ok');
-        if (ok) return true;
+      if (entry.value == peer.id && await _writeFrame(entry.key, frame)) {
+        return true;
       }
     }
     // No live socket from the peer (or it died mid-write) — dial it.

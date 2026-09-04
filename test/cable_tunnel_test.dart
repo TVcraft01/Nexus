@@ -43,8 +43,9 @@ void main() {
         platform: 'android',
       ),
       store: storePhone,
-      // The phone heartbeats over its tunnel socket, keeping it open.
-      heartbeatInterval: const Duration(seconds: 4),
+      // The phone heartbeats over its tunnel socket every second, opening
+      // it quickly and keeping it warm.
+      heartbeatInterval: const Duration(seconds: 1),
       connectTimeout: const Duration(milliseconds: 300),
       onlineWindow: const Duration(seconds: 3),
       visibleWindow: const Duration(seconds: 3),
@@ -73,18 +74,6 @@ void main() {
     );
     expect(result.ok, isTrue, reason: result.error);
 
-    // Wait for the phone's first heartbeat: both sides mark each other
-    // online during pairing itself, so "online" is not enough — the PC only
-    // holds a live inbound socket for the phone once the phone has dialed
-    // and pinged it, which populates the peer's learned address list.
-    final deadline = DateTime.now().add(const Duration(seconds: 20));
-    while (pc.pairedDevices.single.addresses.isEmpty) {
-      if (DateTime.now().isAfter(deadline)) {
-        fail('phone heartbeat never reached the PC');
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-
     final learned = Completer<void>();
     phone.onLearnedPhraseReceived = (phrase, meaning) {
       if (phrase == 'cable-hi' && meaning == 'cable-hello') {
@@ -95,18 +84,24 @@ void main() {
     // Sever every address the PC could dial to the phone: it is only
     // reachable through the socket it opened toward the PC. TEST-NET-1
     // (192.0.2.0/24) is unroutable by design.
+    //
+    // The PC only holds a live inbound socket for the phone after the
+    // phone's first heartbeat (both sides mark each other online during
+    // pairing itself, so "online" is not a usable signal), so keep
+    // re-sending until the phone's heartbeats have opened the tunnel socket
+    // — each attempt re-severs the dial route in case a heartbeat refreshed
+    // it in the meantime.
     var delivered = false;
-    for (var attempt = 0; attempt < 5 && !delivered; attempt++) {
+    for (var attempt = 0; attempt < 15 && !delivered; attempt++) {
       final peer = pc.pairedDevices.single;
       peer.address = '192.0.2.1';
       peer.addresses = ['192.0.2.1'];
       await pc.broadcastLearnedPhrase('cable-hi', 'cable-hello');
       try {
-        await learned.future.timeout(const Duration(milliseconds: 600));
+        await learned.future.timeout(const Duration(seconds: 1));
         delivered = true;
       } on TimeoutException {
-        // A heartbeat may have refreshed the stored route between attempts —
-        // re-sever it and send again.
+        // Heartbeat not there yet — re-sever the route and send again.
       }
     }
     expect(
