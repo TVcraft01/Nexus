@@ -42,26 +42,35 @@ LAN, VPN, Tailscale — Nexus adapts to your network. Your devices can talk from
 
 **One command. Any platform.**
 
+Mac & Linux (terminal):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.sh | bash
 ```
 
-Detects your OS (Linux, macOS, or Windows) and installs the latest release to `~/.nexus/`.
+Windows (PowerShell — no bash needed):
 
-After install:
-
-```bash
-~/.nexus/nexus        # run it now
-# or restart your terminal, then just:
-nexus
+```powershell
+irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | iex
 ```
 
-On Linux, Nexus runs in the system tray — close the window and it keeps running.
+Both download the latest release and install it under `~/.nexus/` — no Flutter, no SDK, no account. To update later, run the same command again.
 
-**Or build from source:**
+After install, look for **Nexus** in your app menu (Linux) or Start menu (Windows). It runs in the system tray — close the window and it keeps running.
+
+**Or build from source** (Mac & Linux):
 
 ```bash
 git clone https://github.com/TVcraft01/Nexus.git && cd Nexus && flutter pub get && flutter run
+```
+
+Windows PowerShell can't use `&&` — either PowerShell 7 or separate lines:
+
+```powershell
+git clone https://github.com/TVcraft01/Nexus.git
+cd Nexus
+flutter pub get
+flutter run
 ```
 
 **Try it on one machine:**
@@ -70,7 +79,7 @@ git clone https://github.com/TVcraft01/Nexus.git && cd Nexus && flutter pub get 
 ~/.nexus/nexus &  NEXUS_DATA_DIR=/tmp/nexus2 ~/.nexus/nexus
 ```
 
-Both windows discover each other. Pair them. Copy something. Watch it appear.
+Both windows discover each other and pair. Copy something. Watch it appear.
 
 ---
 
@@ -79,8 +88,8 @@ Both windows discover each other. Pair them. Copy something. Watch it appear.
 ```bash
 flutter pub get
 flutter build linux --release    # Linux
-flutter build apk --debug        # Android
-flutter build windows            # Windows
+flutter build apk --release      # Android
+flutter build windows --release  # Windows (creates the Windows runner first)
 ```
 
 ---
@@ -107,7 +116,7 @@ flutter build windows            # Windows
 
 - **End-to-end encryption** — AES-GCM + HKDF. Every message, file, and clipboard sync.
 - **No cloud** — your data stays on your device. Period.
-- **Auto-update** — Linux and Android update from GitHub releases on startup.
+- **Auto-update** — Linux and Android update from GitHub releases on startup; Windows re-runs the one-line installer.
 - **File manager mount** (Linux) — paired devices appear as folders in your file manager.
 - **System tray** (Linux) — keeps running when you close the window.
 
@@ -118,7 +127,7 @@ flutter build windows            # Windows
 - ✅ Mesh networking, pairing, encrypted messaging
 - ✅ Clipboard sync across devices
 - ✅ Cross-device file access
-- 🔜 Windows support
+- ✅ Windows support (installer + Start-menu shortcut)
 - 🔜 Local AI assistant
 - 🔜 Voice interface
 - 🔜 Smart reminders and memory

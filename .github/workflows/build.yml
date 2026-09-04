@@ -104,3 +104,52 @@ jobs:
               --notes "Nexus $V"
             echo "Created release $V with APK"
           fi
+
+  windows:
+    name: Windows build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build
+        run: |
+          flutter pub get
+          # Generate the Windows runner (not committed; kept out of the repo).
+          flutter create --platforms=windows .
+          flutter build windows --release
+
+      - name: Package
+        shell: powershell
+        run: |
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath nexus-windows-x64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-windows
+          path: nexus-windows-x64.zip
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: echo "version=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release (for auto-update)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          V="v${{ steps.ver.outputs.version }}"
+          if gh release view "$V" >/dev/null 2>&1; then
+            gh release upload "$V" nexus-windows-x64.zip --clobber
+            echo "Updated release $V"
+          else
+            gh release create "$V" nexus-windows-x64.zip \
+              --title "Nexus $V" \
+              --notes "Windows installer for Nexus $V."
+            echo "Created release $V"
+          fi
