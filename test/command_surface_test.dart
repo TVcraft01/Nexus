@@ -460,6 +460,92 @@ void main() {
     test('generic "find X" searches the web, not devices', () {
       expectAction('find restaurants near me', AgentActions.webSearch);
     });
+    test(
+      'bare bodies and multi-word contacts stay intact for native split',
+      () {
+        expectAction(
+          'send mom a text love you',
+          AgentActions.messageSend,
+          target: 'local',
+          args: {'contact': 'mom love you'},
+        );
+        expectAction(
+          'send a text to mom love you',
+          AgentActions.messageSend,
+          target: 'local',
+          args: {'contact': 'mom love you'},
+        );
+        expectAction(
+          'send a text to varlet florence',
+          AgentActions.messageSend,
+          target: 'local',
+          args: {'contact': 'varlet florence'},
+        );
+        expectAction(
+          'send varlet florence a message saying bonjour',
+          AgentActions.messageSend,
+          target: 'local',
+          args: {'contact': 'varlet florence', 'body': 'bonjour'},
+        );
+      },
+    );
+    test('device suffix never leaks into contact or draft', () {
+      expectAction(
+        'send a text to mom on my phone',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'mom'},
+      );
+      expectAction(
+        'send mom a text on my phone',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'mom'},
+      );
+      expectAction(
+        'send a message to dad on my phone',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'dad'},
+      );
+      expectAction(
+        'text papi saying salut on my phone',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'papi', 'body': 'salut'},
+      );
+    });
+    test('"whats up" greets instead of searching the web', () {
+      expectAction('whats up', AgentActions.greet, target: 'local');
+      expectAction("what's up", AgentActions.greet, target: 'local');
+    });
+    test('bare restart/reboot resolve honestly', () {
+      expectAction('restart', AgentActions.deviceRestart, target: 'local');
+      expectAction('reboot', AgentActions.deviceRestart, target: 'local');
+    });
+    test('web search queries have no leading space', () {
+      expectAction(
+        'find restaurants near me',
+        AgentActions.webSearch,
+        target: 'local',
+        args: {'query': 'restaurants near me'},
+      );
+      expectAction(
+        'google cats',
+        AgentActions.webSearch,
+        target: 'local',
+        args: {'query': 'cats'},
+      );
+      expectAction(
+        'what is the meaning of life',
+        AgentActions.webSearch,
+        target: 'local',
+        args: {'query': 'the meaning of life'},
+      );
+    });
+    test('bare "video call" with no contact is not a call to "call"', () {
+      expect(parse('video call').outcome, InterpretOutcome.unknown);
+    });
     test('airplane mode and restart resolve to honest actions', () {
       expectAction(
         'airplane mode on',

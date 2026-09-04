@@ -131,6 +131,8 @@ class CommandInterpreter {
       'bonsoir',
       'what\'s up',
       'whats up',
+      // normalizePhrase turns both "what's up" and "whats up" into this.
+      'what is up',
       'good morning',
       'good afternoon',
       'good evening',
@@ -235,7 +237,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.webSearch,
           target: 'local',
-          arguments: {'query': what.group(2)},
+          arguments: {'query': what.group(2)!.trim()},
         ),
       );
     }
@@ -294,7 +296,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.webSearch,
           target: 'local',
-          arguments: {'query': 'define ${define.group(1)}'},
+          arguments: {'query': 'define ${define.group(1)!.trim()}'},
         ),
       );
     }
@@ -333,7 +335,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.webSearch,
           target: 'local',
-          arguments: {'query': search.group(3)},
+          arguments: {'query': search.group(3)!.trim()},
         ),
       );
     }
@@ -688,7 +690,7 @@ class CommandInterpreter {
 
     // --- Restart (honest: no app restarts the machine it runs on).
     if (RegExp(
-      r'^(?:restart|reboot)(?: (?:this|the|my) )?(?:device|phone|pc|laptop|computer|tablet)$',
+      r'^(?:restart|reboot)(?: (?:this|the|my) )?(?:device|phone|pc|laptop|computer|tablet)?$',
     ).hasMatch(norm)) {
       return InterpretResult.matched(
         const ParsedCommand(
@@ -702,7 +704,7 @@ class CommandInterpreter {
     // "video call mom" is answered honestly (which app?) — never silently
     // becomes a phone call or picks a default app for them.
     final video = RegExp(
-      r'^(?:video call|videocall|video chat|face time|facetime|video) '
+      r'^(?:video call|videocall|video chat|face time|facetime) '
       r'(.+?)(?:\s+(?:on|via|using|through)\s+(.+))?$',
     ).firstMatch(norm);
     if (video != null) {
@@ -784,60 +786,65 @@ class CommandInterpreter {
     // --- Send text / SMS — every phrasing friends actually type, English
     // and French. A bare trailing message ("text mom love you") stays part
     // of the contact; the native side drops trailing words until the
-    // contact resolves and treats the rest as the body.
+    // contact resolves and treats the rest as the body. A trailing "on my
+    // phone" is always a device marker, never part of the contact or the
+    // draft.
     final textMsg = RegExp(
       r'^(?:text|sms|message|msg|texte|texto) '
       r'(.+?)(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
     ).firstMatch(norm);
     if (textMsg != null) {
-      var contact = textMsg.group(1)!.trim();
-      // Same trailing-device strip the call handler applies: "text john on
-      // my phone" texts john, it does not look for a contact called
-      // "john on my phone".
-      contact = contact.replaceAll(
-        RegExp(r'\s+(?:on|from)\s+(?:my\s+)?(?:phone|device|cell)$'),
-        '',
-      );
-      final body = textMsg.group(2)?.trim();
+      final contact = _stripDeviceSuffix(textMsg.group(1)!);
+      final body = _stripDeviceSuffix(textMsg.group(2) ?? '');
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.messageSend,
           target: 'local',
-          arguments: {'contact': contact, if (body != null) 'body': body},
+          arguments: {'contact': contact, if (body.isNotEmpty) 'body': body},
         ),
       );
     }
 
-    // "send a text to mom saying hi" / "send an sms to mom"
+    // "send a text to mom saying hi" / "send an sms to mom". A bare
+    // trailing body ("send a text to mom love you") stays in the contact
+    // so the native side can split it — multi-word contacts ("varlet
+    // florence") are never broken apart here.
     final sendTextTo = RegExp(
       r'^send (?:a |an )?(?:text|text message|texto|sms|message) to '
-      r'(.+?)(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
+      r'(.+?)(?:\s+(?:saying|disant|en disant)\s+(.+))?'
+      r'(?:\s+(.+))?$',
     ).firstMatch(norm);
     if (sendTextTo != null) {
-      final contact = sendTextTo.group(1)!.trim();
-      final body = sendTextTo.group(2)?.trim();
+      final contact = _stripDeviceSuffix(
+        '${sendTextTo.group(1)!.trim()} ${sendTextTo.group(3) ?? ''}'.trim(),
+      );
+      final body = _stripDeviceSuffix(sendTextTo.group(2) ?? '');
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.messageSend,
           target: 'local',
-          arguments: {'contact': contact, if (body != null) 'body': body},
+          arguments: {'contact': contact, if (body.isNotEmpty) 'body': body},
         ),
       );
     }
 
-    // "send mom a text saying hi"
+    // "send mom a text saying hi" / "send mom a text love you" (bare body
+    // stays in the contact; native side splits it)
     final sendObj = RegExp(
       r'^send (.+?) (?:a text|a texto|an? sms|a message|un message)'
-      r'(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
+      r'(?:\s+(?:saying|disant|en disant)\s+(.+))?'
+      r'(?:\s+(.+))?$',
     ).firstMatch(norm);
     if (sendObj != null) {
-      final contact = sendObj.group(1)!.trim();
-      final body = sendObj.group(2)?.trim();
+      final contact = _stripDeviceSuffix(
+        '${sendObj.group(1)!.trim()} ${sendObj.group(3) ?? ''}'.trim(),
+      );
+      final body = _stripDeviceSuffix(sendObj.group(2) ?? '');
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.messageSend,
           target: 'local',
-          arguments: {'contact': contact, if (body != null) 'body': body},
+          arguments: {'contact': contact, if (body.isNotEmpty) 'body': body},
         ),
       );
     }
@@ -849,13 +856,13 @@ class CommandInterpreter {
       r'(.+?)(?:\s+(?:disant|en disant|saying)\s+(.+))?$',
     ).firstMatch(norm);
     if (frSend != null) {
-      final contact = frSend.group(1)!.trim();
-      final body = frSend.group(2)?.trim();
+      final contact = _stripDeviceSuffix(frSend.group(1)!);
+      final body = _stripDeviceSuffix(frSend.group(2) ?? '');
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.messageSend,
           target: 'local',
-          arguments: {'contact': contact, if (body != null) 'body': body},
+          arguments: {'contact': contact, if (body.isNotEmpty) 'body': body},
         ),
       );
     }
@@ -1186,6 +1193,15 @@ class CommandInterpreter {
   }
 
   bool _oneOf(String norm, List<String> forms) => forms.contains(norm);
+
+  /// Removes a trailing device marker ("on my phone") so it never becomes
+  /// part of a contact name or a message draft.
+  String _stripDeviceSuffix(String s) => s
+      .replaceAll(
+        RegExp(r'\s+(?:on|from)\s+(?:my\s+)?(?:phone|device|cell)$'),
+        '',
+      )
+      .trim();
 
   String _toSymbols(String expr) {
     return expr
