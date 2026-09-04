@@ -13,6 +13,7 @@ import '../core/agent_contract.dart';
 import '../core/command_interpreter.dart';
 import '../core/command_service.dart';
 import '../core/device_actions.dart';
+import '../core/phone_actions.dart';
 import '../core/query_log.dart';
 import '../mesh/mesh_service.dart';
 import 'nexus_header.dart';
@@ -46,6 +47,7 @@ class _AssistantViewState extends State<AssistantView> {
   /// An open "who did you mean?" question after an unresolved contact.
 
   /// Runs real phone actions (dialing) on Android; elsewhere answers honestly.
+  final PhoneActionBackend _phoneBackend = RealPhoneActionBackend();
 
   /// Runs the small device-local actions (alarms, timers, torch…).
   final DeviceActionBackend _deviceBackend = deviceActionBackend();
@@ -406,46 +408,13 @@ class _AssistantViewState extends State<AssistantView> {
       return const ActionResult(false, 'What app should I open?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // Launch via am start — monkey isn't in the app's PATH on Android
-        final pkg = _androidPackageName(query);
-        final result = await Process.run('/system/bin/am', [
-          'start',
-          '-a',
-          'android.intent.action.MAIN',
-          '-c',
-          'android.intent.category.LAUNCHER',
-          '-n',
-          '$pkg/android.activity.Main',
-        ]);
-        if (result.exitCode == 0 &&
-            !result.stdout.toString().contains('Error')) {
-          return ActionResult(true, 'Opened $query.');
-        }
-        // Fallback: try without specifying the activity name
-        final result2 = await Process.run('/system/bin/am', [
-          'start',
-          '-a',
-          'android.intent.action.MAIN',
-          '-c',
-          'android.intent.category.LAUNCHER',
-          '--activity-single-top',
-          '-p',
-          pkg,
-        ]);
-        if (result2.exitCode == 0 &&
-            !result2.stdout.toString().contains('Error')) {
-          return ActionResult(true, 'Opened $query.');
-        }
-        // Last fallback: use monkey with full path
-        final result3 = await Process.run('/system/bin/monkey', [
-          '-p',
-          pkg,
-          '-c',
-          'android.intent.category.LAUNCHER',
-          '1',
-        ]);
-        if (result3.exitCode == 0) return ActionResult(true, 'Opened $query.');
-        return ActionResult(false, 'Could not open $query.');
+        // Launching an app needs a real Intent — an app process cannot run
+        // `/system/bin/am` (Android denies it to non-shell UIDs). Kotlin
+        // fuzzy-matches the app's display name and opens it.
+        return _deviceBackend.run(AgentActions.appOpen, {
+          'query': query,
+          'hint': _androidPackageName(query),
+        });
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
         await Process.run('xdg-open', [query]);
@@ -522,9 +491,10 @@ class _AssistantViewState extends State<AssistantView> {
       return const ActionResult(false, 'What app should I close?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        final pkg = _androidPackageName(query);
-        await Process.run('/system/bin/am', ['force-stop', pkg]);
-        return ActionResult(true, 'Closed $query.');
+        return _deviceBackend.run(AgentActions.appClose, {
+          'query': query,
+          'hint': _androidPackageName(query),
+        });
       }
       return ActionResult(
         false,
@@ -538,13 +508,12 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _takeScreenshot() async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        final dir = await getApplicationDocumentsDirectory();
-        final path =
-            '${dir.path}/screenshot_${DateTime.now().millisecondsSinceEpoch}.png';
-        final result = await Process.run('/system/bin/screencap', ['-p', path]);
-        if (result.exitCode == 0) {
-          return ActionResult(true, 'Screenshot saved to $path');
-        }
+        // Screen capture needs the system MediaProjection consent flow; no
+        // shell tool an app may run. Answer honestly instead of failing.
+        return const ActionResult(
+          false,
+          'Screenshots need a permission Nexus does not ask for yet.',
+        );
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
         final dir = await getApplicationDocumentsDirectory();
@@ -590,36 +559,12 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _setBrightness(Map<String, dynamic> args) async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        final mode = args['mode'] as String? ?? 'up';
-        if (mode == 'set') {
-          final level = args['level'] as int? ?? 50;
-          final value = (level / 100 * 255).round();
-          await Process.run('/system/bin/settings', [
-            'put',
-            'system',
-            'screen_brightness',
-            '$value',
-          ]);
-          return ActionResult(true, 'Brightness set to $level%.');
-        }
-        // Read current brightness
-        final current = await Process.run('/system/bin/settings', [
-          'get',
-          'system',
-          'screen_brightness',
-        ]);
-        final currentVal =
-            int.tryParse(current.stdout.toString().trim()) ?? 128;
-        final delta = mode == 'up' ? 26 : -26;
-        final newVal = (currentVal + delta).clamp(0, 255);
-        await Process.run('/system/bin/settings', [
-          'put',
-          'system',
-          'screen_brightness',
-          '$newVal',
-        ]);
-        final pct = ((newVal / 255) * 100).round();
-        return ActionResult(true, 'Brightness: $pct%.');
+        // Kotlin writes the brightness when Nexus has "modify system
+        // settings" access, otherwise opens the display settings panel.
+        return _deviceBackend.run(AgentActions.brightnessSet, {
+          'mode': args['mode'] as String? ?? 'up',
+          'level': args['level'] as int? ?? 50,
+        });
       }
       return ActionResult(false, 'Brightness control not available.');
     } catch (_) {
@@ -644,18 +589,9 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _toggleWifi(String? state) async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        final enable = state == 'on'
-            ? 'enable'
-            : (state == 'off' ? 'disable' : 'toggle');
-        if (enable == 'toggle') {
-          await Process.run('/system/bin/svc', [
-            'wifi',
-            'enable',
-          ]); // just enable for now
-        } else {
-          await Process.run('/system/bin/svc', ['wifi', enable]);
-        }
-        return ActionResult(true, 'WiFi ${state ?? 'toggled'}.');
+        // Apps can't toggle Wi-Fi on modern Android; Kotlin opens the
+        // Wi-Fi settings panel where the user flips the switch.
+        return _deviceBackend.run(AgentActions.wifiToggle, {'state': state});
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
         final action = state == 'off' ? 'disable' : 'enable';
@@ -671,12 +607,11 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _toggleBluetooth(String? state) async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        if (state == 'on') {
-          await Process.run('/system/bin/svc', ['bluetooth', 'enable']);
-        } else if (state == 'off') {
-          await Process.run('/system/bin/svc', ['bluetooth', 'disable']);
-        }
-        return ActionResult(true, 'Bluetooth ${state ?? 'toggled'}.');
+        // Apps can't toggle Bluetooth on modern Android; Kotlin opens the
+        // Bluetooth settings panel where the user flips the switch.
+        return _deviceBackend.run(AgentActions.bluetoothToggle, {
+          'state': state,
+        });
       }
       return const ActionResult(false, 'Bluetooth control not available.');
     } catch (_) {
@@ -687,8 +622,8 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _lockScreen() async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        await Process.run('/system/bin/input', ['keyevent', 'KEYCODE_POWER']);
-        return const ActionResult(true, 'Screen locked.');
+        // Locking the screen needs Device Admin (or root); Kotlin explains.
+        return _deviceBackend.run(AgentActions.lockScreen, {});
       }
       return const ActionResult(false, 'Lock screen not available.');
     } catch (_) {
@@ -700,22 +635,22 @@ class _AssistantViewState extends State<AssistantView> {
     if (contact.isEmpty) return const ActionResult(false, 'Who should I call?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // Open dialer with the contact name (user selects the right one)
-        await Process.run('/system/bin/am', [
-          'start',
-          '-a',
-          'android.intent.action.DIAL',
-          '-d',
-          'tel:',
-        ]);
-        return ActionResult(true, 'Opening dialer for $contact...');
+        // Kotlin resolves the contact and places the call (ACTION_CALL),
+        // falling back to the prefilled dialer; it asks for READ_CONTACTS /
+        // CALL_PHONE on first use. When nothing matches, the reply names
+        // the closest contacts so the user can pick.
+        final outcome = await _phoneBackend.callContact(contact);
+        return ActionResult(
+          outcome.placed || outcome.launched,
+          outcome.message,
+        );
       }
       return const ActionResult(
         false,
         'Calling is not available on this device.',
       );
     } catch (_) {
-      return const ActionResult(false, 'Could not open dialer.');
+      return const ActionResult(false, 'The call could not be placed.');
     }
   }
 
@@ -723,18 +658,10 @@ class _AssistantViewState extends State<AssistantView> {
     if (contact.isEmpty) return const ActionResult(false, 'Who should I text?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        final args = [
-          'start',
-          '-a',
-          'android.intent.action.SENDTO',
-          '-d',
-          'smsto:',
-        ];
-        if (body != null && body.isNotEmpty) {
-          args.addAll(['--es', 'sms_body', body]);
-        }
-        await Process.run('/system/bin/am', args);
-        return ActionResult(true, 'Opening text to $contact...');
+        return _deviceBackend.run(AgentActions.messageSend, {
+          'contact': contact,
+          'body': body,
+        });
       }
       return const ActionResult(
         false,
@@ -748,16 +675,16 @@ class _AssistantViewState extends State<AssistantView> {
   Future<ActionResult> _mediaControl(String action) async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        final keyEvent = switch (action) {
-          'play' || 'pause' => 'KEYCODE_MEDIA_PLAY_PAUSE',
-          'next' => 'KEYCODE_MEDIA_NEXT',
-          'previous' => 'KEYCODE_MEDIA_PREVIOUS',
-          'shuffle' => 'KEYCODE_MEDIA_SHUFFLE',
-          'repeat' => 'KEYCODE_MEDIA_REWIND',
-          _ => 'KEYCODE_MEDIA_PLAY_PAUSE',
+        final agentAction = switch (action) {
+          'play' => AgentActions.mediaPlay,
+          'pause' => AgentActions.mediaPause,
+          'next' => AgentActions.mediaNext,
+          'previous' => AgentActions.mediaPrev,
+          'shuffle' => AgentActions.mediaShuffle,
+          'repeat' => AgentActions.mediaRepeat,
+          _ => AgentActions.mediaPlay,
         };
-        await Process.run('/system/bin/input', ['keyevent', keyEvent]);
-        return ActionResult(true, 'Media: $action.');
+        return _deviceBackend.run(agentAction, {'mode': action});
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
         final cmd = switch (action) {
@@ -780,23 +707,11 @@ class _AssistantViewState extends State<AssistantView> {
     final minute = args['minute'] as int? ?? 0;
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        await Process.run('/system/bin/am', [
-          'start',
-          '-a',
-          'android.intent.action.SET_ALARM',
-          '--ei',
-          'android.intent.extra.alarm.HOUR',
-          '$hour',
-          '--ei',
-          'android.intent.extra.alarm.MINUTES',
-          '$minute',
-          '--ez',
-          'android.intent.extra.alarm.SKIP_UI',
-          'true',
-        ]);
-        final hh = hour.toString().padLeft(2, '0');
-        final mm = minute.toString().padLeft(2, '0');
-        return ActionResult(true, 'Alarm set for $hh:$mm.');
+        // Kotlin fires the real ACTION_SET_ALARM intent.
+        return _deviceBackend.run(AgentActions.alarmSet, {
+          'hour': hour,
+          'minute': minute,
+        });
       }
       return const ActionResult(
         false,

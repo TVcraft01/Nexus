@@ -1,6 +1,7 @@
 package dev.nexus.nexus
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.IntentFilter
@@ -15,6 +16,7 @@ import android.os.Environment
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.util.Log
+import android.view.KeyEvent
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -224,6 +226,35 @@ class MainActivity : FlutterActivity() {
                 "torch" -> setTorch(args?.get("mode")?.toString() != "off")
                 "battery" -> batteryStatus()
                 "volume" -> adjustVolume(args?.get("mode")?.toString() ?: "up")
+                "openApp" -> openApp(
+                    args?.get("query")?.toString() ?: "",
+                    args?.get("hint")?.toString(),
+                )
+                "closeApp" -> closeApp(
+                    args?.get("query")?.toString() ?: "",
+                    args?.get("hint")?.toString(),
+                )
+                "sendText" -> sendText(
+                    args?.get("contact")?.toString() ?: "",
+                    args?.get("body")?.toString(),
+                )
+                "mediaControl" -> mediaControl(args?.get("mode")?.toString() ?: "play")
+                "wifi" -> openSettingsPanel(
+                    Settings.ACTION_WIFI_SETTINGS,
+                    "Apps can't switch Wi-Fi for you — I opened the Wi-Fi settings, flip the switch there.",
+                )
+                "bluetooth" -> openSettingsPanel(
+                    Settings.ACTION_BLUETOOTH_SETTINGS,
+                    "Apps can't switch Bluetooth for you — I opened the Bluetooth settings, flip the switch there.",
+                )
+                "brightness" -> setBrightness(
+                    args?.get("mode")?.toString() ?: "up",
+                    (args?.get("level") as Number?)?.toInt(),
+                )
+                "lock" -> mapOf(
+                    "ok" to false,
+                    "message" to "I can't lock the screen from an app — use the power button.",
+                )
                 else -> mapOf("ok" to false, "message" to "Not available on this device.")
             }
         } catch (e: Exception) {
@@ -306,6 +337,168 @@ class MainActivity : FlutterActivity() {
         return mapOf("ok" to true, "message" to "Volume $mode.")
     }
 
+    /// Opens an installed app by name. The Dart side usually knows the exact
+    /// package (its alias map), which is tried first; otherwise the display
+    /// name of every installed app is fuzzy-matched, so "open deezer" and
+    /// "launch the music app" both work. An app process can't run
+    /// `/system/bin/am` (Android denies it to non-shell UIDs), so this uses
+    /// the real launcher Intent instead.
+    private fun openApp(query: String, hint: String?): Map<String, Any?> {
+        // 1) Exact package from the alias map, when installed.
+        hint?.trim()?.takeIf { it.isNotEmpty() }?.let { pkg ->
+            if (tryLaunch(pkg)) return mapOf("ok" to true, "message" to "Opened $query.")
+        }
+        val q = contactMatchKey(query)
+        if (q.isEmpty()) {
+            return mapOf("ok" to false, "message" to "What app should I open?")
+        }
+        // 2) Fuzzy-match display names of every launchable app.
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val hits = packageManager
+            .queryIntentActivities(launcher, 0)
+            .mapNotNull { ri ->
+                val label = ri.loadLabel(packageManager)?.toString() ?: return@mapNotNull null
+                val labelKey = contactMatchKey(label)
+                val pkgKey = contactMatchKey(ri.activityInfo.packageName)
+                val score = when {
+                    labelKey == q -> 4
+                    pkgKey == q -> 3
+                    labelKey.startsWith(q) -> 2
+                    pkgKey.contains(q) && q.length >= 2 -> 3
+                    labelKey.contains(q) && q.length >= 2 -> 1
+                    else -> return@mapNotNull null
+                }
+                Triple(ri, label, score)
+            }
+            .distinctBy { it.first.activityInfo.packageName }
+            .sortedByDescending { it.third }
+        hits.firstOrNull()?.let { (ri, label, _) ->
+            if (tryLaunch(ri.activityInfo.packageName)) {
+                return mapOf("ok" to true, "message" to "Opened $label.")
+            }
+            // Some odd launchers hide the launch intent; open the activity.
+            return try {
+                val direct = Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_LAUNCHER)
+                    .setClassName(ri.activityInfo.packageName, ri.activityInfo.name)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                startActivity(direct)
+                mapOf("ok" to true, "message" to "Opened $label.")
+            } catch (e: Exception) {
+                Log.e(TAG, "direct launch of $label failed", e)
+                mapOf("ok" to false, "message" to "Could not open \"$query\".")
+            }
+        }
+        val suggestions = hits.take(3).joinToString { it.second }
+        return mapOf(
+            "ok" to false,
+            "message" to if (suggestions.isEmpty())
+                "I couldn't find an app named \"$query\"."
+            else
+                "I couldn't find \"$query\" — did you mean $suggestions?",
+        )
+    }
+
+    /// Returns true when [pkg] has a launcher entry and the launch succeeded.
+    private fun tryLaunch(pkg: String): Boolean {
+        val intent = packageManager.getLaunchIntentForPackage(pkg) ?: return false
+        return try {
+            startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "launch $pkg failed", e)
+            false
+        }
+    }
+
+    /// Stops a background app by package. Foreground apps can't be killed
+    /// from another app without root — Android only allows background ones.
+    private fun closeApp(query: String, hint: String?): Map<String, Any?> {
+        val pkg = hint?.trim()?.takeIf { it.isNotEmpty() }
+        if (pkg == null || packageManager.getLaunchIntentForPackage(pkg) == null) {
+            return mapOf("ok" to false, "message" to "I couldn't find \"$query\" to close.")
+        }
+        getSystemService(ActivityManager::class.java).killBackgroundProcesses(pkg)
+        return mapOf("ok" to true, "message" to "Closed $query.")
+    }
+
+    /// Opens the SMS composer addressed to a contact. The recipient must be
+    /// picked in the messaging app (apps can't resolve names without the
+    /// contacts permission), but the draft text arrives already written.
+    private fun sendText(contact: String, body: String?): Map<String, Any?> {
+        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (!body.isNullOrBlank()) {
+                putExtra("sms_body", body)
+                putExtra(Intent.EXTRA_TEXT, body)
+            }
+        }
+        startActivity(intent)
+        return mapOf("ok" to true, "message" to "Opened a text to $contact — pick the contact and send.")
+    }
+
+    /// Sends the media key events most players honour: play, pause, skip.
+    private fun mediaControl(mode: String): Map<String, Any?> {
+        val key = when (mode) {
+            "play" -> KeyEvent.KEYCODE_MEDIA_PLAY
+            "pause" -> KeyEvent.KEYCODE_MEDIA_PAUSE
+            "next" -> KeyEvent.KEYCODE_MEDIA_NEXT
+            "previous" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+            else -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+        }
+        if (mode == "shuffle" || mode == "repeat") {
+            return mapOf(
+                "ok" to false,
+                "message" to "Shuffle and repeat live inside the music app — I can only play, pause and skip.",
+            )
+        }
+        val am = getSystemService(AudioManager::class.java)
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, key))
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, key))
+        val verb = when (mode) {
+            "pause" -> "Paused."
+            "next" -> "Next track."
+            "previous" -> "Previous track."
+            else -> "Playing."
+        }
+        return mapOf("ok" to true, "message" to verb)
+    }
+
+    /// Opens a system settings panel (Wi-Fi, Bluetooth, display…).
+    private fun openSettingsPanel(action: String, done: String): Map<String, Any?> = try {
+        startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        mapOf("ok" to true, "message" to done)
+    } catch (e: Exception) {
+        Log.e(TAG, "$action unavailable", e)
+        mapOf("ok" to false, "message" to "That setting isn't available on this device.")
+    }
+
+    /// Writes the brightness only when Nexus has the "modify system settings"
+    /// access; otherwise it opens the display settings so the user can drag
+    /// the slider themselves.
+    private fun setBrightness(mode: String, level: Int?): Map<String, Any?> {
+        if (!Settings.System.canWrite(this)) {
+            return openSettingsPanel(
+                Settings.ACTION_DISPLAY_SETTINGS,
+                "I need the \"modify system settings\" access to set brightness — I opened the display settings instead.",
+            )
+        }
+        val value = if (mode == "set" && level != null) {
+            (level.coerceIn(0, 100) * 255) / 100
+        } else {
+            val cur = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128)
+            (cur + if (mode == "down") -26 else 26).coerceIn(1, 255)
+        }
+        Settings.System.putInt(
+            contentResolver,
+            Settings.System.SCREEN_BRIGHTNESS_MODE,
+            Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL,
+        )
+        Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, value)
+        val pct = (value * 100) / 255
+        return mapOf("ok" to true, "message" to "Brightness set to $pct%.")
+    }
+
     /// Resolves a contact name and places the call directly (ACTION_CALL).
     /// Missing permissions are requested at runtime on first use; without
     /// CALL_PHONE it falls back to the prefilled dialer. When nothing
@@ -336,12 +529,17 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    private fun noContactResult(name: String, ranked: List<String>): Map<String, Any?> = mapOf(
-        "placed" to false,
-        "launched" to false,
-        "candidates" to ranked,
-        "message" to "No contact named \"$name\" on this device."
-    )
+    private fun noContactResult(name: String, ranked: List<String>): Map<String, Any?> {
+        val suggestions = ranked.take(3).joinToString(", ") { "\"$it\"" }
+        val message = "No contact named \"$name\" on this device." +
+            if (suggestions.isEmpty()) "" else " Did you mean $suggestions?"
+        return mapOf(
+            "placed" to false,
+            "launched" to false,
+            "candidates" to ranked,
+            "message" to message
+        )
+    }
 
     /// Starts the call itself — zero taps after the message is sent.
     private fun placeCall(name: String, number: String): Map<String, Any?> = try {

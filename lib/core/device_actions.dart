@@ -46,6 +46,17 @@ class RealDeviceActionBackend implements DeviceActionBackend {
           AgentActions.lockScreen => 'lock',
           AgentActions.wifiToggle => 'wifi',
           AgentActions.bluetoothToggle => 'bluetooth',
+          AgentActions.alarmSet => 'setAlarm',
+          AgentActions.brightnessSet => 'brightness',
+          AgentActions.appOpen => 'openApp',
+          AgentActions.appClose => 'closeApp',
+          AgentActions.messageSend => 'sendText',
+          AgentActions.mediaPlay ||
+          AgentActions.mediaPause ||
+          AgentActions.mediaNext ||
+          AgentActions.mediaPrev ||
+          AgentActions.mediaShuffle ||
+          AgentActions.mediaRepeat => 'mediaControl',
           _ => 'unknown',
         },
         args,
