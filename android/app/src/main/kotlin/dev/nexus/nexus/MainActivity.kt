@@ -47,6 +47,13 @@ class MainActivity : FlutterActivity() {
     private var pendingCallResult: MethodChannel.Result? = null
     private var pendingCallRequested: List<String> = emptyList()
 
+    // "text mom": resolving the recipient needs READ_CONTACTS too, requested
+    // on first use with the MethodChannel result held across the dialog.
+    private val REQUEST_TEXT_PERMISSIONS = 42603
+    private var pendingTextContact: String? = null
+    private var pendingTextBody: String? = null
+    private var pendingTextResult: MethodChannel.Result? = null
+
     private lateinit var usbSerial: UsbSerialBridge
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -97,7 +104,19 @@ class MainActivity : FlutterActivity() {
         // permissions needed beyond the normal SET_ALARM.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL)
             .setMethodCallHandler { call, result ->
-                result.success(runDeviceAction(call.method, call.arguments))
+                if (call.method == "sendText") {
+                    // Texting resolves the recipient's number first, exactly
+                    // like calls — which can ask for READ_CONTACTS, so it is
+                    // handled asynchronously rather than fire-and-report.
+                    val args = call.arguments as? Map<*, *>
+                    sendText(
+                        args?.get("contact")?.toString() ?: "",
+                        args?.get("body")?.toString(),
+                        result,
+                    )
+                } else {
+                    result.success(runDeviceAction(call.method, call.arguments))
+                }
             }
 
         // USB-OTG serial: microcontrollers (ESP32, …) plugged into the phone.
@@ -175,15 +194,15 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val granted = { perm: String ->
+            permissions.indexOf(perm).let { it >= 0 && grantResults[it] == PackageManager.PERMISSION_GRANTED }
+        }
         if (requestCode == REQUEST_CALL_PERMISSIONS) {
             val name = pendingCallName
             val result = pendingCallResult
             pendingCallName = null
             pendingCallResult = null
             if (result == null) return
-            val granted = { perm: String ->
-                permissions.indexOf(perm).let { it >= 0 && grantResults[it] == PackageManager.PERMISSION_GRANTED }
-            }
             if (!granted(Manifest.permission.READ_CONTACTS)) {
                 result.success(mapOf("placed" to false, "launched" to false, "candidates" to emptyList<String>(),
                     "message" to "Contacts permission was not granted."))
@@ -198,6 +217,23 @@ class MainActivity : FlutterActivity() {
                 if (granted(Manifest.permission.CALL_PHONE)) placeCall(name ?: "", number)
                 else openDialer(name ?: "", number)
             )
+        }
+        if (requestCode == REQUEST_TEXT_PERMISSIONS) {
+            val name = pendingTextContact
+            val body = pendingTextBody
+            val result = pendingTextResult
+            pendingTextContact = null
+            pendingTextBody = null
+            pendingTextResult = null
+            if (result == null) return
+            if (!granted(Manifest.permission.READ_CONTACTS)) {
+                result.success(mapOf(
+                    "ok" to false,
+                    "message" to "Contacts permission was not granted — I can't look up \"${name ?: ""}\".",
+                ))
+                return
+            }
+            finishText(name ?: "", body, result)
         }
     }
 
@@ -234,10 +270,8 @@ class MainActivity : FlutterActivity() {
                     args?.get("query")?.toString() ?: "",
                     args?.get("hint")?.toString(),
                 )
-                "sendText" -> sendText(
-                    args?.get("contact")?.toString() ?: "",
-                    args?.get("body")?.toString(),
-                )
+                // sendText is intercepted in the channel handler — it resolves
+                // the recipient like calls do, which may request READ_CONTACTS.
                 "mediaControl" -> mediaControl(args?.get("mode")?.toString() ?: "play")
                 "wifi" -> openSettingsPanel(
                     Settings.ACTION_WIFI_SETTINGS,
@@ -422,11 +456,40 @@ class MainActivity : FlutterActivity() {
         return mapOf("ok" to true, "message" to "Closed $query.")
     }
 
-    /// Opens the SMS composer addressed to a contact. The recipient must be
-    /// picked in the messaging app (apps can't resolve names without the
-    /// contacts permission), but the draft text arrives already written.
-    private fun sendText(contact: String, body: String?): Map<String, Any?> {
-        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")).apply {
+    /// "text mom": resolves the recipient's number (READ_CONTACTS requested
+    /// on first use, result held across the dialog) and opens the SMS
+    /// composer prefilled with the number and draft — mirror of the call
+    /// path, honest at every step.
+    private fun sendText(contact: String, body: String?, result: MethodChannel.Result) {
+        val name = contact.trim()
+        if (name.isEmpty()) {
+            result.success(mapOf("ok" to false, "message" to "Who should I text?"))
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            pendingTextContact = name
+            pendingTextBody = body
+            pendingTextResult = result
+            requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), REQUEST_TEXT_PERMISSIONS)
+            return
+        }
+        finishText(name, body, result)
+    }
+
+    /// Resolves [name] and completes [result] with the outcome.
+    private fun finishText(name: String, body: String?, result: MethodChannel.Result) {
+        val (number, matched, ranked) = lookupContacts(name)
+        result.success(
+            when {
+                number != null -> openSmsComposer(name, number, body)
+                else -> noContactResult(name, ranked, matched, verb = "text them")
+            }
+        )
+    }
+
+    /// Opens the SMS composer addressed to [number] with [body] drafted.
+    private fun openSmsComposer(name: String, number: String, body: String?): Map<String, Any?> = try {
+        val intent = Intent(Intent.ACTION_SENDTO, Uri.fromParts("smsto", number, null)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             if (!body.isNullOrBlank()) {
                 putExtra("sms_body", body)
@@ -434,7 +497,10 @@ class MainActivity : FlutterActivity() {
             }
         }
         startActivity(intent)
-        return mapOf("ok" to true, "message" to "Opened a text to $contact — pick the contact and send.")
+        mapOf("ok" to true, "message" to "Opened a text to $name — ready to send.")
+    } catch (e: Exception) {
+        Log.e(TAG, "could not open the SMS composer", e)
+        mapOf("ok" to false, "message" to "Could not open messaging.")
     }
 
     /// Sends the media key events most players honour: play, pause, skip.
@@ -529,15 +595,20 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    private fun noContactResult(name: String, ranked: List<String>, matched: String? = null): Map<String, Any?> {
+    private fun noContactResult(
+        name: String,
+        ranked: List<String>,
+        matched: String? = null,
+        verb: String = "call it",
+    ): Map<String, Any?> {
         if (matched != null) {
-            // The contact exists, just not callable — never pretend it's missing.
+            // The contact exists, just not reachable — never pretend it's missing.
             return mapOf(
                 "placed" to false,
                 "launched" to false,
                 "candidates" to emptyList<String>(),
                 "message" to "I found \"$matched\" in your contacts, but it has no phone number saved — " +
-                    "add one and I'll call it."
+                    "add one and I'll $verb."
             )
         }
         // Never offer the query itself back as a suggestion: "No contact named
