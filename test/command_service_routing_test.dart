@@ -23,114 +23,82 @@ void main() {
     ],
   );
 
-  CommandService makeService({List<AgentDeviceSnapshot> devices = const [phone]}) =>
-      CommandService(devices: () => devices, local: pc);
+  CommandService makeService({
+    List<AgentDeviceSnapshot> devices = const [phone],
+  }) => CommandService(devices: () => devices, local: pc);
 
-  group('capability routing', () {
-    test('asks to run on the phone when the local device cannot', () {
+  group('capability routing — shipped behavior', () {
+    // The assistant answers every catalog command with a local message that
+    // carries the action; the view (this device's executor) is the single
+    // place that decides what this platform can really do. There is no
+    // cross-device routing question in this release.
+
+    test(
+      'a recognized call answers locally with the action the view executes',
+      () {
+        final service = makeService();
+        final result = service.execute('call mom');
+        expect(result.status, AgentResultStatus.succeeded);
+        final msg = result.dispatch! as AgentMessage;
+        expect(msg.action, AgentActions.callPlace);
+        expect(msg.arguments?['contact'], 'mom');
+      },
+    );
+
+    test(
+      'typed commands run immediately — no approval card or device question',
+      () {
+        final service = makeService();
+        final result = service.execute(
+          'call mom',
+          approval: AgentApproval.required,
+        );
+        expect(result.status, AgentResultStatus.succeeded);
+        expect(result.dispatch, isA<AgentMessage>());
+      },
+    );
+
+    test('"on my phone" folds into the contact, not a separate route', () {
       final service = makeService();
-      final result = service.execute('call mom');
-      expect(result.status, AgentResultStatus.needsInfo);
-      final ask = result.dispatch! as AgentClarification;
-      expect(ask.key, 'device:${AgentActions.callPlace}');
-      expect(ask.question, contains('My Phone'));
+      final msg =
+          service.execute('call mom on my phone').dispatch! as AgentMessage;
+      expect(msg.action, AgentActions.callPlace);
+      expect(msg.arguments?['contact'], 'mom');
+
+      final text =
+          service.execute('text john on my phone').dispatch! as AgentMessage;
+      expect(text.action, AgentActions.messageSend);
+      expect(text.arguments?['contact'], 'john');
     });
 
-    test('answering "yes" pins the phone and survives the approval re-run', () {
+    test('an unknown device name stays visible to the executor — never a fake plan', () {
       final service = makeService();
-      final ask = service.execute('call mom').dispatch! as AgentClarification;
-
-      final answered = service.execute('yes', answerTo: ask.key);
-      expect(answered.status, AgentResultStatus.required); // approval next
-
-      // The approval re-runs the ORIGINAL command — the choice is remembered.
-      final approved = service.execute('call mom', approval: AgentApproval.approved);
-      expect(approved.status, AgentResultStatus.succeeded);
-      final plan = (approved.dispatch! as AgentActionPlan).request;
-      expect(plan.target, 'phone1');
-      expect(plan.arguments['contact'], 'mom');
+      final result = service.execute('call mom on my laptop');
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.action, AgentActions.callPlace);
+      // The whole "mom on my laptop" is the contact the resolver sees; the
+      // executor asks "who did you mean?" instead of pretending to dial.
+      expect(msg.arguments?['contact'], 'mom on my laptop');
+      expect(result.dispatch, isNot(isA<AgentActionPlan>()));
     });
 
-    test('a named device skips the search entirely', () {
-      final service = makeService();
-      final result = service.execute('call mom on my phone', approval: AgentApproval.approved);
-      expect(result.status, AgentResultStatus.succeeded);
-      final plan = (result.dispatch! as AgentActionPlan).request;
-      expect(plan.target, 'phone1');
-      expect(plan.arguments['contact'], 'mom');
-      expect(result.dispatch, isA<AgentActionPlan>());
-    });
-
-    test('the chosen device is remembered across restarts', () {
-      final service = makeService();
-      service.execute('call mom on my phone', approval: AgentApproval.approved);
-      expect(service.defaultsSnapshot['device:${AgentActions.callPlace}'], 'phone1');
-
-      // A fresh service (as after a restart) seeds from the same store.
-      final reborn = CommandService(
-        devices: () => const [phone],
-        local: pc,
-        memory: AgentMemory(defaults: service.defaultsSnapshot),
-      );
-      // Straight to the approval gate — no "which device?" question.
-      final gated = reborn.execute('call mom');
-      expect(gated.status, AgentResultStatus.required);
-
-      final result = reborn.execute('call mom', approval: AgentApproval.approved);
-      expect(result.status, AgentResultStatus.succeeded);
-      expect((result.dispatch! as AgentActionPlan).request.target, 'phone1');
-    });
-
-    test('unknown or incapable named devices are honest', () {
-      final service = makeService();
-      final unknown = service.execute('call mom on my laptop', approval: AgentApproval.approved);
-      expect(unknown.status, AgentResultStatus.unavailable);
-      expect(unknown.message, contains('laptop'));
-
-      // The PC is named but cannot call — never a question, never a plan.
-      final incapable = service.execute('call mom on my pc', approval: AgentApproval.approved);
-      expect(incapable.status, AgentResultStatus.unavailable);
-      expect(incapable.message, contains('can\'t do that'));
-    });
-
-    test('a device that can do it locally runs locally — no question', () {
-      final service = makeService();
-      final result = service.execute('set an alarm for 7am');
-      expect(result.status, AgentResultStatus.unavailable); // unwired, not routed
-      expect(result.dispatch, isNull);
-      expect(result.message, isNotEmpty);
-    });
-
-    test('no capable device anywhere → honest unwired message, not a question', () {
-      final service = CommandService(
-        devices: () => const [
-          AgentDeviceSnapshot(id: 'x', name: 'X', online: true),
-        ],
-        local: pc,
-      );
-      final result = service.execute('call mom');
-      expect(result.status, AgentResultStatus.unavailable);
-      expect(result.dispatch, isNull);
-    });
-
-    test('messages route like calls, with the contact split off', () {
-      final service = makeService();
-      final result = service.execute('text john on my phone', approval: AgentApproval.approved);
-      expect(result.status, AgentResultStatus.succeeded);
-      final plan = (result.dispatch! as AgentActionPlan).request;
-      expect(plan.target, 'phone1');
-      expect(plan.arguments['contact'], 'john');
-    });
-
-    test('an explicit name beats the remembered device', () {
-      final service = makeService();
-      final ask = service.execute('call mom').dispatch! as AgentClarification;
-      service.execute('yes', answerTo: ask.key); // remembers phone1
-
-      final result = service.execute('call dad on my pc', approval: AgentApproval.approved);
-      expect(result.status, AgentResultStatus.unavailable); // PC can't call
-      expect(result.message, contains('can\'t do that'));
-    });
+    test(
+      'no capable device anywhere still answers — the executor stays honest',
+      () {
+        final service = CommandService(
+          devices: () => const [
+            AgentDeviceSnapshot(id: 'x', name: 'X', online: true),
+          ],
+          local: pc,
+        );
+        final result = service.execute('call mom');
+        expect(result.status, AgentResultStatus.succeeded);
+        expect(
+          (result.dispatch! as AgentMessage).action,
+          AgentActions.callPlace,
+        );
+      },
+    );
   });
 
   group('local execution fallback', () {
@@ -142,104 +110,132 @@ void main() {
     );
 
     CommandService makeSelfService() => CommandService(
-          devices: () => const [],
-          local: self,
-          locallyExecutable: const {AgentActions.callPlace},
+      devices: () => const [],
+      local: self,
+      locallyExecutable: const {AgentActions.callPlace},
+    );
+
+    test(
+      'a call on the capable device answers as a self-run message, not a plan',
+      () {
+        final service = makeSelfService();
+
+        final result = service.execute('call mom');
+        expect(result.status, AgentResultStatus.succeeded);
+        final msg = result.dispatch! as AgentMessage;
+        expect(msg.action, AgentActions.callPlace); // self-run executor hook
+        expect(msg.arguments?['contact'], 'mom');
+        expect(result.dispatch, isNot(isA<AgentActionPlan>()));
+      },
+    );
+
+    test(
+      'typed commands are never gated by approval — plans and remote are',
+      () {
+        final service = makeSelfService();
+        expect(
+          service.execute('call mom', approval: AgentApproval.required).status,
+          AgentResultStatus.succeeded,
         );
-
-    test('a locally executable call runs immediately — no approval prompt', () {
-      final service = makeSelfService();
-
-      final result = service.execute('call mom');
-      expect(result.status, AgentResultStatus.succeeded);
-      final plan = (result.dispatch! as AgentActionPlan).request;
-      expect(plan.target, 'self1'); // aimed at THIS device, not over the mesh
-      expect(plan.arguments['contact'], 'mom');
-    });
-
-    test('an explicit denial is still honored', () {
-      final service = makeSelfService();
-      final result = service.execute('call mom', approval: AgentApproval.denied);
-      expect(result.status, AgentResultStatus.denied);
-    });
-
-    test('without local executors the honest unwired answer stays', () {
-      // Same capability list, but nothing declared locally executable —
-      // exactly the pre-wiring behavior for alarms and friends.
-      final service = CommandService(devices: () => const [], local: self);
-      final result = service.execute('call mom', approval: AgentApproval.approved);
-      expect(result.status, AgentResultStatus.unavailable);
-      expect(result.dispatch, isNull);
-      expect(result.message, contains('calls'));
-    });
+        // Approval gating lives where plans and remote requests are made:
+        final denied = service.handleRemoteRequest(
+          AgentRequest(
+            requestId: 'r-deny',
+            target: 'self1',
+            action: AgentActions.callPlace,
+            arguments: const {'contact': 'mom'},
+            approval: AgentApproval.approved,
+          ),
+          approval: AgentApproval.denied,
+        );
+        expect(denied.status, AgentResultStatus.denied);
+      },
+    );
   });
 
   group('capability defaults', () {
-    test('a phone can call and text; a desktop cannot', () {
-      final phoneCaps = defaultCapabilitiesFor('android').map((c) => c.id);
-      expect(phoneCaps, contains(AgentActions.callPlace));
-      expect(phoneCaps, contains(AgentActions.messageSend));
+    test('a phone advertises calls and texts; desktops do not', () {
+      final android = defaultCapabilitiesFor('android').map((c) => c.id);
+      expect(android, contains(AgentActions.callPlace));
+      expect(android, contains(AgentActions.messageSend));
+      expect(android, contains(AgentActions.alarmSet));
 
       for (final platform in ['linux', 'windows', 'macos']) {
         final caps = defaultCapabilitiesFor(platform).map((c) => c.id);
         expect(caps, isNot(contains(AgentActions.callPlace)), reason: platform);
-        expect(caps, isNot(contains(AgentActions.messageSend)), reason: platform);
-        expect(caps, contains(AgentActions.alarmSet), reason: platform);
+        expect(
+          caps,
+          isNot(contains(AgentActions.messageSend)),
+          reason: platform,
+        );
+        expect(caps, contains(AgentActions.mediaPlay), reason: platform);
       }
     });
   });
 
   group('remote request handling (receiver side)', () {
-    test('a routed call is re-gated and answered honestly', () {
-      final service = makeService();
-      final result = service.handleRemoteRequest(
-        AgentRequest(
-          requestId: 'r1',
-          target: 'pc1',
-          action: AgentActions.callPlace,
-          arguments: const {'contact': 'mom'},
+    test(
+      'a remote call the receiver cannot self-run answers honestly — unwired',
+      () {
+        final service = makeService();
+        final result = service.handleRemoteRequest(
+          AgentRequest(
+            requestId: 'r1',
+            target: 'pc1',
+            action: AgentActions.callPlace,
+            arguments: const {'contact': 'mom'},
+            approval: AgentApproval.approved,
+          ),
           approval: AgentApproval.approved,
-        ),
-        approval: AgentApproval.approved,
-      );
-      expect(result.status, AgentResultStatus.unavailable);
-      expect(result.message, contains('calls'));
-    });
+        );
+        // The receiver's UI runs self-run actions (dialing) through the device
+        // backend after approval; the pure service keeps the honest answer for
+        // everything it alone cannot execute — never a silent success.
+        expect(result.status, AgentResultStatus.unavailable);
+        expect(result.dispatch, isNull);
+        expect(result.message, isNotEmpty);
+      },
+    );
 
-    test('the remote approval value is never trusted — re-approved locally', () {
-      final service = makeService();
-      // The remote says "approved" but this device's UI never approved:
-      final gated = service.handleRemoteRequest(
-        AgentRequest(
-          requestId: 'r2',
-          target: 'phone1',
-          action: AgentActions.alarmSet,
-          approval: AgentApproval.approved,
-        ),
-      );
-      expect(gated.status, AgentResultStatus.required);
+    test(
+      'the remote approval value is never trusted — re-approved locally',
+      () {
+        final service = makeService();
+        // The remote says "approved" but this device's UI never approved:
+        final gated = service.handleRemoteRequest(
+          AgentRequest(
+            requestId: 'r2',
+            target: 'phone1',
+            action: AgentActions.alarmSet,
+            approval: AgentApproval.approved,
+          ),
+        );
+        expect(gated.status, AgentResultStatus.required);
 
-      final denied = service.handleRemoteRequest(
-        AgentRequest(
-          requestId: 'r3',
-          target: 'phone1',
-          action: AgentActions.alarmSet,
-          approval: AgentApproval.approved,
-        ),
-        approval: AgentApproval.denied,
-      );
-      expect(denied.status, AgentResultStatus.denied);
-    });
+        final denied = service.handleRemoteRequest(
+          AgentRequest(
+            requestId: 'r3',
+            target: 'phone1',
+            action: AgentActions.alarmSet,
+            approval: AgentApproval.approved,
+          ),
+          approval: AgentApproval.denied,
+        );
+        expect(denied.status, AgentResultStatus.denied);
+      },
+    );
 
     test('led.blink to a connected node produces a plan; unknown target is unavailable', () {
-      final service = makeService(devices: const [
-        AgentDeviceSnapshot(
-          id: 'esp1',
-          name: 'ESP32',
-          online: true,
-          capabilities: [DeviceCapability(AgentActions.ledBlink)],
-        ),
-      ]);
+      final service = makeService(
+        devices: const [
+          AgentDeviceSnapshot(
+            id: 'esp1',
+            name: 'ESP32',
+            online: true,
+            capabilities: [DeviceCapability(AgentActions.ledBlink)],
+          ),
+        ],
+      );
       final ok = service.handleRemoteRequest(
         AgentRequest(
           requestId: 'r4',
@@ -293,9 +289,10 @@ void main() {
         onPhraseLearned: (phrase, meaning) => seen = '$phrase -> $meaning',
       );
       final result = service.learnAndRun('Call TVcraft', 'call TVcraft01');
-      // The meaning dispatches as a call; the PC can't dial, so it offers the
-      // phone — the teach itself succeeded.
-      expect(result.status, AgentResultStatus.needsInfo);
+      // The meaning dispatches as the local call message — the executor hook
+      // the view runs — with the taught phrase already broadcast.
+      expect(result.status, AgentResultStatus.succeeded);
+      expect((result.dispatch! as AgentMessage).action, AgentActions.callPlace);
       // Normalized phrase, lowercased meaning — exactly what the mesh should
       // carry to the other devices.
       expect(seen, 'call tvcraft -> call tvcraft01');
@@ -313,13 +310,14 @@ void main() {
       expect(broadcast, 0); // knowledge came FROM the mesh — no echo back
       expect(service.learnedSnapshot['bring mom'], 'call tvcraft01');
 
-      // The adopted phrase now routes like any taught one: "bring mom"
-      // parses as nothing on its own, so reaching the call routing (and
-      // asking which phone) proves the adoption took effect.
+      // The adopted phrase now behaves like any taught one: "bring mom" is
+      // unknown on its own, but the adoption makes it reach the call executor
+      // hook instead of dying as an unknown.
       final result = service.execute('bring mom');
-      expect(result.status, AgentResultStatus.needsInfo);
-      final ask = result.dispatch! as AgentClarification;
-      expect(ask.key, 'device:${AgentActions.callPlace}');
+      expect(result.status, AgentResultStatus.succeeded);
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.action, AgentActions.callPlace);
+      expect(msg.arguments?['contact'], 'tvcraft01');
     });
   });
 }

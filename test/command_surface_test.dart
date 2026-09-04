@@ -178,7 +178,7 @@ void main() {
         'remind me to buy milk',
         AgentActions.reminderSet,
         target: 'local',
-        args: {'text': 'to buy milk'},
+        args: {'text': 'buy milk'},
       );
       expectAction(
         'define serendipity',

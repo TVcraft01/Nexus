@@ -30,10 +30,16 @@ void main() {
       expect(result.status, AgentResultStatus.succeeded, reason: target);
       final plan = (result.dispatch! as AgentActionPlan).request;
       expect(plan.target, 'esp32', reason: target);
-      expect(plan.isAuthorized(DeviceCapabilities(
-        deviceId: 'esp32',
-        capabilities: [DeviceCapability(AgentActions.ledBlink)],
-      )), isTrue, reason: target);
+      expect(
+        plan.isAuthorized(
+          DeviceCapabilities(
+            deviceId: 'esp32',
+            capabilities: [DeviceCapability(AgentActions.ledBlink)],
+          ),
+        ),
+        isTrue,
+        reason: target,
+      );
     }
   });
 
@@ -50,7 +56,11 @@ void main() {
     // there must never be an approval prompt for a device that does not exist.
     for (final approval in [AgentApproval.approved, AgentApproval.required]) {
       final missing = service.execute('blink the unknown', approval: approval);
-      expect(missing.status, AgentResultStatus.unavailable, reason: approval.name);
+      expect(
+        missing.status,
+        AgentResultStatus.unavailable,
+        reason: approval.name,
+      );
       expect(missing.dispatch, isNull);
     }
   });
@@ -78,11 +88,17 @@ void main() {
     test('time and date answer locally', () {
       final time = service.execute('what time is it');
       expect(time.status, AgentResultStatus.succeeded);
-      expect((time.dispatch! as AgentMessage).text, matches(RegExp(r"It's \d{2}:\d{2}\.")));
+      expect(
+        (time.dispatch! as AgentMessage).text,
+        matches(RegExp(r"It's \d{2}:\d{2}\.")),
+      );
 
       final date = service.execute("what's the date");
       expect(date.status, AgentResultStatus.succeeded);
-      expect((date.dispatch! as AgentMessage).text, contains(DateTime.now().year.toString()));
+      expect(
+        (date.dispatch! as AgentMessage).text,
+        contains(DateTime.now().year.toString()),
+      );
     });
 
     test('simple math computes locally', () {
@@ -122,32 +138,55 @@ void main() {
     });
 
     test('denied and empty text never plan', () {
-      final denied = service.execute('copy hello', approval: AgentApproval.denied);
+      final denied = service.execute(
+        'copy hello',
+        approval: AgentApproval.denied,
+      );
       expect(denied.status, AgentResultStatus.denied);
       expect(denied.dispatch, isNull);
 
-      final empty = service.execute('copy to my phone', approval: AgentApproval.approved);
+      final empty = service.execute(
+        'copy to my phone',
+        approval: AgentApproval.approved,
+      );
       expect(empty.status, AgentResultStatus.unavailable);
       expect(empty.dispatch, isNull);
     });
   });
 
-  group('recognized but unwired catalog', () {
-    test('answers honestly instead of teaching', () {
-      for (final phrase in [
-        'call mom',
-        'text john',
-        'set an alarm for 7am',
-        "what's the weather",
-        'navigate to the office',
-        'search for cats',
-        'turn on the lights',
-        'pause the music',
-      ]) {
+  group('the catalog always answers or teaches — nothing silent', () {
+    test(
+      'recognized commands dispatch their action so the executor stays honest',
+      () {
+        // Every recognized phrase yields a local message carrying the action
+        // (the view/executor decides what this platform can really do). It
+        // must never be a teach prompt or a silent unavailable.
+        for (final phrase in [
+          'call mom',
+          'text john',
+          'set an alarm for 7am',
+          "what's the weather",
+          'search for cats',
+          'pause the music',
+        ]) {
+          final result = service.execute(phrase);
+          expect(result.status, AgentResultStatus.succeeded, reason: phrase);
+          final msg = result.dispatch! as AgentMessage;
+          expect(msg.text, isNotEmpty, reason: phrase);
+          expect(msg.action, isNotNull, reason: phrase);
+        }
+      },
+    );
+
+    test('unrecognized phrases ask to be taught — never fake a result', () {
+      for (final phrase in ['navigate to the office', 'turn on the lights']) {
         final result = service.execute(phrase);
-        expect(result.status, AgentResultStatus.unavailable, reason: phrase);
-        expect(result.message, isNotEmpty, reason: phrase);
-        expect(result.dispatch, isNull, reason: phrase);
+        expect(result.status, AgentResultStatus.needsInfo, reason: phrase);
+        expect(
+          (result.dispatch! as AgentClarification).key,
+          startsWith('teach:'),
+          reason: phrase,
+        );
       }
     });
   });

@@ -247,8 +247,10 @@ class CommandInterpreter {
     // --- Find/ring my device (before web-search & call: "find my phone"
     // must not become a web search, "ring my phone" must not dial a
     // contact named "my phone"). "ring mom" still falls through to call.
+    final devicesNoun =
+        r'(phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)';
     final findDev = RegExp(
-      r'^(?:find|where is|locate) (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)$',
+      r'^(?:find|where is|locate) (?:my |the )?' + devicesNoun + r'$',
     ).firstMatch(norm);
     if (findDev != null) {
       return InterpretResult.matched(
@@ -258,12 +260,15 @@ class CommandInterpreter {
         ),
       );
     }
-    final ringDev = RegExp(
-      r'^(?:ring|beep) (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)$'
-      r'|^make (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch) ring$'
-      r'|^play (?:a )?sound on (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)$'
-      r'|^make noise on (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)$',
-    ).firstMatch(norm);
+    final ringDev =
+        RegExp(r'^(?:ring|beep) (?:my |the )?' + devicesNoun + r'$')
+            .firstMatch(norm) ??
+        RegExp(r'^make (?:my |the )?' + devicesNoun + r' ring$')
+            .firstMatch(norm) ??
+        RegExp(r'^play (?:a )?sound on (?:my |the )?' + devicesNoun + r'$')
+            .firstMatch(norm) ??
+        RegExp(r'^make noise on (?:my |the )?' + devicesNoun + r'$')
+            .firstMatch(norm);
     if (ringDev != null) {
       return InterpretResult.matched(
         ParsedCommand(
@@ -281,23 +286,6 @@ class CommandInterpreter {
           action: AgentActions.webSearch,
           target: 'local',
           arguments: {'query': 'define ${define.group(1)}'},
-        ),
-      );
-    }
-
-    // --- Clipboard: "copy <text>"
-    final copy = RegExp(r'^(copy|send) (.+)$').firstMatch(norm);
-    if (copy != null) {
-      var text = copy.group(2)!.trim();
-      final recipient = RegExp(
-        r'(?:^|\s)(to|on) (my |the )?(phone|pc|computer|laptop|tablet|devices|other devices|others)$',
-      ).firstMatch(text);
-      if (recipient != null) text = text.substring(0, recipient.start).trim();
-      return InterpretResult.matched(
-        ParsedCommand(
-          action: AgentActions.clipboardWrite,
-          target: 'local',
-          arguments: {'text': text},
         ),
       );
     }
@@ -499,7 +487,7 @@ class CommandInterpreter {
 
     // --- Brightness
     final brightUp = RegExp(
-      r'^(?:brightness (?:up|higher|increase)|brighter|(?:make it )?(?:more )?bright)',
+      r'^(?:brightness (?:up|higher|increase)|brighter|(?:make it )?(?:more )?bright)$',
     ).firstMatch(norm);
     if (brightUp != null) {
       return InterpretResult.matched(
@@ -511,7 +499,7 @@ class CommandInterpreter {
       );
     }
     final brightDown = RegExp(
-      r'^(?:brightness (?:down|lower|decrease)|dimmer|darker|(?:make it )?(?:more )?dim|(?:make it )?(?:more )?dark)',
+      r'^(?:brightness (?:down|lower|decrease)|dimmer|darker|(?:make it )?(?:more )?dim|(?:make it )?(?:more )?dark)$',
     ).firstMatch(norm);
     if (brightDown != null) {
       return InterpretResult.matched(
@@ -718,10 +706,17 @@ class CommandInterpreter {
 
     // --- Send text / SMS
     final textMsg = RegExp(
-      r'^(?:text|sms|message|send (?:a )?message to) (.+?)(?:\s+saying\s+(.+))?$',
+      r'^(?:text|sms|message|send (?:a )?(?:message|text) to) (.+?)(?:\s+saying\s+(.+))?$',
     ).firstMatch(norm);
     if (textMsg != null) {
-      final contact = textMsg.group(1)!.trim();
+      var contact = textMsg.group(1)!.trim();
+      // Same trailing-device strip the call handler applies: "text john on
+      // my phone" texts john, it does not look for a contact called
+      // "john on my phone".
+      contact = contact.replaceAll(
+        RegExp(r'\s+(?:on|from)\s+(?:my\s+)?(?:phone|device|cell)$'),
+        '',
+      );
       final body = textMsg.group(2)?.trim();
       return InterpretResult.matched(
         ParsedCommand(
@@ -732,10 +727,29 @@ class CommandInterpreter {
       );
     }
 
+    // --- Clipboard: "copy <text>" — after messages so "send a message to
+    // dad" texts instead of being swallowed by generic "send …".
+    final copy = RegExp(r'^(copy|send) (.+)$').firstMatch(norm);
+    if (copy != null) {
+      var text = copy.group(2)!.trim();
+      final recipient = RegExp(
+        r'(?:^|\s)(to|on) (my |the )?(phone|pc|computer|laptop|tablet|devices|other devices|others)$',
+      ).firstMatch(text);
+      if (recipient != null) text = text.substring(0, recipient.start).trim();
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.clipboardWrite,
+          target: 'local',
+          arguments: {'text': text},
+        ),
+      );
+    }
+
     // --- Media controls
     if (_oneOf(norm, const [
       'play',
       'play music',
+      'play the music',
       'resume',
       'resume music',
       'start playing',
@@ -749,6 +763,7 @@ class CommandInterpreter {
     if (_oneOf(norm, const [
       'pause',
       'pause music',
+      'pause the music',
       'stop music',
       'stop playing',
       'pause playing',

@@ -13,43 +13,62 @@ void main() {
     AgentDeviceSnapshot(id: 'phone', name: 'My Phone', online: true),
   ];
 
-  CommandService makeService({AgentMemory? memory, void Function()? onChanged}) =>
-      CommandService(
-        devices: () => devices,
-        memory: memory ?? const AgentMemory(),
-        onMemoryChanged: onChanged,
-      );
+  CommandService makeService({
+    AgentMemory? memory,
+    void Function()? onChanged,
+  }) => CommandService(
+    devices: () => devices,
+    memory: memory ?? const AgentMemory(),
+    onMemoryChanged: onChanged,
+  );
 
-  test('"play my playlist" asks, remembers the answer, then uses it', () {
+  test('"set a timer" asks, remembers the answer, then uses it', () {
     var saved = 0;
     final service = makeService(onChanged: () => saved++);
 
-    // First time: needs the playlist name.
-    final first = service.execute('play my playlist');
+    // First time: the duration is missing.
+    final first = service.execute('set a timer');
     expect(first.status, AgentResultStatus.needsInfo);
     final ask = first.dispatch! as AgentClarification;
-    expect(ask.key, 'arg:media.play.playlist');
-    expect(ask.question, contains('playlist'));
+    expect(ask.key, 'arg:timer.set.seconds');
+    expect(ask.question, contains('long'));
 
-    // Answer it.
-    final answered = service.execute('Chill Mix', answerTo: ask.key);
-    expect(answered.status, AgentResultStatus.unavailable); // no player wired yet
-    expect(answered.message, contains('Chill Mix'));
+    // Answer it in plain words — the ask flow parses it to real seconds.
+    final answered = service.execute('5 minutes', answerTo: ask.key);
+    expect(answered.status, AgentResultStatus.succeeded);
+    final msg = answered.dispatch! as AgentMessage;
+    expect(msg.text, contains('5m 0s'));
+    expect(msg.arguments?['seconds'], 300);
     expect(saved, 1); // the default was persisted
 
     // Second time: no question — the default is remembered.
-    final second = service.execute('play my playlist');
-    expect(second.status, AgentResultStatus.unavailable);
-    expect(second.message, contains('Chill Mix'));
-    expect(second.dispatch, isNull); // no clarification asked again
+    final second = service.execute('set a timer');
+    expect(second.status, AgentResultStatus.succeeded);
+    expect((second.dispatch! as AgentMessage).arguments?['seconds'], 300);
+    expect(second.dispatch, isA<AgentMessage>()); // no clarification re-asked
   });
 
-  test('an explicit playlist name bypasses the question', () {
+  test('an explicit duration bypasses the question', () {
     final service = makeService();
-    final result = service.execute('play chill vibes');
-    expect(result.status, AgentResultStatus.unavailable);
-    expect(result.message, contains('chill vibes'));
-    expect(result.dispatch, isNull);
+    final result = service.execute('set a timer for 5 minutes');
+    expect(result.status, AgentResultStatus.succeeded);
+    expect((result.dispatch! as AgentMessage).arguments?['seconds'], 300);
+  });
+
+  test('an unparseable answer keeps asking instead of wedging the command', () {
+    final service = makeService();
+    final ask = service.execute('set a timer').dispatch! as AgentClarification;
+
+    // "two minutes" is not a duration Nexus can parse — it re-asks rather
+    // than remembering a default that can never run.
+    final bad = service.execute('two minutes', answerTo: ask.key);
+    expect(bad.status, AgentResultStatus.needsInfo);
+    expect((bad.dispatch! as AgentClarification).key, ask.key);
+
+    // A usable answer then works, and is remembered.
+    final good = service.execute('5 minutes', answerTo: ask.key);
+    expect(good.status, AgentResultStatus.succeeded);
+    expect((good.dispatch! as AgentMessage).arguments?['seconds'], 300);
   });
 
   test('a taught phrase is understood next time', () {
@@ -88,12 +107,15 @@ void main() {
     final service = makeService(
       memory: const AgentMemory(
         learned: {'bring me home': 'show my devices'},
-        defaults: {'media.play.playlist': 'Chill Mix'},
+        defaults: {'timer.set.seconds': 300},
       ),
     );
-    expect(service.execute('bring me home').status, AgentResultStatus.succeeded);
-    final result = service.execute('play my playlist');
-    expect(result.message, contains('Chill Mix'));
-    expect(result.dispatch, isNull);
+    expect(
+      service.execute('bring me home').status,
+      AgentResultStatus.succeeded,
+    );
+    final result = service.execute('set a timer');
+    expect(result.status, AgentResultStatus.succeeded);
+    expect((result.dispatch! as AgentMessage).arguments?['seconds'], 300);
   });
 }

@@ -29,19 +29,18 @@ void main() {
     }
   });
 
-  test('"play my playlist" asks which playlist', () {
-    final result = interpreter.interpret('play my playlist');
-    expect(result.outcome, InterpretOutcome.needsInfo);
-    expect(result.missingArgKey, 'media.play.playlist');
-    expect(result.question, isNotNull);
-  });
-
-  test('"play <name>" names the playlist', () {
-    final result = interpreter.interpret('play chill vibes');
-    expect(result.outcome, InterpretOutcome.matched);
-    expect(result.command!.action, AgentActions.mediaPlay);
-    expect(result.command!.arguments['playlist'], 'chill vibes');
-  });
+  test(
+    '"play <playlist>" stays teachable — playlists are not a separate command',
+    () {
+      // The advertised media surface is play/pause/skip, not playlist
+      // selection. These phrasings must never silently press play on the
+      // wrong thing — they stay unknown so the assistant offers to learn.
+      for (final phrase in ['play my playlist', 'play chill vibes']) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
+      }
+    },
+  );
 
   test('context-dependent phrases like "bring me home" ask to be taught', () {
     for (final phrase in [

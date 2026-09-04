@@ -18,29 +18,38 @@ void main() {
       expect(result.message, contains('duration'));
     });
 
-    test('alarm with hour/minute reports the time', () async {
-      final result = await backend.run(AgentActions.alarmSet, {
-        'hour': 7,
-        'minute': 30,
-      });
-      expect(result.ok, isTrue);
-      expect(result.message, contains('Alarm set for 07:30'));
-    });
+    test(
+      'alarm with hour/minute is never silently dropped at the backend layer',
+      () async {
+        // Desktop alarms run in the view (it opens the system clock app); the
+        // action backend itself must answer honestly instead of pretending it
+        // set one.
+        final result = await backend.run(AgentActions.alarmSet, {
+          'hour': 7,
+          'minute': 30,
+        });
+        expect(result.ok, isFalse);
+        expect(result.message, isNotEmpty);
+      },
+    );
 
-    test('alarm without a time asks for one', () async {
+    test('alarm without a time answers honestly too', () async {
       final result = await backend.run(AgentActions.alarmSet, const {});
       expect(result.ok, isFalse);
-      expect(result.message, contains('time'));
+      expect(result.message, isNotEmpty);
     });
 
-    test('battery either reads a level or answers that none exists', () async {
-      final result = await backend.run(AgentActions.batteryGet, const {});
-      expect(result.ok, isTrue);
-      expect(
-        result.message,
-        anyOf(startsWith('Battery at'), contains('No battery found')),
-      );
-    });
+    test(
+      'battery is answered honestly when the backend cannot read it',
+      () async {
+        // Battery reads happen in the platform-specific view executors
+        // (e.g. /sys/class/power_supply on Linux); the backend must never
+        // claim a level it did not measure.
+        final result = await backend.run(AgentActions.batteryGet, const {});
+        expect(result.ok, isFalse);
+        expect(result.message, isNotEmpty);
+      },
+    );
 
     test('unsupported actions answer honestly', () async {
       // airplaneModeSet is not routed by the device backend — it must

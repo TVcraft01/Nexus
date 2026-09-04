@@ -169,6 +169,21 @@ class CommandService {
       // can re-run it now that the default is remembered.
       final original = _pendingContext.remove(key);
       final argKey = key.substring('arg:'.length);
+      // Shaped answers (durations) are validated before being remembered — a
+      // bad default would otherwise wedge the command into a permanent dead
+      // answer. Re-ask, exactly like the teach flow does for bad meanings.
+      if (argKey == 'timer.set.seconds' &&
+          CommandInterpreter.parseDurationSeconds(answer) == null) {
+        _pendingContext[key] = original ?? answer;
+        return AgentDispatchResult(
+          status: AgentResultStatus.needsInfo,
+          dispatch: AgentClarification(
+            question: 'I still don\'t understand how long — try "5 minutes" or "1 hour 30 seconds".',
+            key: key,
+            hint: 'I\'ll remember your answer, so you won\'t have to tell me again.',
+          ),
+        );
+      }
       _defaults[argKey] = answer;
       onMemoryChanged?.call();
       return original != null
@@ -674,8 +689,13 @@ class CommandService {
           ),
         );
       case AgentActions.timerSet:
-        final seconds = command.arguments['seconds'] as int? ?? 0;
-        if (seconds <= 0) {
+        // Accept the remembered default in either shape: an int (typed
+        // "300") or the plain answer to the question ("5 minutes").
+        final raw = command.arguments['seconds'];
+        final seconds = raw is int
+            ? raw
+            : CommandInterpreter.parseDurationSeconds(raw?.toString() ?? '');
+        if (seconds == null || seconds <= 0) {
           return const AgentDispatchResult(
             status: AgentResultStatus.unavailable,
             message: 'How long should the timer run?',

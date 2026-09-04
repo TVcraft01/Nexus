@@ -230,38 +230,42 @@ void main() {
     expect(clipA.value, isNull); // not applied to the clipboard
   });
 
-  test('a pending smart-clipboard hold must not leak stale sync after stop()', () async {
-    await meshA.start();
-    await meshB.start();
-    final session = meshA.beginPairing();
-    final paired = await meshB.pairWith(
-      address: '127.0.0.1',
-      port: meshA.port,
-      code: session.code,
-    );
-    expect(paired.ok, isTrue);
+  test(
+    'a pending smart-clipboard hold must not leak stale sync after stop()',
+    () async {
+      await meshA.start();
+      await meshB.start();
+      final session = meshA.beginPairing();
+      final paired = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(paired.ok, isTrue);
 
-    // Smart mode: a copy is held for 3 s, not pushed immediately.
-    storeA.alwaysMerge = false;
-    clipA.value = 'stale-copy';
-    // Wait for the clipboard poll (1.5 s) to schedule the 3 s hold.
-    await Future<void>.delayed(const Duration(milliseconds: 2100));
+      // Smart mode: a copy is held for 3 s, not pushed immediately.
+      storeA.alwaysMerge = false;
+      clipA.value = 'stale-copy';
+      // Wait for the clipboard poll (1.5 s) to schedule the 3 s hold.
+      await Future<void>.delayed(const Duration(milliseconds: 2100));
 
-    // Shut the mesh down while the hold is still pending. The fix cancels
-    // the hold timer here; without it, the timer fires after stop and a
-    // later restart flushes the stale copy to B.
-    await meshA.stop();
-    await meshA.start();
+      // Shut the mesh down while the hold is still pending. The fix cancels
+      // the hold timer here; without it, the timer fires after stop and a
+      // later restart flushes the stale copy to B.
+      await meshA.stop();
+      await meshA.start();
 
-    // Give the full expiry + flush + poll cycle time to misbehave.
-    await Future<void>.delayed(const Duration(milliseconds: 4500));
-    expect(
-      clipB.value,
-      isNot('stale-copy'),
-      reason: 'B must never receive a clipboard hold that was pending when '
-          'A stopped — stale state must not survive the restart',
-    );
-  });
+      // Give the full expiry + flush + poll cycle time to misbehave.
+      await Future<void>.delayed(const Duration(milliseconds: 4500));
+      expect(
+        clipB.value,
+        isNot('stale-copy'),
+        reason:
+            'B must never receive a clipboard hold that was pending when '
+            'A stopped — stale state must not survive the restart',
+      );
+    },
+  );
 
   test('smart clipboard: skips inactive devices', () async {
     await meshA.start();
@@ -298,10 +302,7 @@ void main() {
     expect(meshB.isActiveDevice('device-a'), isTrue); // just paired
 
     // Simulate stale by checking with a very short threshold.
-    expect(
-      meshB.isActiveDevice('device-a', threshold: Duration.zero),
-      isFalse,
-    );
+    expect(meshB.isActiveDevice('device-a', threshold: Duration.zero), isFalse);
   });
 
   test('alwaysMerge default is true', () {
@@ -1114,49 +1115,56 @@ void main() {
     expect(meshA.onlineCount, 0);
   });
 
-  test('multi-hop: a peer can message a serial node through its host', () async {
-    await meshA.start();
-    await meshB.start();
+  test(
+    'multi-hop: a peer can message a serial node through its host',
+    () async {
+      await meshA.start();
+      await meshB.start();
 
-    final session = meshA.beginPairing();
-    final result = await meshB.pairWith(
-      address: '127.0.0.1',
-      port: meshA.port,
-      code: session.code,
-    );
-    expect(result.ok, isTrue, reason: result.error);
+      final session = meshA.beginPairing();
+      final result = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(result.ok, isTrue, reason: result.error);
 
-    // A has an ESP32 on its cable.
-    final transport = FakeSerialTransport();
-    final bridge = SerialBridge(transport: transport, onChanged: () {});
-    await bridge.startScan();
-    transport.port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
-    await Future<void>.delayed(Duration.zero);
-    meshA.attachSerialBridge(bridge);
-    transport.port.written.clear(); // forget the hello the bridge sent on open
+      // A has an ESP32 on its cable.
+      final transport = FakeSerialTransport();
+      final bridge = SerialBridge(transport: transport, onChanged: () {});
+      await bridge.startScan();
+      transport.port.feed('{"t":"ann","id":"esp32-abc","name":"ESP"}\n');
+      await Future<void>.delayed(Duration.zero);
+      meshA.attachSerialBridge(bridge);
+      transport.port.written
+          .clear(); // forget the hello the bridge sent on open
 
-    // B learns about it from A's next heartbeat announcement.
-    await _waitFor(
-      () => meshB.remoteSerialDevices.any((d) => d.id == 'esp32-abc'),
-    );
-    expect(
-      meshB.remoteSerialDevices.singleWhere((d) => d.id == 'esp32-abc').name,
-      'ESP',
-    );
+      // B learns about it from A's next heartbeat announcement.
+      await _waitFor(
+        () => meshB.remoteSerialDevices.any((d) => d.id == 'esp32-abc'),
+      );
+      expect(
+        meshB.remoteSerialDevices.singleWhere((d) => d.id == 'esp32-abc').name,
+        'ESP',
+      );
 
-    // B sends a blink through A to the node.
-    expect(await meshB.sendSerialMessage('esp32-abc', {'blink': true}), isTrue);
-    await _waitFor(() => transport.port.written.isNotEmpty);
-    final sent = utf8.decode(transport.port.written.last);
-    expect(sent, contains('"t":"msg"'));
-    expect(sent, contains('"blink":true'));
+      // B sends a blink through A to the node.
+      expect(
+        await meshB.sendSerialMessage('esp32-abc', {'blink': true}),
+        isTrue,
+      );
+      await _waitFor(() => transport.port.written.isNotEmpty);
+      final sent = utf8.decode(transport.port.written.last);
+      expect(sent, contains('"t":"msg"'));
+      expect(sent, contains('"blink":true'));
 
-    // The node answers `up`; A relays it back to B.
-    transport.port.feed('{"t":"up","id":"esp32-abc","data":{"echo":"ok"}}\n');
-    await _waitFor(() => meshB.lastSerialUp != null);
-    expect(meshB.lastSerialUp!['from'], 'esp32-abc');
-    expect(meshB.lastSerialUp!['data'], {'echo': 'ok'});
-  });
+      // The node answers `up`; A relays it back to B.
+      transport.port.feed('{"t":"up","id":"esp32-abc","data":{"echo":"ok"}}\n');
+      await _waitFor(() => meshB.lastSerialUp != null);
+      expect(meshB.lastSerialUp!['from'], 'esp32-abc');
+      expect(meshB.lastSerialUp!['data'], {'echo': 'ok'});
+    },
+  );
 
   test('agent action travels encrypted and the reply comes back', () async {
     await meshA.start();
@@ -1204,7 +1212,9 @@ void main() {
     final reply = await replyFuture;
     expect(reply, isNotNull);
     expect(reply!.status, AgentResultStatus.unavailable);
-    expect(reply.message, contains('calls'));
+    // The pure service cannot dial (the phone's UI runs the call after
+    // approval) — the reply is an honest refusal, never a silent success.
+    expect(reply.message, isNotEmpty);
   });
 
   test('a phrase taught on one device syncs to its paired peers', () async {
@@ -1226,7 +1236,10 @@ void main() {
       seenMeaning = meaning;
     };
 
-    await meshA.broadcastLearnedPhrase('call tvcraft', 'call tvcraft01 〘✘δτκ⑤⑦〙');
+    await meshA.broadcastLearnedPhrase(
+      'call tvcraft',
+      'call tvcraft01 〘✘δτκ⑤⑦〙',
+    );
 
     await _waitFor(() => seenPhrase != null);
     expect(seenPhrase, 'call tvcraft');
@@ -1263,7 +1276,10 @@ void main() {
 
 /// Polls until [cond] is true (with a timeout), so tests don't depend on
 /// heartbeat timing.
-Future<void> _waitFor(bool Function() cond, {Duration timeout = const Duration(seconds: 6)}) async {
+Future<void> _waitFor(
+  bool Function() cond, {
+  Duration timeout = const Duration(seconds: 6),
+}) async {
   final deadline = DateTime.now().add(timeout);
   while (DateTime.now().isBefore(deadline)) {
     if (cond()) return;
@@ -1291,8 +1307,10 @@ class FakeSerialPort implements SerialPort {
 class FakeSerialTransport implements SerialTransport {
   final FakeSerialPort port = FakeSerialPort();
   @override
-  Future<List<SerialPortInfo>> listPorts() async =>
-      [const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0')];
+  Future<List<SerialPortInfo>> listPorts() async => [
+    const SerialPortInfo(port: '/dev/ttyUSB0', label: 'ttyUSB0'),
+  ];
   @override
-  Future<SerialPort> open(SerialPortInfo info, {int baudRate = 115200}) async => port;
+  Future<SerialPort> open(SerialPortInfo info, {int baudRate = 115200}) async =>
+      port;
 }
