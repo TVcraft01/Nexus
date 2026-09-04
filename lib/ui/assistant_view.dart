@@ -782,7 +782,7 @@ class _AssistantViewState extends State<AssistantView> {
           );
         } catch (_) {}
       }
-      return const ActionResult(
+      return ActionResult(
         false,
         'I could not open the $noun settings here — no GNOME/KDE control panel was found.',
       );
