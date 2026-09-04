@@ -40,9 +40,9 @@ LAN, VPN, Tailscale — Nexus adapts to your network. Your devices can talk from
 
 ## Install
 
-**One command. Any platform.**
+**One command. Two platforms.**
 
-Mac & Linux (terminal):
+Linux (x86_64) in a terminal:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.sh | bash
@@ -56,9 +56,11 @@ irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | i
 
 Both download the latest release and install it under `~/.nexus/` — no Flutter, no SDK, no account. To update later, run the same command again.
 
+> **Not published yet:** macOS and ARM (Apple Silicon / Windows-on-ARM / Linux-on-ARM) builds. The installers refuse those cleanly instead of failing mid-download — the published builds are Linux x86_64, Windows x86_64, and Android.
+
 After install, look for **Nexus** in your app menu (Linux) or Start menu (Windows). It runs in the system tray — close the window and it keeps running.
 
-**Or build from source** (Mac & Linux):
+**Or build from source** (Linux):
 
 ```bash
 git clone https://github.com/TVcraft01/Nexus.git && cd Nexus && flutter pub get && flutter run

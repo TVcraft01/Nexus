@@ -4,15 +4,17 @@ set -euo pipefail
 # Nexus — cross-platform installer
 # Detects your OS and installs the latest release from GitHub.
 #
-# Usage:
+# Usage (Linux / macOS shell that has bash — Linux x86_64 only today):
 #   curl -fsSL https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.sh | bash
+#
+# Windows users: run the PowerShell installer instead (no bash needed):
+#   irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | iex
 #
 # Or download and run:
 #   bash install.sh
 
 REPO="TVcraft01/Nexus"
 INSTALL_DIR="${NEXUS_INSTALL_DIR:-$HOME/.nexus}"
-BINARY_NAME="nexus"
 
 # Colors
 RED='\033[0;31m'
@@ -38,7 +40,7 @@ detect_platform() {
     case "$(uname -m)" in
         x86_64|amd64) arch="x64" ;;
         aarch64|arm64) arch="arm64" ;;
-        *) fail "Unsupported architecture: $(uname -m)" ;;
+        *) fail "Unsupported architecture: $(uname -m) — only x86_64 (x64) builds are published." ;;
     esac
     echo "${os}-${arch}"
 }
@@ -73,9 +75,32 @@ main() {
 
     local platform
     platform=$(detect_platform)
+    local os="${platform%%-*}"
+    local arch="${platform##*-}"
     info "Detected platform: ${platform}"
 
-    local os="${platform%%-*}"
+    # Only builds that are actually published may install. Anything else
+    # stops with a clear message instead of failing mid-download with a 404.
+    case "$platform" in
+        linux-x64)
+            ;;
+        linux-arm64)
+            fail "Linux on ARM isn't published yet — only x86_64 Linux builds exist today. Run this on an x86_64 machine, or build from source."
+            ;;
+        windows-x64)
+            info "Windows via Git Bash detected. Tip: native Windows users can skip bash entirely:"
+            info "  irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | iex"
+            ;;
+        windows-arm64)
+            fail "Windows on ARM isn't published yet — only x86_64 Windows builds exist today. In PowerShell, run: irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | iex"
+            ;;
+        macos-*)
+            fail "macOS isn't published yet — Nexus runs on Linux (x86_64), Windows (x86_64), and Android today. Windows users can install from PowerShell: irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | iex"
+            ;;
+        *)
+            fail "No build is published for ${os}-${arch}. Published today: Linux x86_64, Windows x86_64, and Android."
+            ;;
+    esac
 
     # Make install dir
     mkdir -p "$INSTALL_DIR"
@@ -101,18 +126,9 @@ main() {
             chmod +x "$INSTALL_DIR/nexus"
             ;;
 
-        macos)
-            local url="https://github.com/${REPO}/releases/download/${version}/nexus-macos-universal.zip"
-            local archive="/tmp/nexus-macos.zip"
-            info "Downloading macOS build..."
-            download "$url" "$archive"
-            info "Extracting..."
-            unzip -qo "$archive" -C "$INSTALL_DIR"
-            rm -f "$archive"
-            chmod +x "$INSTALL_DIR/nexus" 2>/dev/null || true
-            ;;
-
         windows)
+            command -v unzip >/dev/null 2>&1 \
+                || fail "unzip is missing — install it (Git Bash usually bundles it), or use the PowerShell installer instead: irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | iex"
             local url="https://github.com/${REPO}/releases/download/${version}/nexus-windows-x64.zip"
             local archive="/tmp/nexus-windows.zip"
             info "Downloading Windows build..."
