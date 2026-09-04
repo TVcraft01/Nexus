@@ -106,7 +106,9 @@ class CommandInterpreter {
     }
     return t
         .replaceAll("what's", 'what is')
-        .replaceAll('whats', 'what is')
+        // "whats up" becomes "what is up", but "whatsapp" must survive
+        // untouched — it is an app name, not a question.
+        .replaceAll(RegExp(r"whats(?!app)"), 'what is')
         .replaceAll("'s", ' is')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
@@ -682,6 +684,59 @@ class CommandInterpreter {
         const ParsedCommand(
           action: AgentActions.deviceRestart,
           target: 'local',
+        ),
+      );
+    }
+
+    // --- Video call: only ever starts in an app the user names. A bare
+    // "video call mom" is answered honestly (which app?) — never silently
+    // becomes a phone call or picks a default app for them.
+    final video = RegExp(
+      r'^(?:video call|videocall|video chat|face time|facetime|video) '
+      r'(.+?)(?:\s+(?:on|via|using|through)\s+(.+))?$',
+    ).firstMatch(norm);
+    if (video != null) {
+      var app = video.group(2)?.trim().toLowerCase();
+      // "video call mom on my phone" names no app — drop the device suffix.
+      if (app != null &&
+          RegExp(r'^(?:my\s+)?(?:phone|device|cell)$').hasMatch(app)) {
+        app = null;
+      }
+      final isFacetime =
+          norm.startsWith('facetime') || norm.startsWith('face time');
+      final resolvedApp = app ?? (isFacetime ? 'facetime' : null);
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.callPlace,
+          target: 'local',
+          arguments: {
+            'contact': video.group(1)!.trim(),
+            'mode': 'video',
+            if (resolvedApp != null) 'app': resolvedApp,
+          },
+        ),
+      );
+    }
+
+    // "whatsapp video call mom" — app first, contact last.
+    final appVideo = RegExp(
+      r'^(whatsapp|telegram|skype)\s+(?:video\s+)?call\s+(.+)$',
+    ).firstMatch(norm);
+    if (appVideo != null) {
+      var who = appVideo.group(2)!.trim();
+      who = who.replaceAll(
+        RegExp(r'\s+(?:on|from)\s+(?:my\s+)?(?:phone|device|cell)$'),
+        '',
+      );
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.callPlace,
+          target: 'local',
+          arguments: {
+            'contact': who,
+            'mode': 'video',
+            'app': appVideo.group(1)!.trim().toLowerCase(),
+          },
         ),
       );
     }

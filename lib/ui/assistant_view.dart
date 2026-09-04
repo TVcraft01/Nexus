@@ -372,6 +372,12 @@ class _AssistantViewState extends State<AssistantView> {
       return _lockScreen();
     }
     if (request.action == AgentActions.callPlace) {
+      if (prepared['mode'] == 'video') {
+        return _videoCall(
+          prepared['contact']?.toString() ?? '',
+          prepared['app']?.toString(),
+        );
+      }
       return _placeCall(prepared['contact']?.toString() ?? '');
     }
     if (request.action == AgentActions.messageSend) {
@@ -1120,6 +1126,37 @@ class _AssistantViewState extends State<AssistantView> {
       );
     } catch (_) {
       return const ActionResult(false, 'The call could not be placed.');
+    }
+  }
+
+  /// Video calling only ever happens in an app the user named — a bare
+  /// "video call mom" gets an honest which-app reply, never a silent phone
+  /// call or a made-up default app.
+  Future<ActionResult> _videoCall(String contact, String? app) async {
+    if (contact.isEmpty) {
+      return const ActionResult(false, 'Who should I video call?');
+    }
+    if (app == null || app.trim().isEmpty) {
+      return ActionResult(
+        false,
+        'I only start video calls in an app you name — say "video call '
+        '$contact on whatsapp" (WhatsApp, Telegram or Skype).',
+      );
+    }
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final outcome = await _phoneBackend.videoCall(contact, app);
+        return ActionResult(
+          outcome.placed || outcome.launched,
+          outcome.message,
+        );
+      }
+      return const ActionResult(
+        false,
+        "Video calling needs a phone — this PC can't do it. On your Android device with Nexus, say \"video call mom on whatsapp\" and it opens the app with the contact.",
+      );
+    } catch (_) {
+      return const ActionResult(false, 'Could not start the video call.');
     }
   }
 
@@ -2258,6 +2295,12 @@ class _AssistantViewState extends State<AssistantView> {
       case AgentActions.lockScreen:
         return 'Lock screen';
       case AgentActions.callPlace:
+        if (a['mode'] == 'video') {
+          final app = a['app']?.toString();
+          return app == null
+              ? 'Video call ${a['contact']}'
+              : 'Video call ${a['contact']} on $app';
+        }
         return 'Call ${a['contact']}';
       case AgentActions.messageSend:
         return 'Text ${a['contact']}';

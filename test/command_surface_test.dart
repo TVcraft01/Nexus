@@ -335,6 +335,46 @@ void main() {
         args: {'contact': 'mom'},
       );
     });
+    test('video calls only fire in an app the user names', () {
+      expectAction(
+        'video call mom on whatsapp',
+        AgentActions.callPlace,
+        target: 'local',
+        args: {'contact': 'mom', 'mode': 'video', 'app': 'whatsapp'},
+      );
+      expectAction(
+        'whatsapp video call mom',
+        AgentActions.callPlace,
+        target: 'local',
+        args: {'contact': 'mom', 'mode': 'video', 'app': 'whatsapp'},
+      );
+      expectAction(
+        'skype video call mom',
+        AgentActions.callPlace,
+        target: 'local',
+        args: {'contact': 'mom', 'mode': 'video', 'app': 'skype'},
+      );
+      expectAction(
+        'facetime mom',
+        AgentActions.callPlace,
+        target: 'local',
+        args: {'contact': 'mom', 'mode': 'video', 'app': 'facetime'},
+      );
+      // No app named — still a video intent, never a silent phone call.
+      expectAction(
+        'video call mom',
+        AgentActions.callPlace,
+        target: 'local',
+        args: {'contact': 'mom', 'mode': 'video'},
+      );
+      // "video call mom on my phone" names no app either.
+      expectAction(
+        'video call mom on my phone',
+        AgentActions.callPlace,
+        target: 'local',
+        args: {'contact': 'mom', 'mode': 'video'},
+      );
+    });
     test('generic "find X" searches the web, not devices', () {
       expectAction('find restaurants near me', AgentActions.webSearch);
     });

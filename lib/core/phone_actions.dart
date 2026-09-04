@@ -35,6 +35,11 @@ class PhoneCallOutcome {
 /// unavailable.
 abstract class PhoneActionBackend {
   Future<PhoneCallOutcome> callContact(String name);
+
+  /// Video call in the app the user named. Only WhatsApp, Telegram and
+  /// Skype can land on a callable contact; other apps (and no app at all)
+  /// are answered honestly.
+  Future<PhoneCallOutcome> videoCall(String name, String? app);
 }
 
 /// Real backend: talks to the `dev.nexus.nexus/phone` channel; answers
@@ -54,6 +59,28 @@ class RealPhoneActionBackend implements PhoneActionBackend {
         'callContact',
         {'name': name},
       );
+      if (raw == null) return _unavailable;
+      return PhoneCallOutcome(
+        placed: raw['placed'] == true,
+        launched: raw['launched'] == true,
+        number: raw['number']?.toString(),
+        candidates: (raw['candidates'] as List<dynamic>? ?? const [])
+            .map((c) => c.toString())
+            .toList(),
+        message: raw['message']?.toString() ?? '',
+      );
+    } catch (_) {
+      return _unavailable;
+    }
+  }
+
+  @override
+  Future<PhoneCallOutcome> videoCall(String name, String? app) async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>('videoCall', {
+        'name': name,
+        'app': app,
+      });
       if (raw == null) return _unavailable;
       return PhoneCallOutcome(
         placed: raw['placed'] == true,

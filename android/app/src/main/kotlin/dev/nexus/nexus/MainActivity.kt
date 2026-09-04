@@ -54,6 +54,12 @@ class MainActivity : FlutterActivity() {
     private var pendingTextBody: String? = null
     private var pendingTextResult: MethodChannel.Result? = null
 
+    // "video call mom on whatsapp": same READ_CONTACTS flow as calls/texts.
+    private val REQUEST_VIDEO_PERMISSIONS = 42604
+    private var pendingVideoContact: String? = null
+    private var pendingVideoApp: String? = null
+    private var pendingVideoResult: MethodChannel.Result? = null
+
     private lateinit var usbSerial: UsbSerialBridge
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -95,6 +101,11 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "callContact" -> callContact(call.argument<String>("name") ?: "", result)
+                    "videoCall" -> videoCall(
+                        call.argument<String>("name") ?: "",
+                        call.argument<String>("app"),
+                        result,
+                    )
                     else -> result.notImplemented()
                 }
             }
@@ -234,6 +245,23 @@ class MainActivity : FlutterActivity() {
                 return
             }
             finishText(name ?: "", body, result)
+        }
+        if (requestCode == REQUEST_VIDEO_PERMISSIONS) {
+            val name = pendingVideoContact
+            val app = pendingVideoApp
+            val result = pendingVideoResult
+            pendingVideoContact = null
+            pendingVideoApp = null
+            pendingVideoResult = null
+            if (result == null) return
+            if (!granted(Manifest.permission.READ_CONTACTS)) {
+                result.success(mapOf(
+                    "ok" to false,
+                    "message" to "Contacts permission was not granted — I can't look up \"${name ?: ""}\".",
+                ))
+                return
+            }
+            finishVideo(name ?: "", app ?: "", result)
         }
     }
 
@@ -485,6 +513,91 @@ class MainActivity : FlutterActivity() {
                 else -> noContactResult(name, ranked, matched, verb = "text them")
             }
         )
+    }
+
+    /// "video call mom on whatsapp": only ever opens a video call in an app
+    /// the user named — a bare "video call mom" gets an honest which-app
+    /// reply, never a silent default or a phone call.
+    private fun videoCall(contact: String, app: String?, result: MethodChannel.Result) {
+        val name = contact.trim()
+        if (name.isEmpty()) {
+            result.success(mapOf("ok" to false, "message" to "Who should I video call?"))
+            return
+        }
+        val appName = app?.trim()?.lowercase()?.replace(" ", "") ?: ""
+        if (appName.isEmpty()) {
+            result.success(mapOf(
+                "ok" to false,
+                "message" to "I only start video calls in an app you name — try \"video call " +
+                    "$name on whatsapp\" (WhatsApp, Telegram or Skype).",
+            ))
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            pendingVideoContact = name
+            pendingVideoApp = appName
+            pendingVideoResult = result
+            requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), REQUEST_VIDEO_PERMISSIONS)
+            return
+        }
+        finishVideo(name, appName, result)
+    }
+
+    private fun finishVideo(name: String, app: String, result: MethodChannel.Result) {
+        val (number, matched, ranked) = lookupContacts(name)
+        result.success(
+            when {
+                number != null -> openVideoApp(name, app, number)
+                else -> noContactResult(name, ranked, matched, verb = "video call them")
+            }
+        )
+    }
+
+    /// Opens the named app pointed at [number]. Only WhatsApp, Telegram and
+    /// Skype have a deep link that lands on a callable contact; everything
+    /// else is answered honestly instead of pretending.
+    private fun openVideoApp(name: String, app: String, number: String): Map<String, Any?> {
+        val digits = number.filter { it.isDigit() || it == '+' }
+        val uri = when (app) {
+            "whatsapp", "wa" -> "https://wa.me/$digits"
+            "telegram", "tg" -> "tg://msg?to=$digits"
+            "skype" -> "skype:$digits?call&video=true"
+            else -> null
+        }
+        if (uri != null) {
+            return try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                val message = if (app == "skype")
+                    "Started a Skype video call to $name."
+                else
+                    "Opened ${displayAppName(app)} with $name — tap the video icon to start the call."
+                mapOf("ok" to true, "message" to message)
+            } catch (e: Exception) {
+                Log.e(TAG, "could not open $app for $name", e)
+                mapOf("ok" to false, "message" to "Could not open ${displayAppName(app)}.")
+            }
+        }
+        val label = displayAppName(app)
+        val message = when (app) {
+            "facetime" -> "FaceTime is Apple-only — on this Android, try \"video call " +
+                "$name on whatsapp\" (WhatsApp, Telegram or Skype)."
+            "meet", "googlemeet", "zoom", "teams", "discord", "signal" ->
+                "I can't start a $label video call to a phone number — open $label " +
+                    "and start the call yourself. I can do WhatsApp, Telegram or Skype."
+            else -> "I don't know how to video call on \"$label\" — I can open " +
+                "WhatsApp, Telegram or Skype with $name."
+        }
+        return mapOf("ok" to false, "message" to message)
+    }
+
+    /// Friendly display name for an app key ("wa" -> "WhatsApp").
+    private fun displayAppName(app: String): String = when (app) {
+        "whatsapp", "wa" -> "WhatsApp"
+        "telegram", "tg" -> "Telegram"
+        "skype" -> "Skype"
+        "facetime" -> "FaceTime"
+        "googlemeet" -> "Google Meet"
+        else -> app
     }
 
     /// Opens the SMS composer addressed to [number] with [body] drafted.

@@ -848,12 +848,22 @@ class CommandService {
             message: 'Who should I call?',
           );
         }
+        final isVideo = command.arguments['mode'] == 'video';
+        final app = command.arguments['app'] as String?;
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
-            'Calling $contact...',
+            isVideo
+                ? (app == null
+                      ? 'Which app should I video call $contact on?'
+                      : 'Video calling $contact on $app...')
+                : 'Calling $contact...',
             action: AgentActions.callPlace,
-            arguments: {'contact': contact},
+            arguments: {
+              'contact': contact,
+              if (isVideo) 'mode': 'video',
+              if (app != null) 'app': app,
+            },
           ),
         );
       case AgentActions.messageSend:
