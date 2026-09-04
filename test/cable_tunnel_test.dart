@@ -73,12 +73,14 @@ void main() {
     );
     expect(result.ok, isTrue, reason: result.error);
 
-    // Wait for the phone's first heartbeat so the PC has attributed the
-    // phone's live inbound socket (that also marks the phone online).
-    final deadline = DateTime.now().add(const Duration(seconds: 15));
-    while (!pc.isOnline('cable-phone')) {
+    // Wait for the phone's first heartbeat: both sides mark each other
+    // online during pairing itself, so "online" is not enough — the PC only
+    // holds a live inbound socket for the phone once the phone has dialed
+    // and pinged it, which populates the peer's learned address list.
+    final deadline = DateTime.now().add(const Duration(seconds: 20));
+    while (pc.pairedDevices.single.addresses.isEmpty) {
       if (DateTime.now().isAfter(deadline)) {
-        fail('phone never became online on the PC');
+        fail('phone heartbeat never reached the PC');
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }

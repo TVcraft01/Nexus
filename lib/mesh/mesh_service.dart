@@ -2590,15 +2590,9 @@ class MeshService extends ChangeNotifier {
     // BOTH directions with no adb forward.
     // Snapshot: a failed write drops the socket (mutating the map) while we
     // are looking for another live one.
-    debugPrint(
-      'NEXUS sendenc: peer=${peer.id} cached=$cached inbound='
-      '${_inboundPeer.entries.where((e) => e.value == peer.id).length}',
-    );
     for (final entry in _inboundPeer.entries.toList()) {
-      if (entry.value == peer.id) {
-        final ok = await _writeFrame(entry.key, frame);
-        debugPrint('NEXUS sendenc: inbound write ok=$ok');
-        if (ok) return true;
+      if (entry.value == peer.id && await _writeFrame(entry.key, frame)) {
+        return true;
       }
     }
     // No live socket from the peer (or it died mid-write) — dial it.
