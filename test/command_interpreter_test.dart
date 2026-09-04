@@ -177,6 +177,21 @@ void main() {
       );
     });
 
+    test('volume words map to the mode they literally mean', () {
+      // "unmute" / "volume up and down" / "toggle volume" must toggle —
+      // they must never silently become mute.
+      (String, String) modeOf(String phrase) => (
+        interpreter.interpret(phrase).command!.action,
+        interpreter.interpret(phrase).command!.arguments['mode'] as String,
+      );
+      expect(modeOf('mute'), (AgentActions.volumeSet, 'mute'));
+      expect(modeOf('unmute'), (AgentActions.volumeSet, 'toggle'));
+      expect(modeOf('volume up and down'), (AgentActions.volumeSet, 'toggle'));
+      expect(modeOf('toggle volume'), (AgentActions.volumeSet, 'toggle'));
+      expect(modeOf('volume up'), (AgentActions.volumeSet, 'up'));
+      expect(modeOf('make it quieter'), (AgentActions.volumeSet, 'down'));
+    });
+
     test('unadvertised smart-home/navigation phrases stay teachable', () {
       // No fake "home control" action exists — these stay teachable
       // (unknown), never a pretend success.

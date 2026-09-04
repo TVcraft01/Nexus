@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'agent_contract.dart';
 
 /// How an input was understood.
@@ -36,6 +38,127 @@ class InterpretResult {
 
 class CommandInterpreter {
   const CommandInterpreter();
+
+  /// One canonical, fully-understood phrase per intent — the vocabulary used
+  /// for "did you mean …?" when an input nearly matches something known.
+  /// Every entry must parse (interpret() must match it) because a suggestion
+  /// the user confirms becomes the command that runs.
+  static const List<String> suggestionCatalog = [
+    // Time & system
+    'what time is it',
+    'what is the date',
+    'show my devices',
+    'system info',
+    // Actions on this device
+    'call mom',
+    'text mom saying hi',
+    'make my phone ring',
+    'find my phone',
+    'open youtube',
+    'open github.com',
+    'close chrome',
+    'search for cats',
+    'note that buy milk',
+    'blink the esp32',
+    'copy hello to my devices',
+    // Media
+    'play music',
+    'pause music',
+    'next track',
+    'previous track',
+    'shuffle',
+    'repeat',
+    // System toggles & display
+    'volume up',
+    'volume down',
+    'mute',
+    'brightness up',
+    'brightness 50',
+    'flashlight on',
+    'wifi on',
+    'bluetooth off',
+    'lock screen',
+    'airplane mode on',
+    'battery',
+    'screenshot',
+    'restart',
+    // Productivity
+    'set a timer for 5 minutes',
+    'set an alarm for 7am',
+    'remind me to buy milk',
+    'define serendipity',
+    'translate hello to french',
+    'convert 5 miles to km',
+    // Fun
+    'roll a dice',
+    'flip a coin',
+    'random 1 to 100',
+    'tell me a joke',
+    // Help & French
+    'help',
+    'quelle heure est il',
+  ];
+
+  /// How close two normalized phrases are, 0..1. Combines a character-level
+  /// edit-distance score (catches typos) with word-overlap (catches added or
+  /// reworded words). 1.0 means identical.
+  static double phraseSimilarity(String a, String b) {
+    if (a == b) return 1.0;
+    if (a.isEmpty || b.isEmpty) return 0.0;
+    final dist = _levenshtein(a, b);
+    final lengthScore = 1 - dist / math.max(a.length, b.length);
+    final tokensA = a.split(' ');
+    final tokensB = b.split(' ');
+    final common = tokensA.toSet().intersection(tokensB.toSet()).length;
+    final tokenScore = 2 * common / (tokensA.length + tokensB.length);
+    return lengthScore * 0.55 + tokenScore * 0.45;
+  }
+
+  /// Finds the closest known phrase for an unrecognized input. Returns the
+  /// meaning that phrase maps to plus its score, or null when nothing is
+  /// close enough to risk guessing. Guessing is deliberately conservative:
+  /// the caller only ever offers it — the user confirms before anything runs.
+  static (String meaning, double score)? closestMeaning(
+    String normalizedInput,
+    Map<String, String> candidates,
+  ) {
+    if (normalizedInput.length < 6) return null;
+    String? bestMeaning;
+    var bestScore = 0.0;
+    for (final entry in candidates.entries) {
+      final score = phraseSimilarity(
+        normalizedInput,
+        normalizePhrase(entry.key),
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        bestMeaning = entry.value;
+      }
+    }
+    if (bestMeaning == null || bestScore < 0.68) return null;
+    return (bestMeaning, bestScore);
+  }
+
+  /// Classic Levenshtein edit distance, two rolling rows so it stays cheap
+  /// even if the catalog grows.
+  static int _levenshtein(String a, String b) {
+    if (a == b) return 0;
+    var prev = List<int>.generate(b.length + 1, (i) => i);
+    for (var i = 1; i <= a.length; i++) {
+      final curr = List<int>.filled(b.length + 1, 0)..[0] = i;
+      for (var j = 1; j <= b.length; j++) {
+        curr[j] = math.min(
+          math.min(
+            curr[j - 1] + 1, // deletion
+            prev[j] + 1, // insertion
+          ),
+          prev[j - 1] + (a.codeUnitAt(i - 1) == b.codeUnitAt(j - 1) ? 0 : 1),
+        );
+      }
+      prev = curr;
+    }
+    return prev[b.length];
+  }
 
   static String normalizePhrase(String input) {
     var t = input.trim().toLowerCase();
@@ -539,18 +662,25 @@ class CommandInterpreter {
       }
     }
 
-    // --- Volume
+    // --- Volume. Every alternative is captured so "mute", "unmute",
+    // "volume up and down" and "toggle volume" each map to the mode they
+    // mean — never silently all the way to mute.
     final volume = RegExp(
-      r'^(?:volume (up|down)|turn (?:the volume |it )(up|down)|(?:make it )?(louder|quieter|quiet)|mute|unmute|volume up and down|toggle volume)$',
+      r'^(?:volume (up|down|up and down|toggle)|(toggle volume)|turn (?:the volume |it )(up|down)|(?:make it )?(louder|quieter|quiet)|(mute|unmute))$',
     ).firstMatch(norm);
     if (volume != null) {
       final word =
-          (volume.group(1) ?? volume.group(2) ?? volume.group(3) ?? 'mute')
+          (volume.group(1) ??
+                  volume.group(2) ??
+                  volume.group(3) ??
+                  volume.group(4) ??
+                  volume.group(5) ??
+                  'mute')
               .toLowerCase();
       final mode = switch (word) {
         'up' || 'louder' => 'up',
         'down' || 'quieter' || 'quiet' => 'down',
-        'unmute' || 'toggle volume' => 'toggle',
+        'up and down' || 'toggle' || 'unmute' || 'toggle volume' => 'toggle',
         _ => 'mute',
       };
       return InterpretResult.matched(

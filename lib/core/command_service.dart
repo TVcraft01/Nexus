@@ -125,6 +125,27 @@ class CommandService {
         );
 
       case InterpretOutcome.unknown:
+        // A near-miss of something already known ("tex mom saying hi",
+        // "what time is is")? Offer it. The user confirms with "yes" before
+        // anything runs, so a wrong guess is only ever a question — never
+        // an action.
+        final near = CommandInterpreter.closestMeaning(normalized, {
+          for (final phrase in CommandInterpreter.suggestionCatalog)
+            phrase: phrase,
+          ..._learned,
+        });
+        if (near != null) {
+          final meaning = near.$1;
+          _pendingContext['near:$normalized'] = meaning;
+          return AgentDispatchResult(
+            status: AgentResultStatus.needsInfo,
+            dispatch: AgentClarification(
+              question: 'I don\'t understand "$text". Did you mean "$meaning"?',
+              key: 'near:$normalized',
+              hint: 'Answer "yes" to run it — or type the command it should mean. I remember either way.',
+            ),
+          );
+        }
         _pendingContext['teach:$normalized'] = normalized;
         // When the phrase smells like a call or text but missed the exact
         // patterns, say the shape instead of sending them into the generic
@@ -156,22 +177,24 @@ class CommandService {
   ) {
     if (key.startsWith('teach:')) {
       final phrase = key.substring('teach:'.length);
-      final interpreted = _interpreter.interpret(answer);
-      if (interpreted.outcome != InterpretOutcome.matched) {
-        _pendingContext[key] = phrase; // still waiting for a good answer
-        return AgentDispatchResult(
-          status: AgentResultStatus.needsInfo,
-          dispatch: AgentClarification(
-            question: 'I still don\'t understand what "$phrase" should mean.',
-            key: key,
-            hint: 'Type a command I already know, e.g. "show my devices" or "blink the ESP32".',
-          ),
-        );
+      _pendingContext[key] = phrase; // still waiting for a good answer
+      return _applyTeachAnswer(key, phrase, answer, approval, requestId);
+    }
+    if (key.startsWith('near:')) {
+      // The user is answering a "did you mean …?" question. "yes" runs the
+      // suggested meaning (and learns the phrase so the typo never asks
+      // again); anything else falls into the normal teach loop.
+      final phrase = key.substring('near:'.length);
+      final suggested = _pendingContext.remove(key);
+      if (suggested == null) return null;
+      if (_isYes(answer)) {
+        _learned[phrase] = suggested;
+        onMemoryChanged?.call();
+        onPhraseLearned?.call(phrase, suggested);
+        return _dispatchInput(suggested, approval, requestId);
       }
-      _learned[CommandInterpreter.normalizePhrase(phrase)] = answer;
-      onMemoryChanged?.call();
-      onPhraseLearned?.call(CommandInterpreter.normalizePhrase(phrase), answer);
-      return _dispatchParsed(interpreted.command!, approval, requestId);
+      _pendingContext[key] = suggested;
+      return _applyTeachAnswer(key, phrase, answer, approval, requestId);
     }
     if (key.startsWith('arg:')) {
       // Capture the original input before clearing the pending state, so we
@@ -227,6 +250,35 @@ class CommandService {
       return execute(original, approval: approval, requestId: requestId);
     }
     return null;
+  }
+
+  /// Shared heart of the teach loop, used by both a plain "teach me"
+  /// question and a rejected "did you mean …?" suggestion: parse the
+  /// answer; if it is a command we know, remember it for [phrase] and run
+  /// it; otherwise re-ask.
+  AgentDispatchResult _applyTeachAnswer(
+    String key,
+    String phrase,
+    String answer,
+    AgentApproval approval,
+    String requestId,
+  ) {
+    final interpreted = _interpreter.interpret(answer);
+    if (interpreted.outcome != InterpretOutcome.matched) {
+      _pendingContext[key] = phrase; // still waiting for a good answer
+      return AgentDispatchResult(
+        status: AgentResultStatus.needsInfo,
+        dispatch: AgentClarification(
+          question: 'I still don\'t understand what "$phrase" should mean.',
+          key: key,
+          hint: 'Type a command I already know, e.g. "show my devices" or "blink the ESP32".',
+        ),
+      );
+    }
+    _learned[CommandInterpreter.normalizePhrase(phrase)] = answer;
+    onMemoryChanged?.call();
+    onPhraseLearned?.call(CommandInterpreter.normalizePhrase(phrase), answer);
+    return _dispatchParsed(interpreted.command!, approval, requestId);
   }
 
   AgentDispatchResult _dispatchInput(
