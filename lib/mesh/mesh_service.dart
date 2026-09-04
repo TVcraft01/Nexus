@@ -282,6 +282,9 @@ class MeshService extends ChangeNotifier {
   List<String>? _ipsCache;
   DateTime? _ipsCacheAt;
   TailscaleInfo? _tailscale;
+  // Relay integration is staged (see relay/); the client is wired once the
+  // server is deployed. Kept as a field so wiring it up has one owner.
+  // ignore: unused_field
   late final RelayClient _relay;
 
   String? pendingCode;

@@ -411,7 +411,7 @@ class _AssistantViewState extends State<AssistantView> {
         // Launching an app needs a real Intent — an app process cannot run
         // `/system/bin/am` (Android denies it to non-shell UIDs). Kotlin
         // fuzzy-matches the app's display name and opens it.
-        return _deviceBackend.run(AgentActions.appOpen, {
+        return await _deviceBackend.run(AgentActions.appOpen, {
           'query': query,
           'hint': _androidPackageName(query),
         });
@@ -421,7 +421,7 @@ class _AssistantViewState extends State<AssistantView> {
       // registry on Windows). Unknown names get an honest reply — never a
       // fake win from a bare-word xdg-open.
       final site = _desktopSiteUrl(query);
-      if (site != null) return _openUrl(site);
+      if (site != null) return await _openUrl(site);
       if (defaultTargetPlatform == TargetPlatform.linux) {
         final found = await _whichLinuxApp(query);
         if (found != null) {
@@ -798,7 +798,7 @@ class _AssistantViewState extends State<AssistantView> {
       return const ActionResult(false, 'What app should I close?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        return _deviceBackend.run(AgentActions.appClose, {
+        return await _deviceBackend.run(AgentActions.appClose, {
           'query': query,
           'hint': _androidPackageName(query),
         });
@@ -940,7 +940,7 @@ class _AssistantViewState extends State<AssistantView> {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Kotlin writes the brightness when Nexus has "modify system
         // settings" access, otherwise opens the display settings panel.
-        return _deviceBackend.run(AgentActions.brightnessSet, {
+        return await _deviceBackend.run(AgentActions.brightnessSet, {
           'mode': args['mode'] as String? ?? 'up',
           'level': args['level'] as int? ?? 50,
         });
@@ -948,10 +948,10 @@ class _AssistantViewState extends State<AssistantView> {
       final mode = args['mode'] as String? ?? 'up';
       final level = args['level'] as int?;
       if (defaultTargetPlatform == TargetPlatform.linux) {
-        return _linuxBrightness(mode, level);
+        return await _linuxBrightness(mode, level);
       }
       if (defaultTargetPlatform == TargetPlatform.windows) {
-        return _windowsBrightness(mode, level);
+        return await _windowsBrightness(mode, level);
       }
       return const ActionResult(
         false,
@@ -992,7 +992,9 @@ class _AssistantViewState extends State<AssistantView> {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Apps can't toggle Wi-Fi on modern Android; Kotlin opens the
         // Wi-Fi settings panel where the user flips the switch.
-        return _deviceBackend.run(AgentActions.wifiToggle, {'state': state});
+        return await _deviceBackend.run(AgentActions.wifiToggle, {
+          'state': state,
+        });
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
         // nmcli can toggle when the user may manage the session; otherwise
@@ -1004,7 +1006,7 @@ class _AssistantViewState extends State<AssistantView> {
             return ActionResult(true, "WiFi ${state == 'off' ? 'off' : 'on'}.");
           }
         } catch (_) {}
-        return _openSettingsPanel(
+        return await _openSettingsPanel(
           windowsUri: 'ms-settings:network-wifi',
           linuxGnome: 'wifi',
           linuxKde: 'network',
@@ -1013,7 +1015,7 @@ class _AssistantViewState extends State<AssistantView> {
         );
       }
       if (defaultTargetPlatform == TargetPlatform.windows) {
-        return _openSettingsPanel(
+        return await _openSettingsPanel(
           windowsUri: 'ms-settings:network-wifi',
           linuxGnome: 'wifi',
           linuxKde: 'network',
@@ -1032,14 +1034,14 @@ class _AssistantViewState extends State<AssistantView> {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Apps can't toggle Bluetooth on modern Android; Kotlin opens the
         // Bluetooth settings panel where the user flips the switch.
-        return _deviceBackend.run(AgentActions.bluetoothToggle, {
+        return await _deviceBackend.run(AgentActions.bluetoothToggle, {
           'state': state,
         });
       }
       if (defaultTargetPlatform == TargetPlatform.linux ||
           defaultTargetPlatform == TargetPlatform.windows) {
         // Same rule as Android: no toggle from an app — open the panel.
-        return _openSettingsPanel(
+        return await _openSettingsPanel(
           windowsUri: 'ms-settings:bluetooth',
           linuxGnome: 'bluetooth',
           linuxKde: 'bluetooth',
@@ -1060,7 +1062,7 @@ class _AssistantViewState extends State<AssistantView> {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Locking the screen needs Device Admin (or root); Kotlin explains.
-        return _deviceBackend.run(AgentActions.lockScreen, {});
+        return await _deviceBackend.run(AgentActions.lockScreen, {});
       }
       if (defaultTargetPlatform == TargetPlatform.windows) {
         final r = await Process.run('rundll32.exe', [
@@ -1125,7 +1127,7 @@ class _AssistantViewState extends State<AssistantView> {
     if (contact.isEmpty) return const ActionResult(false, 'Who should I text?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        return _deviceBackend.run(AgentActions.messageSend, {
+        return await _deviceBackend.run(AgentActions.messageSend, {
           'contact': contact,
           'body': body,
         });
@@ -1151,7 +1153,7 @@ class _AssistantViewState extends State<AssistantView> {
           'repeat' => AgentActions.mediaRepeat,
           _ => AgentActions.mediaPlay,
         };
-        return _deviceBackend.run(agentAction, {'mode': action});
+        return await _deviceBackend.run(agentAction, {'mode': action});
       }
       if (action == 'shuffle' || action == 'repeat') {
         return const ActionResult(
@@ -1190,7 +1192,7 @@ class _AssistantViewState extends State<AssistantView> {
           'pause' => 'Paused.',
           _ => 'Playing.',
         };
-        return _windowsKeyEvent(key, text);
+        return await _windowsKeyEvent(key, text);
       }
       return const ActionResult(false, 'Media control not available here.');
     } catch (_) {
@@ -1204,7 +1206,7 @@ class _AssistantViewState extends State<AssistantView> {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Kotlin fires the real ACTION_SET_ALARM intent.
-        return _deviceBackend.run(AgentActions.alarmSet, {
+        return await _deviceBackend.run(AgentActions.alarmSet, {
           'hour': hour,
           'minute': minute,
         });
@@ -1410,7 +1412,7 @@ class _AssistantViewState extends State<AssistantView> {
           'down' => 'Volume down.',
           _ => 'Volume muted.',
         };
-        return _windowsKeyEvent(key, text);
+        return await _windowsKeyEvent(key, text);
       }
       return const ActionResult(false, 'Could not change volume here.');
     } catch (_) {
