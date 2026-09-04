@@ -19,8 +19,10 @@ void main() {
     });
 
     test('alarm with hour/minute reports the time', () async {
-      final result =
-          await backend.run(AgentActions.alarmSet, {'hour': 7, 'minute': 30});
+      final result = await backend.run(AgentActions.alarmSet, {
+        'hour': 7,
+        'minute': 30,
+      });
       expect(result.ok, isTrue);
       expect(result.message, contains('Alarm set for 07:30'));
     });
@@ -41,14 +43,17 @@ void main() {
     });
 
     test('unsupported actions answer honestly', () async {
-      final result = await backend.run(AgentActions.torchToggle, const {});
+      // airplaneModeSet is not routed by the device backend — it must
+      // answer honestly, never pretend.
+      final result = await backend.run(AgentActions.airplaneModeSet, const {});
       expect(result.ok, isFalse);
       expect(result.message, contains('not available'));
     });
 
     test('web search reports the query or a browser failure', () async {
-      final result =
-          await backend.run(AgentActions.webSearch, {'query': 'weather'});
+      final result = await backend.run(AgentActions.webSearch, {
+        'query': 'weather',
+      });
       expect(
         result.message,
         anyOf(contains('Searching for'), contains('browser')),

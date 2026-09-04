@@ -44,7 +44,11 @@ void main() {
   });
 
   test('context-dependent phrases like "bring me home" ask to be taught', () {
-    for (final phrase in ['bring me home', 'take me home', 'show me the way home']) {
+    for (final phrase in [
+      'bring me home',
+      'take me home',
+      'show me the way home',
+    ]) {
       final result = interpreter.interpret(phrase);
       expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
     }
@@ -68,8 +72,14 @@ void main() {
       final time = interpreter.interpret('what time is it');
       expect(time.command!.action, AgentActions.timeGet);
       expect(time.command!.arguments['kind'], 'time');
-      expect(interpreter.interpret("what's the date").command!.arguments['kind'], 'date');
-      expect(interpreter.interpret('current time').command!.action, AgentActions.timeGet);
+      expect(
+        interpreter.interpret("what's the date").command!.arguments['kind'],
+        'date',
+      );
+      expect(
+        interpreter.interpret('current time').command!.action,
+        AgentActions.timeGet,
+      );
     });
 
     test('math with words and symbols', () {
@@ -118,41 +128,71 @@ void main() {
     });
 
     test('alarms, timers and reminders', () {
-      expect(interpreter.interpret('set an alarm for 7am').command!.action, AgentActions.alarmSet);
-      expect(interpreter.interpret('set a timer for 5 minutes').command!.action, AgentActions.timerSet);
-      expect(interpreter.interpret('remind me to call the bank').command!.action, AgentActions.reminderSet);
+      expect(
+        interpreter.interpret('set an alarm for 7am').command!.action,
+        AgentActions.alarmSet,
+      );
+      expect(
+        interpreter.interpret('set a timer for 5 minutes').command!.action,
+        AgentActions.timerSet,
+      );
+      expect(
+        interpreter.interpret('remind me to call the bank').command!.action,
+        AgentActions.reminderSet,
+      );
     });
 
-    test('weather, news and calendar', () {
-      expect(interpreter.interpret("what's the weather").command!.action, AgentActions.weatherGet);
-      expect(interpreter.interpret('what is the news').command!.action, AgentActions.newsGet);
-      expect(interpreter.interpret('what is on my calendar').command!.action, AgentActions.calendarGet);
+    test('unadvertised extras (weather, news, calendar) search the web', () {
+      // None of these are promised commands — they must not claim a fake
+      // action; falling back to a web search is the honest current answer.
+      expect(
+        interpreter.interpret("what's the weather").command!.action,
+        AgentActions.webSearch,
+      );
+      expect(
+        interpreter.interpret('what is the news').command!.action,
+        AgentActions.webSearch,
+      );
+      expect(
+        interpreter.interpret('what is on my calendar').command!.action,
+        AgentActions.webSearch,
+      );
     });
 
-    test('music control and play', () {
-      final pause = interpreter.interpret('pause the music');
-      expect(pause.command!.action, AgentActions.musicControl);
-      expect(pause.command!.arguments['mode'], 'pause');
-      expect(interpreter.interpret('next song').command!.arguments['mode'], 'next');
-      expect(interpreter.interpret('shuffle my music').command!.arguments['mode'], 'shuffle');
+    test('music play/pause/skip maps to the media actions', () {
+      expect(
+        interpreter.interpret('pause music').command!.action,
+        AgentActions.mediaPause,
+      );
+      expect(
+        interpreter.interpret('next song').command!.action,
+        AgentActions.mediaNext,
+      );
+      expect(
+        interpreter.interpret('shuffle').command!.action,
+        AgentActions.mediaShuffle,
+      );
+      expect(
+        interpreter.interpret('repeat').command!.action,
+        AgentActions.mediaRepeat,
+      );
     });
 
-    test('smart home', () {
-      final on = interpreter.interpret('turn on the lights');
-      expect(on.command!.action, AgentActions.homeControl);
-      expect(on.command!.arguments['state'], 'on');
-      expect(on.command!.arguments['device'], 'lights');
-      expect(interpreter.interpret('lock the door').command!.action, AgentActions.homeControl);
-    });
-
-    test('navigation recognizes explicit destinations but not home', () {
-      final office = interpreter.interpret('navigate to the office');
-      expect(office.command!.action, AgentActions.navigationRoute);
-      expect(office.command!.arguments['place'], 'the office');
-      expect(interpreter.interpret('get directions to the airport').command!.action, AgentActions.navigationRoute);
-      // Vague home phrases stay teachable.
-      for (final phrase in ['take me home', 'bring me home']) {
-        expect(interpreter.interpret(phrase).outcome, InterpretOutcome.unknown, reason: phrase);
+    test('unadvertised smart-home/navigation phrases stay teachable', () {
+      // No fake "home control" action exists — these stay teachable
+      // (unknown), never a pretend success.
+      for (final phrase in [
+        'turn on the lights',
+        'lock the door',
+        'navigate to the office',
+        'take me home',
+        'bring me home',
+      ]) {
+        expect(
+          interpreter.interpret(phrase).outcome,
+          InterpretOutcome.unknown,
+          reason: phrase,
+        );
       }
     });
 
@@ -163,15 +203,27 @@ void main() {
       final note = interpreter.interpret('make a note to buy milk');
       expect(note.command!.action, AgentActions.noteCreate);
       expect(note.command!.arguments['text'], 'to buy milk');
-      expect(interpreter.interpret('remember that the wifi password is nexus').command!.action, AgentActions.noteCreate);
+      expect(
+        interpreter
+            .interpret('remember that the wifi password is nexus')
+            .command!
+            .action,
+        AgentActions.noteCreate,
+      );
       final tr = interpreter.interpret('translate hello to french');
       expect(tr.command!.action, AgentActions.translateText);
       expect(tr.command!.arguments['language'], 'french');
     });
 
     test('normalization folds accents and contractions', () {
-      expect(CommandInterpreter.normalizePhrase('  Café  Maman '), 'cafe maman');
-      expect(CommandInterpreter.normalizePhrase("what's the time"), 'what is the time');
+      expect(
+        CommandInterpreter.normalizePhrase('  Café  Maman '),
+        'cafe maman',
+      );
+      expect(
+        CommandInterpreter.normalizePhrase("what's the time"),
+        'what is the time',
+      );
       // Accented input reaches the same commands as its plain form.
       expect(
         interpreter.interpret('call café').command!.arguments['contact'],
