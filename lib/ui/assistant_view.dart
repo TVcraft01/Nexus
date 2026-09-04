@@ -1258,11 +1258,15 @@ class _AssistantViewState extends State<AssistantView> {
     if (text.isEmpty)
       return const ActionResult(false, 'What should I remind you about?');
     try {
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        // Save as a note since we can't set reminders directly
-        return _appendNote('[Reminder] $text');
-      }
-      return _appendNote('[Reminder] $text');
+      // No real reminder service exists yet (on any platform), so save it
+      // as a note — and say so instead of pretending a reminder was set.
+      final saved = await _appendNote('[Reminder] $text');
+      return ActionResult(
+        saved.ok,
+        saved.ok
+            ? 'Reminder saved as a note on this device — real reminders aren\'t wired into this release yet.'
+            : saved.message,
+      );
     } catch (_) {
       return const ActionResult(false, 'Could not set reminder.');
     }

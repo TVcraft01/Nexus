@@ -305,7 +305,11 @@ class CommandService {
         action == AgentActions.randomDice ||
         action == AgentActions.randomCoin ||
         action == AgentActions.randomNumber ||
-        action == AgentActions.tellJoke) {
+        action == AgentActions.tellJoke ||
+        action == AgentActions.findDevice ||
+        action == AgentActions.ringDevice ||
+        action == AgentActions.airplaneModeSet ||
+        action == AgentActions.deviceRestart) {
       return _localAnswer(command);
     }
     if (_routableActions.contains(action)) {
@@ -552,6 +556,9 @@ class CommandService {
 
   bool _supports(AgentDeviceSnapshot device, String action) =>
       device.capabilities.any((c) => c.id == action);
+
+  List<String> capabilitiesOf(AgentDeviceSnapshot? device) =>
+      device?.capabilities.map((c) => c.id).toList() ?? const [];
 
   List<AgentDeviceSnapshot> _allDevices() => [?local, ...devices()];
 
@@ -984,6 +991,48 @@ class CommandService {
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(joke),
+        );
+      // --- Find/ring a paired device. There is no ring/find executor in
+      // this release, so the honest answer depends on whether the target
+      // is actually on the mesh right now — never a silent dead-end.
+      case AgentActions.findDevice:
+      case AgentActions.ringDevice:
+        final who = command.target;
+        final reachable = devices().any(
+          (d) =>
+              d.online &&
+              (d.name.toLowerCase().contains(who.toLowerCase()) ||
+                  d.id.toLowerCase() == who.toLowerCase()),
+        );
+        final verb = command.action == AgentActions.ringDevice
+            ? 'make it ring'
+            : 'find it';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            reachable
+                ? '"$who" is online on your mesh, but I can't $verb from the assistant in this release yet.'
+                : 'I don't see "$who" online right now. $verb needs the other device connected to your mesh — open the Devices tab to check.',
+          ),
+        );
+      // --- Airplane mode: needs a system permission, or doesn't exist on a
+      // PC. Say which instead of pretending to toggle radios.
+      case AgentActions.airplaneModeSet:
+        final isPhone = capabilitiesOf(local).contains(AgentActions.callPlace);
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            isPhone
+                ? 'Airplane mode needs a system-level permission Nexus doesn't take — swipe down from the top of the screen and tap the airplane toggle.'
+                : 'Airplane mode is a phone feature — this device has no radios to switch.',
+          ),
+        );
+      case AgentActions.deviceRestart:
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'I won't restart the device from inside the app — use the power menu.',
+          ),
         );
       default:
         return const AgentDispatchResult(

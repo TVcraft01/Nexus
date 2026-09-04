@@ -92,6 +92,18 @@ class CommandInterpreter {
         .replaceAll(RegExp(r'\s+(?:please|thanks|thank you|pls|thx|ty)$'), '')
         .replaceAll(RegExp(r'\s+for me$'), '')
         .replaceAll(RegExp(r'\s+for me\s*$'), '');
+    // Keep stripping repeated leading filler so "hey please call mom"
+    // and "can you please open youtube" both reach their patterns.
+    var previous = '';
+    while (t != previous) {
+      previous = t;
+      t = t.replaceAll(
+        RegExp(
+          r'^(?:can you|could you|would you|will you|please|hey|yo|uh|um|so|okay|ok|alright|right|just|try to|help me|go ahead and)\s+',
+        ),
+        '',
+      );
+    }
     return t
         .replaceAll("what's", 'what is')
         .replaceAll('whats', 'what is')
@@ -228,6 +240,35 @@ class CommandInterpreter {
           action: AgentActions.mathCalc,
           target: 'local',
           arguments: {'expr': bare},
+        ),
+      );
+    }
+
+    // --- Find/ring my device (before web-search & call: "find my phone"
+    // must not become a web search, "ring my phone" must not dial a
+    // contact named "my phone"). "ring mom" still falls through to call.
+    final findDev = RegExp(
+      r'^(?:find|where is|locate) (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)$',
+    ).firstMatch(norm);
+    if (findDev != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.findDevice,
+          target: findDev.group(1)!,
+        ),
+      );
+    }
+    final ringDev = RegExp(
+      r'^(?:ring|beep) (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)$'
+      r'|^make (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch) ring$'
+      r'|^play (?:a )?sound on (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)$'
+      r'|^make noise on (?:my |the )?(?:phone|cellphone|cell|mobile|tablet|ipad|pc|laptop|computer|desktop|device|watch)$',
+    ).firstMatch(norm);
+    if (ringDev != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.ringDevice,
+          target: ringDev.group(1)!,
         ),
       );
     }
@@ -608,6 +649,55 @@ class CommandInterpreter {
       );
     }
 
+    // --- Airplane mode (honest answer in the service layer — an app
+    // cannot toggle the radios by itself).
+    if (_oneOf(norm, const [
+      'airplane mode on',
+      'turn on airplane mode',
+      'enable airplane mode',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.airplaneModeSet,
+          target: 'local',
+          arguments: {'state': 'on'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'airplane mode off',
+      'turn off airplane mode',
+      'disable airplane mode',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.airplaneModeSet,
+          target: 'local',
+          arguments: {'state': 'off'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const ['airplane mode', 'toggle airplane mode'])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.airplaneModeSet,
+          target: 'local',
+        ),
+      );
+    }
+
+    // --- Restart (honest: no app restarts the machine it runs on).
+    if (RegExp(
+      r'^(?:restart|reboot)(?: (?:this|the|my) )?(?:device|phone|pc|laptop|computer|tablet)$',
+    ).hasMatch(norm)) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.deviceRestart,
+          target: 'local',
+        ),
+      );
+    }
+
     // --- Call
     final call = RegExp(r'^(?:call|dial|phone|ring) (.+)$').firstMatch(norm);
     if (call != null) {
@@ -854,29 +944,6 @@ class CommandInterpreter {
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.tellJoke, target: 'local'),
-      );
-    }
-
-    // --- Find my device / ring
-    final findDev = RegExp(r'^(?:find|where is|locate) (?:my )?(.+)$')
-        .firstMatch(norm);
-    if (findDev != null) {
-      return InterpretResult.matched(
-        ParsedCommand(
-          action: AgentActions.findDevice,
-          target: findDev.group(1)!.trim(),
-        ),
-      );
-    }
-    final ringDev = RegExp(
-      r'^(?:ring|make .+ ring|play sound on|make noise on) (?:my )?(.+)$',
-    ).firstMatch(norm);
-    if (ringDev != null) {
-      return InterpretResult.matched(
-        ParsedCommand(
-          action: AgentActions.ringDevice,
-          target: ringDev.group(1)!.trim(),
-        ),
       );
     }
 
