@@ -505,13 +505,32 @@ class MainActivity : FlutterActivity() {
         finishText(name, body, result)
     }
 
-    /// Resolves [name] and completes [result] with the outcome.
+    /// Resolves [name] and completes [result] with the outcome. When there is
+    /// no explicit body and the whole phrase doesn't match a contact, the
+    /// trailing words are treated as the message — "text mom love you" or
+    /// French "texte papi salut" resolve mom/papi with "love you"/"salut"
+    /// as the draft, instead of failing on a contact named "mom love you".
     private fun finishText(name: String, body: String?, result: MethodChannel.Result) {
-        val (number, matched, ranked) = lookupContacts(name)
+        var contact = name.trim()
+        var msgBody = body
+        val (number, matched, ranked) = lookupContacts(contact)
+        if (number == null && body == null) {
+            val words = contact.split(Regex("\\s+"))
+            for (i in words.size - 1 downTo 1) {
+                val probe = lookupContacts(words.take(i).joinToString(" "))
+                if (probe.first != null) {
+                    contact = words.take(i).joinToString(" ")
+                    msgBody = words.drop(i).joinToString(" ")
+                    openSmsComposer(contact, probe.first!!, msgBody)
+                        .also { result.success(it) }
+                    return
+                }
+            }
+        }
         result.success(
             when {
-                number != null -> openSmsComposer(name, number, body)
-                else -> noContactResult(name, ranked, matched, verb = "text them")
+                number != null -> openSmsComposer(contact, number, msgBody)
+                else -> noContactResult(contact, ranked, matched, verb = "text them")
             }
         )
     }

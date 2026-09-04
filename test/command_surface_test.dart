@@ -335,6 +335,88 @@ void main() {
         args: {'contact': 'mom'},
       );
     });
+    test('natural and French phrasings route to the right action', () {
+      // Call — English word orders and French.
+      expectAction(
+        'appelle papi',
+        AgentActions.callPlace,
+        target: 'local',
+        args: {'contact': 'papi'},
+      );
+      expectAction(
+        'give mom a call',
+        AgentActions.callPlace,
+        target: 'local',
+        args: {'contact': 'mom'},
+      );
+      // Text — extra verbs, word orders, and French. A bare trailing
+      // message stays with the contact; the native side splits it.
+      expectAction(
+        'msg dad coucou',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'dad coucou'},
+      );
+      expectAction(
+        'texte papi salut',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'papi salut'},
+      );
+      expectAction(
+        'texto papi',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'papi'},
+      );
+      expectAction(
+        'send mom a text saying hi',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'mom', 'body': 'hi'},
+      );
+      expectAction(
+        'send a text to mom saying hi',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'mom', 'body': 'hi'},
+      );
+      expectAction(
+        'send papi salut',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'papi salut'},
+      );
+      expectAction(
+        'envoie un message a papi disant salut',
+        AgentActions.messageSend,
+        target: 'local',
+        args: {'contact': 'papi', 'body': 'salut'},
+      );
+      // "send ..." with a device target stays a clipboard write.
+      expectAction(
+        'send hello to my pc',
+        AgentActions.clipboardWrite,
+        target: 'local',
+        args: {'text': 'hello'},
+      );
+      // French garnish: greetings, time, battery, open, help.
+      expectAction('bonjour', AgentActions.greet, target: 'local');
+      expectAction(
+        'quelle heure est il',
+        AgentActions.timeGet,
+        target: 'local',
+        args: {'kind': 'time'},
+      );
+      expectAction('batterie', AgentActions.batteryGet, target: 'local');
+      expectAction(
+        'ouvre youtube',
+        AgentActions.appOpen,
+        target: 'local',
+        args: {'query': 'youtube'},
+      );
+      expectAction('aide', AgentActions.helpGet, target: 'local');
+    });
     test('video calls only fire in an app the user names', () {
       expectAction(
         'video call mom on whatsapp',

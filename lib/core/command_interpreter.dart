@@ -125,6 +125,10 @@ class CommandInterpreter {
       'yo',
       'hiya',
       'sup',
+      'salut',
+      'bonjour',
+      'coucou',
+      'bonsoir',
       'what\'s up',
       'whats up',
       'good morning',
@@ -177,6 +181,9 @@ class CommandInterpreter {
       'check the time',
       'what time is it right now',
       'what time is it currently',
+      'quelle heure est il',
+      'il est quelle heure',
+      'quelle heure',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(
@@ -332,7 +339,8 @@ class CommandInterpreter {
     }
 
     // --- Open URL / website
-    final open = RegExp(r'^(open|go to|launch|start) (.+)$').firstMatch(norm);
+    final open = RegExp(r'^(open|go to|launch|start|ouvre) (.+)$')
+        .firstMatch(norm);
     if (open != null) {
       final target = open.group(2)!.trim();
       if (target.contains('.') || target.startsWith('http')) {
@@ -416,6 +424,8 @@ class CommandInterpreter {
       'what is my battery level',
       'check battery',
       'battery check',
+      'batterie',
+      'niveau de batterie',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.batteryGet, target: 'local'),
@@ -742,7 +752,8 @@ class CommandInterpreter {
     }
 
     // --- Call
-    final call = RegExp(r'^(?:call|dial|phone|ring) (.+)$').firstMatch(norm);
+    final call = RegExp(r'^(?:call|dial|phone|ring|appelle|appeler) (.+)$')
+        .firstMatch(norm);
     if (call != null) {
       final who = call.group(1)!.trim();
       // Strip trailing "on my phone" etc.
@@ -758,10 +769,25 @@ class CommandInterpreter {
         ),
       );
     }
+    // "give mom a call" word order
+    final callGive = RegExp(r'^give (.+) (?:a|the) call$').firstMatch(norm);
+    if (callGive != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.callPlace,
+          target: 'local',
+          arguments: {'contact': callGive.group(1)!.trim()},
+        ),
+      );
+    }
 
-    // --- Send text / SMS
+    // --- Send text / SMS — every phrasing friends actually type, English
+    // and French. A bare trailing message ("text mom love you") stays part
+    // of the contact; the native side drops trailing words until the
+    // contact resolves and treats the rest as the body.
     final textMsg = RegExp(
-      r'^(?:text|sms|message|send (?:a )?(?:message|text) to) (.+?)(?:\s+saying\s+(.+))?$',
+      r'^(?:text|sms|message|msg|texte|texto) '
+      r'(.+?)(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
     ).firstMatch(norm);
     if (textMsg != null) {
       var contact = textMsg.group(1)!.trim();
@@ -782,11 +808,64 @@ class CommandInterpreter {
       );
     }
 
-    // --- Clipboard: "copy <text>" — after messages so "send a message to
-    // dad" texts instead of being swallowed by generic "send …".
-    final copy = RegExp(r'^(copy|send) (.+)$').firstMatch(norm);
+    // "send a text to mom saying hi" / "send an sms to mom"
+    final sendTextTo = RegExp(
+      r'^send (?:a |an )?(?:text|text message|texto|sms|message) to '
+      r'(.+?)(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
+    ).firstMatch(norm);
+    if (sendTextTo != null) {
+      final contact = sendTextTo.group(1)!.trim();
+      final body = sendTextTo.group(2)?.trim();
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.messageSend,
+          target: 'local',
+          arguments: {'contact': contact, if (body != null) 'body': body},
+        ),
+      );
+    }
+
+    // "send mom a text saying hi"
+    final sendObj = RegExp(
+      r'^send (.+?) (?:a text|a texto|an? sms|a message|un message)'
+      r'(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
+    ).firstMatch(norm);
+    if (sendObj != null) {
+      final contact = sendObj.group(1)!.trim();
+      final body = sendObj.group(2)?.trim();
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.messageSend,
+          target: 'local',
+          arguments: {'contact': contact, if (body != null) 'body': body},
+        ),
+      );
+    }
+
+    // French: "envoie un message a mom disant salut" (accents are folded
+    // by normalizePhrase, so "à" arrives as "a").
+    final frSend = RegExp(
+      r'^envoie (?:un |une )?(?:message|texto|sms) a '
+      r'(.+?)(?:\s+(?:disant|en disant|saying)\s+(.+))?$',
+    ).firstMatch(norm);
+    if (frSend != null) {
+      final contact = frSend.group(1)!.trim();
+      final body = frSend.group(2)?.trim();
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.messageSend,
+          target: 'local',
+          arguments: {'contact': contact, if (body != null) 'body': body},
+        ),
+      );
+    }
+
+    // --- Clipboard: "copy <text>" or "send <text> to <device>". Only the
+    // "copy" verb and device-targeted sends land here — a bare "send papi
+    // salut" is a message to a person, never a clipboard write.
+    final copy = RegExp(r'^copy (.+)$').firstMatch(norm);
     if (copy != null) {
-      var text = copy.group(2)!.trim();
+      var text = copy.group(1)!.trim();
       final recipient = RegExp(
         r'(?:^|\s)(to|on) (my |the )?(phone|pc|computer|laptop|tablet|devices|other devices|others)$',
       ).firstMatch(text);
@@ -796,6 +875,32 @@ class CommandInterpreter {
           action: AgentActions.clipboardWrite,
           target: 'local',
           arguments: {'text': text},
+        ),
+      );
+    }
+    final sendClip = RegExp(
+      r'^send (.+) (?:to|onto|on) (?:my |the )?'
+      r'(?:phone|pc|computer|laptop|tablet|devices|other devices|others)$',
+    ).firstMatch(norm);
+    if (sendClip != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.clipboardWrite,
+          target: 'local',
+          arguments: {'text': sendClip.group(1)!.trim()},
+        ),
+      );
+    }
+
+    // Bare "send X": someone-directed, not clipboard (device-targeted
+    // sends were caught above).
+    final bareSend = RegExp(r'^send (.+)$').firstMatch(norm);
+    if (bareSend != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.messageSend,
+          target: 'local',
+          arguments: {'contact': bareSend.group(1)!.trim()},
         ),
       );
     }
@@ -1029,6 +1134,10 @@ class CommandInterpreter {
       'how do you work',
       'options',
       'what are your commands',
+      'aide',
+      'aide moi',
+      'que peux tu faire',
+      'que sais tu faire',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.helpGet, target: 'local'),

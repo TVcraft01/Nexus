@@ -126,12 +126,21 @@ class CommandService {
 
       case InterpretOutcome.unknown:
         _pendingContext['teach:$normalized'] = normalized;
+        // When the phrase smells like a call or text but missed the exact
+        // patterns, say the shape instead of sending them into the generic
+        // teach loop — friends phrase these a hundred different ways.
+        final commLike = RegExp(
+          r'\b(appelle|appeler|texte|texto|sms|message|msg|call|text|dial|phone|ring|send)\b',
+        ).hasMatch(normalized);
+        final hint = commLike
+            ? 'It sounds like a call or text — try "call <name>" or "text <name> saying <message>".'
+            : 'Teach me what it should mean — or tap "what can you do" below to see everything I know.';
         return AgentDispatchResult(
           status: AgentResultStatus.needsInfo,
           dispatch: AgentClarification(
             question: 'I don\'t understand "$text" yet.',
             key: 'teach:$normalized',
-            hint: 'Teach me what it should mean — or tap "what can you do" below to see everything I know.',
+            hint: hint,
           ),
         );
     }
