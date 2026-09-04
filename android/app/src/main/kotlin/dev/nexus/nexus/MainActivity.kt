@@ -189,9 +189,9 @@ class MainActivity : FlutterActivity() {
                     "message" to "Contacts permission was not granted."))
                 return
             }
-            val (number, ranked) = lookupContacts(name ?: "")
+            val (number, matched, ranked) = lookupContacts(name ?: "")
             if (number == null) {
-                result.success(noContactResult(name ?: "", ranked))
+                result.success(noContactResult(name ?: "", ranked, matched))
                 return
             }
             result.success(
@@ -502,8 +502,8 @@ class MainActivity : FlutterActivity() {
     /// Resolves a contact name and places the call directly (ACTION_CALL).
     /// Missing permissions are requested at runtime on first use; without
     /// CALL_PHONE it falls back to the prefilled dialer. When nothing
-    /// matches, the closest contact names travel back so the assistant can
-    /// ask "who did you mean?".
+    /// callable matches, genuinely different closest names travel back so
+    /// the assistant can ask "who did you mean?".
     private fun callContact(name: String, result: MethodChannel.Result) {
         val contact = name.trim()
         if (contact.isEmpty()) {
@@ -520,23 +520,43 @@ class MainActivity : FlutterActivity() {
             requestPermissions(missing.toTypedArray(), REQUEST_CALL_PERMISSIONS)
             return
         }
-        val (number, ranked) = lookupContacts(contact)
+        val (number, matched, ranked) = lookupContacts(contact)
         result.success(
             when {
-                number == null -> noContactResult(contact, ranked)
+                number == null -> noContactResult(contact, ranked, matched)
                 else -> placeCall(contact, number)
             }
         )
     }
 
-    private fun noContactResult(name: String, ranked: List<String>): Map<String, Any?> {
-        val suggestions = ranked.take(3).joinToString(", ") { "\"$it\"" }
-        val message = "No contact named \"$name\" on this device." +
-            if (suggestions.isEmpty()) "" else " Did you mean $suggestions?"
+    private fun noContactResult(name: String, ranked: List<String>, matched: String? = null): Map<String, Any?> {
+        if (matched != null) {
+            // The contact exists, just not callable — never pretend it's missing.
+            return mapOf(
+                "placed" to false,
+                "launched" to false,
+                "candidates" to emptyList<String>(),
+                "message" to "I found \"$matched\" in your contacts, but it has no phone number saved — " +
+                    "add one and I'll call it."
+            )
+        }
+        // Never offer the query itself back as a suggestion: "No contact named
+        // X ... Did you mean X?" (or a case/spacing twin like TVCraft01) is a
+        // contradiction, not a choice. Keep one spelling per real contact.
+        val q = contactMatchKey(name)
+        val suggestions = ranked
+            .filter { contactMatchKey(it) != q }
+            .distinctBy { contactMatchKey(it) }
+            .take(3)
+        val message = if (suggestions.isEmpty())
+            "No contact named \"$name\" on this device — add them to your contacts and I'll find them."
+        else
+            "No contact named \"$name\" on this device. Did you mean " +
+                suggestions.joinToString(", ") { "\"$it\"" } + "?"
         return mapOf(
             "placed" to false,
             "launched" to false,
-            "candidates" to ranked,
+            "candidates" to suggestions,
             "message" to message
         )
     }
@@ -571,10 +591,11 @@ class MainActivity : FlutterActivity() {
     }
 
     /// Best number for [name] plus the closest matching display names.
-    /// Only an exact or case-insensitive-full name match is trusted enough
-    /// to dial immediately; looser matches come back as candidates so the
-    /// assistant can ask "who did you mean?" and learn the wording.
-    private fun lookupContacts(name: String): Pair<String?, List<String>> {
+    /// Returns (number, matched-name-or-null, ranked). Only an exact or
+    /// case-insensitive-full name match is trusted enough to dial
+    /// immediately; looser matches come back as candidates so the assistant
+    /// can ask "who did you mean?" and learn the wording.
+    private fun lookupContacts(name: String): Triple<String?, String?, List<String>> {
         return try {
             val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
             val projection = arrayOf(
@@ -582,25 +603,27 @@ class MainActivity : FlutterActivity() {
                 ContactsContract.CommonDataKinds.Phone.NUMBER,
             )
             contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-                // First number wins per display name.
+                // First non-blank number wins per display name; rows without
+                // a number are tracked separately so we can tell "no contact"
+                // apart from "contact with no number".
                 val numberByName = LinkedHashMap<String, String>()
+                val allNames = LinkedHashSet<String>()
                 while (cursor.moveToNext()) {
                     val displayName = cursor.getString(0) ?: continue
-                    numberByName.putIfAbsent(displayName, cursor.getString(1))
+                    allNames.add(displayName)
+                    val number = cursor.getString(1)
+                    if (!number.isNullOrBlank()) numberByName.putIfAbsent(displayName, number)
                 }
-                val names = numberByName.keys.toList()
                 val q = name.trim()
                 val lower = contactMatchKey(q)
-                val confident = names.any { contactMatchKey(it) == lower }
-                val ranked = rankedContactMatches(names, name)
-                Pair(
-                    if (confident) ranked.firstOrNull()?.let { numberByName[it] } else null,
-                    ranked,
-                )
-            } ?: Pair(null, emptyList())
+                if (lower.isEmpty()) return@use Triple(null, null, emptyList())
+                val matched = allNames.firstOrNull { contactMatchKey(it) == lower }
+                val ranked = rankedContactMatches(numberByName.keys.toList(), name)
+                Triple(matched?.let { numberByName[it] }, matched, ranked)
+            } ?: Triple(null, null, emptyList())
         } catch (e: Exception) {
             Log.e(TAG, "contact lookup failed", e)
-            Pair(null, emptyList())
+            Triple(null, null, emptyList())
         }
     }
 
