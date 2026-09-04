@@ -2578,10 +2578,34 @@ class MeshService extends ChangeNotifier {
     } catch (_) {
       return false;
     }
+    final frame = FrameDecoder.encodeFrame(encodeJson({'enc': enc}));
+    final cached = _outbound[peer.id];
+    if (cached != null) return _writeFrame(cached, frame);
+
+    // Tunnel fallback: when the peer reached us through a one-way link
+    // (adb reverse over a cable), only the peer holds an outbound socket —
+    // our own dial to its announced address fails (loopback here, or no
+    // route at all). The peer keeps its connection to us alive with its
+    // heartbeats, so send on that inbound socket: the cable then works in
+    // BOTH directions with no adb forward.
+    // Snapshot: a failed write drops the socket (mutating the map) while we
+    // are looking for another live one.
+    for (final entry in _inboundPeer.entries.toList()) {
+      if (entry.value == peer.id && await _writeFrame(entry.key, frame)) {
+        return true;
+      }
+    }
+    // No live socket from the peer (or it died mid-write) — dial it.
     final socket = await _outboundSocket(peer);
     if (socket == null) return false;
+    return _writeFrame(socket, frame);
+  }
+
+  /// Adds [frame] to [socket]. On failure the socket is dropped and cleaned
+  /// from both maps, so the next send picks a fresh route.
+  Future<bool> _writeFrame(Socket socket, List<int> frame) async {
     try {
-      socket.add(FrameDecoder.encodeFrame(encodeJson({'enc': enc})));
+      socket.add(frame);
       await socket.flush();
       return true;
     } catch (_) {

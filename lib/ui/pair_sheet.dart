@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
@@ -52,7 +51,6 @@ class _PairSheetState extends State<_PairSheet> {
   late final TextEditingController _portController;
   bool _pairing = false;
   String? _error;
-  String? _usbIp; // USB tethering IP if detected
 
   /// Camera scanning needs a real camera; the phone can scan, desktop types.
   bool get _canScan =>
@@ -81,21 +79,6 @@ class _PairSheetState extends State<_PairSheet> {
     // Add our LAN IP to the QR as soon as we know it, so the other device can
     // connect straight from a scan without typing an address.
     unawaited(_refreshQrWithIp());
-    unawaited(_detectUsb());
-  }
-
-  Future<void> _detectUsb() async {
-    try {
-      final result = await Process.run('ip', ['route']);
-      if (result.exitCode == 0) {
-        final text = result.stdout.toString();
-        // Look for USB tethering gateway (192.168.42.1)
-        final match = RegExp(r'192\.168\.42\.(\d+)').firstMatch(text);
-        if (match != null && mounted) {
-          setState(() => _usbIp = '192.168.42.${match.group(1)}');
-        }
-      }
-    } catch (_) {}
   }
 
   Future<void> _refreshQrWithIp() async {
@@ -373,38 +356,6 @@ class _PairSheetState extends State<_PairSheet> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (_usbIp != null) ...[
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: NexusColors.ok.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: NexusColors.ok.withValues(alpha: 0.3),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.usb_rounded,
-                      size: 20,
-                      color: NexusColors.ok,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'USB tethering detected! Other device can reach this phone at \'$_usbIp\' port \'${widget.mesh.port}\'',
-                        style: const TextStyle(
-                          color: NexusColors.text,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
@@ -420,9 +371,10 @@ class _PairSheetState extends State<_PairSheet> {
                   SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Phone to PC: Plug into a PC running Nexus — it pairs automatically.\n\n'
-                      'Phone to Phone: Enable USB tethering on the other phone, '
-                      'then enter its USB IP (192.168.42.x) in "Enter a code".',
+                      'Plug this phone into a PC running Nexus and the PC does '
+                      'the work: it spots this phone over the cable, installs '
+                      'or updates Nexus on it if needed, and opens a secure '
+                      'tunnel — no Wi-Fi used for the pairing.',
                       style: TextStyle(color: NexusColors.text, fontSize: 13),
                     ),
                   ),
@@ -431,32 +383,41 @@ class _PairSheetState extends State<_PairSheet> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Phone to PC pairing:',
+              'Phone to PC pairing',
               style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 8),
             Text(
-              '1. On the PC: Nexus > Pair a device > Pair over cable.',
+              '1. On this phone: enable USB debugging (Settings > Developer '
+              'options > USB debugging).',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              '2. Plug this phone in and follow the PC prompts.',
+              '2. Plug this phone into the PC, then on the PC open Nexus > '
+              'Pair a device > Pair over cable.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '3. When the PC shows a code and a port: open \"Enter a code\" '
+              'here and type Address 127.0.0.1, the port shown on the PC, and '
+              'that code, then tap Pair.',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 16),
             Text(
-              'Phone to Phone pairing:',
+              'Two phones and one cable?',
               style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 8),
             Text(
-              '1. On the OTHER phone: Settings > Network > Hotspot > USB tethering ON.',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '2. On THIS phone: Enter a code tab > address: 192.168.42.1',
+              'Android cannot bridge two phones over a single USB cable, so '
+              'phone-to-phone pairing over USB is not possible on a normal '
+              'phone. To pair two phones anywhere with no router and no '
+              'internet: put one in hotspot mode and pair the other to it '
+              'with a code or a QR scan — same direct, private pairing, over '
+              'the hotspot link instead of a cable.',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
           ],
