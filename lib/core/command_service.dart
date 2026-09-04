@@ -1011,8 +1011,8 @@ class CommandService {
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
             reachable
-                ? '"$who" is online on your mesh, but I can't $verb from the assistant in this release yet.'
-                : 'I don't see "$who" online right now. $verb needs the other device connected to your mesh — open the Devices tab to check.',
+                ? '"$who" is online on your mesh, but I can\'t $verb from the assistant in this release yet.'
+                : 'I don\'t see "$who" online right now. $verb needs the other device connected to your mesh — open the Devices tab to check.',
           ),
         );
       // --- Airplane mode: needs a system permission, or doesn't exist on a
@@ -1023,7 +1023,7 @@ class CommandService {
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
             isPhone
-                ? 'Airplane mode needs a system-level permission Nexus doesn't take — swipe down from the top of the screen and tap the airplane toggle.'
+                ? 'Airplane mode needs a system-level permission Nexus doesn\'t take — swipe down from the top of the screen and tap the airplane toggle.'
                 : 'Airplane mode is a phone feature — this device has no radios to switch.',
           ),
         );
@@ -1031,7 +1031,7 @@ class CommandService {
         return const AgentDispatchResult(
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
-            'I won't restart the device from inside the app — use the power menu.',
+            'I won\'t restart the device from inside the app — use the power menu.',
           ),
         );
       default:
