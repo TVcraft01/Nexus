@@ -209,4 +209,58 @@ void main() {
       expect(evaluateMath('(2+2'), isNull);
     });
   });
+
+  group('near-miss suggestions never act without confirmation', () {
+    test('a typo of a known command is offered as "did you mean", not run', () {
+      for (final phrase in ['tex mom saying hi', 'what time is is']) {
+        final result = service.execute(phrase);
+        expect(result.status, AgentResultStatus.needsInfo, reason: phrase);
+        final ask = result.dispatch! as AgentClarification;
+        expect(ask.key, startsWith('near:'), reason: phrase);
+        expect(ask.question, contains('Did you mean'), reason: phrase);
+      }
+    });
+
+    test('confirming a suggestion runs it and remembers the phrase', () {
+      final first = service.execute('tex mom saying hi');
+      final key = (first.dispatch! as AgentClarification).key;
+      final confirmed = service.execute('yes', answerTo: key);
+      expect(confirmed.status, AgentResultStatus.succeeded);
+      expect(
+        (confirmed.dispatch! as AgentMessage).action,
+        AgentActions.messageSend,
+      );
+
+      // The phrase is remembered on this device…
+      expect(service.learnedSnapshot, contains('tex mom saying hi'));
+      // …and now runs directly, with no question at all.
+      final direct = service.execute('tex mom saying hi');
+      expect(direct.status, AgentResultStatus.succeeded);
+    });
+
+    test('correcting a bad suggestion falls into the normal teach loop', () {
+      final first = service.execute('what time is is');
+      final key = (first.dispatch! as AgentClarification).key;
+      // Not a "yes" — the user answers with the real command instead.
+      final taught = service.execute('show my devices', answerTo: key);
+      expect(taught.status, AgentResultStatus.succeeded);
+      expect(service.learnedSnapshot['what time is is'], 'show my devices');
+    });
+
+    test('phrases with no near match still go straight to the teach loop', () {
+      for (final phrase in [
+        'navigate to the office',
+        'turn on the lights',
+        'teleport me to mars',
+      ]) {
+        final result = service.execute(phrase);
+        expect(result.status, AgentResultStatus.needsInfo, reason: phrase);
+        expect(
+          (result.dispatch! as AgentClarification).key,
+          startsWith('teach:'),
+          reason: phrase,
+        );
+      }
+    });
+  });
 }
