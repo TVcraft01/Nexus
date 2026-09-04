@@ -555,14 +555,12 @@ class MainActivity : FlutterActivity() {
     }
 
     /// Opens the named app pointed at [number]. WhatsApp (wa.me) and Telegram
-    /// (tg://resolve) have deep links that land on a callable contact; the
-    /// number is normalized to full international form first (see
-    /// [e164Number]). Everything else — including Skype, whose consumer
-    /// service was retired in 2025 — is answered honestly instead of
-    /// pretending.
+    /// (tg://resolve) have deep links that land on a callable contact;
+    /// [number] arrives already E.164-normalized from [lookupContacts].
+    /// Everything else — including Skype, whose consumer service was retired
+    /// in 2025 — is answered honestly instead of pretending.
     private fun openVideoApp(name: String, app: String, number: String): Map<String, Any?> {
-        val e164 = e164Number(number, simCountryIso())
-        val digits = e164.removePrefix("+") // wa.me / tg:// resolve want no + sign
+        val digits = number.removePrefix("+") // wa.me / tg:// resolve want no + sign
         val uri = when (app) {
             "whatsapp", "wa" -> "https://wa.me/$digits"
             "telegram", "tg" -> "tg://resolve?phone=$digits"
@@ -631,7 +629,8 @@ class MainActivity : FlutterActivity() {
         else -> app
     }
 
-    /// Opens the SMS composer addressed to [number] with [body] drafted.
+    /// Opens the SMS composer addressed to [number] (E.164 from
+    /// [lookupContacts]) with [body] drafted.
     private fun openSmsComposer(name: String, number: String, body: String?): Map<String, Any?> = try {
         val intent = Intent(Intent.ACTION_SENDTO, Uri.fromParts("smsto", number, null)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -806,7 +805,8 @@ class MainActivity : FlutterActivity() {
     }
 
     /// Best number for [name] plus the closest matching display names.
-    /// Returns (number, matched-name-or-null, ranked). Only an exact or
+    /// Returns (E.164-normalized number, matched-name-or-null, ranked).
+    /// Only an exact or
     /// case-insensitive-full name match is trusted enough to dial
     /// immediately; looser matches come back as candidates so the assistant
     /// can ask "who did you mean?" and learn the wording.
@@ -833,8 +833,12 @@ class MainActivity : FlutterActivity() {
                 val lower = contactMatchKey(q)
                 if (lower.isEmpty()) return@use Triple(null, null, emptyList())
                 val matched = allNames.firstOrNull { contactMatchKey(it) == lower }
+                // Normalize once, here, so calls, the dialer fallback, texts
+                // and video all receive the same clean international number.
+                val number = matched?.let { numberByName[it] }
+                    ?.let { e164Number(it, simCountryIso()) }
                 val ranked = rankedContactMatches(numberByName.keys.toList(), name)
-                Triple(matched?.let { numberByName[it] }, matched, ranked)
+                Triple(number, matched, ranked)
             } ?: Triple(null, null, emptyList())
         } catch (e: Exception) {
             Log.e(TAG, "contact lookup failed", e)
