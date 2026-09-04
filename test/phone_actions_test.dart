@@ -18,6 +18,19 @@ class FakePhoneBackend implements PhoneActionBackend {
   FakePhoneBackend(this.contacts);
 
   @override
+  Future<PhoneCallOutcome> videoCall(String name, String? app) async {
+    lastDialed = name;
+    if (fail) throw Exception('boom');
+    return PhoneCallOutcome(
+      placed: false,
+      launched: app != null && app.isNotEmpty,
+      message: app == null
+          ? 'I only start video calls in an app you name.'
+          : 'Opened $app with $name.',
+    );
+  }
+
+  @override
   Future<PhoneCallOutcome> callContact(String name) async {
     lastDialed = name;
     if (fail) throw Exception('boom');
@@ -79,16 +92,19 @@ void main() {
     approval: AgentApproval.approved,
   );
 
-  test('resolves the contact and opens the dialer, confirming the launch', () async {
-    final backend = FakePhoneBackend({'mom': '+33612345678'});
-    final result = await executePhoneCall(backend, request);
+  test(
+    'resolves the contact and opens the dialer, confirming the launch',
+    () async {
+      final backend = FakePhoneBackend({'mom': '+33612345678'});
+      final result = await executePhoneCall(backend, request);
 
-    expect(backend.lastDialed, 'mom');
-    expect(result.status, AgentResultStatus.succeeded);
-    final message = result.dispatch! as AgentMessage;
-    expect(message.text, contains('mom'));
-    expect(message.text, contains('+33612345678'));
-  });
+      expect(backend.lastDialed, 'mom');
+      expect(result.status, AgentResultStatus.succeeded);
+      final message = result.dispatch! as AgentMessage;
+      expect(message.text, contains('mom'));
+      expect(message.text, contains('+33612345678'));
+    },
+  );
 
   test('an unknown contact is an honest unavailable, never a crash', () async {
     final backend = FakePhoneBackend({});
@@ -124,32 +140,36 @@ void main() {
     expect(message.text, isNot(contains('0652544264')));
   });
 
-  test('a decorated contact resolves through the fallback (real-device case)', () async {
-    // The real phone stores the contact as "TVcraft01 〘✘ΔτΚ⑤⑦〙"; asking for
-    // "TVcraft01" used to miss with an exact-only lookup.
-    final backend = FakePhoneBackend({
-      'TVcraft01 〘✘ΔτΚ⑤⑦〙': '0652544264',
-      'Mom': '+33612345678',
-    });
-    final result = await executePhoneCall(
-      backend,
-      const AgentRequest(
-        requestId: 'r4',
-        target: 'phone1',
-        action: AgentActions.callPlace,
-        arguments: {'contact': 'TVcraft01'},
-        approval: AgentApproval.approved,
-      ),
-    );
+  test(
+    'a decorated contact resolves through the fallback (real-device case)',
+    () async {
+      // The real phone stores the contact as "TVcraft01 〘✘ΔτΚ⑤⑦〙"; asking for
+      // "TVcraft01" used to miss with an exact-only lookup.
+      final backend = FakePhoneBackend({
+        'TVcraft01 〘✘ΔτΚ⑤⑦〙': '0652544264',
+        'Mom': '+33612345678',
+      });
+      final result = await executePhoneCall(
+        backend,
+        const AgentRequest(
+          requestId: 'r4',
+          target: 'phone1',
+          action: AgentActions.callPlace,
+          arguments: {'contact': 'TVcraft01'},
+          approval: AgentApproval.approved,
+        ),
+      );
 
-    expect(result.status, AgentResultStatus.succeeded);
-    final message = result.dispatch! as AgentMessage;
-    expect(message.text, contains('0652544264'));
-    expect(message.text, contains('TVcraft01'));
-  });
+      expect(result.status, AgentResultStatus.succeeded);
+      final message = result.dispatch! as AgentMessage;
+      expect(message.text, contains('0652544264'));
+      expect(message.text, contains('TVcraft01'));
+    },
+  );
 
   test('a directly-placed call maps to succeeded', () async {
-    final backend = FakePhoneBackend({'mom': '+33612345678'})..directCall = true;
+    final backend = FakePhoneBackend({'mom': '+33612345678'})
+      ..directCall = true;
     final result = await executePhoneCall(backend, request);
 
     expect(result.status, AgentResultStatus.succeeded);
