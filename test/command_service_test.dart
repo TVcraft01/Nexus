@@ -262,5 +262,32 @@ void main() {
         );
       }
     });
+
+    test(
+      'a "yes" after a rejected suggestion runs the suggestion, not the typo',
+      () {
+        // Regression: re-answering a "did you mean" question with something
+        // non-command must not clobber the stored suggestion — a later plain
+        // "yes" has to run the suggested meaning, or it dead-ends by trying
+        // to interpret the original typo again.
+        // Fresh service: the shared one may already know "what time is is"
+        // from an earlier test in this file.
+        final isolated = CommandService(devices: () => devices);
+        final first = isolated.execute('what time is is');
+        final key = (first.dispatch! as AgentClarification).key;
+        expect(key, startsWith('near:'));
+
+        // Not a command → re-asks the same question.
+        final reask = isolated.execute('no', answerTo: key);
+        expect(reask.status, AgentResultStatus.needsInfo);
+        expect((reask.dispatch! as AgentClarification).key, key);
+
+        // Now "yes" → must run the suggested time answer.
+        final yes = isolated.execute('yes', answerTo: key);
+        expect(yes.status, AgentResultStatus.succeeded);
+        expect(yes.dispatch, isA<AgentMessage>());
+        expect(isolated.learnedSnapshot['what time is is'], 'what time is it');
+      },
+    );
   });
 }
