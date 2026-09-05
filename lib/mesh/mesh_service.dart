@@ -350,6 +350,12 @@ class MeshService extends ChangeNotifier {
   /// Fired when a paired device tells the assistant a fact and syncs it here.
   /// The view wires this into the live [CommandService] so the fact is usable
   /// immediately. Receivers never re-broadcast — that would loop the mesh.
+  ///
+  /// Ownership rule: inbound knowledge is persisted by whoever claims it. When
+  /// this (or [onLearnedPhraseReceived]) is attached, the mesh only delivers
+  /// and the live assistant's own persistence funnel writes the store — never
+  /// both. When nobody is listening (startup window, headless mesh), the mesh
+  /// writes the store itself so the knowledge survives for the next boot.
   void Function(String fact)? onFactReceived;
 
   /// In-flight replies keyed by request id. Completed by `agent.result` or a
@@ -1321,8 +1327,13 @@ class MeshService extends ChangeNotifier {
           QueryLog.i.synced(phrase, meaning, from: msg.from, conflict: true);
           break;
         }
-        store.agentLearned = {...store.agentLearned, phrase: meaning};
-        _queueSave();
+        // No live assistant to claim this phrase — persist it ourselves so it
+        // survives until one starts. With a live listener, the assistant's own
+        // persistence funnel owns the write (see [onLearnedPhraseReceived]).
+        if (onLearnedPhraseReceived == null) {
+          store.agentLearned = {...store.agentLearned, phrase: meaning};
+          _queueSave();
+        }
         QueryLog.i.synced(phrase, meaning, from: msg.from);
         onLearnedPhraseReceived?.call(phrase, meaning);
         notifyListeners();
@@ -1340,8 +1351,13 @@ class MeshService extends ChangeNotifier {
           QueryLog.i.syncedFact(text, from: msg.from, conflict: true);
           break;
         }
-        store.agentFacts = [...store.agentFacts, text];
-        _queueSave();
+        // No live assistant to claim this fact — persist it ourselves so it
+        // survives until one starts. With a live listener, the assistant's own
+        // persistence funnel owns the write (see [onFactReceived]).
+        if (onFactReceived == null) {
+          store.agentFacts = [...store.agentFacts, text];
+          _queueSave();
+        }
         QueryLog.i.syncedFact(text, from: msg.from);
         onFactReceived?.call(text);
         notifyListeners();

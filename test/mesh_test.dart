@@ -1231,9 +1231,13 @@ void main() {
 
     String? seenPhrase;
     String? seenMeaning;
+    // The live assistant claims the knowledge: it adopts the phrase and its
+    // own persistence funnel writes the store (the mesh only delivers when a
+    // listener is attached — never both).
     meshB.onLearnedPhraseReceived = (phrase, meaning) {
       seenPhrase = phrase;
       seenMeaning = meaning;
+      meshB.store.agentLearned = {...meshB.store.agentLearned, phrase: meaning};
     };
 
     await meshA.broadcastLearnedPhrase(
@@ -1244,9 +1248,38 @@ void main() {
     await _waitFor(() => seenPhrase != null);
     expect(seenPhrase, 'call tvcraft');
     expect(seenMeaning, 'call tvcraft01 〘✘δτκ⑤⑦〙');
-    // Persisted on the peer, and usable right away via the live callback.
+    // Persisted by the claiming listener's funnel, usable right away.
     expect(meshB.store.agentLearned['call tvcraft'], 'call tvcraft01 〘✘δτκ⑤⑦〙');
   });
+
+  test(
+    'knowledge syncs with no assistant listening and is persisted by the mesh',
+    () async {
+      await meshA.start();
+      await meshB.start();
+
+      final session = meshA.beginPairing();
+      final result = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(result.ok, isTrue);
+
+      // No listener attached: the mesh persists inbound knowledge itself (the
+      // startup window / headless use), so it survives for the next boot.
+      await meshA.broadcastLearnedPhrase('call tvcraft', 'call bob');
+      await meshA.broadcastFact('my wifi password is nexus');
+
+      await _waitFor(
+        () =>
+            meshB.store.agentLearned.containsKey('call tvcraft') &&
+            meshB.store.agentFacts.isNotEmpty,
+      );
+      expect(meshB.store.agentLearned['call tvcraft'], 'call bob');
+      expect(meshB.store.agentFacts, ['my wifi password is nexus']);
+    },
+  );
 
   test('a local correction wins over a conflicting synced meaning', () async {
     await meshA.start();
@@ -1286,13 +1319,19 @@ void main() {
     expect(result.ok, isTrue);
 
     String? seenFact;
-    meshB.onFactReceived = (fact) => seenFact = fact;
+    // The live assistant claims the fact: it adopts it and its persistence
+    // funnel writes the store (the mesh only delivers when a listener is
+    // attached — never both).
+    meshB.onFactReceived = (fact) {
+      seenFact = fact;
+      meshB.store.agentFacts = [...meshB.store.agentFacts, fact];
+    };
 
     await meshA.broadcastFact('my wifi password is nexus');
 
     await _waitFor(() => seenFact != null);
     expect(seenFact, 'my wifi password is nexus');
-    // Persisted on the peer, and deduplicated by the store round-trip.
+    // Persisted by the claiming listener's funnel, deduplicated on delivery.
     expect(meshB.store.agentFacts, ['my wifi password is nexus']);
   });
 
