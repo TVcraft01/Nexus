@@ -217,16 +217,50 @@ void main() {
       final note = interpreter.interpret('make a note to buy milk');
       expect(note.command!.action, AgentActions.noteCreate);
       expect(note.command!.arguments['text'], 'to buy milk');
-      expect(
-        interpreter
-            .interpret('remember that the wifi password is nexus')
-            .command!
-            .action,
-        AgentActions.noteCreate,
-      );
       final tr = interpreter.interpret('translate hello to french');
       expect(tr.command!.action, AgentActions.translateText);
       expect(tr.command!.arguments['language'], 'french');
+    });
+
+    test('remember/forget/recall are fact-memory commands', () {
+      // "remember that …" is a fact — never a note, never a reminder.
+      final remember = interpreter.interpret(
+        'remember that my wifi password is nexus',
+      );
+      expect(remember.outcome, InterpretOutcome.matched);
+      expect(remember.command!.action, AgentActions.memoryRemember);
+      expect(remember.command!.arguments['text'], 'my wifi password is nexus');
+      for (final phrase in [
+        'remember my bike code is 4321',
+        'remember this: mom prefers text',
+      ]) {
+        expect(
+          interpreter.interpret(phrase).command!.action,
+          AgentActions.memoryRemember,
+          reason: phrase,
+        );
+      }
+      // "remember to …" stays a reminder, never a fact.
+      final remind = interpreter.interpret('remember to buy milk');
+      expect(remind.command!.action, AgentActions.reminderSet);
+      // Forget and recall.
+      final forget = interpreter.interpret('forget my wifi password');
+      expect(forget.command!.action, AgentActions.memoryForget);
+      expect(forget.command!.arguments['text'], 'my wifi password');
+      for (final phrase in [
+        'what do you know about me',
+        'what do you remember',
+        'what have i told you',
+      ]) {
+        expect(
+          interpreter.interpret(phrase).command!.action,
+          AgentActions.memoryRecall,
+          reason: phrase,
+        );
+      }
+      final topic = interpreter.interpret('what do you know about my bike');
+      expect(topic.command!.action, AgentActions.memoryRecall);
+      expect(topic.command!.arguments['topic'], 'my bike');
     });
 
     test('normalization folds accents and contractions', () {

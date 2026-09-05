@@ -57,6 +57,11 @@ abstract final class AgentActions {
   static const randomNumber = 'random.number';
   static const tellJoke = 'tell.joke';
 
+  // --- Memory: facts the user tells us about their world ---
+  static const memoryRemember = 'memory.remember';
+  static const memoryRecall = 'memory.recall';
+  static const memoryForget = 'memory.forget';
+
   // --- Cross-device (mesh) ---
   static const findDevice = 'device.find';
   static const ringDevice = 'device.ring';

@@ -176,10 +176,64 @@ void main() {
         await tester.pump();
         expect(find.textContaining('Here is what I can do:'), findsOneWidget);
 
-        // A second chip keeps working after the first exchange.
-        await tester.tap(find.widgetWithText(ActionChip, 'roll a dice'));
+        // A second chip keeps working after the first exchange — and the
+        // memory chip answers honestly on a fresh store.
+        await tester.tap(
+          find.widgetWithText(ActionChip, 'what do you know about me'),
+        );
         await tester.pump();
-        expect(find.textContaining(RegExp(r'Rolled a [1-6]!')), findsOneWidget);
+        expect(
+          find.textContaining('don\'t remember anything about you yet'),
+          findsOneWidget,
+        );
+      } finally {
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets(
+    'memory flow: remember a fact, recall it, restart, still remembered, '
+    'then forget it',
+    (tester) async {
+      final (store, mesh) = await boot();
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump();
+
+        // Tell it something about me, like a first user would.
+        await ask(tester, 'remember that my wifi password is nexus');
+        expect(find.textContaining('Remembered:'), findsOneWidget);
+
+        // Ask what it knows.
+        await ask(tester, 'what do you know about me');
+        expect(find.textContaining('Here is what I know:'), findsOneWidget);
+        expect(find.textContaining('wifi password is nexus'), findsWidgets);
+
+        // Restart on the same store: the fact must survive.
+        await tester.pumpWidget(harness(mesh, key: UniqueKey()));
+        await tester.pump();
+        await ask(tester, 'what do you know about wifi');
+        expect(find.textContaining('About "wifi":'), findsOneWidget);
+        expect(find.textContaining('wifi password is nexus'), findsWidgets);
+
+        // Careless: forgetting something it does not know is honest.
+        await ask(tester, 'forget the moon');
+        expect(
+          find.textContaining('don\'t remember anything like'),
+          findsOneWidget,
+        );
+
+        // Forgetting the real thing removes it for good.
+        await ask(tester, 'forget my wifi password');
+        expect(find.textContaining('Forgotten:'), findsOneWidget);
+        await ask(tester, 'what do you know about me');
+        expect(
+          find.textContaining('don\'t remember anything about you yet'),
+          findsOneWidget,
+        );
+        expect(store.agentFacts, isEmpty);
       } finally {
         QueryLog.i.resetForTest();
         await mesh.stop();

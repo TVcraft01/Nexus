@@ -97,10 +97,12 @@ class _AssistantViewState extends State<AssistantView> {
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
         defaults: widget.mesh.store.agentDefaults,
+        facts: widget.mesh.store.agentFacts,
       ),
       onMemoryChanged: () {
         widget.mesh.store.agentLearned = _service.learnedSnapshot;
         widget.mesh.store.agentDefaults = _service.defaultsSnapshot;
+        widget.mesh.store.agentFacts = _service.factsSnapshot;
         // Best-effort persist — never a boot requirement.
         unawaited(widget.mesh.store.save());
       },
@@ -109,17 +111,27 @@ class _AssistantViewState extends State<AssistantView> {
       onPhraseLearned: (phrase, meaning) {
         unawaited(widget.mesh.broadcastLearnedPhrase(phrase, meaning));
       },
+      // Remember once here, known on every paired device: a fact told to
+      // this assistant is broadcast over the mesh like a taught phrase.
+      onFactLearned: (fact) {
+        unawaited(widget.mesh.broadcastFact(fact));
+      },
     );
     // And the other direction — adopt phrases taught on paired devices, live
     // (not only after a restart).
     widget.mesh.onLearnedPhraseReceived = (phrase, meaning) {
       _service.adoptLearned(phrase, meaning);
     };
+    // And the other direction — adopt facts told to paired devices, live.
+    widget.mesh.onFactReceived = (fact) {
+      _service.adoptFact(fact);
+    };
   }
 
   @override
   void dispose() {
     widget.mesh.onLearnedPhraseReceived = null;
+    widget.mesh.onFactReceived = null;
     _controller.dispose();
     _focus.dispose();
     super.dispose();
@@ -1613,6 +1625,8 @@ class _AssistantViewState extends State<AssistantView> {
   Widget _suggestionChips() {
     const suggestions = [
       'what can you do',
+      'what time is it',
+      'what do you know about me',
       'battery',
       'open youtube',
       'call mom',
@@ -1676,7 +1690,9 @@ class _AssistantViewState extends State<AssistantView> {
                 '1. Try a blue word below — tap one and watch.\n'
                 '2. "call …" dials right away; if I am not sure who,\n'
                 '    I ask once and remember forever.\n'
-                '3. Pair your other devices from the Devices tab — then\n'
+                '3. "remember that …" saves a fact I keep for you:\n'
+                '    ask "what do you know about me" anytime.\n'
+                '4. Pair your other devices from the Devices tab — then\n'
                 '    I can also do things on them for you.\n',
                 style: TextStyle(
                   color: NexusColors.muted,

@@ -32,7 +32,9 @@ class QueryLog {
     for (final dir in await _candidateDirs()) {
       try {
         await dir.create(recursive: true);
-        final f = File('${dir.path}${Platform.pathSeparator}assistant_log.jsonl');
+        final f = File(
+          '${dir.path}${Platform.pathSeparator}assistant_log.jsonl',
+        );
         // One rolling page: past the cap we start fresh (the .1 keeps the old).
         if (await f.exists() && await f.length() > _maxBytes) {
           await f.rename('${f.path}.1');
@@ -49,7 +51,9 @@ class QueryLog {
     final out = <Directory>[];
     try {
       final shared = await MeshService.androidSharedRoot();
-      if (shared != null && shared.isNotEmpty) out.add(Directory('$shared/Nexus'));
+      if (shared != null && shared.isNotEmpty) {
+        out.add(Directory('$shared/Nexus'));
+      }
     } catch (_) {}
     try {
       out.add(await getApplicationDocumentsDirectory());
@@ -60,7 +64,11 @@ class QueryLog {
   /// Records one event. Fire-and-forget by design.
   void write(String kind, Map<String, dynamic> data) {
     _pending.add(
-      jsonEncode({'ts': DateTime.now().toIso8601String(), 'kind': kind, ...data}),
+      jsonEncode({
+        'ts': DateTime.now().toIso8601String(),
+        'kind': kind,
+        ...data,
+      }),
     );
     _flushTimer ??= Timer(flushDelay, _flush);
     if (_pending.length >= 8) unawaited(_flush());
@@ -74,20 +82,45 @@ class QueryLog {
     _pending.clear();
   }
 
-  void ask(String input, String status, String route, String detail) =>
-      write('ask', {'input': input, 'status': status, 'route': route, 'detail': detail});
+  void ask(String input, String status, String route, String detail) => write(
+    'ask',
+    {'input': input, 'status': status, 'route': route, 'detail': detail},
+  );
 
   void call(String contact, String outcome, {List<String>? candidates}) =>
-      write('call', {'contact': contact, 'outcome': outcome, '?candidates': candidates});
+      write('call', {
+        'contact': contact,
+        'outcome': outcome,
+        '?candidates': candidates,
+      });
 
   void learned(String phrase, String meaning) =>
       write('learned', {'phrase': phrase, 'meaning': meaning});
 
-  void synced(String phrase, String meaning, {String? from, bool conflict = false}) =>
-      write('sync', {'phrase': phrase, 'meaning': meaning, 'from': from, 'conflict': conflict});
+  void synced(
+    String phrase,
+    String meaning, {
+    String? from,
+    bool conflict = false,
+  }) => write('sync', {
+    'phrase': phrase,
+    'meaning': meaning,
+    'from': from,
+    'conflict': conflict,
+  });
+
+  void fact(String op, String text) => write('fact', {'op': op, 'text': text});
+
+  void syncedFact(String text, {String? from, bool conflict = false}) =>
+      write('fact-sync', {'text': text, 'from': from, 'conflict': conflict});
 
   void remote(String from, String action, String approval, String detail) =>
-      write('remote', {'from': from, 'action': action, 'approval': approval, 'detail': detail});
+      write('remote', {
+        'from': from,
+        'action': action,
+        'approval': approval,
+        'detail': detail,
+      });
 
   Future<void> _flush() async {
     _flushTimer?.cancel();

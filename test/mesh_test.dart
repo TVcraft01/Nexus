@@ -1272,6 +1272,56 @@ void main() {
     expect(adopted, isFalse);
     expect(meshB.store.agentLearned['call tvcraft'], 'call bob');
   });
+
+  test('a fact told to one assistant syncs to its paired peers', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    String? seenFact;
+    meshB.onFactReceived = (fact) => seenFact = fact;
+
+    await meshA.broadcastFact('my wifi password is nexus');
+
+    await _waitFor(() => seenFact != null);
+    expect(seenFact, 'my wifi password is nexus');
+    // Persisted on the peer, and deduplicated by the store round-trip.
+    expect(meshB.store.agentFacts, ['my wifi password is nexus']);
+  });
+
+  test(
+    'a synced fact that already exists is dropped, not duplicated',
+    () async {
+      await meshA.start();
+      await meshB.start();
+
+      final session = meshA.beginPairing();
+      final result = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(result.ok, isTrue);
+
+      meshB.store.agentFacts = ['my wifi password is nexus'];
+      var adopted = false;
+      meshB.onFactReceived = (_) => adopted = true;
+
+      await meshA.broadcastFact('my wifi password is nexus');
+
+      // Nothing may adopt (or re-add) — the fact is already there.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(adopted, isFalse);
+      expect(meshB.store.agentFacts, ['my wifi password is nexus']);
+    },
+  );
 }
 
 /// Polls until [cond] is true (with a timeout), so tests don't depend on
