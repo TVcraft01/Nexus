@@ -303,4 +303,103 @@ void main() {
       await mesh.stop();
     }
   });
+
+  testWidgets(
+    'proactive dream nudge: startup gaps surface by themselves, and '
+    'teaching one clears the nudge',
+    (tester) async {
+      final (store, mesh) = await boot();
+      // A phrase the assistant failed on twice, still untaught.
+      QueryLog.readAllOverride = () async => [
+        '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
+        '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
+      ];
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump(); // first frame
+        await tester.pump(); // post-frame log read resolves
+
+        // The assistant says so itself, before being asked — the nudge
+        // names the phrase it keeps missing.
+        final nudge = find.byKey(const ValueKey('dream-nudge'));
+        expect(nudge, findsOneWidget);
+        expect(
+          find.textContaining('"bring me home"'),
+          findsWidgets,
+          reason: 'the nudge should name the missed phrase',
+        );
+
+        // Tapping it opens the same dream review as the header button.
+        await tester.tap(nudge);
+        await tester.pumpAndSettle();
+        expect(find.text('What I still misunderstand'), findsOneWidget);
+
+        // Teach it inside the sheet; the row leaves the list.
+        await tester.enterText(
+          find.byKey(const ValueKey('dream-meaning')),
+          'show my devices',
+        );
+        await tester.tap(find.byIcon(Icons.check_rounded));
+        await tester.pumpAndSettle();
+        expect(find.text('"bring me home"  ·  asked 1 time'), findsNothing);
+
+        // Closing the sheet re-checks the log: no gaps left, nudge gone.
+        await tester.tapAt(const Offset(10, 10)); // barrier above the sheet
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('dream-nudge')), findsNothing);
+        expect(store.agentLearned['bring me home'], 'show my devices');
+      } finally {
+        QueryLog.readAllOverride = null;
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets('the nudge is once per session and honors a clean log', (
+    tester,
+  ) async {
+    final (store, mesh) = await boot();
+    QueryLog.readAllOverride = () async => [
+      '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
+    ];
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+      await tester.pump();
+      final nudge = find.byKey(const ValueKey('dream-nudge'));
+      expect(nudge, findsOneWidget);
+
+      // Dismissing it silences the session. Opening the dream review from
+      // the header and closing it re-checks the log — the gaps are still
+      // there, yet the nudge must not come back.
+      await tester.tap(find.byTooltip('Not now'));
+      await tester.pump();
+      expect(nudge, findsNothing);
+      await tester.tap(find.byIcon(Icons.psychology_alt_outlined));
+      await tester.pumpAndSettle();
+      expect(find.text('What I still misunderstand'), findsOneWidget);
+      await tester.tapAt(const Offset(10, 10)); // barrier above the sheet
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('dream-nudge')), findsNothing);
+    } finally {
+      QueryLog.readAllOverride = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+
+    // A clean log never nudges.
+    final (cleanStore, cleanMesh) = await boot();
+    QueryLog.readAllOverride = () async => const [];
+    try {
+      await tester.pumpWidget(harness(cleanMesh));
+      await tester.pump();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('dream-nudge')), findsNothing);
+    } finally {
+      QueryLog.readAllOverride = null;
+      QueryLog.i.resetForTest();
+      await cleanMesh.stop();
+    }
+  });
 }
