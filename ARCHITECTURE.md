@@ -46,7 +46,8 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
 | `core/query_log.dart` | ~170 | Append-only ask log + read-back, with `@visibleForTesting` seams for fake-async tests. |
 | `core/store.dart` | ~270 | JSON persistence (`NexusStore`). The store is a *mirror* — setter + `save()`, no logic — plus identity/devices/files metadata. |
 | `mesh/mesh_service.dart` | ~3,200 | Mesh transport, pairing, sync handlers, remote file access, clipboard. Its size is next on the chopping block. |
-| `ui/assistant_view.dart` | ~2,700 | The assistant screen: thread UI, service wiring, platform dispatch, dream sheet. Biggest remaining monolith; the sheet and clock are candidates to extract. |
+| `ui/device_executor.dart` | ~1,180 | **The device executor**: every platform action this device can run (apps, screenshots, calls, texts, media, timers…) and the switch routing an `AgentRequest` to the right one. Injectable backends — unit-tested without widgets (`test/device_executor_test.dart`). |
+| `ui/assistant_view.dart` | ~1,550 | The assistant screen: thread UI, service wiring, mesh/approval flows. It decides *what* the assistant says and when to run; `DeviceExecutor` decides *how* an action runs. The dream sheet and clock are still extractable here. |
 
 ## State ownership
 
@@ -74,6 +75,9 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
 - A new *memory* kind → follow the facts vertical: interpreter pattern →
   catalog case mutating through `AnswerContext` → a `NexusStore` field →
   a mesh message type + inbound handler.
+- A new *platform action* ("open x", "toggle y") → `ui/device_executor.dart`:
+  add the method and one route in its switch. Platform code never lives in
+  the view or the catalog.
 - A behavior change to sync or pairing → `mesh/`. A new screen → `ui/`, in
   its own file, not appended to `assistant_view.dart`.
 - Answers that need more than the catalog's `AnswerContext` (facts +
@@ -82,9 +86,13 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
 
 ## Known debt (do not grow)
 
-- `mesh/mesh_service.dart` (3.2k) and `ui/assistant_view.dart` (2.7k) are
-  still monoliths; extract by concern (relay vs pairing vs sync; thread UI
-  vs service wiring vs the dream sheet) before adding to them.
+- `mesh/mesh_service.dart` (3.2k) is now the last monolith; extract by
+  concern (relay vs pairing vs sync vs file serving) before adding to it.
+  Its parts share one state object, so split state with the seams, not
+  around them.
+- `ui/assistant_view.dart` (1.5k) still holds the dream sheet, the live
+  clock, and `_ThreadEntry` next to the conversation UI; extracting them
+  into their own files is the next clean slice.
 - `handleRemoteRequest` in `command_service.dart` keeps its own small
   answer switch rather than delegating to the catalog — shared wording
   between the two is duplicated, not yet collapsed.
