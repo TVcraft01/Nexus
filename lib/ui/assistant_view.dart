@@ -83,36 +83,11 @@ class _AssistantViewState extends State<AssistantView> {
         online: true,
         capabilities: defaultCapabilitiesFor(widget.mesh.identity.platform),
       ),
-      // Locally-executable actions run immediately from typed input — no
-      // Approve/Deny prompt. Android runs the catalog natively; the desktop
-      // runs what a Linux box can do (battery, timers, alarms, notes, search).
-      locallyExecutable: const {
-        AgentActions.webSearch,
-        AgentActions.noteCreate,
-        AgentActions.timerSet,
-        AgentActions.openUrl,
-        AgentActions.systemInfo,
-        AgentActions.volumeSet,
-        AgentActions.appOpen,
-        AgentActions.appClose,
-        AgentActions.screenshot,
-        AgentActions.batteryGet,
-        AgentActions.brightnessSet,
-        AgentActions.flashlightToggle,
-        AgentActions.wifiToggle,
-        AgentActions.bluetoothToggle,
-        AgentActions.lockScreen,
-        AgentActions.callPlace,
-        AgentActions.messageSend,
-        AgentActions.mediaPlay,
-        AgentActions.mediaPause,
-        AgentActions.mediaNext,
-        AgentActions.mediaPrev,
-        AgentActions.mediaShuffle,
-        AgentActions.mediaRepeat,
-        AgentActions.alarmSet,
-        AgentActions.defineWord,
-      },
+      // The set of actions this device can truly execute end to end: they
+      // run immediately from typed input — no Approve/Deny prompt. One
+      // definition ([_selfRunActions]) feeds both the service's gate and
+      // this view's self-run routing.
+      locallyExecutable: _selfRunActions,
       memory: AgentMemory(
         learned: widget.mesh.store.agentLearned,
         defaults: widget.mesh.store.agentDefaults,
@@ -266,9 +241,11 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   /// Actions this device executes itself, straight after planning — typing
-  /// "wake me at 7" sets a real alarm with zero extra taps. Mirrors
-  /// [CommandService.locallyExecutable]: Android runs the catalog natively,
-  /// the desktop runs what a Linux box can do.
+  /// "wake me at 7" sets a real alarm with zero extra taps. The ONE
+  /// definition of "what this device can do end to end": passed to
+  /// [CommandService] as `locallyExecutable` and used here to decide which
+  /// plans/messages self-run. Android runs the catalog natively; the
+  /// desktop runs what a Linux box can do.
   static const _selfRunActions = {
     AgentActions.webSearch,
     AgentActions.noteCreate,
@@ -1561,8 +1538,6 @@ class _AssistantViewState extends State<AssistantView> {
         return 'Toggle repeat';
       case AgentActions.alarmSet:
         return 'Set an alarm';
-      case AgentActions.reminderSet:
-        return 'Set a reminder';
       case AgentActions.defineWord:
         return 'Define ${a['word']}';
       case AgentActions.translateText:
