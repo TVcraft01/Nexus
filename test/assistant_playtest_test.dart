@@ -240,4 +240,67 @@ void main() {
       }
     },
   );
+
+  testWidgets(
+    'dream flow: a dead-end ask lands in the dream review, teaching it '
+    'closes the gap and persists',
+    (tester) async {
+      final (store, mesh) = await boot();
+      // Real file IO never completes inside the test zone; feed the reader
+      // synchronously instead — the production path is unit-tested in
+      // dream_test.
+      QueryLog.readAllOverride = () async => [
+        '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
+      ];
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump();
+
+        // Open the dream review from the assistant header.
+        await tester.tap(find.byIcon(Icons.psychology_alt_outlined));
+        await tester.pumpAndSettle();
+        expect(find.text('What I still misunderstand'), findsOneWidget);
+        expect(find.text('"bring me home"  ·  asked 1 time'), findsOneWidget);
+
+        // Teach it from the sheet; the row leaves the list.
+        await tester.enterText(
+          find.byKey(const ValueKey('dream-meaning')),
+          'show my devices',
+        );
+        await tester.tap(find.byIcon(Icons.check_rounded));
+        await tester.pumpAndSettle();
+        expect(find.text('"bring me home"  ·  asked 1 time'), findsNothing);
+        expect(find.text('Sweet dreams.'), findsNothing);
+
+        // The lesson is real: persisted, broadcast-eligible, and it runs —
+        // typed straight into the composer, no question this time.
+        expect(store.agentLearned['bring me home'], 'show my devices');
+        await ask(tester, 'bring me home');
+        expect(find.text('Question'), findsNothing);
+        expect(find.text('Done'), findsOneWidget);
+      } finally {
+        QueryLog.readAllOverride = null;
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets('dream review with a clean log is a friendly empty state', (
+    tester,
+  ) async {
+    final (store, mesh) = await boot();
+    QueryLog.readAllOverride = () async => const [];
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.psychology_alt_outlined));
+      await tester.pumpAndSettle();
+      expect(find.text('Sweet dreams.'), findsOneWidget);
+    } finally {
+      QueryLog.readAllOverride = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
 }

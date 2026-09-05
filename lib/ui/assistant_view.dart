@@ -12,6 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/agent_contract.dart';
 import '../core/command_interpreter.dart';
 import '../core/command_service.dart';
+import '../core/dream.dart';
 import '../core/device_actions.dart';
 import '../core/phone_actions.dart';
 import '../core/query_log.dart';
@@ -1711,17 +1712,51 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// Opens the dream review: phrases the assistant had to give up on,
+  /// straight from its own log. Teaching one closes that gap forever.
+  Future<void> _showDreamReview(BuildContext context) async {
+    final lines = await QueryLog.i.readAll();
+    if (!context.mounted) return;
+    final insights = const DreamPass().unknownPhrases(
+      lines,
+      exclude: {..._service.learnedSnapshot.keys},
+    );
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: NexusColors.bg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetContext) =>
+          _DreamSheet(service: _service, insights: insights),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // One header for every tab.
-        const Padding(
-          padding: EdgeInsets.fromLTRB(20, 24, 20, 0),
-          child: NexusHeader(
-            icon: Icons.forum_rounded,
-            title: 'Assistant',
-            subtitle: 'Type it like you\'d say it — I\'ll take care of it.',
+        // One header for every tab — plus the assistant's own dream review:
+        // what it failed to understand, mined from its log, fixable in place.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 24, 12, 0),
+          child: Row(
+            children: [
+              const Expanded(
+                child: NexusHeader(
+                  icon: Icons.forum_rounded,
+                  title: 'Assistant',
+                  subtitle:
+                      'Type it like you\'d say it — I\'ll take care of it.',
+                ),
+              ),
+              IconButton(
+                tooltip: 'What I still misunderstand',
+                icon: const Icon(Icons.psychology_alt_outlined),
+                color: NexusColors.muted,
+                onPressed: () => unawaited(_showDreamReview(context)),
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 16),
@@ -2466,4 +2501,199 @@ class _ThreadEntry {
 
   _ThreadEntry.user(this.userText) : result = null;
   _ThreadEntry.result(this.result) : userText = null;
+}
+
+/// The dream review: phrases the assistant gave up on, mined from its own
+/// log, each teachable in place. One taught phrase closes that gap forever.
+class _DreamSheet extends StatefulWidget {
+  final CommandService service;
+  final List<DreamInsight> insights;
+
+  const _DreamSheet({required this.service, required this.insights});
+
+  @override
+  State<_DreamSheet> createState() => _DreamSheetState();
+}
+
+class _DreamSheetState extends State<_DreamSheet> {
+  // phrase -> the command it was just taught to mean, so the row can show
+  // the outcome instead of waiting for a rebuild from the parent.
+  final _taught = <String, String>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final open = widget.insights
+        .where((i) => !_taught.containsKey(i.phrase))
+        .toList(growable: false);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.psychology_alt_outlined,
+                  color: NexusColors.accent,
+                  size: 20,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'What I still misunderstand',
+                    style: const TextStyle(
+                      color: NexusColors.text,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              widget.insights.isEmpty
+                  ? 'Nothing yet — I understood everything you asked.'
+                  : 'Things you asked that I had to give up on. Teach one and I never fail it again.',
+              style: const TextStyle(color: NexusColors.muted, fontSize: 12.5),
+            ),
+            const SizedBox(height: 14),
+            if (widget.insights.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'Sweet dreams.',
+                  style: TextStyle(color: NexusColors.muted, fontSize: 13),
+                ),
+              )
+            else
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: open.length,
+                  itemBuilder: (context, index) => _DreamRow(
+                    service: widget.service,
+                    phrase: open[index].phrase,
+                    count: open[index].count,
+                    onTaught: (cmd) {
+                      setState(() => _taught[open[index].phrase] = cmd);
+                    },
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+typedef _DreamRowCallback = void Function(String meaning);
+
+class _DreamRow extends StatefulWidget {
+  final CommandService service;
+  final String phrase;
+  final int count;
+  final _DreamRowCallback onTaught;
+
+  const _DreamRow({
+    required this.service,
+    required this.phrase,
+    required this.count,
+    required this.onTaught,
+  });
+
+  @override
+  State<_DreamRow> createState() => _DreamRowState();
+}
+
+class _DreamRowState extends State<_DreamRow> {
+  final _controller = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _teach() async {
+    final meaning = _controller.text.trim();
+    if (meaning.isEmpty || _busy) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    // Answering UI only: the service validates the meaning and persists via
+    // its own callbacks. Nothing executes from a review sheet.
+    final result = widget.service.learn(widget.phrase, meaning);
+    if (!mounted) return;
+    if (result.status == AgentResultStatus.needsInfo) {
+      setState(() {
+        _busy = false;
+        _error = result.message;
+      });
+      return;
+    }
+    // The sheet rebuilds without this row — that is the outcome.
+    widget.onTaught(meaning.toLowerCase().trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '"${widget.phrase}"  ·  asked ${widget.count} '
+            '${widget.count == 1 ? 'time' : 'times'}',
+            style: const TextStyle(color: NexusColors.text, fontSize: 13.5),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const ValueKey('dream-meaning'),
+                  controller: _controller,
+                  onSubmitted: (_) => _teach(),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    hintText: 'means… e.g. "show my devices"',
+                    border: OutlineInputBorder(),
+                  ),
+                  style: const TextStyle(color: NexusColors.text, fontSize: 13),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Teach',
+                icon: _busy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check_rounded),
+                color: NexusColors.accent,
+                onPressed: _teach,
+              ),
+            ],
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                _error!,
+                style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }

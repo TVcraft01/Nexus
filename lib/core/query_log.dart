@@ -122,6 +122,30 @@ class QueryLog {
         'detail': detail,
       });
 
+  /// Test override for [readAll]: the UI dream flow must complete inside
+  /// fake-async widget tests, where real file IO never resolves.
+  @visibleForTesting
+  static Future<List<String>> Function()? readAllOverride;
+
+  /// All recorded lines, oldest first — the dream pass's raw material.
+  /// Includes the rotated page when present. Missing or unreadable history
+  /// is skipped, never an error.
+  Future<List<String>> readAll() async {
+    final override = readAllOverride;
+    if (override != null) return override();
+    final f = await _resolve();
+    if (f == null) return const [];
+    final out = <String>[];
+    for (final file in [File('${f.path}.1'), f]) {
+      try {
+        if (await file.exists()) {
+          out.addAll(await file.readAsLines());
+        }
+      } catch (_) {}
+    }
+    return out;
+  }
+
   Future<void> _flush() async {
     _flushTimer?.cancel();
     _flushTimer = null;

@@ -654,19 +654,35 @@ class CommandService {
   }
 
   /// Teaches that [phrase] means [meaning] (a command the interpreter
-  /// knows, e.g. "call TVcraft01 〘✘ΔτΚ⑤⑦〙"), persists via [onMemoryChanged],
-  /// and runs it now — so "who did you mean?" only ever has to be answered
-  /// once per wording.
-  AgentDispatchResult learnAndRun(String phrase, String meaning) {
+  /// knows, e.g. "show my devices"), persists via [onMemoryChanged], and
+  /// fires [onPhraseLearned] so paired devices learn it too. An
+  /// uninterpretable [meaning] is refused with a re-ask rather than stored
+  /// — a phrase that dead-ends later is worse than one never taught.
+  /// Nothing executes here; running the command is the caller's choice.
+  AgentDispatchResult learn(String phrase, String meaning) {
     final key = CommandInterpreter.normalizePhrase(phrase);
     if (key.isEmpty) {
       return const AgentDispatchResult(status: AgentResultStatus.unavailable);
+    }
+    if (_interpreter.interpret(meaning.trim()).outcome !=
+        InterpretOutcome.matched) {
+      return AgentDispatchResult(
+        status: AgentResultStatus.needsInfo,
+        dispatch: AgentClarification(
+          question: 'I still don\'t understand what "$phrase" should mean.',
+          key: 'teach:$key',
+          hint: 'Type a command I already know, e.g. "show my devices" or "blink the ESP32".',
+        ),
+      );
     }
     final cmd = meaning.trim().toLowerCase();
     _learned[key] = cmd;
     onMemoryChanged?.call();
     onPhraseLearned?.call(key, cmd);
-    return _dispatchInput(meaning, AgentApproval.approved, 'learned-phrase');
+    return AgentDispatchResult(
+      status: AgentResultStatus.succeeded,
+      dispatch: AgentMessage('"$phrase" now means "$cmd".'),
+    );
   }
 
   /// Adopts a phrase taught on a paired device and synced over the mesh.
