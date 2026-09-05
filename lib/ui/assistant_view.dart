@@ -391,7 +391,10 @@ class _AssistantViewState extends State<AssistantView> {
           prepared['app']?.toString(),
         );
       }
-      return _placeCall(prepared['contact']?.toString() ?? '');
+      return _placeCall(
+        prepared['contact']?.toString() ?? '',
+        prepared['number']?.toString(),
+      );
     }
     if (request.action == AgentActions.messageSend) {
       return _sendText(
@@ -1120,15 +1123,19 @@ class _AssistantViewState extends State<AssistantView> {
     }
   }
 
-  Future<ActionResult> _placeCall(String contact) async {
+  Future<ActionResult> _placeCall(String contact, String? number) async {
     if (contact.isEmpty) return const ActionResult(false, 'Who should I call?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // Kotlin resolves the contact and places the call (ACTION_CALL),
-        // falling back to the prefilled dialer; it asks for READ_CONTACTS /
-        // CALL_PHONE on first use. When nothing matches, the reply names
-        // the closest contacts so the user can pick.
-        final outcome = await _phoneBackend.callContact(contact);
+        // A taught number ("remember that mom is 06…") skips contact lookup
+        // entirely — Kotlin places the call with the number and never asks
+        // for READ_CONTACTS. Without one, it resolves the contact against
+        // the address book (asking READ_CONTACTS / CALL_PHONE on first use)
+        // and names the closest matches when nothing fits.
+        final outcome = await _phoneBackend.callContact(
+          contact,
+          number: number,
+        );
         return ActionResult(
           outcome.placed || outcome.launched,
           outcome.message,

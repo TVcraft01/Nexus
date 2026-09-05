@@ -34,7 +34,9 @@ class PhoneCallOutcome {
 /// places the call; other platforms answer honestly that phone actions are
 /// unavailable.
 abstract class PhoneActionBackend {
-  Future<PhoneCallOutcome> callContact(String name);
+  /// Calls [name] — resolved against the device address book unless
+  /// [number] is given (a taught fact), which skips contact lookup.
+  Future<PhoneCallOutcome> callContact(String name, {String? number});
 
   /// Video call in the app the user named. Only WhatsApp and Telegram can
   /// land on a callable contact; other apps (and no app at all) are
@@ -53,11 +55,11 @@ class RealPhoneActionBackend implements PhoneActionBackend {
   );
 
   @override
-  Future<PhoneCallOutcome> callContact(String name) async {
+  Future<PhoneCallOutcome> callContact(String name, {String? number}) async {
     try {
       final raw = await _channel.invokeMapMethod<String, dynamic>(
         'callContact',
-        {'name': name},
+        {'name': name, 'number': ?number},
       );
       if (raw == null) return _unavailable;
       return PhoneCallOutcome(

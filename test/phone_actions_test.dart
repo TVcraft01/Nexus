@@ -14,6 +14,7 @@ class FakePhoneBackend implements PhoneActionBackend {
   List<String> candidatesOnMiss = const [];
 
   String? lastDialed;
+  String? lastNumber;
 
   FakePhoneBackend(this.contacts);
 
@@ -31,15 +32,25 @@ class FakePhoneBackend implements PhoneActionBackend {
   }
 
   @override
-  Future<PhoneCallOutcome> callContact(String name) async {
+  Future<PhoneCallOutcome> callContact(String name, {String? number}) async {
     lastDialed = name;
+    final taught = number;
+    lastNumber = taught;
     if (fail) throw Exception('boom');
+    // A taught number skips the address book, exactly like MainActivity.kt.
+    if (taught != null) {
+      return PhoneCallOutcome(
+        placed: true,
+        number: taught,
+        message: 'Calling $name ($taught).',
+      );
+    }
     // Mirrors the native matcher in MainActivity.kt (exact first, then
     // case-insensitive prefix/contains) so the Dart side exercises the same
     // resolution contract end-to-end.
     final matchedName = _bestContactMatch(contacts.keys, name);
-    final number = matchedName == null ? null : contacts[matchedName];
-    if (number == null) {
+    final resolved = matchedName == null ? null : contacts[matchedName];
+    if (resolved == null) {
       return PhoneCallOutcome(
         placed: false,
         candidates: candidatesOnMiss,
@@ -49,15 +60,15 @@ class FakePhoneBackend implements PhoneActionBackend {
     if (directCall) {
       return PhoneCallOutcome(
         placed: true,
-        number: number,
-        message: 'Calling $matchedName ($number).',
+        number: resolved,
+        message: 'Calling $matchedName ($resolved).',
       );
     }
     return PhoneCallOutcome(
       placed: false,
       launched: true,
-      number: number,
-      message: 'Opened the dialer for $matchedName ($number).',
+      number: resolved,
+      message: 'Opened the dialer for $matchedName ($resolved).',
     );
   }
 }
