@@ -374,6 +374,52 @@ void main() {
   );
 
   testWidgets(
+    'dream-learn: a phrase the user keeps re-asking that matches one they '
+    'taught is offered as a one-tap fix',
+    (tester) async {
+      final (store, mesh) = await boot();
+      // The user taught "text mom" once; the log shows "tex mom" failing
+      // twice as a fresh ask — the dream should connect the dots itself.
+      store.agentLearned = {'text mom': 'call tvcraft01'};
+      QueryLog.readAllOverride = () async => [
+        '{"ts":"t","kind":"ask","input":"tex mom","status":"needsInfo","route":"teach:tex mom","detail":""}',
+        '{"ts":"t","kind":"ask","input":"tex mom","status":"needsInfo","route":"teach:tex mom","detail":""}',
+      ];
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump(); // first frame
+        await tester.pump(); // post-frame log read resolves
+
+        // The specific learn card appears above the composer — the fix,
+        // not a generic "teach me?".
+        final card = find.byKey(const ValueKey('dream-learn-card'));
+        expect(card, findsOneWidget);
+        expect(find.textContaining('"tex mom"'), findsWidgets);
+        expect(find.textContaining('"text mom"'), findsWidgets);
+
+        // One tap learns it through the real teach funnel — persisted,
+        // broadcast-eligible, echoed in the thread.
+        await tester.tap(find.byKey(const ValueKey('dream-learn-button')));
+        await tester.pump();
+        expect(store.agentLearned['tex mom'], 'call tvcraft01');
+        expect(find.textContaining('now means'), findsOneWidget);
+        expect(find.byKey(const ValueKey('dream-learn-card')), findsNothing);
+
+        // And the lesson is real: typed straight into the composer, the
+        // phrase runs without a question — it reached the phone's contact
+        // on this device-less box only as far as the honest teach prompt
+        // would, so assert the routing instead: no "did you mean".
+        await ask(tester, 'tex mom');
+        expect(find.textContaining('Did you mean'), findsNothing);
+      } finally {
+        QueryLog.readAllOverride = null;
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets(
     'personal predictions: repeated asks replace the generic chips, and '
     'tapping one asks again',
     (tester) async {
