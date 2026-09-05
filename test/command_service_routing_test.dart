@@ -288,11 +288,11 @@ void main() {
         local: pc,
         onPhraseLearned: (phrase, meaning) => seen = '$phrase -> $meaning',
       );
-      final result = service.learnAndRun('Call TVcraft', 'call TVcraft01');
-      // The meaning dispatches as the local call message — the executor hook
-      // the view runs — with the taught phrase already broadcast.
+      final result = service.learn('Call TVcraft', 'call TVcraft01');
+      // Teaching stores and broadcasts — it does not execute; the
+      // conversation paths run the meaning right after an in-chat teach.
       expect(result.status, AgentResultStatus.succeeded);
-      expect((result.dispatch! as AgentMessage).action, AgentActions.callPlace);
+      expect((result.dispatch! as AgentMessage).text, contains('now means'));
       // Normalized phrase, lowercased meaning — exactly what the mesh should
       // carry to the other devices.
       expect(seen, 'call tvcraft -> call tvcraft01');

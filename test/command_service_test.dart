@@ -472,4 +472,33 @@ void main() {
       expect(changed, 1);
     });
   });
+
+  group('learn (dream review + teach loop)', () {
+    test('stores, broadcasts, and never executes from a review', () {
+      var changed = 0;
+      String? broadcast;
+      final service = CommandService(
+        devices: () => const [],
+        onMemoryChanged: () => changed++,
+        onPhraseLearned: (phrase, meaning) => broadcast = '$phrase->$meaning',
+      );
+      final result = service.learn('bring me home', 'show my devices');
+      expect(result.status, AgentResultStatus.succeeded);
+      expect((result.dispatch! as AgentMessage).text, contains('now means'));
+      expect(service.learnedSnapshot['bring me home'], 'show my devices');
+      expect(broadcast, 'bring me home->show my devices');
+      expect(changed, 1);
+    });
+
+    test('an uninterpretable meaning is refused, never stored', () {
+      final service = CommandService(devices: () => const []);
+      final result = service.learn('zzz qqq xyz', 'do the thing');
+      expect(result.status, AgentResultStatus.needsInfo);
+      expect(
+        (result.dispatch! as AgentClarification).key,
+        startsWith('teach:'),
+      );
+      expect(service.learnedSnapshot, isEmpty); // nothing stored
+    });
+  });
 }
