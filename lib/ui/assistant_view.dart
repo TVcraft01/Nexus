@@ -10,6 +10,7 @@ import '../core/dream.dart';
 import '../core/predictions.dart';
 import '../core/query_log.dart';
 import '../core/reminders.dart';
+import '../core/speech.dart';
 import '../mesh/mesh_service.dart';
 import 'device_executor.dart';
 import 'nexus_header.dart';
@@ -61,6 +62,9 @@ class _AssistantViewState extends State<AssistantView> {
   Reminder? _firedReminder;
 
   Timer? _reminderTimer;
+
+  /// Whether the mic is listening right now (button becomes the live mic).
+  bool _listening = false;
 
   /// An open "who did you mean?" question after an unresolved contact.
 
@@ -385,6 +389,47 @@ class _AssistantViewState extends State<AssistantView> {
     final outcome = await _executor.run(request);
     if (!mounted) return;
     _showSelfOutcome(outcome.ok, outcome.message);
+  }
+
+  /// One utterance, then the recognized words run through the same pipeline
+  /// as typing them — the "command based" assistant, spoken. Devices without
+  /// a speech service answer honestly instead of pretending to listen.
+  Future<void> _listen() async {
+    final speech = SpeechInput.current;
+    if (!speech.available) {
+      setState(
+        () => _appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: const AgentMessage(
+              'Voice input isn\'t set up on this device yet — type it, or '
+              'tap one of the example chips below.',
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+    setState(() => _listening = true);
+    final heard = await speech.listen();
+    if (!mounted) return;
+    setState(() => _listening = false);
+    final text = heard?.trim() ?? '';
+    if (text.isEmpty) {
+      setState(
+        () => _appendResult(
+          const AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage(
+              'I didn\'t catch that — could you say it again?',
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+    _controller.text = text;
+    _onSubmit();
   }
 
   void _showSelfOutcome(bool ok, String message) {
@@ -925,6 +970,15 @@ class _AssistantViewState extends State<AssistantView> {
                   ),
                   style: const TextStyle(color: NexusColors.text, fontSize: 14),
                 ),
+              ),
+              IconButton(
+                tooltip: _listening ? 'Listening…' : 'Speak your question',
+                icon: Icon(
+                  _listening ? Icons.mic_rounded : Icons.mic_none_rounded,
+                  size: 20,
+                  color: _listening ? NexusColors.accent : NexusColors.muted,
+                ),
+                onPressed: _listening ? null : () => unawaited(_listen()),
               ),
               IconButton(
                 icon: const Icon(Icons.send_rounded, size: 20),

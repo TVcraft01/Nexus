@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <!-- For scanning pairing QR codes with the camera. -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- For voice input: the mic feeds the system SpeechRecognizer, whose
+         text runs through the same command pipeline as typing. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- For installing APK updates on Android 8+. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>

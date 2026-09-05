@@ -1,15 +1,31 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/query_log.dart';
 import 'package:nexus/core/reminders.dart';
+import 'package:nexus/core/speech.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/ui/assistant_view.dart';
 import 'package:nexus/ui/theme.dart';
+
+/// A recognizer that "hears" a fixed utterance (or nothing) — the test
+/// stand-in for Android's SpeechRecognizer.
+class _FakeSpeechInput extends SpeechInput {
+  _FakeSpeechInput(this.heard);
+  final String? heard;
+
+  @override
+  bool get available => true;
+
+  @override
+  Future<String?> listen() async => heard;
+}
 
 /// Playtest of the assistant as a first real user drives it: the real
 /// AssistantView widgets, real MeshService, real store. Covers the main
@@ -455,6 +471,66 @@ void main() {
       QueryLog.readAllOverride = null;
       QueryLog.i.resetForTest();
       await cleanMesh.stop();
+    }
+  });
+
+  testWidgets('voice: the mic turns spoken words into the same command flow', (tester) async {
+    final (store, mesh) = await boot();
+    // A recognizer that "hears" one utterance, exactly like Android's.
+    SpeechInput.override = () => _FakeSpeechInput('what time is it');
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump(); // listening
+      await tester.pump(); // recognized text resolves
+
+      // The recognized words ran through the real pipeline — a real answer.
+      expect(find.textContaining("It's "), findsWidgets);
+    } finally {
+      SpeechInput.override = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('voice: nothing heard answers honestly, never a silent mic', (tester) async {
+    final (store, mesh) = await boot();
+    SpeechInput.override = () => _FakeSpeechInput(null);
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('didn\'t catch that'), findsWidgets);
+    } finally {
+      SpeechInput.override = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('voice: a device without a speech service says so', (tester) async {
+    final (store, mesh) = await boot();
+    // No override — the real SpeechInput, on a desktop host: available is
+    // false, so the mic must answer honestly instead of pretending.
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump();
+      expect(find.textContaining('Voice input isn\'t set up'), findsWidgets);
+      // And nothing was submitted — the thread stays on the honest answer.
+      expect(find.textContaining("It's "), findsNothing);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
     }
   });
 
