@@ -473,6 +473,59 @@ void main() {
     });
   });
 
+  group('contacts from memory: text uses a remembered number', () {
+    test('a taught number is injected into the text action', () {
+      final facts = CommandService(devices: () => const []);
+      facts.execute('remember that mom is Martine 06 12 34 56 78');
+
+      final result = facts.execute('text mom saying hi');
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.text, contains('Texting mom at 0612345678'));
+      expect(msg.arguments, containsPair('contact', 'mom'));
+      expect(msg.arguments, containsPair('number', '0612345678'));
+      expect(msg.arguments, containsPair('body', 'hi'));
+    });
+
+    test('loose wording, the saying-form body, and international resolve', () {
+      final facts = CommandService(devices: () => const []);
+      facts.execute('remember that mummy is +33 6 12 34 56 78');
+
+      // Loose wording: "mum" reaches the mummy fact via prefix match.
+      final loose = facts.execute('text mum');
+      final looseMsg = loose.dispatch! as AgentMessage;
+      expect(looseMsg.arguments, containsPair('number', '+33612345678'));
+
+      // The "saying …" form carries the body separately.
+      final saying = facts.execute('text mummy saying love you');
+      final sayingMsg = saying.dispatch! as AgentMessage;
+      expect(sayingMsg.arguments, containsPair('number', '+33612345678'));
+      expect(sayingMsg.arguments, containsPair('body', 'love you'));
+      expect(sayingMsg.text, contains('"love you"'));
+    });
+
+    test('no taught number → name passes through untouched', () {
+      final facts = CommandService(devices: () => const []);
+      facts.execute('remember that dad likes tea');
+
+      final result = facts.execute('text dad');
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.text, contains('Opening text to dad'));
+      expect(msg.arguments, isNot(contains('number')));
+      expect(msg.arguments, containsPair('contact', 'dad'));
+    });
+
+    test('short digit runs never resolve as a phone number', () {
+      final facts = CommandService(devices: () => const []);
+      facts.execute('remember that the gate code is 4321');
+      facts.execute('remember that the wifi password is nexus4321');
+
+      final result = facts.execute('text the gate');
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.arguments, isNot(contains('number')));
+      expect(msg.arguments, containsPair('contact', 'the gate'));
+    });
+  });
+
   group('learn (dream review + teach loop)', () {
     test('stores, broadcasts, and never executes from a review', () {
       var changed = 0;

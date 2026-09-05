@@ -783,6 +783,27 @@ class CommandService {
   int _factScore(String fact, Set<String> topicWords) =>
       _topicWords(fact).intersection(topicWords).length;
 
+  /// A phone-looking token in [fact], normalized to digits, or null. Requires
+  /// at least 9 digits so street numbers and years never resolve as contacts.
+  String? _phoneIn(String fact) {
+    final run = RegExp(r'\+?[\d\s.\-()]{9,}').firstMatch(fact);
+    if (run == null) return null;
+    final digits = run.group(0)!.replaceAll(RegExp(r'[^\d+]'), '');
+    return digits.length >= 9 ? digits : null;
+  }
+
+  /// The phone number nexus has been taught for a contact name, or null when
+  /// no matching fact carries one — the device then falls back to its own
+  /// address book. Best-scoring fact wins, like question recall.
+  String? _contactNumber(String name) {
+    if (name.isEmpty) return null;
+    for (final fact in _factsAbout(name)) {
+      final number = _phoneIn(fact);
+      if (number != null) return number;
+    }
+    return null;
+  }
+
   /// Locally executable intents that need no device: greeting, time, math.
   AgentDispatchResult _localAnswer(ParsedCommand command) {
     switch (command.action) {
@@ -1086,14 +1107,18 @@ class CommandService {
           );
         }
         final body = command.arguments['body'] as String?;
+        final number = _contactNumber(contact);
+        final who = number != null ? '$contact at $number' : contact;
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
-            body != null
-                ? 'Texting $contact: "$body"'
-                : 'Opening text to $contact...',
+            body != null ? 'Texting $who: "$body"' : 'Opening text to $who...',
             action: AgentActions.messageSend,
-            arguments: {'contact': contact, if (body != null) 'body': body},
+            arguments: {
+              'contact': contact,
+              'number': ?number,
+              'body': ?body,
+            },
           ),
         );
       // --- Media ---
