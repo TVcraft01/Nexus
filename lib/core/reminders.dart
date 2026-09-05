@@ -1,11 +1,14 @@
 // The reminder engine: turning "take out the trash at 8" and "call mom in
-// 5 minutes" into a text and a due time, and deciding what is due now.
-// Pure Dart with an injectable clock — the view owns the list, persistence
-// and the mesh; this module only decides the words, the times and the due
-// checks, so it is testable without widgets.
+// 5 minutes" into a text and a due time, deciding what is due now, and —
+// since the architecture pass — owning the live list, the ticking due-check
+// and the one-shot fire. Pure Dart with an injectable clock; the edges
+// (store persistence, mesh broadcast, thread messages) are callbacks the
+// view wires, so the engine is testable without widgets.
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show ChangeNotifier, visibleForTesting;
 
 /// One reminder the assistant promised to say back to the user later.
 class Reminder {
@@ -96,5 +99,117 @@ class Reminders {
     final out = all.where((r) => !r.dueAt.isAfter(now)).toList()
       ..sort((a, b) => a.dueAt.compareTo(b.dueAt));
     return out;
+  }
+}
+
+/// The reminder lifecycle: the live list, the ticking due-check, and the
+/// one-shot fire. Owns the state; the view renders and wires the edges
+/// (store persistence, mesh broadcast, thread messages) through callbacks,
+/// exactly like [CommandService]'s memory funnel.
+class ReminderEngine extends ChangeNotifier {
+  ReminderEngine({this.checkInterval = const Duration(seconds: 15)});
+
+  final Duration checkInterval;
+  final List<Reminder> _reminders = [];
+
+  /// The reminder that fired and is waiting for a "Done" — shown as a
+  /// banner until acknowledged. The latest fire wins.
+  Reminder? fired;
+
+  Timer? _timer;
+
+  /// Edge callbacks the composition root (the view) wires. All fire-and-
+  /// forget by design; the engine never touches the store or the mesh.
+
+  /// The list changed — persist this device's copy.
+  void Function(List<Reminder> reminders)? onPersist;
+
+  /// A reminder was registered HERE — tell every paired device so it
+  /// fires wherever the user is.
+  void Function(Reminder reminder)? onBroadcast;
+
+  /// A reminder fired — the view says it in the thread.
+  void Function(Reminder reminder)? onFired;
+
+  List<Reminder> get reminders => List.unmodifiable(_reminders);
+
+  /// Seeds this device's copy from the store (a promise made before a
+  /// restart still fires). The store already holds these — no persist.
+  void seed(Iterable<String> lines) {
+    for (final line in lines) {
+      final reminder = Reminder.fromJsonLine(line);
+      if (reminder == null) continue;
+      if (_reminders.any((r) => r.id == reminder.id)) continue;
+      _reminders.add(reminder);
+    }
+    notifyListeners();
+  }
+
+  /// Starts the periodic due-check. The view calls this from initState.
+  void start() {
+    _timer ??= Timer.periodic(checkInterval, (_) => check());
+  }
+
+  void stop() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  /// Registers a promise made on THIS device: kept here, persisted, and
+  /// told to every paired device.
+  void register(String text, DateTime dueAt) {
+    final reminder = Reminder(
+      id: 'r-${DateTime.now().microsecondsSinceEpoch}',
+      text: text,
+      dueAt: dueAt,
+    );
+    _add(reminder);
+    onBroadcast?.call(reminder);
+    check();
+  }
+
+  /// Adopts a reminder set on a paired device, live (no restart needed).
+  /// The mesh already persisted it when no assistant was listening.
+  void adopt(String line) {
+    final reminder = Reminder.fromJsonLine(line);
+    if (reminder == null) return;
+    if (_reminders.any((r) => r.id == reminder.id)) return;
+    _add(reminder);
+    check();
+  }
+
+  /// The fired banner has been seen — it goes away until the next fire.
+  void acknowledge() {
+    if (fired == null) return;
+    fired = null;
+    notifyListeners();
+  }
+
+  void _add(Reminder reminder) {
+    _reminders.add(reminder);
+    onPersist?.call(_reminders);
+    notifyListeners();
+  }
+
+  /// Fires every reminder whose time has come — an assistant message in the
+  /// thread and a banner until acknowledged, all without anyone asking. A
+  /// fired reminder is spent: gone from the list and the store (one shot,
+  /// like a real reminder).
+  void check() {
+    final due = const Reminders().dueNow(_reminders, Reminders.now());
+    if (due.isEmpty) return;
+    for (final reminder in due) {
+      _reminders.removeWhere((r) => r.id == reminder.id);
+      fired = reminder;
+      onFired?.call(reminder);
+    }
+    onPersist?.call(_reminders);
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    stop();
+    super.dispose();
   }
 }
