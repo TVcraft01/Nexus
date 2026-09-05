@@ -35,10 +35,31 @@ class AnswerContext {
   final void Function(String fact)? onFactLearned;
 }
 
-/// Capability ids of a device snapshot, for the one catalog case that asks
-/// "is this a phone?" (airplane mode answers).
+/// Capability ids of a device snapshot, for the catalog cases that ask
+/// "can this device act?" (airplane mode, contact actions).
 List<String> _capabilitiesOf(AgentDeviceSnapshot? device) =>
     device?.capabilities.map((c) => c.id).toList() ?? const [];
+
+/// Whether [action] can actually execute somewhere in the assistant's world
+/// right now — on this device, or on a paired device the mesh can reach.
+bool _somewhereRuns(AnswerContext ctx, String action) {
+  if (_capabilitiesOf(ctx.local).contains(action)) return true;
+  return ctx.devices().any((d) => d.capabilities.any((c) => c.id == action));
+}
+
+/// The honest answer when a contact action has no taught number and nothing
+/// in the assistant's world can execute it: teach the number instead of
+/// echoing an action that can only fail here. (A paired phone would have its
+/// own address book — the prompt only fires when no executor is reachable.)
+AgentDispatchResult _unknownContactAnswer(String contact, String verb) =>
+    AgentDispatchResult(
+      status: AgentResultStatus.succeeded,
+      dispatch: AgentMessage(
+        'I don\'t have a number for "$contact" yet. Teach me with '
+        '"remember that $contact is 0612345678" — then your Nexus phone '
+        'can $verb them with the number.',
+      ),
+    );
 
 /// Words worth matching on — lowercase, alphanumeric runs of 3+ chars,
 /// minus a few stopwords so "the" in a topic doesn't match "the" in every
@@ -192,6 +213,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           '  "remember that my bike code is 4321"\n'
           '  "what is my wifi password" — I answer from memory\n'
           '  "what do you know about me" / "forget my bike code"\n'
+          '  "remember that mom is 0612345678" — then "call mom" / "text mom" use it\n'
           '\n'
           'If I misunderstand, just teach me once — I remember.',
         ),
@@ -420,18 +442,33 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       }
       final isVideo = command.arguments['mode'] == 'video';
       final app = command.arguments['app'] as String?;
+      // Video calls open a named app (WhatsApp/Telegram) by contact, not by
+      // number — resolution only applies to plain calls.
+      if (!isVideo) {
+        final number = _contactNumber(ctx.facts, contact);
+        if (number == null && !_somewhereRuns(ctx, AgentActions.callPlace)) {
+          return _unknownContactAnswer(contact, 'call');
+        }
+        final who = number != null ? '$contact at $number' : contact;
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Calling $who...',
+            action: AgentActions.callPlace,
+            arguments: {'contact': contact, 'number': ?number},
+          ),
+        );
+      }
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          isVideo
-              ? (app == null
-                    ? 'Which app should I video call $contact on?'
-                    : 'Video calling $contact on $app...')
-              : 'Calling $contact...',
+          app == null
+              ? 'Which app should I video call $contact on?'
+              : 'Video calling $contact on $app...',
           action: AgentActions.callPlace,
           arguments: {
             'contact': contact,
-            if (isVideo) 'mode': 'video',
+            'mode': 'video',
             if (app != null) 'app': app,
           },
         ),
@@ -446,6 +483,9 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       }
       final body = command.arguments['body'] as String?;
       final number = _contactNumber(ctx.facts, contact);
+      if (number == null && !_somewhereRuns(ctx, AgentActions.messageSend)) {
+        return _unknownContactAnswer(contact, 'text');
+      }
       final who = number != null ? '$contact at $number' : contact;
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,

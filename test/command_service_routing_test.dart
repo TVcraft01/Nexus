@@ -82,23 +82,29 @@ void main() {
       expect(result.dispatch, isNot(isA<AgentActionPlan>()));
     });
 
-    test(
-      'no capable device anywhere still answers — the executor stays honest',
-      () {
-        final service = CommandService(
-          devices: () => const [
-            AgentDeviceSnapshot(id: 'x', name: 'X', online: true),
-          ],
-          local: pc,
-        );
-        final result = service.execute('call mom');
-        expect(result.status, AgentResultStatus.succeeded);
-        expect(
-          (result.dispatch! as AgentMessage).action,
-          AgentActions.callPlace,
-        );
-      },
-    );
+    test('no phone anywhere answers honestly — a taught number is surfaced, otherwise it teaches', () {
+      final service = CommandService(
+        devices: () => const [
+          AgentDeviceSnapshot(id: 'x', name: 'X', online: true),
+        ],
+        local: pc,
+      );
+      // No taught number and no phone reachable: echoing "Calling mom..."
+      // would only fail at the executor. The honest answer asks to teach
+      // the number — never a doomed action.
+      final result = service.execute('call mom');
+      expect(result.status, AgentResultStatus.succeeded);
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.action, isNull);
+      expect(msg.text, contains('Teach me'));
+
+      // With the number taught, the memory is surfaced even though this
+      // PC can't dial — the action still flows to the executor.
+      service.execute('remember that mom is 0612345678');
+      final known = service.execute('call mom').dispatch! as AgentMessage;
+      expect(known.action, AgentActions.callPlace);
+      expect(known.arguments, containsPair('number', '0612345678'));
+    });
   });
 
   group('local execution fallback', () {

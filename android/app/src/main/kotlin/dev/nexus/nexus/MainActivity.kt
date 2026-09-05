@@ -101,7 +101,11 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PHONE_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "callContact" -> callContact(call.argument<String>("name") ?: "", result)
+                    "callContact" -> callContact(
+                        call.argument<String>("name") ?: "",
+                        call.argument<String>("number"),
+                        result,
+                    )
                     "videoCall" -> videoCall(
                         call.argument<String>("name") ?: "",
                         call.argument<String>("app"),
@@ -748,11 +752,21 @@ class MainActivity : FlutterActivity() {
     /// CALL_PHONE it falls back to the prefilled dialer. When nothing
     /// callable matches, genuinely different closest names travel back so
     /// the assistant can ask "who did you mean?".
-    private fun callContact(name: String, result: MethodChannel.Result) {
+    private fun callContact(name: String, number: String?, result: MethodChannel.Result) {
         val contact = name.trim()
         if (contact.isEmpty()) {
             result.success(mapOf("placed" to false, "launched" to false, "candidates" to emptyList<String>(),
                 "message" to "No contact name given."))
+            return
+        }
+        if (!number.isNullOrBlank()) {
+            // A taught number ("remember that mom is 06…") — no address-book
+            // lookup, so no READ_CONTACTS prompt. Dial straight through when
+            // CALL_PHONE is granted, otherwise prefill the dialer.
+            val direct = if (checkSelfPermission(Manifest.permission.CALL_PHONE) ==
+                PackageManager.PERMISSION_GRANTED
+            ) placeCall(contact, number) else openDialer(contact, number)
+            result.success(direct)
             return
         }
         val missing = listOf(Manifest.permission.READ_CONTACTS, Manifest.permission.CALL_PHONE)
@@ -764,11 +778,11 @@ class MainActivity : FlutterActivity() {
             requestPermissions(missing.toTypedArray(), REQUEST_CALL_PERMISSIONS)
             return
         }
-        val (number, matched, ranked) = lookupContacts(contact)
+        val (foundNumber, matched, ranked) = lookupContacts(contact)
         result.success(
             when {
-                number == null -> noContactResult(contact, ranked, matched)
-                else -> placeCall(contact, number)
+                foundNumber == null -> noContactResult(contact, ranked, matched)
+                else -> placeCall(contact, foundNumber)
             }
         )
     }

@@ -162,10 +162,8 @@ void main() {
       () {
         // Every recognized phrase yields a local message carrying the action
         // (the view/executor decides what this platform can really do). It
-        // must never be a teach prompt or a silent unavailable.
+        // must never be a silent unavailable.
         for (final phrase in [
-          'call mom',
-          'text john',
           'set an alarm for 7am',
           "what's the weather",
           'search for cats',
@@ -179,6 +177,19 @@ void main() {
         }
       },
     );
+
+    test('a contact action with no executor anywhere teaches the number, never a doomed action', () {
+      // With no phone reachable and no taught number, echoing "Calling
+      // mom..." would only fail at the executor. The honest answer asks to
+      // be taught the number instead.
+      for (final phrase in ['call mom', 'text john']) {
+        final result = service.execute(phrase);
+        expect(result.status, AgentResultStatus.succeeded, reason: phrase);
+        final msg = result.dispatch! as AgentMessage;
+        expect(msg.text, contains('Teach me'), reason: phrase);
+        expect(msg.action, isNull, reason: phrase); // nothing to execute
+      }
+    });
 
     test('unrecognized phrases ask to be taught — never fake a result', () {
       for (final phrase in ['navigate to the office', 'turn on the lights']) {
@@ -239,9 +250,21 @@ void main() {
     });
 
     test('confirming a suggestion runs it and remembers the phrase', () {
-      final first = service.execute('tex mom saying hi');
+      // On a phone-capable device the confirmed text action flows to the
+      // executor (no taught number → native lookup); a phoneless box would
+      // answer with the teach prompt instead.
+      final onPhone = CommandService(
+        devices: () => const [],
+        local: const AgentDeviceSnapshot(
+          id: 'phone',
+          name: 'My Phone',
+          online: true,
+          capabilities: [DeviceCapability(AgentActions.messageSend)],
+        ),
+      );
+      final first = onPhone.execute('tex mom saying hi');
       final key = (first.dispatch! as AgentClarification).key;
-      final confirmed = service.execute('yes', answerTo: key);
+      final confirmed = onPhone.execute('yes', answerTo: key);
       expect(confirmed.status, AgentResultStatus.succeeded);
       expect(
         (confirmed.dispatch! as AgentMessage).action,
@@ -249,9 +272,9 @@ void main() {
       );
 
       // The phrase is remembered on this device…
-      expect(service.learnedSnapshot, contains('tex mom saying hi'));
+      expect(onPhone.learnedSnapshot, contains('tex mom saying hi'));
       // …and now runs directly, with no question at all.
-      final direct = service.execute('tex mom saying hi');
+      final direct = onPhone.execute('tex mom saying hi');
       expect(direct.status, AgentResultStatus.succeeded);
     });
 
@@ -475,6 +498,18 @@ void main() {
   });
 
   group('contacts from memory: text uses a remembered number', () {
+    // A phone-capable local: resolution only matters when the action can
+    // actually proceed (a taught number skips the address book; without one
+    // the phone resolves the name natively).
+    const phone = AgentDeviceSnapshot(
+      id: 'phone',
+      name: 'My Phone',
+      online: true,
+      capabilities: [DeviceCapability(AgentActions.messageSend)],
+    );
+    CommandService factsService() =>
+        CommandService(devices: () => const [], local: phone);
+
     test('a taught number is injected into the text action', () {
       final facts = CommandService(devices: () => const []);
       facts.execute('remember that mom is Martine 06 12 34 56 78');
@@ -504,19 +539,35 @@ void main() {
       expect(sayingMsg.text, contains('"love you"'));
     });
 
-    test('no taught number → name passes through untouched', () {
-      final facts = CommandService(devices: () => const []);
-      facts.execute('remember that dad likes tea');
+    test(
+      'no taught number → name passes through untouched (native lookup)',
+      () {
+        final facts = factsService();
+        facts.execute('remember that dad likes tea');
 
-      final result = facts.execute('text dad');
-      final msg = result.dispatch! as AgentMessage;
-      expect(msg.text, contains('Opening text to dad'));
-      expect(msg.arguments, isNot(contains('number')));
-      expect(msg.arguments, containsPair('contact', 'dad'));
-    });
+        final result = facts.execute('text dad');
+        final msg = result.dispatch! as AgentMessage;
+        expect(msg.text, contains('Opening text to dad'));
+        expect(msg.arguments, isNot(contains('number')));
+        expect(msg.arguments, containsPair('contact', 'dad'));
+      },
+    );
+
+    test(
+      'no taught number and no phone → teach instead of a doomed action',
+      () {
+        final facts = CommandService(devices: () => const []);
+        facts.execute('remember that dad likes tea');
+
+        final result = facts.execute('text dad');
+        final msg = result.dispatch! as AgentMessage;
+        expect(msg.text, contains('Teach me'));
+        expect(msg.action, isNull);
+      },
+    );
 
     test('short digit runs never resolve as a phone number', () {
-      final facts = CommandService(devices: () => const []);
+      final facts = factsService();
       facts.execute('remember that the gate code is 4321');
       facts.execute('remember that the wifi password is nexus4321');
 
@@ -527,7 +578,7 @@ void main() {
     });
 
     test('digit runs beyond the E.164 max (15) never resolve', () {
-      final facts = CommandService(devices: () => const []);
+      final facts = factsService();
       facts.execute('remember that my bank card is 1234 5678 9012 3456');
       facts.execute('remember that the hotline is 123456789012345');
 
@@ -536,16 +587,62 @@ void main() {
       expect(card.arguments, isNot(contains('number')));
 
       // 15 digits — the legal maximum, still a phone.
-      final hotline = facts.execute('text the hotline').dispatch! as AgentMessage;
+      final hotline =
+          facts.execute('text the hotline').dispatch! as AgentMessage;
       expect(hotline.arguments?['number'], '123456789012345');
     });
 
+    group('calls use a remembered number too', () {
+      const callPhone = AgentDeviceSnapshot(
+        id: 'callphone',
+        name: 'My Phone',
+        online: true,
+        capabilities: [DeviceCapability(AgentActions.callPlace)],
+      );
+      CommandService callService() =>
+          CommandService(devices: () => const [], local: callPhone);
+
+      test('a taught number is injected into the call action', () {
+        final facts = callService();
+        facts.execute('remember that mom is Martine 06 12 34 56 78');
+
+        final result = facts.execute('call mom');
+        final msg = result.dispatch! as AgentMessage;
+        expect(msg.text, contains('Calling mom at 0612345678'));
+        expect(msg.arguments, containsPair('contact', 'mom'));
+        expect(msg.arguments, containsPair('number', '0612345678'));
+        expect(msg.arguments, isNot(contains('mode')));
+      });
+
+      test('loose wording resolves, no number passes through untouched', () {
+        final facts = callService();
+        facts.execute('remember that mummy is +33 6 12 34 56 78');
+
+        final loose = facts.execute('call mum').dispatch! as AgentMessage;
+        expect(loose.arguments, containsPair('number', '+33612345678'));
+
+        facts.execute('remember that dad likes tea');
+        final unknown = facts.execute('call dad').dispatch! as AgentMessage;
+        expect(unknown.arguments, isNot(contains('number')));
+        expect(unknown.text, contains('Calling dad'));
+      });
+
+      test('video calls never carry a number — they need a named app', () {
+        final facts = callService();
+        facts.execute('remember that mom is Martine 06 12 34 56 78');
+
+        final video = facts.execute('video call mom').dispatch! as AgentMessage;
+        expect(video.arguments, containsPair('mode', 'video'));
+        expect(video.arguments, isNot(contains('number')));
+      });
+    });
+
     test('forgetting the fact removes the resolution', () {
-      final facts = CommandService(devices: () => const []);
+      final facts = factsService();
       facts.execute('remember that mom is Martine 06 12 34 56 78');
       expect(
-        (facts.execute('text mom').dispatch! as AgentMessage).arguments
-            ?['number'],
+        (facts.execute('text mom').dispatch! as AgentMessage)
+            .arguments?['number'],
         '0612345678',
       );
 
