@@ -107,9 +107,9 @@ class Reminders {
 /// (store persistence, mesh broadcast, thread messages) through callbacks,
 /// exactly like [CommandService]'s memory funnel.
 class ReminderEngine extends ChangeNotifier {
-  ReminderEngine({this.checkInterval = const Duration(seconds: 15)});
+  /// How often the assistant checks whether any promise is due.
+  static const _checkEvery = Duration(seconds: 15);
 
-  final Duration checkInterval;
   final List<Reminder> _reminders = [];
 
   /// The reminder that fired and is waiting for a "Done" — shown as a
@@ -147,7 +147,7 @@ class ReminderEngine extends ChangeNotifier {
 
   /// Starts the periodic due-check. The view calls this from initState.
   void start() {
-    _timer ??= Timer.periodic(checkInterval, (_) => check());
+    _timer ??= Timer.periodic(_checkEvery, (_) => check());
   }
 
   void stop() {
