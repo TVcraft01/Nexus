@@ -123,6 +123,7 @@ class MainActivity : FlutterActivity() {
                     val args = call.arguments as? Map<*, *>
                     sendText(
                         args?.get("contact")?.toString() ?: "",
+                        args?.get("number")?.toString(),
                         args?.get("body")?.toString(),
                         result,
                     )
@@ -489,10 +490,25 @@ class MainActivity : FlutterActivity() {
     /// on first use, result held across the dialog) and opens the SMS
     /// composer prefilled with the number and draft — mirror of the call
     /// path, honest at every step.
-    private fun sendText(contact: String, body: String?, result: MethodChannel.Result) {
+    private fun sendText(
+        contact: String,
+        number: String?,
+        body: String?,
+        result: MethodChannel.Result,
+    ) {
         val name = contact.trim()
         if (name.isEmpty()) {
             result.success(mapOf("ok" to false, "message" to "Who should I text?"))
+            return
+        }
+        val known = number?.trim().orEmpty()
+        if (known.isNotEmpty()) {
+            // Nexus was taught this contact's number — use it directly,
+            // skipping the address book (which also works when the name is
+            // only in nexus memory, not in the device contacts).
+            result.success(
+                openSmsComposer(name, e164Number(known, simCountryIso()), body),
+            )
             return
         }
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {

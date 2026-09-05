@@ -396,6 +396,7 @@ class _AssistantViewState extends State<AssistantView> {
     if (request.action == AgentActions.messageSend) {
       return _sendText(
         prepared['contact']?.toString() ?? '',
+        prepared['number']?.toString(),
         prepared['body']?.toString(),
       );
     }
@@ -1173,12 +1174,17 @@ class _AssistantViewState extends State<AssistantView> {
     }
   }
 
-  Future<ActionResult> _sendText(String contact, String? body) async {
+  Future<ActionResult> _sendText(
+    String contact,
+    String? number,
+    String? body,
+  ) async {
     if (contact.isEmpty) return const ActionResult(false, 'Who should I text?');
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         return await _deviceBackend.run(AgentActions.messageSend, {
           'contact': contact,
+          if (number != null) 'number': number,
           'body': body,
         });
       }
