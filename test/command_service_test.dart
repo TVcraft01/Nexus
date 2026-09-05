@@ -369,6 +369,45 @@ void main() {
       expect(facts.factsSnapshot, ['mom prefers text']);
     });
 
+    test(
+      'personal questions are answered from memory, web fallback is honest',
+      () {
+        final facts = CommandService(devices: () => const []);
+        facts.execute('remember that my wifi password is nexus4321');
+        facts.execute('remember that mom is Martine 06 12 34 56 78');
+        facts.execute('remember that the bike code is 4321');
+
+        AgentMessage ask(String q) =>
+            facts.execute(q).dispatch! as AgentMessage;
+
+        // The three question forms hit memory, not the web.
+        expect(ask('what is my wifi password').text, contains('nexus4321'));
+        expect(ask("what is mom's number").text, contains('martine'));
+        expect(ask('who is mom').text, contains('martine'));
+        expect(ask('where is the bike code').text, contains('4321'));
+
+        // Loose wording reaches the right fact.
+        expect(
+          ask('what do you know about internet').text,
+          contains('wifi password'),
+        );
+        expect(ask('what do you know about family').text, contains('mom is'));
+
+        // Nothing stored → honest web fallback, never a fake answer.
+        final unknown = ask('what is the capital of france');
+        expect(unknown.text, contains("don't know that yet"));
+        expect(unknown.action, AgentActions.webSearch);
+        expect(unknown.arguments, containsPair('query', isNotEmpty));
+
+        // Non-personal and arithmetic paths untouched.
+        expect(ask('what is 2 plus 2').text, contains('='));
+        expect(
+          facts.execute('search for cats').status,
+          AgentResultStatus.succeeded,
+        );
+      },
+    );
+
     test('recall answers empty, all, and by topic', () {
       final facts = CommandService(devices: () => const []);
       final none = facts.execute('what do you know about me');

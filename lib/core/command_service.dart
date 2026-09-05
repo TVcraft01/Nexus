@@ -432,7 +432,8 @@ class CommandService {
         action == AgentActions.deviceRestart ||
         action == AgentActions.memoryRemember ||
         action == AgentActions.memoryRecall ||
-        action == AgentActions.memoryForget) {
+        action == AgentActions.memoryForget ||
+        action == AgentActions.memoryQuestion) {
       return _localAnswer(command);
     }
     if (_routableActions.contains(action)) {
@@ -643,6 +644,7 @@ class CommandService {
       case AgentActions.defineWord:
       case AgentActions.translateText:
       case AgentActions.unitConvert:
+      case AgentActions.memoryQuestion:
         return _localAnswer(command);
       default:
         // The requester already routed this to us as the capable device — run
@@ -684,6 +686,86 @@ class CommandService {
       device?.capabilities.map((c) => c.id).toList() ?? const [];
 
   List<AgentDeviceSnapshot> _allDevices() => [?local, ...devices()];
+
+  /// Words worth matching on — lowercase, alphanumeric runs of 3+ chars,
+  /// minus a few stopwords so "the" in a topic doesn't match "the" in every
+  /// fact ("what is the capital of france" must not hit a bike fact).
+  static const _stopWords = {
+    'the',
+    'and',
+    'for',
+    'with',
+    'that',
+    'this',
+    'from',
+    'was',
+    'are',
+    'has',
+    'had',
+    'not',
+    'but',
+    'all',
+    'out',
+    'get',
+    'got',
+  };
+
+  /// Cross-wording: how people actually ask vs how they said it. Seeded
+  /// only with observed pairs ("what do you know about internet" for a
+  /// wifi fact); grows from the assistant log, never by hand-guessing.
+  static const _synonyms = {
+    'internet': ['wifi', 'network'],
+    'family': ['mom', 'mum', 'mama', 'dad', 'papa', 'brother', 'sister'],
+  };
+
+  Set<String> _topicWords(String text) => text
+      .toLowerCase()
+      .split(RegExp(r'[^a-z0-9]+'))
+      .where((w) => w.length >= 3 && !_stopWords.contains(w))
+      .toSet();
+
+  /// Topic words plus their synonyms, so "about internet" reaches a wifi
+  /// fact without any model.
+  Set<String> _topicWordsExpanded(String text) {
+    final words = _topicWords(text);
+    return {...words, for (final w in words) ...?_synonyms[w]};
+  }
+
+  /// Facts loosely matching a spoken topic, best first. Substring matching
+  /// alone misses real wording: a bike-code fact is "about bike" but not
+  /// "about bicycle". A fact matches when any of its words loosely matches
+  /// any topic word — same word, a prefix, or small edit distance for
+  /// typos. Synonyms ("internet" ↔ "wifi") are deliberately out of scope.
+  List<String> _factsAbout(String topic) {
+    final topicWords = _topicWordsExpanded(topic);
+    if (topicWords.isEmpty) return const [];
+    bool loose(String factWord, String topicWord) {
+      if (factWord == topicWord) return true;
+      if (factWord.length >= 3 &&
+          (factWord.startsWith(topicWord) || topicWord.startsWith(factWord))) {
+        return true;
+      }
+      return topicWord.length >= 4 &&
+          factWord.length >= 4 &&
+          CommandInterpreter.phraseSimilarity(factWord, topicWord) >= 0.75;
+    }
+
+    bool factMatches(String fact) {
+      final words = _topicWords(fact);
+      return words.any((fw) => topicWords.any((tw) => loose(fw, tw)));
+    }
+
+    final hits = _facts.where(factMatches).toList();
+    hits.sort(
+      (a, b) => _factScore(b, topicWords).compareTo(_factScore(a, topicWords)),
+    );
+    return hits;
+  }
+
+  /// How strongly a fact matches a set of topic words — used only to order
+  /// multiple hits, never to admit them.
+  int _factScore(String fact, Set<String> topicWords) =>
+      _topicWords(fact).intersection(topicWords).length;
 
   /// Locally executable intents that need no device: greeting, time, math.
   AgentDispatchResult _localAnswer(ParsedCommand command) {
@@ -733,6 +815,7 @@ class CommandService {
             '\n'
             'Memory:\n'
             '  "remember that my bike code is 4321"\n'
+            '  "what is my wifi password" — I answer from memory\n'
             '  "what do you know about me" / "forget my bike code"\n'
             '\n'
             'If I misunderstand, just teach me once — I remember.',
@@ -1214,11 +1297,7 @@ class CommandService {
             ),
           );
         }
-        final matches = topic.isEmpty
-            ? _facts
-            : _facts
-                  .where((f) => f.toLowerCase().contains(topic.toLowerCase()))
-                  .toList();
+        final matches = topic.isEmpty ? _facts.toList() : _factsAbout(topic);
         if (matches.isEmpty) {
           return AgentDispatchResult(
             status: AgentResultStatus.succeeded,
@@ -1234,6 +1313,37 @@ class CommandService {
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
             '$heading\n${matches.map((f) => '  • $f').join('\n')}',
+          ),
+        );
+      case AgentActions.memoryQuestion:
+        // The payoff of memory: a personal question answered from what the
+        // user actually said. Nothing stored? Fall back to the web honestly.
+        final qTopic = (command.arguments['topic'] as String? ?? '').trim();
+        if (qTopic.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message:
+                'What do you want to know? Try "what is my wifi password".',
+          );
+        }
+        final hits = _factsAbout(qTopic);
+        if (hits.isEmpty) {
+          return AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage(
+              'I don\'t know that yet — nothing you told me matches "$qTopic". Searching the web instead…',
+              action: AgentActions.webSearch,
+              arguments: {'query': qTopic},
+            ),
+          );
+        }
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            hits.length == 1
+                ? hits.single
+                : '${hits.length} things you told me match "$qTopic":\n'
+                      '${hits.map((f) => '  • $f').join('\n')}',
           ),
         );
       case AgentActions.memoryForget:

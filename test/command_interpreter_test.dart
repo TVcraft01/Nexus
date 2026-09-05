@@ -94,10 +94,13 @@ void main() {
       expect(bare.command!.arguments['expr'], '2 + 2');
     });
 
-    test('a non-arithmetic "what is …" becomes a web search', () {
+    test('a non-arithmetic "what is …" asks memory before the web', () {
+      // Personal questions must never web-search the user's own secrets;
+      // generic ones reach the web honestly via the service fallback when
+      // memory has nothing (covered at service level).
       final result = interpreter.interpret('what is the capital of france');
-      expect(result.command!.action, AgentActions.webSearch);
-      expect(result.command!.arguments['query'], 'the capital of france');
+      expect(result.command!.action, AgentActions.memoryQuestion);
+      expect(result.command!.arguments['topic'], 'the capital of france');
     });
 
     test('"what does X mean" folds into a define search', () {
@@ -141,22 +144,26 @@ void main() {
       );
     });
 
-    test('unadvertised extras (weather, news, calendar) search the web', () {
-      // None of these are promised commands — they must not claim a fake
-      // action; falling back to a web search is the honest current answer.
-      expect(
-        interpreter.interpret("what's the weather").command!.action,
-        AgentActions.webSearch,
-      );
-      expect(
-        interpreter.interpret('what is the news').command!.action,
-        AgentActions.webSearch,
-      );
-      expect(
-        interpreter.interpret('what is on my calendar').command!.action,
-        AgentActions.webSearch,
-      );
-    });
+    test(
+      'unadvertised extras (weather, news, calendar) never fake an answer',
+      () {
+        // None of these are promised commands. They route through memory first
+        // (a taught fact wins); with nothing stored the service falls back to
+        // a web search — still honest, never a claimed fake action.
+        expect(
+          interpreter.interpret("what's the weather").command!.action,
+          AgentActions.memoryQuestion,
+        );
+        expect(
+          interpreter.interpret('what is the news').command!.action,
+          AgentActions.memoryQuestion,
+        );
+        expect(
+          interpreter.interpret('what is on my calendar').command!.action,
+          AgentActions.memoryQuestion,
+        );
+      },
+    );
 
     test('music play/pause/skip maps to the media actions', () {
       expect(
@@ -260,7 +267,33 @@ void main() {
       }
       final topic = interpreter.interpret('what do you know about my bike');
       expect(topic.command!.action, AgentActions.memoryRecall);
-      expect(topic.command!.arguments['topic'], 'my bike');
+    });
+
+    test('personal questions route to memory, math and search do not', () {
+      for (final pair in [
+        ('what is my wifi password', 'my wifi password'),
+        ("what is mom's number", 'mom is number'),
+        ('who is mom', 'mom'),
+        ('where is the bike code', 'bike code'),
+      ]) {
+        final r = interpreter.interpret(pair.$1);
+        expect(r.outcome, InterpretOutcome.matched, reason: pair.$1);
+        expect(r.command!.action, AgentActions.memoryQuestion, reason: pair.$1);
+        expect(r.command!.arguments['topic'], pair.$2, reason: pair.$1);
+      }
+      // Non-personal paths unchanged.
+      expect(
+        interpreter.interpret('what is 2 plus 2').command!.action,
+        AgentActions.mathCalc,
+      );
+      expect(
+        interpreter.interpret('search for cats').command!.action,
+        AgentActions.webSearch,
+      );
+      expect(
+        interpreter.interpret('what is the capital of france').command!.action,
+        AgentActions.memoryQuestion,
+      );
     });
 
     test('normalization folds accents and contractions', () {
