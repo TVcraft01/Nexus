@@ -45,6 +45,7 @@ class _AssistantViewState extends State<AssistantView> {
   /// after the first frame. When non-empty (and not dismissed) the assistant
   /// says so itself — its first proactive behavior, before being asked.
   List<DreamInsight>? _dreamGaps;
+  List<DreamLearn>? _dreamLearns;
   bool _dreamDismissed = false;
 
   /// The phrases this user asks most (their habits), mined from the same
@@ -712,12 +713,22 @@ class _AssistantViewState extends State<AssistantView> {
       lines,
       exclude: {..._service.learnedSnapshot.keys},
     );
+    // The dream also finds fixes on its own: a phrase the user kept
+    // re-asking that maps onto a phrase they have since taught.
+    final learns = const DreamPass().learnable(
+      lines,
+      learned: _service.learnedSnapshot,
+    );
     final habits = const Predictions().habits(lines);
     final changed =
         gaps.length != (_dreamGaps?.length ?? 0) ||
+        learns.length != (_dreamLearns?.length ?? 0) ||
         habits.length != (_habits?.length ?? 0) ||
         gaps.any(
           (g) => !(_dreamGaps ?? const []).any((o) => o.phrase == g.phrase),
+        ) ||
+        learns.any(
+          (l) => !(_dreamLearns ?? const []).any((o) => o.phrase == l.phrase),
         ) ||
         habits.any(
           (h) => !(_habits ?? const []).any((o) => o.phrase == h.phrase),
@@ -725,6 +736,7 @@ class _AssistantViewState extends State<AssistantView> {
     if (!changed) return;
     setState(() {
       _dreamGaps = gaps;
+      _dreamLearns = learns;
       _habits = habits;
     });
   }
@@ -832,9 +844,78 @@ class _AssistantViewState extends State<AssistantView> {
   /// still fails on something you asked (its dream log) and offers to be
   /// taught. Tapping opens the same review as the header button; the X
   /// silences it for this session.
+  /// The dream's self-improvement in one tap: the user's own teaching,
+  /// applied to the variant they keep typing — validated, persisted, and
+  /// broadcast to every paired device by the service's normal teach funnel.
+  void _dreamLearn(DreamLearn learn) {
+    setState(() => _dreamDismissed = true);
+    _consume(_service.learn(learn.phrase, learn.meaning));
+    unawaited(_refreshFromLog());
+  }
+
+  /// The specific beats the generic: when the dream found a fix, offer it
+  /// instead of the plain "teach me?" nudge.
+  Widget _dreamLearnCard(DreamLearn learn) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 10, 12, 0),
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          key: const ValueKey('dream-learn-card'),
+          padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+          decoration: BoxDecoration(
+            color: NexusColors.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: NexusColors.border),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.auto_awesome_rounded,
+                size: 16,
+                color: NexusColors.accent,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'You tried "${learn.phrase}" a few times — I think you '
+                  'meant "${learn.source}". Want me to remember that?',
+                  style: const TextStyle(
+                    color: NexusColors.text,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              TextButton(
+                key: const ValueKey('dream-learn-button'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+                onPressed: () => _dreamLearn(learn),
+                child: const Text('Learn it'),
+              ),
+              IconButton(
+                tooltip: 'Not now',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded, size: 16),
+                color: NexusColors.muted,
+                onPressed: () => setState(() => _dreamDismissed = true),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _dreamNudge() {
+    if (_dreamDismissed) return const SizedBox.shrink();
+    final learns = _dreamLearns;
+    if (learns != null && learns.isNotEmpty) {
+      return _dreamLearnCard(learns.first);
+    }
     final gaps = _dreamGaps;
-    if (_dreamDismissed || gaps == null || gaps.isEmpty) {
+    if (gaps == null || gaps.isEmpty) {
       return const SizedBox.shrink();
     }
     final message = gaps.length == 1
