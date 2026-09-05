@@ -524,6 +524,35 @@ void main() {
       expect(msg.arguments, isNot(contains('number')));
       expect(msg.arguments, containsPair('contact', 'the gate'));
     });
+
+    test('digit runs beyond the E.164 max (15) never resolve', () {
+      final facts = CommandService(devices: () => const []);
+      facts.execute('remember that my bank card is 1234 5678 9012 3456');
+      facts.execute('remember that the hotline is 123456789012345');
+
+      // 16 digits — a card number, not a phone.
+      final card = facts.execute('text the bank').dispatch! as AgentMessage;
+      expect(card.arguments, isNot(contains('number')));
+
+      // 15 digits — the legal maximum, still a phone.
+      final hotline = facts.execute('text the hotline').dispatch! as AgentMessage;
+      expect(hotline.arguments?['number'], '123456789012345');
+    });
+
+    test('forgetting the fact removes the resolution', () {
+      final facts = CommandService(devices: () => const []);
+      facts.execute('remember that mom is Martine 06 12 34 56 78');
+      expect(
+        (facts.execute('text mom').dispatch! as AgentMessage).arguments
+            ?['number'],
+        '0612345678',
+      );
+
+      facts.execute('forget mom');
+      final after = facts.execute('text mom').dispatch! as AgentMessage;
+      expect(after.arguments, isNot(contains('number')));
+      expect(after.arguments, containsPair('contact', 'mom'));
+    });
   });
 
   group('learn (dream review + teach loop)', () {
