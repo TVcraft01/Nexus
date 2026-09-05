@@ -784,12 +784,13 @@ class CommandService {
       _topicWords(fact).intersection(topicWords).length;
 
   /// A phone-looking token in [fact], normalized to digits, or null. Requires
-  /// at least 9 digits so street numbers and years never resolve as contacts.
+  /// 9..15 digits (E.164 max) so street numbers, years, and card or order
+  /// numbers never resolve as contacts.
   String? _phoneIn(String fact) {
     final run = RegExp(r'\+?[\d\s.\-()]{9,}').firstMatch(fact);
     if (run == null) return null;
     final digits = run.group(0)!.replaceAll(RegExp(r'[^\d+]'), '');
-    return digits.length >= 9 ? digits : null;
+    return digits.length >= 9 && digits.length <= 15 ? digits : null;
   }
 
   /// The phone number nexus has been taught for a contact name, or null when
