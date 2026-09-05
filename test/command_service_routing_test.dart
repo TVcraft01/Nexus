@@ -27,59 +27,124 @@ void main() {
     List<AgentDeviceSnapshot> devices = const [phone],
   }) => CommandService(devices: () => devices, local: pc);
 
-  group('capability routing — shipped behavior', () {
-    // The assistant answers every catalog command with a local message that
-    // carries the action; the view (this device's executor) is the single
-    // place that decides what this platform can really do. There is no
-    // cross-device routing question in this release.
+  group('capability routing — contact actions reach the device that can run them', () {
+    // A contact action is answered by the catalog and runs wherever it can:
+    // a phone self-dials, a phone-less device with a reachable phone offers
+    // to have that phone do it (the mesh thesis), and when nothing anywhere
+    // can run it the catalog honestly asks to teach the number.
 
-    test(
-      'a recognized call answers locally with the action the view executes',
-      () {
-        final service = makeService();
-        final result = service.execute('call mom');
-        expect(result.status, AgentResultStatus.succeeded);
-        final msg = result.dispatch! as AgentMessage;
-        expect(msg.action, AgentActions.callPlace);
-        expect(msg.arguments?['contact'], 'mom');
-      },
-    );
-
-    test(
-      'typed commands run immediately — no approval card or device question',
-      () {
-        final service = makeService();
-        final result = service.execute(
-          'call mom',
-          approval: AgentApproval.required,
-        );
-        expect(result.status, AgentResultStatus.succeeded);
-        expect(result.dispatch, isA<AgentMessage>());
-      },
-    );
-
-    test('"on my phone" folds into the contact, not a separate route', () {
+    test('a phone-less device with a reachable phone offers the call there', () {
       final service = makeService();
-      final msg =
-          service.execute('call mom on my phone').dispatch! as AgentMessage;
-      expect(msg.action, AgentActions.callPlace);
-      expect(msg.arguments?['contact'], 'mom');
+      final result = service.execute('call mom');
+      expect(result.status, AgentResultStatus.needsInfo);
+      final question = result.dispatch! as AgentClarification;
+      expect(question.key, 'device:${AgentActions.callPlace}');
+      expect(question.question, contains('My Phone'));
 
-      final text =
-          service.execute('text john on my phone').dispatch! as AgentMessage;
-      expect(text.action, AgentActions.messageSend);
-      expect(text.arguments?['contact'], 'john');
+      // The user agrees — the call goes to the phone as an approved plan
+      // with no second local prompt: the phone re-gates the request itself.
+      final agreed = service.execute('yes', answerTo: question.key);
+      expect(agreed.status, AgentResultStatus.succeeded);
+      final plan = agreed.dispatch! as AgentActionPlan;
+      expect(plan.request.target, 'phone1');
+      expect(plan.request.arguments['contact'], 'mom');
+      expect(plan.request.approval, AgentApproval.approved);
     });
 
-    test('an unknown device name stays visible to the executor — never a fake plan', () {
+    test('a taught number rides along so the phone dials straight through', () {
+      final service = makeService();
+      service.execute('remember that mom is 0612345678');
+      final result = service.execute('call mom');
+      final question = result.dispatch! as AgentClarification;
+      final agreed = service.execute('yes', answerTo: question.key);
+      final plan = agreed.dispatch! as AgentActionPlan;
+      expect(plan.request.arguments, containsPair('number', '0612345678'));
+      expect(plan.request.arguments['contact'], 'mom');
+    });
+
+    test('texts are offered the same way, body included', () {
+      final service = makeService();
+      final result = service.execute('text mom saying love you');
+      final question = result.dispatch! as AgentClarification;
+      expect(question.key, 'device:${AgentActions.messageSend}');
+      final agreed = service.execute('yes', answerTo: question.key);
+      final plan = agreed.dispatch! as AgentActionPlan;
+      expect(plan.request.target, 'phone1');
+      expect(plan.request.arguments['contact'], 'mom');
+      expect(plan.request.arguments['body'], 'love you');
+    });
+
+    test('the chosen device is remembered — the next call skips the question', () {
+      final service = makeService();
+      final first = service.execute('call mom');
+      expect(first.status, AgentResultStatus.needsInfo);
+      final question = first.dispatch! as AgentClarification;
+      expect(question.key, 'device:${AgentActions.callPlace}');
+      final agreed = service.execute('yes', answerTo: question.key);
+      expect(agreed.status, AgentResultStatus.succeeded);
+
+      final again = service.execute('call mom');
+      expect(again.status, AgentResultStatus.succeeded);
+      final plan = again.dispatch! as AgentActionPlan;
+      expect(plan.request.target, 'phone1');
+      expect(plan.request.approval, AgentApproval.approved);
+    });
+
+    test('naming the phone pins the route without a question', () {
+      final service = makeService();
+      final result = service.execute('call mom on my phone');
+      expect(result.status, AgentResultStatus.succeeded);
+      final plan = result.dispatch! as AgentActionPlan;
+      expect(plan.request.target, 'phone1');
+      // "on my phone" is a device marker — the contact stays clean.
+      expect(plan.request.arguments['contact'], 'mom');
+
+      final text = service.execute('text john on my phone');
+      expect(text.status, AgentResultStatus.succeeded);
+      expect(
+        (text.dispatch! as AgentActionPlan).request.target,
+        'phone1',
+      );
+    });
+
+    test('an unknown device name is refused honestly — no fake plan', () {
       final service = makeService();
       final result = service.execute('call mom on my laptop');
-      final msg = result.dispatch! as AgentMessage;
-      expect(msg.action, AgentActions.callPlace);
-      // The whole "mom on my laptop" is the contact the resolver sees; the
-      // executor asks "who did you mean?" instead of pretending to dial.
-      expect(msg.arguments?['contact'], 'mom on my laptop');
-      expect(result.dispatch, isNot(isA<AgentActionPlan>()));
+      expect(result.status, AgentResultStatus.unavailable);
+      expect(result.message, contains('my laptop'));
+    });
+
+    test('two phones produce a "which one?" question naming both', () {
+      final service = CommandService(
+        devices: () => const [
+          phone,
+          AgentDeviceSnapshot(
+            id: 'phone2',
+            name: 'Work Phone',
+            online: true,
+            capabilities: [DeviceCapability(AgentActions.callPlace)],
+          ),
+        ],
+        local: pc,
+      );
+      final result = service.execute('call mom');
+      expect(result.status, AgentResultStatus.needsInfo);
+      final question = result.dispatch! as AgentClarification;
+      expect(question.question, contains('Which device'));
+      expect(question.hint, contains('My Phone'));
+      expect(question.hint, contains('Work Phone'));
+
+      // Naming one routes there — and is remembered for next time.
+      final agreed = service.execute('work phone', answerTo: question.key);
+      expect(agreed.status, AgentResultStatus.succeeded);
+      final plan = agreed.dispatch! as AgentActionPlan;
+      expect(plan.request.target, 'phone2');
+      final again = service.execute('call mom');
+      expect(again.status, AgentResultStatus.succeeded);
+      expect(
+        (again.dispatch! as AgentActionPlan).request.target,
+        'phone2',
+      );
     });
 
     test('no phone anywhere answers honestly — a taught number is surfaced, otherwise it teaches', () {
@@ -317,13 +382,17 @@ void main() {
       expect(service.learnedSnapshot['bring mom'], 'call tvcraft01');
 
       // The adopted phrase now behaves like any taught one: "bring mom" is
-      // unknown on its own, but the adoption makes it reach the call executor
-      // hook instead of dying as an unknown.
+      // unknown on its own, but the adoption turns it into a call — offered
+      // to the reachable phone instead of dying as an unknown or echoing a
+      // call this PC can never place.
       final result = service.execute('bring mom');
-      expect(result.status, AgentResultStatus.succeeded);
-      final msg = result.dispatch! as AgentMessage;
-      expect(msg.action, AgentActions.callPlace);
-      expect(msg.arguments?['contact'], 'tvcraft01');
+      expect(result.status, AgentResultStatus.needsInfo);
+      final question = result.dispatch! as AgentClarification;
+      expect(question.key, 'device:${AgentActions.callPlace}');
+      final agreed = service.execute('yes', answerTo: question.key);
+      final plan = agreed.dispatch! as AgentActionPlan;
+      expect(plan.request.target, 'phone1');
+      expect(plan.request.arguments['contact'], 'tvcraft01');
     });
   });
 }

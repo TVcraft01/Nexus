@@ -302,6 +302,20 @@ class _AssistantViewState extends State<AssistantView> {
             _selfRunActions.contains(plan.request.action)) {
       unawaited(_runSelfAction(plan.request));
     }
+    // Path 3: An approved plan aimed at a PAIRED device (a call or text
+    // this device can't run, offered to the phone that can). The device
+    // question already got the user's consent, so it sends itself and shows
+    // the remote's outcome in the plan card; the paired device re-gates the
+    // request on its own side. Blink and clipboard keep their dedicated
+    // paths (they target serial nodes, not mesh devices).
+    if (result.dispatch case final AgentActionPlan plan
+        when plan.request.target.isNotEmpty &&
+            plan.request.target != widget.mesh.identity.id &&
+            plan.request.approval == AgentApproval.approved &&
+            plan.request.action != AgentActions.ledBlink &&
+            plan.request.action != AgentActions.clipboardWrite) {
+      unawaited(_sendAgentRequest(plan.request));
+    }
     // Path 2: A message with an attached action — these come from
     // _localAnswer() for webSearch, noteCreate, timerSet, openUrl,
     // systemInfo, volumeSet. The message is shown immediately and the

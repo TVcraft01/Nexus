@@ -389,6 +389,14 @@ class CommandService {
         requestId: requestId,
       );
     }
+    // Contact actions: answered here on the device that can run them, and
+    // honestly taught when nothing anywhere can. But when THIS device can't
+    // execute a call or text and a paired device can, echoing the action
+    // would only fail here — offer to have the paired device do it instead.
+    if (action == AgentActions.callPlace ||
+        action == AgentActions.messageSend) {
+      return _contactAction(command, approval, requestId, rawInput);
+    }
     if (action == AgentActions.greet ||
         action == AgentActions.timeGet ||
         action == AgentActions.mathCalc ||
@@ -408,8 +416,6 @@ class CommandService {
         action == AgentActions.wifiToggle ||
         action == AgentActions.bluetoothToggle ||
         action == AgentActions.lockScreen ||
-        action == AgentActions.callPlace ||
-        action == AgentActions.messageSend ||
         action == AgentActions.mediaPlay ||
         action == AgentActions.mediaPause ||
         action == AgentActions.mediaNext ||
@@ -435,9 +441,6 @@ class CommandService {
         action == AgentActions.memoryQuestion) {
       return localAnswer(command, _answerContext);
     }
-    if (_routableActions.contains(action)) {
-      return _routeDeviceAction(command, approval, requestId, rawInput);
-    }
     return _unwired(command);
   }
 
@@ -448,9 +451,54 @@ class CommandService {
     );
   }
 
-  static const _routableActions = <String>{};
+  /// A call or text command. The catalog decides the words and resolves a
+  /// taught number; then this device's own abilities decide where it runs:
+  ///  - a device that genuinely dials keeps it (its view self-runs it),
+  ///  - when nothing anywhere can run it, the catalog's answer stands (the
+  ///    honest "teach me the number" prompt), and
+  ///  - when THIS device can't but a paired one can, echoing the action
+  ///    would only fail here — offer to have the paired device do it.
+  AgentDispatchResult _contactAction(
+    ParsedCommand command,
+    AgentApproval approval,
+    String requestId,
+    String? rawInput,
+  ) {
+    final answer = localAnswer(command, _answerContext);
+    // Only an executable action card can be offered elsewhere — teach
+    // prompts, "who should I call" re-asks and plain answers stay put.
+    final card = answer.dispatch;
+    if (answer.status != AgentResultStatus.succeeded ||
+        card is! AgentMessage ||
+        card.action == null) {
+      return answer;
+    }
+    // A device that genuinely runs calls and texts keeps them (a phone
+    // dials its own, address book included).
+    final self = local;
+    if (self != null && _supports(self, command.action)) return answer;
+    final reachable = devices()
+        .where((d) => d.online && _supports(d, command.action))
+        .toList();
+    // No paired executor anywhere: the catalog's answer stands.
+    if (reachable.isEmpty) return answer;
+    // This device can't, a paired one can — offer it. The resolved number
+    // and body ride along so the remote dials or texts straight through.
+    return _routeDeviceAction(
+      ParsedCommand(
+        action: command.action,
+        target: command.target,
+        arguments: card.arguments ?? command.arguments,
+      ),
+      approval,
+      requestId,
+      rawInput,
+    );
+  }
 
-  /// Finds the device an action should run on, or asks the user to pick one.
+  /// Finds the device a contact action should run on, or asks the user to
+  /// pick one. Called from [_contactAction] when this device cannot execute
+  /// a call or text but a paired device can.
   /// Naming a device ("call mom on my phone") pins the target and skips the
   /// search; otherwise the local device runs it if it can, a single capable
   /// device is offered, and several produce a "which one?" question.
@@ -549,8 +597,13 @@ class CommandService {
   }) {
     // Locally-executable actions (calls on Android) run immediately from
     // typed input — no Approve/Deny prompt. Remote requests keep their own
-    // gate in handleRemoteRequest.
-    final autoRun = locallyExecutable.contains(command.action);
+    // gate in handleRemoteRequest. A plan aimed at a PAIRED device also runs
+    // without a second local prompt: reaching this point means the user
+    // already chose that device (the "do it on My Phone?" question, a named
+    // device, or a remembered choice) — the remote re-gates anyway.
+    final remotePlan = command.target.isNotEmpty &&
+        (local == null || command.target != local!.id);
+    final autoRun = locallyExecutable.contains(command.action) || remotePlan;
     if (approval == AgentApproval.required && !autoRun) {
       return const AgentDispatchResult(
         status: AgentResultStatus.required,
