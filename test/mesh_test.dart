@@ -1361,6 +1361,36 @@ void main() {
       expect(meshB.store.agentFacts, ['my wifi password is nexus']);
     },
   );
+
+  test('a reminder set on one device syncs to its paired peers', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    const line = '{"id":"r-1","text":"take out the trash",'
+        '"dueAt":"2026-09-05T20:00:00.000"}';
+
+    String? seenLine;
+    // The live assistant claims the reminder: it adopts it and its funnel
+    // writes the store (the mesh only delivers when a listener is attached).
+    meshB.onReminderReceived = (line) {
+      seenLine = line;
+      meshB.store.agentReminders = [...meshB.store.agentReminders, line];
+    };
+
+    await meshA.broadcastReminder(line);
+
+    await _waitFor(() => seenLine != null);
+    expect(seenLine, line);
+    expect(meshB.store.agentReminders, [line]);
+  });
 }
 
 /// Polls until [cond] is true (with a timeout), so tests don't depend on

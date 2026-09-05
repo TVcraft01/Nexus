@@ -3,6 +3,7 @@ import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/answers.dart';
 import 'package:nexus/core/command_interpreter.dart';
 import 'package:nexus/core/command_service.dart';
+import 'package:nexus/core/reminders.dart';
 
 void main() {
   const devices = [
@@ -359,13 +360,41 @@ void main() {
 
     test('"remember to …" is a reminder, never a fact', () {
       final facts = CommandService(devices: () => const []);
+      // No time given — the catalog asks when instead of pretending, but
+      // it is still a reminder path, never a stored fact.
       final result = facts.execute('remember to buy milk');
       expect(result.status, AgentResultStatus.succeeded);
-      expect(
-        (result.dispatch! as AgentMessage).action,
-        AgentActions.reminderSet,
-      );
+      expect((result.dispatch! as AgentMessage).text, contains('when'));
       expect(facts.factsSnapshot, isEmpty);
+    });
+
+    test('a reminder with a time promises to say it back then', () {
+      final service = CommandService(devices: () => const []);
+      final fixed = DateTime(2026, 9, 5, 19, 59);
+      Reminders.nowOverride = () => fixed;
+      try {
+        final result = service.execute('remind me to stretch at 8pm');
+        expect(result.status, AgentResultStatus.succeeded);
+        final msg = result.dispatch! as AgentMessage;
+        expect(msg.text, contains('Reminder set for 8:00pm'));
+        // The promise carries the split text and its due time for the engine.
+        expect(msg.arguments?['text'], 'stretch');
+        expect(
+          msg.arguments?['dueAt'],
+          DateTime(2026, 9, 5, 20, 0).toIso8601String(),
+        );
+      } finally {
+        Reminders.nowOverride = null;
+      }
+    });
+
+    test('a reminder without a time asks honestly, never a fake promise', () {
+      final service = CommandService(devices: () => const []);
+      final result = service.execute('remind me to buy milk');
+      expect(result.status, AgentResultStatus.succeeded);
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.action, isNull); // nothing will fire — and nothing pretends
+      expect(msg.text, contains('when'));
     });
 
     test('framing-word-only content is refused, never stored', () {

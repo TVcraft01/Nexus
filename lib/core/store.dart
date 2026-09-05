@@ -123,6 +123,18 @@ class NexusStore {
     _agentSection()['facts'] = List<String>.of(value);
   }
 
+  /// Promises the assistant made to say something back later ("remind me to
+  /// take out the trash at 8"), one JSON line each. Survives restarts, so a
+  /// reminder set before quitting still fires after launching again.
+  List<String> get agentReminders => List<String>.from(
+    (_data['agent'] as Map<String, dynamic>?)?['reminders'] as List? ??
+        const [],
+  );
+
+  set agentReminders(List<String> value) {
+    _agentSection()['reminders'] = List<String>.of(value);
+  }
+
   Map<String, dynamic> _agentSection() =>
       _data.putIfAbsent('agent', () => <String, dynamic>{})
           as Map<String, dynamic>;

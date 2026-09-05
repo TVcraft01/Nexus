@@ -85,6 +85,12 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
   Path 3 in the view (`_consume`); the paired device re-gates the incoming
   request in its own view (`_handleIncoming`) and runs its real executor.
   Widen the fork's action set only with the receiver's capability in mind.
+- A new *timed behavior* ("remind me … at 8pm") → follow the reminder
+  vertical: `core/reminders.dart` owns the words/times/due checks (pure,
+  injectable clock), the view owns the list + scheduler + firing + mesh
+  broadcast/adopt (`_registerReminder`/`_checkReminders`), the store mirrors
+  it via `agentReminders`, and `agent.reminder` is the mesh message. The
+  catalog parses the time and promises the echo; the engine does the rest.
 - A behavior change to sync or pairing → `mesh/`. A new screen → `ui/`, in
   its own file, not appended to `assistant_view.dart`.
 - Answers that need more than the catalog's `AnswerContext` (facts +

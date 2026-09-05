@@ -662,7 +662,7 @@ void main() {
             'next': AgentActions.mediaNext,
             'previous': AgentActions.mediaPrev,
             'alarm for 7am': AgentActions.alarmSet,
-            'remind me to buy milk': AgentActions.reminderSet,
+            'remind me to buy milk at 8pm': AgentActions.reminderSet,
             'define serendipity': AgentActions.defineWord,
             'search for flutter': AgentActions.webSearch,
             'open github.com': AgentActions.openUrl,

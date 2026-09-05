@@ -8,6 +8,7 @@ import 'dart:math';
 
 import 'agent_contract.dart';
 import 'command_interpreter.dart';
+import 'reminders.dart';
 
 /// The window onto the assistant's state the catalog may touch while
 /// answering. Kept deliberately small so the catalog is readable and
@@ -550,13 +551,25 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         ),
       );
     case AgentActions.reminderSet:
-      final text = command.arguments['text'] as String? ?? '';
+      final raw = command.arguments['text'] as String? ?? '';
+      final split = const Reminders().splitTime(raw, Reminders.now());
+      if (split == null) {
+        // No time in the request — never pretend a reminder was set.
+        return const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'I\'ll remind you — but when? Try "remind me to buy milk at 6pm" '
+            'or "remind me to stretch in 20 minutes".',
+          ),
+        );
+      }
+      final (text, dueAt) = split;
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          'Reminder: "$text"',
+          'Reminder set for ${_clockLabel(dueAt)} — I\'ll tell you then.',
           action: AgentActions.reminderSet,
-          arguments: {'text': text},
+          arguments: {'text': text, 'dueAt': dueAt.toIso8601String()},
         ),
       );
     case AgentActions.defineWord:
@@ -838,6 +851,14 @@ String _formatTime(Object? kind) {
 String _formatNumber(double value) => value == value.roundToDouble()
     ? value.toInt().toString()
     : value.toString();
+
+/// "8:00pm" / "6:05am" — how the reminder echo says when it fires.
+String _clockLabel(DateTime t) {
+  final hh = t.hour % 12 == 0 ? 12 : t.hour % 12;
+  final mm = t.minute.toString().padLeft(2, '0');
+  final meridiem = t.hour < 12 ? 'am' : 'pm';
+  return '$hh:$mm$meridiem';
+}
 
 /// Safely evaluates a small arithmetic expression: numbers, `+ - * /` and
 /// parentheses. Returns null for anything invalid (empty, bad tokens, or
