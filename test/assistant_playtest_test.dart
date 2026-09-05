@@ -356,6 +356,60 @@ void main() {
     },
   );
 
+  testWidgets(
+    'personal predictions: repeated asks replace the generic chips, and '
+    'tapping one asks again',
+    (tester) async {
+      final (store, mesh) = await boot();
+      // Three resolved asks of the same phrase — a real habit.
+      QueryLog.readAllOverride = () async => [
+        '{"ts":"t","kind":"ask","input":"roll a dice","status":"succeeded","route":"message","detail":""}',
+        '{"ts":"t","kind":"ask","input":"roll a dice","status":"succeeded","route":"message","detail":""}',
+        '{"ts":"t","kind":"ask","input":"roll a dice","status":"succeeded","route":"message","detail":""}',
+      ];
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump(); // first frame
+        await tester.pump(); // log read resolves
+
+        // The chips row predicts the user's own routine instead of the
+        // generic catalog — the habit is the only chip and the catalog's
+        // opener is gone.
+        expect(find.byType(ActionChip), findsOneWidget);
+        expect(find.widgetWithText(ActionChip, 'roll a dice'), findsOneWidget);
+        expect(find.widgetWithText(ActionChip, 'what can you do'), findsNothing);
+
+        // Tapping the predicted chip asks it — a real dice roll reply.
+        await tester.tap(find.widgetWithText(ActionChip, 'roll a dice').first);
+        await tester.pumpAndSettle();
+        expect(find.textContaining('olled a'), findsWidgets);
+      } finally {
+        QueryLog.readAllOverride = null;
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+
+      // No history yet — the generic discovery chips stay. A fresh State
+      // (as after a restart) reads the empty log and falls back to the
+      // catalog.
+      final (freshStore, freshMesh) = await boot();
+      QueryLog.readAllOverride = () async => const [];
+      try {
+        await tester.pumpWidget(harness(freshMesh, key: UniqueKey()));
+        await tester.pump();
+        await tester.pump();
+        // The generic discovery row is back — it opens with the catalog's
+        // first chip, not the user's routine.
+        expect(find.widgetWithText(ActionChip, 'what can you do'), findsOneWidget);
+        expect(find.widgetWithText(ActionChip, 'roll a dice'), findsNothing);
+      } finally {
+        QueryLog.readAllOverride = null;
+        QueryLog.i.resetForTest();
+        await freshMesh.stop();
+      }
+    },
+  );
+
   testWidgets('the nudge is once per session and honors a clean log', (
     tester,
   ) async {
