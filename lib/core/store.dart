@@ -28,21 +28,32 @@ class NexusStore {
     _data['identity'] = info.toJson();
   }
 
-  int get port => ((_data['settings'] as Map<String, dynamic>?)?['port'] as num?)?.toInt() ?? 51820;
+  int get port =>
+      ((_data['settings'] as Map<String, dynamic>?)?['port'] as num?)
+          ?.toInt() ??
+      51820;
 
   set port(int value) => _settings()['port'] = value;
 
-  bool get clipboardSync => ((_data['settings'] as Map<String, dynamic>?)?['clipboardSync'] as bool?) ?? true;
+  bool get clipboardSync =>
+      ((_data['settings'] as Map<String, dynamic>?)?['clipboardSync']
+          as bool?) ??
+      true;
 
   set clipboardSync(bool value) => _settings()['clipboardSync'] = value;
 
   bool get broadcastDiscovery =>
-      ((_data['settings'] as Map<String, dynamic>?)?['broadcastDiscovery'] as bool?) ?? true;
+      ((_data['settings'] as Map<String, dynamic>?)?['broadcastDiscovery']
+          as bool?) ??
+      true;
 
-  set broadcastDiscovery(bool value) => _settings()['broadcastDiscovery'] = value;
+  set broadcastDiscovery(bool value) =>
+      _settings()['broadcastDiscovery'] = value;
 
   /// Whether the app checks GitHub for a newer release on startup.
-  bool get autoUpdate => ((_data['settings'] as Map<String, dynamic>?)?['autoUpdate'] as bool?) ?? true;
+  bool get autoUpdate =>
+      ((_data['settings'] as Map<String, dynamic>?)?['autoUpdate'] as bool?) ??
+      true;
 
   set autoUpdate(bool value) => _settings()['autoUpdate'] = value;
 
@@ -50,18 +61,25 @@ class NexusStore {
   /// devices. When false, the smart delayed sync is used (3 s delay +
   /// activity filter). Defaults to true so clipboard sync is reliable
   /// out of the box.
-  bool get alwaysMerge => ((_data['settings'] as Map<String, dynamic>?)?['alwaysMerge'] as bool?) ?? true;
+  bool get alwaysMerge =>
+      ((_data['settings'] as Map<String, dynamic>?)?['alwaysMerge'] as bool?) ??
+      true;
 
   set alwaysMerge(bool value) => _settings()['alwaysMerge'] = value;
 
   /// Localhost gateway (Linux FUSE mount companion): a fixed default port the
   /// mount script can find, and a per-launch random token the daemon must
   /// present so only it (and the app) can use the gateway.
-  int get gatewayPort => ((_data['settings'] as Map<String, dynamic>?)?['gatewayPort'] as num?)?.toInt() ?? 51823;
+  int get gatewayPort =>
+      ((_data['settings'] as Map<String, dynamic>?)?['gatewayPort'] as num?)
+          ?.toInt() ??
+      51823;
 
   set gatewayPort(int value) => _settings()['gatewayPort'] = value;
 
-  String? get gatewayToken => ((_data['settings'] as Map<String, dynamic>?)?['gatewayToken'] as String?);
+  String? get gatewayToken =>
+      ((_data['settings'] as Map<String, dynamic>?)?['gatewayToken']
+          as String?);
 
   set gatewayToken(String? value) {
     if (value == null) {
@@ -76,10 +94,9 @@ class NexusStore {
 
   /// Phrases the user taught the assistant, mapped to the command they mean
   /// ("bring me home" -> "show my devices"). Survives restarts.
-  Map<String, String> get agentLearned =>
-      Map<String, String>.from(
-        (_data['agent'] as Map<String, dynamic>?)?['learned'] as Map? ?? const {},
-      );
+  Map<String, String> get agentLearned => Map<String, String>.from(
+    (_data['agent'] as Map<String, dynamic>?)?['learned'] as Map? ?? const {},
+  );
 
   set agentLearned(Map<String, String> value) {
     _agentSection()['learned'] = Map<String, dynamic>.of(value);
@@ -87,17 +104,28 @@ class NexusStore {
 
   /// Remembered answers to "which …?" questions, keyed by the argument
   /// (e.g. `media.play.playlist` -> "Chill Mix"). Survives restarts.
-  Map<String, dynamic> get agentDefaults =>
-      Map<String, dynamic>.from(
-        (_data['agent'] as Map<String, dynamic>?)?['defaults'] as Map? ?? const {},
-      );
+  Map<String, dynamic> get agentDefaults => Map<String, dynamic>.from(
+    (_data['agent'] as Map<String, dynamic>?)?['defaults'] as Map? ?? const {},
+  );
 
   set agentDefaults(Map<String, dynamic> value) {
     _agentSection()['defaults'] = Map<String, dynamic>.of(value);
   }
 
+  /// Things the user told the assistant about their world ("my wifi
+  /// password is nexus"), kept as plain text so recall can search them by
+  /// keyword. Survives restarts, like taught phrases.
+  List<String> get agentFacts => List<String>.from(
+    (_data['agent'] as Map<String, dynamic>?)?['facts'] as List? ?? const [],
+  );
+
+  set agentFacts(List<String> value) {
+    _agentSection()['facts'] = List<String>.of(value);
+  }
+
   Map<String, dynamic> _agentSection() =>
-      _data.putIfAbsent('agent', () => <String, dynamic>{}) as Map<String, dynamic>;
+      _data.putIfAbsent('agent', () => <String, dynamic>{})
+          as Map<String, dynamic>;
 
   List<Map<String, dynamic>> get pairedDevices =>
       ((_data['paired'] as List?) ?? const [])
@@ -105,8 +133,8 @@ class NexusStore {
           .toList();
 
   void upsertPaired(Map<String, dynamic> device) {
-    final list = _data.putIfAbsent('paired', () => <Map<String, dynamic>>[])
-        as List;
+    final list =
+        _data.putIfAbsent('paired', () => <Map<String, dynamic>>[]) as List;
     final idx = list.indexWhere((e) => e['id'] == device['id']);
     if (idx >= 0) {
       list[idx] = device;
@@ -142,14 +170,26 @@ class NexusStore {
           .toList();
 
   void upsertNeighbor(String id, String address, int port, String name) {
-    final list = _data.putIfAbsent('neighbors', () => <Map<String, dynamic>>[])
-        as List;
+    final list =
+        _data.putIfAbsent('neighbors', () => <Map<String, dynamic>>[]) as List;
     final now = DateTime.now().toIso8601String();
     final idx = list.indexWhere((e) => e['id'] == id);
     if (idx >= 0) {
-      list[idx] = {'id': id, 'address': address, 'port': port, 'name': name, 'lastSeen': now};
+      list[idx] = {
+        'id': id,
+        'address': address,
+        'port': port,
+        'name': name,
+        'lastSeen': now,
+      };
     } else {
-      list.add({'id': id, 'address': address, 'port': port, 'name': name, 'lastSeen': now});
+      list.add({
+        'id': id,
+        'address': address,
+        'port': port,
+        'name': name,
+        'lastSeen': now,
+      });
     }
     // Keep it small: the most recent 12 devices, dropping anything not seen
     // within the last day (a stale address is worse than none — a phone that
@@ -226,6 +266,8 @@ class NexusStore {
       return File(explicitPath!);
     }
     final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}${Platform.pathSeparator}nexus${Platform.pathSeparator}state.json');
+    return File(
+      '${dir.path}${Platform.pathSeparator}nexus${Platform.pathSeparator}state.json',
+    );
   }
 }

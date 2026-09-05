@@ -499,11 +499,62 @@ class CommandInterpreter {
       );
     }
 
+    // --- Memory: facts the user tells us about their world. These land in
+    // the fact store, not in notes — remembering is the assistant's own
+    // business, a note is a scratchpad the user can edit. "remember to …"
+    // still means a reminder, never a fact.
+    final remember = RegExp(r'^remember(?: that| this)? (?!to\b)(.+)$')
+        .firstMatch(norm);
+    if (remember != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.memoryRemember,
+          target: 'local',
+          arguments: {'text': remember.group(1)!.trim()},
+        ),
+      );
+    }
+    final forget = RegExp(r'^forget(?: that| the fact that)? (.+)$')
+        .firstMatch(norm);
+    if (forget != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.memoryForget,
+          target: 'local',
+          arguments: {'text': forget.group(1)!.trim()},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'what do you remember',
+      'what do you remember about me',
+      'what do you know about me',
+      'what have you remembered',
+      'what have i told you',
+      'what did i tell you',
+      'what do i know',
+      'tell me what you remember',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.memoryRecall, target: 'local'),
+      );
+    }
+    final recallTopic = RegExp(r'^what do you (?:know|remember) about (.+)$')
+        .firstMatch(norm);
+    if (recallTopic != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.memoryRecall,
+          target: 'local',
+          arguments: {'topic': recallTopic.group(1)!.trim()},
+        ),
+      );
+    }
+
     // --- Notes: "note that X" / "save X"
     final note =
         RegExp(r'^(note|write down|make a note)( down)?( that)? (.+)$')
             .firstMatch(norm) ??
-        RegExp(r'^remember that (.+)$').firstMatch(norm) ??
         RegExp(r'^save (.+)$').firstMatch(norm);
     if (note != null) {
       return InterpretResult.matched(

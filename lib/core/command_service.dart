@@ -8,11 +8,18 @@ import 'command_interpreter.dart';
 ///    (e.g. "bring me home" -> "show my devices").
 ///  - [defaults]: an answer to a previous "which …?" question, keyed by the
 ///    argument (e.g. `media.play.playlist` -> "Chill Mix").
+///  - [facts]: things the user told us about their world ("my wifi password
+///    is nexus"), kept as plain text so recall can search them by keyword.
 class AgentMemory {
   final Map<String, String> learned;
   final Map<String, dynamic> defaults;
+  final List<String> facts;
 
-  const AgentMemory({this.learned = const {}, this.defaults = const {}});
+  const AgentMemory({
+    this.learned = const {},
+    this.defaults = const {},
+    this.facts = const [],
+  });
 }
 
 class CommandService {
@@ -20,6 +27,7 @@ class CommandService {
   final CommandInterpreter _interpreter;
   final Map<String, String> _learned;
   final Map<String, dynamic> _defaults;
+  final List<String> _facts;
   final void Function()? onMemoryChanged;
 
   /// Fired when the user teaches a phrase on THIS device, so the view can
@@ -38,6 +46,11 @@ class CommandService {
   /// answer.
   final Set<String> locallyExecutable;
 
+  /// Fired when the user tells the assistant a fact on THIS device, so the
+  /// view can broadcast it to paired devices. Never fired for facts adopted
+  /// from a peer (that would re-broadcast and loop the mesh).
+  final void Function(String fact)? onFactLearned;
+
   /// The last input behind each open clarification, keyed by the
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
@@ -52,17 +65,33 @@ class CommandService {
     AgentMemory memory = const AgentMemory(),
     this.onMemoryChanged,
     this.onPhraseLearned,
+    this.onFactLearned,
     this.local,
     this.locallyExecutable = const {},
     this._interpreter = const CommandInterpreter(),
   }) : _learned = Map.of(memory.learned),
-       _defaults = Map.of(memory.defaults);
+       _defaults = Map.of(memory.defaults),
+       _facts = List.of(memory.facts);
 
   /// Snapshot of the taught phrases, for persisting to the store.
   Map<String, String> get learnedSnapshot => Map.unmodifiable(_learned);
 
   /// Snapshot of the remembered argument defaults, for persisting.
   Map<String, dynamic> get defaultsSnapshot => Map.unmodifiable(_defaults);
+
+  /// Snapshot of the facts the user told us, for persisting.
+  List<String> get factsSnapshot => List.unmodifiable(_facts);
+
+  /// Adopts a fact told to a paired device and synced over the mesh.
+  /// Persists like a local remember, but never fires [onFactLearned] — the
+  /// fact came FROM the mesh, broadcasting it back would loop forever.
+  void adoptFact(String fact) {
+    final clean = fact.trim();
+    if (clean.isEmpty) return;
+    if (_facts.any((f) => f.toLowerCase() == clean.toLowerCase())) return;
+    _facts.add(clean);
+    onMemoryChanged?.call();
+  }
 
   AgentDispatchResult execute(
     String input, {
@@ -400,7 +429,10 @@ class CommandService {
         action == AgentActions.findDevice ||
         action == AgentActions.ringDevice ||
         action == AgentActions.airplaneModeSet ||
-        action == AgentActions.deviceRestart) {
+        action == AgentActions.deviceRestart ||
+        action == AgentActions.memoryRemember ||
+        action == AgentActions.memoryRecall ||
+        action == AgentActions.memoryForget) {
       return _localAnswer(command);
     }
     if (_routableActions.contains(action)) {
@@ -698,6 +730,10 @@ class CommandService {
             'Web:\n'
             '  \"search for flutter\" / \"open github.com\"\n'
             '  \"note that buy milk\"\n'
+            '\n'
+            'Memory:\n'
+            '  "remember that my bike code is 4321"\n'
+            '  "what do you know about me" / "forget my bike code"\n'
             '\n'
             'If I misunderstand, just teach me once — I remember.',
           ),
@@ -1138,6 +1174,90 @@ class CommandService {
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
             'I won\'t restart the device from inside the app — use the power menu.',
+          ),
+        );
+      // --- Memory: facts the user told us about their world. All three
+      // answer locally with plain messages — the store is the memory.
+      case AgentActions.memoryRemember:
+        final text = (command.arguments['text'] as String? ?? '').trim();
+        if (text.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'What should I remember? Try "remember that my wifi password is nexus".',
+          );
+        }
+        if (_facts.any((f) => f.toLowerCase() == text.toLowerCase())) {
+          return AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage('I already know that.'),
+          );
+        }
+        _facts.add(text);
+        onMemoryChanged?.call();
+        onFactLearned?.call(text);
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('Remembered: "$text".'),
+        );
+      case AgentActions.memoryRecall:
+        final topic = (command.arguments['topic'] as String? ?? '').trim();
+        if (_facts.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage(
+              'I don\'t remember anything about you yet. Tell me with "remember that …".',
+            ),
+          );
+        }
+        final matches = topic.isEmpty
+            ? _facts
+            : _facts
+                  .where((f) => f.toLowerCase().contains(topic.toLowerCase()))
+                  .toList();
+        if (matches.isEmpty) {
+          return AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage(
+              'I don\'t remember anything about "$topic" yet. Tell me with "remember that …".',
+            ),
+          );
+        }
+        final heading = topic.isEmpty
+            ? 'Here is what I know:'
+            : 'About "$topic":';
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            '$heading\n${matches.map((f) => '  • $f').join('\n')}',
+          ),
+        );
+      case AgentActions.memoryForget:
+        final query = (command.arguments['text'] as String? ?? '').trim();
+        if (query.isEmpty) {
+          return const AgentDispatchResult(
+            status: AgentResultStatus.unavailable,
+            message: 'What should I forget? Try "forget my wifi password".',
+          );
+        }
+        final gone = _facts
+            .where((f) => f.toLowerCase().contains(query.toLowerCase()))
+            .toList();
+        if (gone.isEmpty) {
+          return AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage('I don\'t remember anything like "$query".'),
+          );
+        }
+        _facts.removeWhere(
+          (f) => f.toLowerCase().contains(query.toLowerCase()),
+        );
+        onMemoryChanged?.call();
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            gone.length == 1
+                ? 'Forgotten: "${gone.single}".'
+                : 'Forgotten ${gone.length} things.',
           ),
         );
       default:

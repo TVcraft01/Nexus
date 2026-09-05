@@ -347,6 +347,11 @@ class MeshService extends ChangeNotifier {
   /// — that would loop the mesh forever.
   void Function(String phrase, String meaning)? onLearnedPhraseReceived;
 
+  /// Fired when a paired device tells the assistant a fact and syncs it here.
+  /// The view wires this into the live [CommandService] so the fact is usable
+  /// immediately. Receivers never re-broadcast — that would loop the mesh.
+  void Function(String fact)? onFactReceived;
+
   /// In-flight replies keyed by request id. Completed by `agent.result` or a
   /// timeout, so a sender can await the remote's answer.
   final Map<String, Completer<AgentDispatchResult?>> _pendingAgentResults = {};
@@ -540,6 +545,30 @@ class MeshService extends ChangeNotifier {
             from: identity.id,
             to: peer.id,
             payload: {'phrase': phrase, 'meaning': meaning},
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Tells every paired device a fact the user just told the assistant
+  /// ("remember that …"), so one telling is known on all of them.
+  /// Fire-and-forget, like [broadcastLearnedPhrase]: a peer that is offline
+  /// misses this one until the next telling.
+  Future<void> broadcastFact(String fact) async {
+    final peers = _paired.values.toList();
+    if (peers.isEmpty) return;
+    await Future.wait(
+      peers.map(
+        (peer) => _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.agentFact,
+            from: identity.id,
+            to: peer.id,
+            payload: {'text': fact},
             id: _newId(),
             ts: DateTime.now().millisecondsSinceEpoch,
           ),
@@ -1296,6 +1325,25 @@ class MeshService extends ChangeNotifier {
         _queueSave();
         QueryLog.i.synced(phrase, meaning, from: msg.from);
         onLearnedPhraseReceived?.call(phrase, meaning);
+        notifyListeners();
+
+      case NexusMessage.agentFact:
+        // A paired device told the assistant a fact — adopt it silently
+        // (knowledge, not an action, so no approval gate). Duplicates are
+        // dropped; we never re-broadcast (that would loop forever).
+        if (!encrypted) return;
+        final text = msg.payload['text']?.toString().trim() ?? '';
+        if (text.isEmpty) break;
+        if (store.agentFacts.any(
+          (f) => f.toLowerCase() == text.toLowerCase(),
+        )) {
+          QueryLog.i.syncedFact(text, from: msg.from, conflict: true);
+          break;
+        }
+        store.agentFacts = [...store.agentFacts, text];
+        _queueSave();
+        QueryLog.i.syncedFact(text, from: msg.from);
+        onFactReceived?.call(text);
         notifyListeners();
     }
   }

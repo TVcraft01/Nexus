@@ -290,4 +290,106 @@ void main() {
       },
     );
   });
+
+  group('fact memory: remember, recall, forget', () {
+    test('"remember that …" stores a fact and says so', () {
+      var changed = 0;
+      final learnedFacts = <String>[];
+      final facts = CommandService(
+        devices: () => const [],
+        onMemoryChanged: () => changed++,
+        onFactLearned: learnedFacts.add,
+      );
+      final result = facts.execute('remember that my wifi password is nexus');
+      expect(result.status, AgentResultStatus.succeeded);
+      expect((result.dispatch! as AgentMessage).text, contains('Remembered'));
+      expect(facts.factsSnapshot, ['my wifi password is nexus']);
+      expect(learnedFacts, ['my wifi password is nexus']);
+      expect(changed, 1);
+    });
+
+    test('duplicate facts (any casing) are answered, not stored twice', () {
+      final facts = CommandService(devices: () => const []);
+      facts.execute('remember that mom likes tea');
+      final again = facts.execute('Remember that Mom likes tea');
+      expect(again.status, AgentResultStatus.succeeded);
+      expect((again.dispatch! as AgentMessage).text, contains('already'));
+      expect(facts.factsSnapshot.length, 1);
+    });
+
+    test('"remember to …" is a reminder, never a fact', () {
+      final facts = CommandService(devices: () => const []);
+      final result = facts.execute('remember to buy milk');
+      expect(result.status, AgentResultStatus.succeeded);
+      expect(
+        (result.dispatch! as AgentMessage).action,
+        AgentActions.reminderSet,
+      );
+      expect(facts.factsSnapshot, isEmpty);
+    });
+
+    test('recall answers empty, all, and by topic', () {
+      final facts = CommandService(devices: () => const []);
+      final none = facts.execute('what do you know about me');
+      expect((none.dispatch! as AgentMessage).text, contains('yet'));
+
+      facts.execute('remember that my bike code is 4321');
+      facts.execute('remember that mom prefers text messages');
+      final all = facts.execute('what do you know about me');
+      final allText = (all.dispatch! as AgentMessage).text;
+      expect(allText, contains('bike code'));
+      expect(allText, contains('mom prefers'));
+
+      final topic = facts.execute('what do you know about bike');
+      final topicText = (topic.dispatch! as AgentMessage).text;
+      expect(topicText, contains('bike code'));
+      expect(topicText, isNot(contains('mom prefers')));
+    });
+
+    test('forget removes matching facts and reports count', () {
+      final facts = CommandService(devices: () => const []);
+      facts.execute('remember that my bike code is 4321');
+      facts.execute('remember that my bike shop is on 5th');
+      facts.execute('remember that mom prefers text messages');
+
+      final gone = facts.execute('forget my bike');
+      expect((gone.dispatch! as AgentMessage).text, contains('Forgotten 2'));
+      expect(facts.factsSnapshot, ['mom prefers text messages']);
+
+      final unknown = facts.execute('forget the moon');
+      expect(
+        (unknown.dispatch! as AgentMessage).text,
+        contains('don\'t remember anything like'),
+      );
+    });
+
+    test('facts survive a restart via AgentMemory', () {
+      final first = CommandService(devices: () => const []);
+      first.execute('remember that my bike code is 4321');
+
+      // "Restart": a fresh service rebuilt from the persisted snapshot.
+      final second = CommandService(
+        devices: () => const [],
+        memory: AgentMemory(facts: first.factsSnapshot),
+      );
+      final recall = second.execute('what do you know about me');
+      expect((recall.dispatch! as AgentMessage).text, contains('bike code'));
+    });
+
+    test('adoptFact persists without re-broadcasting', () {
+      var learned = 0;
+      var changed = 0;
+      final facts = CommandService(
+        devices: () => const [],
+        onFactLearned: (_) => learned++,
+        onMemoryChanged: () => changed++,
+      );
+      facts.adoptFact('shared from my phone');
+      facts.adoptFact('shared from my phone'); // duplicate — dropped
+      facts.adoptFact('   '); // empty — dropped
+      expect(facts.factsSnapshot, ['shared from my phone']);
+      expect(learned, 0); // never re-broadcast a mesh-adopted fact
+      expect(changed, 1);
+    });
+  });
 }
