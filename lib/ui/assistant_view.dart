@@ -6,6 +6,7 @@ import 'package:flutter/services.dart' show HapticFeedback;
 import '../core/agent_contract.dart';
 import '../core/command_service.dart';
 import '../core/dream.dart';
+import '../core/predictions.dart';
 import '../core/query_log.dart';
 import '../mesh/mesh_service.dart';
 import 'device_executor.dart';
@@ -42,6 +43,11 @@ class _AssistantViewState extends State<AssistantView> {
   /// says so itself — its first proactive behavior, before being asked.
   List<DreamInsight>? _dreamGaps;
   bool _dreamDismissed = false;
+
+  /// The phrases this user asks most (their habits), mined from the same
+  /// log pass. When a real routine exists (asked twice or more) the static
+  /// suggestion chips make way for these — the assistant predicting.
+  List<Habit>? _habits;
 
   /// An open "who did you mean?" question after an unresolved contact.
 
@@ -124,11 +130,12 @@ class _AssistantViewState extends State<AssistantView> {
       _service.adoptFact(fact);
     };
 
-    // The assistant's first proactive behavior: once the first frame is
-    // drawn, read its own log and — if it still fails on phrases you asked —
-    // say so itself instead of waiting for the dream button.
+    // The assistant's proactive behaviors: once the first frame is drawn,
+    // read its own log — to know what it still fails on (the dream nudge)
+    // and what you keep asking (personal predictions). Both before being
+    // asked.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_checkDreamGaps());
+      unawaited(_refreshFromLog());
     });
   }
 
@@ -209,6 +216,8 @@ class _AssistantViewState extends State<AssistantView> {
       typedPhrase: input.trim().toLowerCase(),
       replaceLast: replaceLast,
     );
+    // Every ask refines what the assistant predicts you'll ask next.
+    unawaited(_refreshFromLog());
   }
 
   /// Every ask and its outcome lands in the query log — raw material for
@@ -493,18 +502,27 @@ class _AssistantViewState extends State<AssistantView> {
 
   /// One-tap examples — for anyone who doesn't know what to type yet.
   Widget _suggestionChips() {
-    const suggestions = [
-      'what can you do',
-      'what time is it',
-      'what do you know about me',
-      'battery',
-      'open youtube',
-      'call mom',
-      'roll a dice',
-      'flashlight on',
-      'tell me a joke',
-      'screenshot',
-    ];
+    // Personal prediction: when this user keeps asking the same phrases,
+    // the generic suggestions make way for their own habits. A real habit
+    // means asked more than once — a single ask is not a routine yet.
+    final habits = _habits;
+    final personal = habits == null || habits.every((h) => h.count < 2)
+        ? null
+        : habits.where((h) => h.count >= 2).take(4).toList();
+    final suggestions =
+        personal?.map((h) => h.phrase).toList() ??
+        const [
+          'what can you do',
+          'what time is it',
+          'what do you know about me',
+          'battery',
+          'open youtube',
+          'call mom',
+          'roll a dice',
+          'flashlight on',
+          'tell me a joke',
+          'screenshot',
+        ];
     return SizedBox(
       height: 40,
       child: ListView(
@@ -599,29 +617,39 @@ class _AssistantViewState extends State<AssistantView> {
       builder: (sheetContext) =>
           _DreamSheet(service: _service, insights: insights),
     );
-    // Teaching inside the sheet closes gaps — refresh the nudge so it
+    // Teaching inside the sheet closes gaps — refresh so the nudge
     // disappears without a restart when everything is understood.
-    await _checkDreamGaps();
+    await _refreshFromLog();
   }
 
-  /// Loads the phrases the assistant still fails on (the dream pass over its
-  /// own log). Called after the first frame and when the dream review
-  /// closes; [setState] only when the picture changed, so idle starts cost
-  /// one rebuild at most.
-  Future<void> _checkDreamGaps() async {
+  /// Reads the ask log once and updates both proactive surfaces from it:
+  /// the phrases the assistant still fails on (the dream nudge) and the
+  /// phrases this user asks most (personal predictions). Called after the
+  /// first frame, when the dream review closes, and after every ask;
+  /// [setState] only when the picture changed, so idle starts cost one
+  /// rebuild at most.
+  Future<void> _refreshFromLog() async {
     final lines = await QueryLog.i.readAll();
     if (!mounted) return;
     final gaps = const DreamPass().unknownPhrases(
       lines,
       exclude: {..._service.learnedSnapshot.keys},
     );
-    if (gaps.length == (_dreamGaps?.length ?? 0) &&
-        !gaps.any(
+    final habits = const Predictions().habits(lines);
+    final changed =
+        gaps.length != (_dreamGaps?.length ?? 0) ||
+        habits.length != (_habits?.length ?? 0) ||
+        gaps.any(
           (g) => !(_dreamGaps ?? const []).any((o) => o.phrase == g.phrase),
-        )) {
-      return;
-    }
-    setState(() => _dreamGaps = gaps);
+        ) ||
+        habits.any(
+          (h) => !(_habits ?? const []).any((o) => o.phrase == h.phrase),
+        );
+    if (!changed) return;
+    setState(() {
+      _dreamGaps = gaps;
+      _habits = habits;
+    });
   }
 
   /// A once-per-session nudge above the composer: the assistant noticed it
