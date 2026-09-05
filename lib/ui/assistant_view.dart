@@ -37,6 +37,12 @@ class _AssistantViewState extends State<AssistantView> {
   String? _reply; // outcome shown on whichever plan card is open
   bool _sending = false;
 
+  /// Phrases from the dream log the assistant still fails on, loaded once
+  /// after the first frame. When non-empty (and not dismissed) the assistant
+  /// says so itself — its first proactive behavior, before being asked.
+  List<DreamInsight>? _dreamGaps;
+  bool _dreamDismissed = false;
+
   /// An open "who did you mean?" question after an unresolved contact.
 
   /// Runs actions on this platform (apps, calls, texts, media…); the view
@@ -117,6 +123,13 @@ class _AssistantViewState extends State<AssistantView> {
     widget.mesh.onFactReceived = (fact) {
       _service.adoptFact(fact);
     };
+
+    // The assistant's first proactive behavior: once the first frame is
+    // drawn, read its own log and — if it still fails on phrases you asked —
+    // say so itself instead of waiting for the dream button.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_checkDreamGaps());
+    });
   }
 
   @override
@@ -586,6 +599,88 @@ class _AssistantViewState extends State<AssistantView> {
       builder: (sheetContext) =>
           _DreamSheet(service: _service, insights: insights),
     );
+    // Teaching inside the sheet closes gaps — refresh the nudge so it
+    // disappears without a restart when everything is understood.
+    await _checkDreamGaps();
+  }
+
+  /// Loads the phrases the assistant still fails on (the dream pass over its
+  /// own log). Called after the first frame and when the dream review
+  /// closes; [setState] only when the picture changed, so idle starts cost
+  /// one rebuild at most.
+  Future<void> _checkDreamGaps() async {
+    final lines = await QueryLog.i.readAll();
+    if (!mounted) return;
+    final gaps = const DreamPass().unknownPhrases(
+      lines,
+      exclude: {..._service.learnedSnapshot.keys},
+    );
+    if (gaps.length == (_dreamGaps?.length ?? 0) &&
+        !gaps.any(
+          (g) => !(_dreamGaps ?? const []).any((o) => o.phrase == g.phrase),
+        )) {
+      return;
+    }
+    setState(() => _dreamGaps = gaps);
+  }
+
+  /// A once-per-session nudge above the composer: the assistant noticed it
+  /// still fails on something you asked (its dream log) and offers to be
+  /// taught. Tapping opens the same review as the header button; the X
+  /// silences it for this session.
+  Widget _dreamNudge() {
+    final gaps = _dreamGaps;
+    if (_dreamDismissed || gaps == null || gaps.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final message = gaps.length == 1
+        ? 'I still don\'t understand "${gaps.first.phrase}" — teach me?'
+        : 'I still don\'t get ${gaps.length} things you asked — teach me?';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 10, 12, 0),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: const ValueKey('dream-nudge'),
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => unawaited(_showDreamReview(context)),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+            decoration: BoxDecoration(
+              color: NexusColors.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: NexusColors.border),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.auto_awesome_rounded,
+                  size: 16,
+                  color: NexusColors.accent,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    message,
+                    style: const TextStyle(
+                      color: NexusColors.text,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Not now',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.close_rounded, size: 16),
+                  color: NexusColors.muted,
+                  onPressed: () => setState(() => _dreamDismissed = true),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -615,6 +710,9 @@ class _AssistantViewState extends State<AssistantView> {
             ],
           ),
         ),
+        // Proactive nudge: gaps the dream log found, surfaced without being
+        // asked. Sits above the composer so it never hides a reply.
+        _dreamNudge(),
         const SizedBox(height: 16),
         // Input bar
         Container(
