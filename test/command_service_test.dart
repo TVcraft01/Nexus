@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
+import 'package:nexus/core/command_interpreter.dart';
 import 'package:nexus/core/command_service.dart';
 
 void main() {
@@ -212,12 +213,27 @@ void main() {
 
   group('near-miss suggestions never act without confirmation', () {
     test('a typo of a known command is offered as "did you mean", not run', () {
-      for (final phrase in ['tex mom saying hi', 'what time is is']) {
+      for (final phrase in [
+        'tex mom saying hi',
+        'what time is is',
+        'what do you now about me',
+      ]) {
         final result = service.execute(phrase);
         expect(result.status, AgentResultStatus.needsInfo, reason: phrase);
         final ask = result.dispatch! as AgentClarification;
         expect(ask.key, startsWith('near:'), reason: phrase);
         expect(ask.question, contains('Did you mean'), reason: phrase);
+      }
+    });
+
+    test('every suggestion-catalog entry parses — a confirmed suggestion runs verbatim', () {
+      const interpreter = CommandInterpreter();
+      for (final phrase in CommandInterpreter.suggestionCatalog) {
+        expect(
+          interpreter.interpret(phrase).outcome,
+          InterpretOutcome.matched,
+          reason: phrase,
+        );
       }
     });
 
@@ -326,6 +342,31 @@ void main() {
         AgentActions.reminderSet,
       );
       expect(facts.factsSnapshot, isEmpty);
+    });
+
+    test('framing-word-only content is refused, never stored', () {
+      // The interpreter's regex backtracks on a bare "remember that" into
+      // capturing the framing word itself — the service must answer as if
+      // nothing was said, and "forget that" must never delete facts that
+      // merely contain the word.
+      final facts = CommandService(devices: () => const []);
+      for (final phrase in ['remember that', 'remember this', 'forget that']) {
+        final result = facts.execute(phrase);
+        expect(result.status, AgentResultStatus.unavailable, reason: phrase);
+      }
+      expect(facts.factsSnapshot, isEmpty);
+
+      facts.execute('remember that my bike code is 4321');
+      final forgetThat = facts.execute('forget that');
+      expect(forgetThat.status, AgentResultStatus.unavailable);
+      expect(facts.factsSnapshot, ['my bike code is 4321']);
+    });
+
+    test('"remember this: …" stores the content, not the colon form', () {
+      final facts = CommandService(devices: () => const []);
+      final result = facts.execute('remember this: mom prefers text');
+      expect((result.dispatch! as AgentMessage).text, contains('Remembered'));
+      expect(facts.factsSnapshot, ['mom prefers text']);
     });
 
     test('recall answers empty, all, and by topic', () {

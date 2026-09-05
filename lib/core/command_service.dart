@@ -1180,7 +1180,12 @@ class CommandService {
       // answer locally with plain messages — the store is the memory.
       case AgentActions.memoryRemember:
         final text = (command.arguments['text'] as String? ?? '').trim();
-        if (text.isEmpty) {
+        // A bare framing phrase ("remember that") makes the interpreter's
+        // regex backtrack into capturing the framing word itself — answer
+        // exactly as if nothing was said, never store it.
+        if (text.isEmpty ||
+            text.toLowerCase() == 'that' ||
+            text.toLowerCase() == 'this') {
           return const AgentDispatchResult(
             status: AgentResultStatus.unavailable,
             message: 'What should I remember? Try "remember that my wifi password is nexus".',
@@ -1233,7 +1238,9 @@ class CommandService {
         );
       case AgentActions.memoryForget:
         final query = (command.arguments['text'] as String? ?? '').trim();
-        if (query.isEmpty) {
+        // Same backtrack guard as remember: "forget that" must ask what to
+        // forget, never delete every fact containing the word "that".
+        if (query.isEmpty || query.toLowerCase() == 'that') {
           return const AgentDispatchResult(
             status: AgentResultStatus.unavailable,
             message: 'What should I forget? Try "forget my wifi password".',
