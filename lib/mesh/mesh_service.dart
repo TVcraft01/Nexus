@@ -358,6 +358,13 @@ class MeshService extends ChangeNotifier {
   /// writes the store itself so the knowledge survives for the next boot.
   void Function(String fact)? onFactReceived;
 
+  /// Fired when a paired device sets a reminder and syncs it here, so the
+  /// assistant on THIS device reminds the user too — whoever they are near.
+  /// Same ownership rule as [onFactReceived]: with a listener attached, the
+  /// live assistant's own funnel writes the store; otherwise the mesh
+  /// persists the reminder itself so it survives for the next boot.
+  void Function(String line)? onReminderReceived;
+
   /// In-flight replies keyed by request id. Completed by `agent.result` or a
   /// timeout, so a sender can await the remote's answer.
   final Map<String, Completer<AgentDispatchResult?>> _pendingAgentResults = {};
@@ -575,6 +582,29 @@ class MeshService extends ChangeNotifier {
             from: identity.id,
             to: peer.id,
             payload: {'text': fact},
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Tells every paired device about a reminder the user just set, so it
+  /// fires on whichever device they are near. Fire-and-forget: a peer that
+  /// is offline misses this one until the next setting.
+  Future<void> broadcastReminder(String line) async {
+    final peers = _paired.values.toList();
+    if (peers.isEmpty) return;
+    await Future.wait(
+      peers.map(
+        (peer) => _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.agentReminder,
+            from: identity.id,
+            to: peer.id,
+            payload: {'reminder': line},
             id: _newId(),
             ts: DateTime.now().millisecondsSinceEpoch,
           ),
@@ -1360,6 +1390,22 @@ class MeshService extends ChangeNotifier {
         }
         QueryLog.i.syncedFact(text, from: msg.from);
         onFactReceived?.call(text);
+        notifyListeners();
+
+      case NexusMessage.agentReminder:
+        // A paired device set a reminder — adopt it silently (knowledge,
+        // not an action, so no approval gate). Duplicates are dropped; we
+        // never re-broadcast (that would loop forever).
+        if (!encrypted) return;
+        final line = msg.payload['reminder']?.toString().trim() ?? '';
+        if (line.isEmpty) break;
+        if (store.agentReminders.contains(line)) break;
+        // No live assistant: persist it ourselves so it fires later.
+        if (onReminderReceived == null) {
+          store.agentReminders = [...store.agentReminders, line];
+          _queueSave();
+        }
+        onReminderReceived?.call(line);
         notifyListeners();
     }
   }

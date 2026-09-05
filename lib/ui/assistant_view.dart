@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
@@ -8,6 +9,7 @@ import '../core/command_service.dart';
 import '../core/dream.dart';
 import '../core/predictions.dart';
 import '../core/query_log.dart';
+import '../core/reminders.dart';
 import '../mesh/mesh_service.dart';
 import 'device_executor.dart';
 import 'nexus_header.dart';
@@ -48,6 +50,17 @@ class _AssistantViewState extends State<AssistantView> {
   /// log pass. When a real routine exists (asked twice or more) the static
   /// suggestion chips make way for these — the assistant predicting.
   List<Habit>? _habits;
+
+  /// Promises to say something back later — this device's copy, mirrored
+  /// into the store (a reminder set before a restart still fires) and fed
+  /// by peers' reminders over the mesh.
+  final List<Reminder> _reminders = [];
+
+  /// The reminder that fired and is waiting for a "Done", shown as a
+  /// banner above the composer until acknowledged.
+  Reminder? _firedReminder;
+
+  Timer? _reminderTimer;
 
   /// An open "who did you mean?" question after an unresolved contact.
 
@@ -94,7 +107,6 @@ class _AssistantViewState extends State<AssistantView> {
         AgentActions.mediaShuffle,
         AgentActions.mediaRepeat,
         AgentActions.alarmSet,
-        AgentActions.reminderSet,
         AgentActions.defineWord,
       },
       memory: AgentMemory(
@@ -130,6 +142,21 @@ class _AssistantViewState extends State<AssistantView> {
       _service.adoptFact(fact);
     };
 
+    // Reminders: this device's copy comes back from the store (a promise
+    // made before a restart still fires), and peers' reminders arrive live.
+    for (final line in widget.mesh.store.agentReminders) {
+      final reminder = Reminder.fromJsonLine(line);
+      if (reminder != null) _reminders.add(reminder);
+    }
+    widget.mesh.onReminderReceived = _adoptReminder;
+    // The assistant keeps its own promises: check every so often and fire
+    // whatever's due — without anyone asking.
+    _reminderTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => unawaited(_checkReminders()),
+    );
+    unawaited(_checkReminders());
+
     // The assistant's proactive behaviors: once the first frame is drawn,
     // read its own log — to know what it still fails on (the dream nudge)
     // and what you keep asking (personal predictions). Both before being
@@ -143,6 +170,8 @@ class _AssistantViewState extends State<AssistantView> {
   void dispose() {
     widget.mesh.onLearnedPhraseReceived = null;
     widget.mesh.onFactReceived = null;
+    widget.mesh.onReminderReceived = null;
+    _reminderTimer?.cancel();
     _controller.dispose();
     _focus.dispose();
     super.dispose();
@@ -261,7 +290,6 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.mediaShuffle,
     AgentActions.mediaRepeat,
     AgentActions.alarmSet,
-    AgentActions.reminderSet,
     AgentActions.defineWord,
   };
 
@@ -320,6 +348,19 @@ class _AssistantViewState extends State<AssistantView> {
     // _localAnswer() for webSearch, noteCreate, timerSet, openUrl,
     // systemInfo, volumeSet. The message is shown immediately and the
     // side-effect (open browser, save note, etc.) runs in the background.
+    // A reminder card is different: it registers the promise with this
+    // device's reminder engine (which fires later, on its own) instead of
+    // running an executor stub.
+    if (result.dispatch case final AgentMessage message
+        when message.action == AgentActions.reminderSet) {
+      final dueAt = DateTime.tryParse(
+        message.arguments?['dueAt']?.toString() ?? '',
+      );
+      final text = message.arguments?['text']?.toString() ?? '';
+      if (dueAt != null && text.isNotEmpty) {
+        unawaited(_registerReminder(text, dueAt));
+      }
+    }
     if (result.dispatch case final AgentMessage message
         when message.action != null &&
             _selfRunActions.contains(message.action)) {
@@ -666,6 +707,105 @@ class _AssistantViewState extends State<AssistantView> {
     });
   }
 
+  /// Saves the promise locally (persisted), tells every paired device so it
+  /// fires wherever the user is, and starts watching for its time. The
+  /// catalog already said "Reminder set for …" — this is the doing part.
+  Future<void> _registerReminder(String text, DateTime dueAt) async {
+    final reminder = Reminder(
+      id: 'r-${DateTime.now().microsecondsSinceEpoch}',
+      text: text,
+      dueAt: dueAt,
+    );
+    setState(() => _reminders.add(reminder));
+    await _persistReminders();
+    unawaited(widget.mesh.broadcastReminder(jsonEncode(reminder.toJson())));
+    unawaited(_checkReminders());
+  }
+
+  /// Adopts a reminder set on a paired device, live (no restart needed).
+  /// The mesh already persisted it when no assistant was listening.
+  void _adoptReminder(String line) {
+    final reminder = Reminder.fromJsonLine(line);
+    if (reminder == null) return;
+    if (_reminders.any((r) => r.id == reminder.id)) return;
+    setState(() => _reminders.add(reminder));
+    unawaited(_persistReminders());
+    unawaited(_checkReminders());
+  }
+
+  Future<void> _persistReminders() async {
+    widget.mesh.store.agentReminders = [
+      for (final r in _reminders) jsonEncode(r.toJson()),
+    ];
+    await widget.mesh.store.save();
+  }
+
+  /// Fires every reminder whose time has come — an assistant message in the
+  /// thread and a banner until acknowledged, all without anyone asking. A
+  /// fired reminder is spent: gone from the list and the store (one shot,
+  /// like a real reminder).
+  Future<void> _checkReminders() async {
+    final due = const Reminders().dueNow(_reminders, Reminders.now());
+    if (due.isEmpty) return;
+    setState(() {
+      for (final reminder in due) {
+        _reminders.removeWhere((r) => r.id == reminder.id);
+        _appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage('Reminder: ${reminder.text}.'),
+          ),
+        );
+        _firedReminder = reminder;
+      }
+    });
+    await _persistReminders();
+  }
+
+  /// The reminder that fired, waiting for a "Done" — sits above the
+  /// composer like the nudge, never hiding a reply.
+  Widget _reminderBanner() {
+    final reminder = _firedReminder;
+    if (reminder == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+      child: Container(
+        key: const ValueKey('reminder-banner'),
+        padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+        decoration: BoxDecoration(
+          color: NexusColors.accent.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: NexusColors.accent.withValues(alpha: 0.4),
+          ),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.alarm_rounded, size: 18, color: NexusColors.accent),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Reminder: ${reminder.text}',
+                style: const TextStyle(
+                  color: NexusColors.text,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Done',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.check_rounded, size: 18),
+              color: NexusColors.ok,
+              onPressed: () => setState(() => _firedReminder = null),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// A once-per-session nudge above the composer: the assistant noticed it
   /// still fails on something you asked (its dream log) and offers to be
   /// taught. Tapping opens the same review as the header button; the X
@@ -755,6 +895,8 @@ class _AssistantViewState extends State<AssistantView> {
         // Proactive nudge: gaps the dream log found, surfaced without being
         // asked. Sits above the composer so it never hides a reply.
         _dreamNudge(),
+        // A reminder that fired, waiting for a "Done".
+        _reminderBanner(),
         const SizedBox(height: 16),
         // Input bar
         Container(

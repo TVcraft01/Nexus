@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/query_log.dart';
+import 'package:nexus/core/reminders.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/ui/assistant_view.dart';
@@ -454,6 +455,50 @@ void main() {
       QueryLog.readAllOverride = null;
       QueryLog.i.resetForTest();
       await cleanMesh.stop();
+    }
+  });
+
+  testWidgets('a reminder fires by itself, is acknowledged, and survives a restart', (tester) async {
+    final (store, mesh) = await boot();
+    // A fixed clock: 7:59pm when asked, 8:01pm when the reminder is due.
+    var now = DateTime(2026, 9, 5, 19, 59);
+    Reminders.nowOverride = () => now;
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+
+      // Setting it promises to say it back — nothing fires yet.
+      await ask(tester, 'remind me to take out the trash at 8pm');
+      expect(find.textContaining('Reminder set for 8:00pm'), findsOneWidget);
+      expect(find.byKey(const ValueKey('reminder-banner')), findsNothing);
+      expect(store.agentReminders, hasLength(1));
+
+      // Time passes; the assistant keeps its promise by itself.
+      now = now.add(const Duration(minutes: 2));
+      await tester.pump(const Duration(seconds: 16)); // the periodic check
+      expect(find.text('Reminder: take out the trash.'), findsWidgets);
+      expect(find.byKey(const ValueKey('reminder-banner')), findsOneWidget);
+
+      // Done acknowledges it; the reminder is spent — one shot, like real.
+      await tester.tap(find.byTooltip('Done'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('reminder-banner')), findsNothing);
+      expect(store.agentReminders, isEmpty);
+
+      // A pending reminder made before a restart still fires afterwards.
+      store.agentReminders = [
+        '{"id":"r-seeded","text":"stretch","dueAt":"2026-09-05T19:58:00.000"}',
+      ];
+      now = now.add(const Duration(minutes: 1));
+      await tester.pumpWidget(harness(mesh, key: UniqueKey()));
+      await tester.pump();
+      expect(find.text('Reminder: stretch.'), findsWidgets);
+      expect(find.byKey(const ValueKey('reminder-banner')), findsOneWidget);
+      expect(store.agentReminders, isEmpty); // fired once, never again
+    } finally {
+      Reminders.nowOverride = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
     }
   });
 }

@@ -127,9 +127,8 @@ class DeviceExecutor {
     if (request.action == AgentActions.alarmSet) {
       return _setAlarm(prepared);
     }
-    if (request.action == AgentActions.reminderSet) {
-      return _setReminder(prepared['text']?.toString() ?? '');
-    }
+    // Reminders live in the assistant core (the view's reminder engine), not
+    // in a platform backend — this executor is never reached for them.
     if (request.action == AgentActions.defineWord) {
       return _openWebSearch('define ${prepared['query']?.toString() ?? ''}');
     }
@@ -1027,24 +1026,6 @@ class DeviceExecutor {
       );
     } catch (_) {
       return const ActionResult(false, 'Could not set alarm.');
-    }
-  }
-
-  Future<ActionResult> _setReminder(String text) async {
-    if (text.isEmpty)
-      return const ActionResult(false, 'What should I remind you about?');
-    try {
-      // No real reminder service exists yet (on any platform), so save it
-      // as a note — and say so instead of pretending a reminder was set.
-      final saved = await _appendNote('[Reminder] $text');
-      return ActionResult(
-        saved.ok,
-        saved.ok
-            ? 'Reminder saved as a note on this device — real reminders aren\'t wired into this release yet.'
-            : saved.message,
-      );
-    } catch (_) {
-      return const ActionResult(false, 'Could not set reminder.');
     }
   }
 
