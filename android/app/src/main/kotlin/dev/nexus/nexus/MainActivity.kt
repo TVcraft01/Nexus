@@ -12,12 +12,18 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.ContactsContract
 import android.provider.Settings
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.view.KeyEvent
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -60,6 +66,12 @@ class MainActivity : FlutterActivity() {
     private var pendingVideoContact: String? = null
     private var pendingVideoApp: String? = null
     private var pendingVideoResult: MethodChannel.Result? = null
+
+    // Voice input: RECORD_AUDIO is requested at runtime on first use, with
+    // the MethodChannel result held across the dialog like the call flow.
+    private val SPEECH_CHANNEL = "dev.nexus.nexus/speech"
+    private val REQUEST_SPEECH_PERMISSIONS = 42605
+    private var pendingSpeechResult: MethodChannel.Result? = null
 
     private lateinit var usbSerial: UsbSerialBridge
 
@@ -113,6 +125,15 @@ class MainActivity : FlutterActivity() {
                     )
                     else -> result.notImplemented()
                 }
+            }
+
+        // Voice input: one utterance through the system SpeechRecognizer.
+        // The recognized words come back as text and run through the same
+        // assistant pipeline as typing.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SPEECH_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method == "listen") listenSpeech(result)
+                else result.notImplemented()
             }
 
         // Small device-local actions: alarms, timers, search, navigation,
@@ -268,6 +289,13 @@ class MainActivity : FlutterActivity() {
                 return
             }
             finishVideo(name ?: "", app ?: "", result)
+        }
+        if (requestCode == REQUEST_SPEECH_PERMISSIONS) {
+            val result = pendingSpeechResult
+            pendingSpeechResult = null
+            if (result == null) return
+            if (granted(Manifest.permission.RECORD_AUDIO)) startSpeech(result)
+            else result.success(null) // honest: nothing was recognized
         }
     }
 
@@ -553,6 +581,57 @@ class MainActivity : FlutterActivity() {
                 else -> noContactResult(contact, ranked, matched, verb = "text them")
             }
         )
+    }
+
+    /// Voice input: RECORD_AUDIO is requested on first use, then one
+    /// utterance is recognized and its text comes back to the composer.
+    private fun listenSpeech(result: MethodChannel.Result) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingSpeechResult = result
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                REQUEST_SPEECH_PERMISSIONS,
+            )
+            return
+        }
+        startSpeech(result)
+    }
+
+    private fun startSpeech(result: MethodChannel.Result) {
+        val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        recognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onResults(results: Bundle?) {
+                val text = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                recognizer.destroy()
+                result.success(text)
+            }
+
+            override fun onError(error: Int) {
+                recognizer.destroy()
+                result.success(null) // nothing heard / mic unavailable
+            }
+
+            override fun onBeginningOfSpeech() {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onRmsChanged(rmsdB: Float) {}
+        })
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+        }
+        recognizer.startListening(intent)
     }
 
     /// "video call mom on whatsapp": only ever opens a video call in an app

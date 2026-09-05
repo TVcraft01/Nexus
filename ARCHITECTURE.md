@@ -91,6 +91,12 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
   broadcast/adopt (`_registerReminder`/`_checkReminders`), the store mirrors
   it via `agentReminders`, and `agent.reminder` is the mesh message. The
   catalog parses the time and promises the echo; the engine does the rest.
+- A new *input surface* (voice, camera, sensors) → follow the speech
+  vertical: `core/speech.dart` is the thin seam (injectable, honest
+  "not on this device" fallback), the view wires the button and submits
+  the captured text through the same `_execute` pipeline as typing, and
+  the real platform implementation lives behind a `dev.nexus.nexus/…`
+  MethodChannel in `MainActivity.kt`. Fakes drive the whole flow in tests.
 - A behavior change to sync or pairing → `mesh/`. A new screen → `ui/`, in
   its own file, not appended to `assistant_view.dart`.
 - Answers that need more than the catalog's `AnswerContext` (facts +
