@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
+import 'package:nexus/core/answers.dart';
 import 'package:nexus/core/command_interpreter.dart';
 import 'package:nexus/core/command_service.dart';
 
