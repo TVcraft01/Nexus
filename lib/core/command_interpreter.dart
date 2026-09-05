@@ -48,6 +48,9 @@ class CommandInterpreter {
     'what time is it',
     'what is the date',
     'show my devices',
+    // Content-free phrases only: a suggestion runs verbatim, so
+    // parameterized "remember …"/"forget …" stay out.
+    'what do you know about me',
     'system info',
     // Actions on this device
     'call mom',
@@ -503,7 +506,7 @@ class CommandInterpreter {
     // the fact store, not in notes — remembering is the assistant's own
     // business, a note is a scratchpad the user can edit. "remember to …"
     // still means a reminder, never a fact.
-    final remember = RegExp(r'^remember(?: that| this)? (?!to\b)(.+)$')
+    final remember = RegExp(r'^remember(?: (?:that|this):?)? (?!to\b)(.+)$')
         .firstMatch(norm);
     if (remember != null) {
       return InterpretResult.matched(
