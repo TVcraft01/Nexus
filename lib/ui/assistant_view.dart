@@ -150,8 +150,15 @@ class _AssistantViewState extends State<AssistantView> {
     // whatever's due — without anyone asking. The first check is deferred
     // a microtask (like the original async call) so a reminder that came
     // due while the app was closed fires on startup, after the frame.
+    // Guarded: if the view is unmounted in the same frame, the engine is
+    // already disposed by the time the microtask runs.
     _reminderEngine.start();
-    unawaited(Future<void>.microtask(_reminderEngine.check));
+    unawaited(
+      Future<void>.microtask(() {
+        if (!mounted) return;
+        _reminderEngine.check();
+      }),
+    );
 
     // The assistant's proactive behaviors: once the first frame is drawn,
     // read its own log — to know what it still fails on (the dream nudge)
