@@ -78,6 +78,13 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
 - A new *platform action* ("open x", "toggle y") → `ui/device_executor.dart`:
   add the method and one route in its switch. Platform code never lives in
   the view or the catalog.
+- A new *device-offered action* (a call/text this device can't run but a
+  paired one can) → follow the contact vertical: the service fork in
+  `_contactAction` decides local-vs-offer-vs-catalog, `_routeDeviceAction`
+  asks/remembers the device, and the approved remote plan auto-sends via
+  Path 3 in the view (`_consume`); the paired device re-gates the incoming
+  request in its own view (`_handleIncoming`) and runs its real executor.
+  Widen the fork's action set only with the receiver's capability in mind.
 - A behavior change to sync or pairing → `mesh/`. A new screen → `ui/`, in
   its own file, not appended to `assistant_view.dart`.
 - Answers that need more than the catalog's `AnswerContext` (facts +
