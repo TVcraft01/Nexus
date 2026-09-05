@@ -538,9 +538,9 @@ void main() {
       );
       expectAction(
         'what is the meaning of life',
-        AgentActions.webSearch,
+        AgentActions.memoryQuestion,
         target: 'local',
-        args: {'query': 'the meaning of life'},
+        args: {'topic': 'the meaning of life'},
       );
     });
     test('bare "video call" with no contact is not a call to "call"', () {

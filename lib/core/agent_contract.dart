@@ -61,6 +61,7 @@ abstract final class AgentActions {
   static const memoryRemember = 'memory.remember';
   static const memoryRecall = 'memory.recall';
   static const memoryForget = 'memory.forget';
+  static const memoryQuestion = 'memory.question';
 
   // --- Cross-device (mesh) ---
   static const findDevice = 'device.find';

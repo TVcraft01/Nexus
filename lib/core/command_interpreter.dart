@@ -359,11 +359,14 @@ class CommandInterpreter {
           ),
         );
       }
+      // A personal question ("what is my wifi password") must not become a
+      // web search for the user's own secret — ask memory first; the
+      // service falls back to the web honestly when memory has nothing.
       return InterpretResult.matched(
         ParsedCommand(
-          action: AgentActions.webSearch,
+          action: AgentActions.memoryQuestion,
           target: 'local',
-          arguments: {'query': what.group(2)!.trim()},
+          arguments: {'topic': what.group(2)!.trim()},
         ),
       );
     }
@@ -550,6 +553,30 @@ class CommandInterpreter {
           action: AgentActions.memoryRecall,
           target: 'local',
           arguments: {'topic': recallTopic.group(1)!.trim()},
+        ),
+      );
+    }
+    // Short personal questions: "who is mom", "who's my mechanic". Same
+    // memory-first routing as the "what is" family.
+    final whoIs = RegExp(r"^who(?: is|'s) (?:my |the )?(.+)$").firstMatch(norm);
+    if (whoIs != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.memoryQuestion,
+          target: 'local',
+          arguments: {'topic': whoIs.group(1)!.trim()},
+        ),
+      );
+    }
+    // "where is/are the X": locations the user told us to keep.
+    final whereIs = RegExp(r'^where (?:is|are) (?:the |my )?(.+)$')
+        .firstMatch(norm);
+    if (whereIs != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.memoryQuestion,
+          target: 'local',
+          arguments: {'topic': whereIs.group(1)!.trim()},
         ),
       );
     }
