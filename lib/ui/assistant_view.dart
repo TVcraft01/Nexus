@@ -53,16 +53,11 @@ class _AssistantViewState extends State<AssistantView> {
   /// suggestion chips make way for these — the assistant predicting.
   List<Habit>? _habits;
 
-  /// Promises to say something back later — this device's copy, mirrored
+  /// Promises to say something back later: this device's copy, mirrored
   /// into the store (a reminder set before a restart still fires) and fed
-  /// by peers' reminders over the mesh.
-  final List<Reminder> _reminders = [];
-
-  /// The reminder that fired and is waiting for a "Done", shown as a
-  /// banner above the composer until acknowledged.
-  Reminder? _firedReminder;
-
-  Timer? _reminderTimer;
+  /// by peers' reminders over the mesh. The engine owns the list, the
+  /// ticking due-check and the one-shot fire; the view only renders.
+  final ReminderEngine _reminderEngine = ReminderEngine();
 
   /// Whether the mic is listening right now (button becomes the live mic).
   bool _listening = false;
@@ -124,18 +119,39 @@ class _AssistantViewState extends State<AssistantView> {
 
     // Reminders: this device's copy comes back from the store (a promise
     // made before a restart still fires), and peers' reminders arrive live.
-    for (final line in widget.mesh.store.agentReminders) {
-      final reminder = Reminder.fromJsonLine(line);
-      if (reminder != null) _reminders.add(reminder);
-    }
-    widget.mesh.onReminderReceived = _adoptReminder;
+    // The engine owns the state; the view wires the edges — persistence,
+    // mesh broadcast, and the fired message in the thread.
+    _reminderEngine
+      ..onPersist = (list) {
+        widget.mesh.store.agentReminders = [
+          for (final r in list) jsonEncode(r.toJson()),
+        ];
+        unawaited(widget.mesh.store.save());
+      }
+      ..onBroadcast = (reminder) {
+        unawaited(widget.mesh.broadcastReminder(jsonEncode(reminder.toJson())));
+      }
+      ..onFired = (reminder) {
+        setState(() {
+          _appendResult(
+            AgentDispatchResult(
+              status: AgentResultStatus.succeeded,
+              dispatch: AgentMessage('Reminder: ${reminder.text}.'),
+            ),
+          );
+        });
+      }
+      ..seed(widget.mesh.store.agentReminders);
+    // Listen after seeding, so the engine's first notify can't setState
+    // mid-initState.
+    _reminderEngine.addListener(_onRemindersChanged);
+    widget.mesh.onReminderReceived = _reminderEngine.adopt;
     // The assistant keeps its own promises: check every so often and fire
-    // whatever's due — without anyone asking.
-    _reminderTimer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => unawaited(_checkReminders()),
-    );
-    unawaited(_checkReminders());
+    // whatever's due — without anyone asking. The first check is deferred
+    // a microtask (like the original async call) so a reminder that came
+    // due while the app was closed fires on startup, after the frame.
+    _reminderEngine.start();
+    unawaited(Future<void>.microtask(_reminderEngine.check));
 
     // The assistant's proactive behaviors: once the first frame is drawn,
     // read its own log — to know what it still fails on (the dream nudge)
@@ -151,11 +167,14 @@ class _AssistantViewState extends State<AssistantView> {
     widget.mesh.onLearnedPhraseReceived = null;
     widget.mesh.onFactReceived = null;
     widget.mesh.onReminderReceived = null;
-    _reminderTimer?.cancel();
+    _reminderEngine.removeListener(_onRemindersChanged);
+    _reminderEngine.dispose();
     _controller.dispose();
     _focus.dispose();
     super.dispose();
   }
+
+  void _onRemindersChanged() => setState(() {});
 
   List<AgentDeviceSnapshot> _buildSnapshots() {
     final mesh = widget.mesh;
@@ -340,7 +359,7 @@ class _AssistantViewState extends State<AssistantView> {
       );
       final text = message.arguments?['text']?.toString() ?? '';
       if (dueAt != null && text.isNotEmpty) {
-        unawaited(_registerReminder(text, dueAt));
+        _reminderEngine.register(text, dueAt);
       }
     }
     if (result.dispatch case final AgentMessage message
@@ -744,62 +763,10 @@ class _AssistantViewState extends State<AssistantView> {
   /// Saves the promise locally (persisted), tells every paired device so it
   /// fires wherever the user is, and starts watching for its time. The
   /// catalog already said "Reminder set for …" — this is the doing part.
-  Future<void> _registerReminder(String text, DateTime dueAt) async {
-    final reminder = Reminder(
-      id: 'r-${DateTime.now().microsecondsSinceEpoch}',
-      text: text,
-      dueAt: dueAt,
-    );
-    setState(() => _reminders.add(reminder));
-    await _persistReminders();
-    unawaited(widget.mesh.broadcastReminder(jsonEncode(reminder.toJson())));
-    unawaited(_checkReminders());
-  }
-
-  /// Adopts a reminder set on a paired device, live (no restart needed).
-  /// The mesh already persisted it when no assistant was listening.
-  void _adoptReminder(String line) {
-    final reminder = Reminder.fromJsonLine(line);
-    if (reminder == null) return;
-    if (_reminders.any((r) => r.id == reminder.id)) return;
-    setState(() => _reminders.add(reminder));
-    unawaited(_persistReminders());
-    unawaited(_checkReminders());
-  }
-
-  Future<void> _persistReminders() async {
-    widget.mesh.store.agentReminders = [
-      for (final r in _reminders) jsonEncode(r.toJson()),
-    ];
-    await widget.mesh.store.save();
-  }
-
-  /// Fires every reminder whose time has come — an assistant message in the
-  /// thread and a banner until acknowledged, all without anyone asking. A
-  /// fired reminder is spent: gone from the list and the store (one shot,
-  /// like a real reminder).
-  Future<void> _checkReminders() async {
-    final due = const Reminders().dueNow(_reminders, Reminders.now());
-    if (due.isEmpty) return;
-    setState(() {
-      for (final reminder in due) {
-        _reminders.removeWhere((r) => r.id == reminder.id);
-        _appendResult(
-          AgentDispatchResult(
-            status: AgentResultStatus.succeeded,
-            dispatch: AgentMessage('Reminder: ${reminder.text}.'),
-          ),
-        );
-        _firedReminder = reminder;
-      }
-    });
-    await _persistReminders();
-  }
-
   /// The reminder that fired, waiting for a "Done" — sits above the
   /// composer like the nudge, never hiding a reply.
   Widget _reminderBanner() {
-    final reminder = _firedReminder;
+    final reminder = _reminderEngine.fired;
     if (reminder == null) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
@@ -832,7 +799,7 @@ class _AssistantViewState extends State<AssistantView> {
               visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.check_rounded, size: 18),
               color: NexusColors.ok,
-              onPressed: () => setState(() => _firedReminder = null),
+              onPressed: _reminderEngine.acknowledge,
             ),
           ],
         ),

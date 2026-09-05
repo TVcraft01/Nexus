@@ -43,11 +43,12 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
 | `core/command_service.dart` | ~770 | **Routing + assistant state**: execute pipeline, taught phrases/learned defaults (`_learned`/`_defaults`), clarification state machines, approval + device plans, remote requests. The service is deliberately store-agnostic — constructed with an `AgentMemory` value, mutations surfaced through callbacks. |
 | `core/answers.dart` | ~870 | **The local answer catalog**: `localAnswer(command, ctx)` — a flat switch over actions deciding the assistant's words, plus its pure helpers (fact matching `factsAbout`/`contactNumber`, phone extraction with the E.164 cap, time/number formatting, `evaluateMath`). Routing stays in the service; only answers live here. |
 | `core/dream.dart` | ~150 | The dream pass: mines the ask log for phrases the assistant missed, and (since the self-improvement pass) proposes fixes for persistently re-asked phrases that match one the user already taught (`learnable`) — the meaning always comes from the user's own teaching, applied through the service's normal `learn` funnel. Pure. |
+| `core/reminders.dart` | ~215 | **The reminder engine** (since the architecture pass): the model (`Reminder`), the decisions (`splitTime`, `dueNow`) and the lifecycle (`ReminderEngine` — the live list, the ticking due-check, the one-shot fire). The engine is store/mesh-free: persistence, broadcast and thread messages are edge callbacks the view wires. |
 | `core/query_log.dart` | ~170 | Append-only ask log + read-back, with `@visibleForTesting` seams for fake-async tests. |
 | `core/store.dart` | ~270 | JSON persistence (`NexusStore`). The store is a *mirror* — setter + `save()`, no logic — plus identity/devices/files metadata. |
 | `mesh/mesh_service.dart` | ~3,200 | Mesh transport, pairing, sync handlers, remote file access, clipboard. Its size is next on the chopping block. |
 | `ui/device_executor.dart` | ~1,180 | **The device executor**: every platform action this device can run (apps, screenshots, calls, texts, media, timers…) and the switch routing an `AgentRequest` to the right one. Injectable backends — unit-tested without widgets (`test/device_executor_test.dart`). |
-| `ui/assistant_view.dart` | ~1,550 | The assistant screen: thread UI, service wiring, mesh/approval flows. It decides *what* the assistant says and when to run; `DeviceExecutor` decides *how* an action runs. The dream sheet and clock are still extractable here. |
+| `ui/assistant_view.dart` | ~1,915 | The assistant screen: thread UI, service wiring, mesh/approval flows. It decides *what* the assistant says and when to run; `DeviceExecutor` decides *how* an action runs. The reminder engine was extracted into `core/reminders.dart` (the view only renders its banner and wires its edges); the dream review sheet and the clock widget are still extractable here. |
 
 ## State ownership
 
@@ -55,6 +56,10 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
   `CommandService`'s private maps/lists, seeded from an `AgentMemory` at
   construction and mutated only through its methods (`learn`, `remember`
   via the catalog, `adoptLearned`, `adoptFact`, forget).
+- **Promises (reminders)** are owned by `ReminderEngine` (list, fired
+  banner, timer, one-shot semantics). The view seeds it from the store,
+  wires its `onPersist`/`onBroadcast`/`onFired` edges, and renders; the
+  engine never touches the store or the mesh directly.
 - **Persisted memory** is owned by `NexusStore`. The `onMemoryChanged`
   callback — wired in `assistant_view` — is the *single funnel*: the view
   copies the service's snapshots into the store and saves. The service
