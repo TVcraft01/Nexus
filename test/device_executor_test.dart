@@ -8,10 +8,25 @@ import 'package:nexus/ui/device_executor.dart';
 /// Captures every backend call so tests assert routing without a widget tree.
 class _FakeDeviceBackend implements DeviceActionBackend {
   final calls = <(String action, Map<String, dynamic> args)>[];
+  (double, double)? location;
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async {
     calls.add((action, args));
     return ActionResult(true, 'ran $action');
+  }
+
+  @override
+  Future<(double, double)?> currentLocation() async => location;
+}
+
+/// Records the place/coordinates each weather fetch was asked for.
+class _FakeWeatherFetcher {
+  final calls = <(String place, String kind, String? coordinates)>[];
+  String? reply = 'In Paris it\'s 18°C.';
+
+  Future<String?> call(String place, String kind, {String? coordinates}) async {
+    calls.add((place, kind, coordinates));
+    return reply;
   }
 }
 
@@ -135,6 +150,71 @@ void main() {
     expect(out.ok, isFalse); // honest: cannot search the library
     expect(out.message, contains('search'));
     expect(device.calls, isEmpty); // never a silent media key press
+  });
+
+  test('weather with a city fetches that city, never the location', () async {
+    final fetcher = _FakeWeatherFetcher();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      weatherFetcher: fetcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.weatherGet,
+      {'place': 'Paris', 'kind': 'now'},
+    ));
+    expect(out.ok, isTrue);
+    expect(out.message, 'In Paris it\'s 18°C.');
+    expect(fetcher.calls, [('Paris', 'now', null)]);
+  });
+
+  test('weather without a city uses the device location when available',
+      () async {
+    device.location = (48.8566, 2.3522);
+    final fetcher = _FakeWeatherFetcher();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      weatherFetcher: fetcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.weatherGet,
+      {'place': '', 'kind': 'now'},
+    ));
+    expect(out.ok, isTrue);
+    expect(fetcher.calls, [('', 'now', '48.8566,2.3522')]);
+  });
+
+  test('weather without a city and without location falls back to IP auto',
+      () async {
+    final fetcher = _FakeWeatherFetcher();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      weatherFetcher: fetcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.weatherGet,
+      {'place': '', 'kind': 'now'},
+    ));
+    expect(out.ok, isTrue);
+    expect(fetcher.calls, [('', 'now', null)]);
+  });
+
+  test('weather reports a fetch failure honestly, never a fake forecast',
+      () async {
+    final fetcher = _FakeWeatherFetcher()..reply = null;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      weatherFetcher: fetcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.weatherGet,
+      {'place': 'Paris', 'kind': 'now'},
+    ));
+    expect(out.ok, isFalse);
+    expect(out.message, contains('couldn\'t reach the weather service'));
   });
 }
 

@@ -26,11 +26,14 @@ class DeviceExecutor {
   DeviceExecutor({
     DeviceActionBackend? deviceBackend,
     PhoneActionBackend? phoneBackend,
+    WeatherFetcher? weatherFetcher,
   }) : _deviceBackend = deviceBackend ?? deviceActionBackend(),
-       _phoneBackend = phoneBackend ?? RealPhoneActionBackend();
+       _phoneBackend = phoneBackend ?? RealPhoneActionBackend(),
+       _weatherFetcher = weatherFetcher ?? fetchWeather;
 
   final DeviceActionBackend _deviceBackend;
   final PhoneActionBackend _phoneBackend;
+  final WeatherFetcher _weatherFetcher;
 
   /// Parses follow-up answers ('time': '7am') into what the native side
   /// expects, then runs the action through the platform backend (or the
@@ -1094,13 +1097,31 @@ class DeviceExecutor {
     }
   }
 
-  /// Fetches and formats live weather for [place] — the wttr.in payload is
-  /// parsed in the core layer so it stays testable without a network.
+  /// Fetches and formats live weather. With a city, that city is fetched;
+  /// without one, the phone's location (one-time grant) is tried first and
+  /// IP detection is the honest fallback — never a "which city?" dead end.
   Future<ActionResult> _weather(String place, String kind) async {
     if (place.isEmpty) {
-      return const ActionResult(false, 'Which city? Try "weather in Paris".');
+      (double, double)? fix;
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        fix = await _deviceBackend.currentLocation();
+      }
+      final line = fix != null
+          ? await _weatherFetcher(
+              '',
+              kind,
+              coordinates: '${fix.$1},${fix.$2}',
+            )
+          : await _weatherFetcher('', kind);
+      if (line == null) {
+        return const ActionResult(
+          false,
+          'I couldn\'t reach the weather service — check the internet and try again.',
+        );
+      }
+      return ActionResult(true, line);
     }
-    final line = await fetchWeather(place, kind);
+    final line = await _weatherFetcher(place, kind);
     if (line == null) {
       return ActionResult(
         false,

@@ -17,6 +17,11 @@ class ActionResult {
 /// Runs the small device-local actions the assistant can execute natively.
 abstract class DeviceActionBackend {
   Future<ActionResult> run(String action, Map<String, dynamic> args);
+
+  /// One-shot location fix (lat, lon) for "what is the weather" without a
+  /// city. Null when the platform can't provide one — the weather fetch
+  /// then falls back to IP detection, never a dead end.
+  Future<(double, double)?> currentLocation() async => null;
 }
 
 /// Returns the platform-appropriate backend.
@@ -32,6 +37,21 @@ DeviceActionBackend deviceActionBackend() {
 
 class RealDeviceActionBackend implements DeviceActionBackend {
   static const _channel = MethodChannel('dev.nexus.nexus/device');
+
+  @override
+  Future<(double, double)?> currentLocation() async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>('location');
+      final lat = (raw?['lat'] as num?)?.toDouble();
+      final lon = (raw?['lon'] as num?)?.toDouble();
+      if (raw?['ok'] == true && lat != null && lon != null) {
+        return (lat, lon);
+      }
+    } catch (_) {
+      // fall through: null → IP detection
+    }
+    return null;
+  }
 
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async {
@@ -82,10 +102,16 @@ class UnavailableDeviceActionBackend implements DeviceActionBackend {
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async =>
       const ActionResult(false, 'That action is not available on this device.');
+
+  @override
+  Future<(double, double)?> currentLocation() async => null;
 }
 
 /// The desktop executor: timers via notify-send, web search via xdg-open.
 class DesktopDeviceActionBackend implements DeviceActionBackend {
+  @override
+  Future<(double, double)?> currentLocation() async => null;
+
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async {
     switch (action) {

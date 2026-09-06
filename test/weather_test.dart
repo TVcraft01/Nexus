@@ -54,5 +54,24 @@ void main() {
       expect(formatWttr('{"no":"current_condition"}', place: 'Paris'), isNull);
       expect(formatWttr('', place: 'Paris'), isNull);
     });
+
+    test('an empty place names the area wttr.in actually resolved', () {
+      const body = '''
+      {"nearest_area":[{"areaName":[{"value":"Montpellier"}],
+        "country":[{"value":"France"}]}],
+       "current_condition":[{"temp_C":"24","FeelsLikeC":"24",
+        "weatherDesc":[{"value":"Sunny"}]}],
+       "weather":[{"hourly":[{"chanceofrain":"0"}]}]}
+      ''';
+      // Place given: the caller's spelling wins, never wttr.in's.
+      final named = formatWttr(body, place: 'Lyon');
+      expect(named, contains('In Lyon'));
+      // No place (location/IP fetch): the resolved area is named honestly.
+      final auto = formatWttr(body, place: '');
+      expect(auto, contains('In Montpellier'));
+      // Rain variant uses the same resolved name.
+      final rain = formatWttr(body, place: '', kind: 'rain');
+      expect(rain, contains('In Montpellier'));
+    });
   });
 }

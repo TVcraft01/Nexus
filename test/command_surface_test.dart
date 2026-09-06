@@ -204,6 +204,12 @@ void main() {
     });
     test('weather, navigation & email', () {
       expectAction(
+        'what is the weather',
+        AgentActions.weatherGet,
+        target: 'local',
+        args: {'place': '', 'kind': 'now'},
+      );
+      expectAction(
         'what is the weather in paris',
         AgentActions.weatherGet,
         target: 'local',

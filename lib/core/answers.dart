@@ -200,7 +200,8 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           '  "what is 15% of 80" — math with percents\n'
           '\n'
           'Weather & Getting Around:\n'
-          '  "what is the weather in paris" — live forecast\n'
+          '  "what is the weather" — live forecast, no city needed\n'
+          '  "what is the weather in paris" — any city\n'
           '  "take me home" / "navigate to the office" — maps\n'
           '\n'
           'Email:\n'
@@ -276,17 +277,15 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       );
     case AgentActions.weatherGet:
       final place = command.arguments['place'] as String? ?? '';
-      if (place.isEmpty) {
-        return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
-          message: 'Which city? Try "weather in Paris".',
-        );
-      }
       final kind = command.arguments['kind'] as String? ?? 'now';
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          'Checking the weather in $place…',
+          // No city: "what is the weather" — the device's location or IP
+          // answers; the fetched line names the resolved area.
+          place.isEmpty
+              ? 'Checking the weather here…'
+              : 'Checking the weather in $place…',
           action: AgentActions.weatherGet,
           arguments: {'place': place, 'kind': kind},
         ),

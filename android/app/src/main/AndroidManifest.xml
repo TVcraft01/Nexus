@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <!-- For "what is the weather" without a city: a one-time coarse location
+         grant lets the assistant fetch the forecast for where the phone is.
+         Declined? It falls back to IP-based detection — never a dead end. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <!-- Needed so Android lets the app receive multicast announcements. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <!-- For scanning pairing QR codes with the camera. -->

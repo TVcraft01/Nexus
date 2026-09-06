@@ -153,10 +153,11 @@ void main() {
       // Weather is now fetched live; news/calendar are still not promised
       // commands — they route through memory first, then fall back to a web
       // search. Never a claimed fake action.
-      expect(
-        interpreter.interpret("what's the weather").outcome,
-        InterpretOutcome.needsInfo,
-      );
+      // No city is still a real command: empty place means location/IP.
+      final bare = interpreter.interpret("what's the weather");
+      expect(bare.outcome, InterpretOutcome.matched);
+      expect(bare.command!.action, AgentActions.weatherGet);
+      expect(bare.command!.arguments['place'], '');
       final inParis = interpreter.interpret('what is the weather in paris');
       expect(inParis.command!.action, AgentActions.weatherGet);
       expect(inParis.command!.arguments['place'], 'paris');
