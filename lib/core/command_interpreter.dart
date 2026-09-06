@@ -160,6 +160,55 @@ class CommandInterpreter {
     return (bestMeaning, bestScore);
   }
 
+  /// Currency codes and the everyday names people actually say (EN + FR):
+  /// "dollars", "quid", "yen", "euros"… A conversion only qualifies when
+  /// both sides are known, so "2 points in the game" never becomes one.
+  static const Set<String> _currencyWords = {
+    'usd', 'dollar', 'dollars', 'buck', 'bucks',
+    'eur', 'euro', 'euros',
+    'gbp', 'pound', 'pounds', 'quid', 'quids',
+    'jpy', 'yen', 'yens',
+    'chf', 'franc', 'francs',
+    'cad', 'aud', 'cny', 'yuan', 'renminbi', 'inr', 'rupee', 'rupees',
+    'btc', 'bitcoin', 'bitcoins',
+  };
+
+  /// Unit words the converter knows (mirrors _convertUnit's table):
+  /// length, weight, temperature, speed and volume.
+  static const Set<String> _unitWords = {
+    'km', 'kilometer', 'kilometers', 'm', 'meter', 'meters',
+    'cm', 'centimeter', 'centimeters', 'mm', 'millimeter', 'millimeters',
+    'mile', 'miles', 'mi', 'yard', 'yards', 'yd', 'foot', 'feet', 'ft',
+    'inch', 'inches', 'kg', 'kilogram', 'kilograms', 'g', 'gram', 'grams',
+    'mg', 'milligram', 'milligrams', 'lb', 'lbs', 'pound', 'pounds',
+    'ounce', 'ounces', 'oz', 'stone', 'stones',
+    'c', 'celsius', 'f', 'fahrenheit', 'k', 'kelvin',
+    'kmh', 'kph', 'km/h', 'mph',
+    'liter', 'liters', 'litre', 'litres', 'l', 'gallon', 'gallons',
+    'cup', 'cups', 'pint', 'pints', 'quart', 'quarts',
+  };
+
+  /// True when [from]/[to] are symbols or known unit/currency words.
+  static bool _knownConvertWords(String from, String to) {
+    bool known(String w) =>
+        w == r'$' || w == '€' || w == '£' ||
+        _currencyWords.contains(w.toLowerCase()) ||
+        _unitWords.contains(w.toLowerCase());
+    return known(from) && known(to);
+  }
+
+  /// Matches "100 dollars in yen", "10 km to miles", "100$ vers yen" —
+  /// returns (value, from, to) when both sides are known units/currencies.
+  static (String, String, String)? _conversionMatch(String text) {
+    final m = RegExp(
+      r'^(\d+(?:\.\d+)?)\s*(\$|€|£|\w+)\s+(?:in|to|into|en|vers)\s+(\$|€|£|\w+)$',
+    ).firstMatch(text.trim().toLowerCase());
+    if (m == null || !_knownConvertWords(m.group(2)!, m.group(3)!)) {
+      return null;
+    }
+    return (m.group(1)!, m.group(2)!, m.group(3)!);
+  }
+
   /// Classic Levenshtein edit distance, two rolling rows so it stays cheap
   /// even if the catalog grows.
   static int _levenshtein(String a, String b) {
@@ -223,7 +272,7 @@ class CommandInterpreter {
       '',
     );
     t = t.replaceAll(
-      RegExp(r'^(?:(?:hey|ok|okay|yo)[,\s]*)?siri[,\s]+(?=\S)'),
+      RegExp(r'^(?:(?:hey|ok|okay|yo)[,\s]*)?(?:siri|nexus)[,\s]+(?=\S)'),
       '',
     );
     // Strip conversational prefixes that friends naturally type
@@ -667,14 +716,51 @@ class CommandInterpreter {
           ),
         );
       }
+      // "how much is 100 dollars in yen" is a conversion, not a math
+      // expression — route it to the unit converter (live currency rates)
+      // instead of a web search.
+      final whatConvert = _conversionMatch(what.group(2)!.trim());
+      if (whatConvert != null) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.unitConvert,
+            target: 'local',
+            arguments: {
+              'value': double.tryParse(whatConvert.$1) ?? 0,
+              'from': whatConvert.$2,
+              'to': whatConvert.$3,
+            },
+          ),
+        );
+      }
       // A personal question ("what is my wifi password") must not become a
-      // web search for the user's own secret — ask memory first; the
-      // service falls back to the web honestly when memory has nothing.
+      // web search for the user's own secret — ask the user for it instead
+      // and remember the answer like a conversation. The service stores the
+      // reply as a default and re-answers the question with it.
+      final topic = what.group(2)!.trim();
+      if (RegExp(r'^(my|mon|ma|mes) ').hasMatch(topic)) {
+        final yours = topic
+            .replaceFirst(RegExp(r'^my '), 'your ')
+            .replaceFirst(RegExp(r'^mes '), 'your ')
+            .replaceFirst(RegExp(r'^mon '), 'your ')
+            .replaceFirst(RegExp(r'^ma '), 'your ');
+        return InterpretResult.needsInfo(
+          'memory.ask.$topic',
+          'I don\'t know that yet — what is $yours?',
+          ParsedCommand(
+            action: AgentActions.memoryQuestion,
+            target: 'local',
+            arguments: {'topic': topic},
+          ),
+        );
+      }
+      // General knowledge the assistant can't answer: ask memory first;
+      // the service falls back to the web honestly when memory has nothing.
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.memoryQuestion,
           target: 'local',
-          arguments: {'topic': what.group(2)!.trim()},
+          arguments: {'topic': topic},
         ),
       );
     }
@@ -847,6 +933,20 @@ class CommandInterpreter {
           action: AgentActions.appClose,
           target: 'local',
           arguments: {'query': close.group(1)!.trim()},
+        ),
+      );
+    }
+
+    // --- Who am I: a memory question about the user themselves, answered
+    // conversationally (the service asks for the name and remembers it).
+    if (_oneOf(norm, const ['who am i', 'who am i again'])) {
+      return InterpretResult.needsInfo(
+        'memory.ask.my name',
+        'I don\'t know that yet — what is your name?',
+        const ParsedCommand(
+          action: AgentActions.memoryQuestion,
+          target: 'local',
+          arguments: {'topic': 'my name'},
         ),
       );
     }
@@ -1821,9 +1921,9 @@ class CommandInterpreter {
 
     // --- Unit conversion
     final convert = RegExp(
-      r'^(?:convert|convertis|how (?:many|much)|what is) (\d+(?:\.\d+)?)\s*(\w+)\s+(?:to|in|into|en) (\w+)$',
+      r'^(?:convert|convertis|how (?:many|much)|what is) (\d+(?:\.\d+)?)\s*(\$|€|£|\w+)\s+(?:to|in|into|en|vers) (\$|€|£|\w+)$',
     ).firstMatch(norm);
-    if (convert != null) {
+    if (convert != null && _knownConvertWords(convert.group(2)!, convert.group(3)!)) {
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.unitConvert,
@@ -1832,6 +1932,23 @@ class CommandInterpreter {
             'value': double.tryParse(convert.group(1)!) ?? 0,
             'from': convert.group(2)!,
             'to': convert.group(3)!,
+          },
+        ),
+      );
+    }
+    // Bare conversion, no verb: "100 dollars in yen" or "10 km in miles".
+    // Only known unit/currency words qualify, so "2 points in the game"
+    // never becomes a conversion.
+    final bareConvert = _conversionMatch(norm);
+    if (bareConvert != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.unitConvert,
+          target: 'local',
+          arguments: {
+            'value': double.tryParse(bareConvert.$1) ?? 0,
+            'from': bareConvert.$2,
+            'to': bareConvert.$3,
           },
         ),
       );

@@ -287,7 +287,6 @@ void main() {
 
     test('personal questions route to memory, math and search do not', () {
       for (final pair in [
-        ('what is my wifi password', 'my wifi password'),
         ("what is mom's number", 'mom is number'),
         ('who is mom', 'mom'),
         ('where is the bike code', 'bike code'),
@@ -310,6 +309,28 @@ void main() {
         interpreter.interpret('what is the capital of france').command!.action,
         AgentActions.memoryQuestion,
       );
+    });
+
+    test("the assistant asks back for personal facts instead of searching the web", () {
+      // "what is my name" / "what is my wifi password" must ask the user
+      // for the answer (and remember it), never search the web for their
+      // own secret.
+      for (final pair in [
+        ('what is my name', 'memory.ask.my name', 'your name'),
+        ('whats my name', 'memory.ask.my name', 'your name'),
+        ('who am i', 'memory.ask.my name', 'your name'),
+        (
+          'what is my wifi password',
+          'memory.ask.my wifi password',
+          'your wifi password',
+        ),
+      ]) {
+        final r = interpreter.interpret(pair.$1);
+        expect(r.outcome, InterpretOutcome.needsInfo, reason: pair.$1);
+        expect(r.missingArgKey, pair.$2, reason: pair.$1);
+        expect(r.question, contains(pair.$3), reason: pair.$1);
+        expect(r.command!.action, AgentActions.memoryQuestion, reason: pair.$1);
+      }
     });
 
     test('normalization folds accents and contractions', () {
@@ -579,6 +600,49 @@ void main() {
       expect(fr.command!.arguments['to'], 'dollars');
       final miles = interpreter.interpret('convert 5 miles to km');
       expect(miles.command!.action, AgentActions.unitConvert);
+    });
+
+    test('currency parses with symbols and bare phrasings - no web needed', () {
+      for (final phrase in [
+        'convert 100\$ in yen',
+        '100 dollars in yen',
+        '100 usd to jpy',
+        r'100€ to dollars',
+        'how much is 100 dollars in yen',
+        'what is 10 km in miles',
+        'convert 5 pounds to dollars',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.unitConvert, reason: phrase);
+        expect(
+          (r.command!.arguments['value'] as num) > 0,
+          isTrue,
+          reason: phrase,
+        );
+      }
+      expect(
+        interpreter.interpret('convert 100\$ in yen').command!.arguments['from'],
+        '\$',
+      );
+      // Unknown units never hijack a normal sentence.
+      expect(
+        interpreter.interpret('2 points in the game').outcome,
+        InterpretOutcome.unknown,
+      );
+      expect(
+        interpreter.interpret('100 dollars in the game').outcome,
+        InterpretOutcome.unknown,
+      );
+    });
+
+    test('hey nexus is the wake word - and hey siri still tolerated', () {
+      final wake = interpreter.interpret('hey nexus, call mom');
+      expect(wake.outcome, InterpretOutcome.matched);
+      expect(wake.command!.action, AgentActions.callPlace);
+      expect(wake.command!.arguments['contact'], 'mom');
+      final legacy = interpreter.interpret('hey siri, what time is it');
+      expect(legacy.command!.action, AgentActions.timeGet);
     });
 
     test('timezone questions parse for curated and unknown places', () {

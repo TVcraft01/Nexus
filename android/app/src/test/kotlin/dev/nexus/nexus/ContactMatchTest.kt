@@ -61,6 +61,26 @@ class ContactMatchTest {
   }
 
   @Test
+  fun `full word inside a longer display name resolves - the tvcraft01 case`() {
+    // The user says "call TVcraft01"; the real contact is a decorated or
+    // suffixed display name containing the full word. This must dial.
+    assertEquals(
+      "TVcraft01 〘✘ΔτΚ⑤⑦〙",
+      pickBestContactMatch(listOf("TVcraft01 〘✘ΔτΚ⑤⑦〙"), "TVcraft01"),
+    )
+    assertEquals(
+      "TVcraft01 Dad",
+      pickBestContactMatch(listOf("TVcraft01 Dad", "Mom"), "tvcraft01"),
+    )
+  }
+
+  @Test
+  fun `substring inside another word never matches - tom vs atom`() {
+    assertNull(pickBestContactMatch(listOf("Atom", "Tommy"), "tom"))
+    assertEquals("Tom", pickBestContactMatch(listOf("Atom", "Tom", "Tommy"), "tom"))
+  }
+
+  @Test
   fun `no candidate matches returns null`() {
     assertNull(pickBestContactMatch(contacts, "bob"))
   }

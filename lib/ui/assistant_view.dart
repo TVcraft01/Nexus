@@ -64,6 +64,25 @@ class _AssistantViewState extends State<AssistantView> {
   /// Whether the mic is listening right now (button becomes the live mic).
   bool _listening = false;
 
+  /// Whether the input currently being processed came from the mic. Voice
+  /// contact actions (call/text/email) are confirmed by a spoken yes/no;
+  /// typed ones run directly.
+  bool _lastInputWasVoice = false;
+
+  /// Contact actions that get a voice confirmation before running.
+  static const _voiceConfirmActions = {
+    AgentActions.callPlace,
+    AgentActions.messageSend,
+    AgentActions.emailSend,
+  };
+
+  /// A voice-triggered contact action awaiting a spoken yes/no.
+  ({AgentRequest request, String question})? _voiceConfirm;
+
+  /// An unresolved contact with near matches — "who did you mean?" is open
+  /// and a yes/no answer (plus learning) is pending.
+  ({AgentRequest request, List<String> candidates})? _contactConfirm;
+
   /// An open "who did you mean?" question after an unresolved contact.
 
   /// Runs actions on this platform (apps, calls, texts, media…); the view
@@ -384,16 +403,32 @@ class _AssistantViewState extends State<AssistantView> {
     if (result.dispatch case final AgentMessage message
         when message.action != null &&
             _selfRunActions.contains(message.action)) {
-      unawaited(
-        _runSelfAction(
-          AgentRequest(
-            requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
-            target: widget.mesh.identity.id,
-            action: message.action!,
-            arguments: message.arguments ?? const {},
-          ),
-        ),
+      final request = AgentRequest(
+        requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
+        target: widget.mesh.identity.id,
+        action: message.action!,
+        arguments: message.arguments ?? const {},
       );
+      // Spoken contact actions are confirmed by voice first — "call mom"
+      // heard, not typed, asks before dialing. Typed ones run straight
+      // away: the user already wrote what they meant.
+      if (_lastInputWasVoice &&
+          _voiceConfirmActions.contains(message.action)) {
+        _voiceConfirm = (request: request, question: message.text);
+        setState(
+          () => _appendResult(
+            AgentDispatchResult(
+              status: AgentResultStatus.needsInfo,
+              dispatch: AgentMessage(
+                '${message.text} Say "yes" to confirm, or "no" to cancel.',
+              ),
+            ),
+            replaceLast: true,
+          ),
+        );
+      } else {
+        unawaited(_runSelfAction(request));
+      }
     }
   }
 
@@ -404,7 +439,12 @@ class _AssistantViewState extends State<AssistantView> {
     });
     final outcome = await _executor.run(request);
     if (!mounted) return;
-    _showSelfOutcome(outcome.ok, outcome.message);
+    _showSelfOutcome(
+      outcome.ok,
+      outcome.message,
+      request: request,
+      candidates: outcome.candidates,
+    );
   }
 
   /// One utterance, then the recognized words run through the same pipeline
@@ -445,12 +485,33 @@ class _AssistantViewState extends State<AssistantView> {
       return;
     }
     _controller.text = text;
-    _onSubmit();
+    _onSubmit(voice: true);
   }
 
-  void _showSelfOutcome(bool ok, String message) {
+  void _showSelfOutcome(
+    bool ok,
+    String message, {
+    AgentRequest? request,
+    List<String> candidates = const [],
+  }) {
     setState(() {
       _sending = false;
+      // The contact lookup found close names but nothing exact — offer them
+      // as "who did you mean?" and LEARN the answer ("alx" -> Alex). The
+      // Kotlin message already names the candidates.
+      if (!ok && candidates.isNotEmpty && request != null) {
+        _contactConfirm = (request: request, candidates: candidates);
+        _appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.needsInfo,
+            dispatch: AgentMessage(
+              '$message Say "yes" for the first one — or "no" to cancel.',
+            ),
+          ),
+          replaceLast: true,
+        );
+        return;
+      }
       _appendResult(
         AgentDispatchResult(
           status: ok
@@ -464,12 +525,78 @@ class _AssistantViewState extends State<AssistantView> {
     });
   }
 
-  void _onSubmit() {
+  void _onSubmit({bool voice = false}) {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
     HapticFeedback.selectionClick();
     _lastInput = text;
+    _lastInputWasVoice = voice;
     _controller.clear();
+    final yes = _isYes(text);
+    final no = _isNo(text);
+    // A voice-triggered call/text/email is waiting for a spoken yes/no —
+    // typed input never lands here (typed contact actions run directly).
+    if (_voiceConfirm != null) {
+      final vc = _voiceConfirm!;
+      if (yes) {
+        _voiceConfirm = null;
+        unawaited(_runSelfAction(vc.request));
+      } else if (no) {
+        _voiceConfirm = null;
+        _showSelfOutcome(false, 'Cancelled — nothing was sent.');
+      } else {
+        _voiceConfirm = null; // moved on: run the new request
+        _execute(text);
+      }
+      return;
+    }
+    // "who did you mean?" after an unresolved contact — "yes" calls the
+    // closest match AND learns the wording ("alx" means Alex from now on).
+    if (_contactConfirm != null) {
+      final cc = _contactConfirm!;
+      if (yes) {
+        _contactConfirm = null;
+        final chosen = cc.candidates.first;
+        final original = cc.request.arguments['contact']?.toString() ?? '';
+        if (chosen != original) {
+          _service.learnContactAlias(original, chosen);
+        }
+        final args = Map<String, dynamic>.of(cc.request.arguments)
+          ..['contact'] = chosen;
+        unawaited(
+          _runSelfAction(
+            AgentRequest(
+              requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
+              target: cc.request.target,
+              action: cc.request.action,
+              arguments: args,
+            ),
+          ),
+        );
+      } else if (no) {
+        _contactConfirm = null;
+        _showSelfOutcome(false, 'Okay — I won\'t call anyone.');
+      } else {
+        _contactConfirm = null; // moved on: run the new request
+        _execute(text);
+      }
+      return;
+    }
+    // An Approve/Deny bar is showing — spoken (or typed) yes/no answers it.
+    final lastResult =
+        _thread.isNotEmpty ? _thread.last.result : null;
+    if (lastResult != null &&
+        lastResult.status == AgentResultStatus.required &&
+        (yes || no)) {
+      _execute(
+        _lastInput,
+        approval: yes
+            ? AgentApproval.approved
+            : AgentApproval.denied,
+        replaceLast: true,
+      );
+      return;
+    }
     final pending = _pendingKey;
     // A clarification is open. The next input answers it — UNLESS it is
     // itself a command: the user moved on, so the new request runs and the
@@ -482,6 +609,16 @@ class _AssistantViewState extends State<AssistantView> {
       _execute(text);
     }
   }
+
+  bool _isYes(String text) => RegExp(
+        r'^(yes|yep|yeah|yah|y|ok|okay|sure|oui|correct|affirmative|go ahead)$',
+        caseSensitive: false,
+      ).hasMatch(text.trim().toLowerCase());
+
+  bool _isNo(String text) => RegExp(
+        r"^(no|nope|n|non|negative|cancel|stop|dont|don't)$",
+        caseSensitive: false,
+      ).hasMatch(text.trim().toLowerCase());
 
   void _approve() {
     HapticFeedback.lightImpact();

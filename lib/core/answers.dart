@@ -773,16 +773,23 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       const currencies = {
         'usd', 'eur', 'gbp', 'chf', 'jpy', 'cad', 'aud', 'cny', 'inr', 'btc',
       };
-      // French currency words ("100 euros en dollars") map to their codes.
-      const frWords = {
-        'dollars': 'usd', 'dollar': 'usd',
+      // Everyday currency words (EN + FR) and symbols map to their codes:
+      // "dollars", "bucks", "quid", "yen", "100$", "€"…
+      const moneyWords = {
+        'dollars': 'usd', 'dollar': 'usd', 'bucks': 'usd', 'buck': 'usd',
         'euros': 'eur', 'euro': 'eur',
         'livres': 'gbp', 'livre': 'gbp',
+        'pounds': 'gbp', 'pound': 'gbp', 'quids': 'gbp', 'quid': 'gbp',
         'yens': 'jpy', 'yen': 'jpy',
         'francs': 'chf', 'franc': 'chf',
+        'yuans': 'cny', 'yuan': 'cny', 'renminbis': 'cny', 'renminbi': 'cny',
+        'rupees': 'inr', 'rupee': 'inr',
+        'bitcoins': 'btc', 'bitcoin': 'btc',
+        '\$': 'usd', '€': 'eur', '£': 'gbp',
       };
-      final fromCode = frWords[from.toLowerCase()] ?? from.toLowerCase();
-      final toCode = frWords[to.toLowerCase()] ?? to.toLowerCase();
+      final fromCode =
+          moneyWords[from.toLowerCase()] ?? from.toLowerCase();
+      final toCode = moneyWords[to.toLowerCase()] ?? to.toLowerCase();
       if (currencies.contains(fromCode) && currencies.contains(toCode)) {
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
@@ -997,6 +1004,21 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       }
       final hits = _factsAbout(ctx.facts, qTopic);
       if (hits.isEmpty) {
+        // The user already answered our "I don't know that yet" question
+        // ("what is my name" -> "John") — the service stored the answer and
+        // re-ran this command with it. Answer from that, never the web.
+        final told = command.arguments[qTopic];
+        if (told is String && told.trim().isNotEmpty) {
+          final answer = told.trim();
+          return AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage(
+              qTopic == 'my name'
+                  ? 'Your name is $answer.'
+                  : '$qTopic is $answer — I\'ll remember that.',
+            ),
+          );
+        }
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(

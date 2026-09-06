@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nexus/core/identity.dart';
@@ -43,7 +44,7 @@ void main() {
     await tester.pump();
   }
 
-  Future<(NexusStore, MeshService)> boot() async {
+  Future<(NexusStore, MeshService)> boot({String platform = 'linux'}) async {
     final store = NexusStore(
       explicitPath: '${Directory.systemTemp.createTempSync('pt').path}/s.json',
     )..clipboardSync = true;
@@ -51,7 +52,7 @@ void main() {
       identity: DeviceInfo(
         id: 'playtest-device',
         name: 'Playtest PC',
-        platform: 'linux',
+        platform: platform,
       ),
       store: store,
     );
@@ -689,6 +690,118 @@ void main() {
       expect(store.agentReminders, isEmpty); // fired once, never again
     } finally {
       Reminders.nowOverride = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('voice: a spoken call is confirmed by voice — typed runs directly', (tester) async {
+    // The mesh identity is a phone (callPlace locally supported) and the
+    // executor takes the Android branch: calls route through the phone
+    // channel, which is unhandled here (answers "not available") — perfect
+    // for asserting the confirmation gate, not the dial.
+    final (store, mesh) = await boot(platform: 'android');
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    var heard = 'call mom';
+    SpeechInput.override = () => _FakeSpeechInput(heard);
+    const phone = MethodChannel('dev.nexus.nexus/phone');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(phone, (call) async {
+      if (call.method == 'callContact') {
+        return {'placed': true, 'launched': false, 'message': 'Calling mom (fake).'};
+      }
+      return null;
+    });
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+
+      // Spoken "call mom" must ask before dialing.
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('Say "yes" to confirm'), findsWidgets);
+
+      // Spoken "no" cancels — nothing was dialed.
+      heard = 'no';
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('Cancelled — nothing was sent.'), findsWidgets);
+
+      // Typed "call mom" skips the confirmation entirely (the user wrote
+      // what they meant) and goes straight to the device.
+      await ask(tester, 'call mom');
+      await tester.pump();
+      await tester.pump(); // the self-run's outcome lands a beat later
+      expect(find.textContaining('Say "yes" to confirm'), findsNothing);
+      // It RAN straight away — no confirmation, right to the device.
+      expect(find.textContaining('Calling mom (fake)'), findsWidgets);
+    } finally {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(phone, null);
+      debugDefaultTargetPlatformOverride = null;
+      SpeechInput.override = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('"did you mean?" for a contact: yes calls the match and learns it', (tester) async {
+    final (store, mesh) = await boot(platform: 'android');
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    var calls = 0;
+    const phone = MethodChannel('dev.nexus.nexus/phone');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(phone, (call) async {
+      if (call.method == 'callContact') {
+        calls++;
+        if (calls == 1) {
+          return {
+            'placed': false,
+            'launched': false,
+            'candidates': ['Alex'],
+            'message':
+                'No contact named "alx" on this device. Did you mean "Alex"?',
+          };
+        }
+        return {'placed': true, 'launched': false, 'message': 'Calling Alex.'};
+      }
+      return null;
+    });
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+
+      await ask(tester, 'call alx');
+      await tester.pump();
+      await tester.pump(); // the self-run's outcome lands a beat later
+      expect(find.textContaining('Did you mean "Alex"'), findsWidgets);
+
+      // "yes" calls the suggestion — and remembers the wording.
+      await ask(tester, 'yes');
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('Calling Alex'), findsWidgets);
+      expect(calls, 2);
+      expect(
+        store.agentFacts.any(
+          (f) => f.toLowerCase() == 'alx means alex',
+        ),
+        isTrue,
+      );
+
+      // The alias persists into the service: next "call alx" names Alex
+      // without any question.
+      await ask(tester, 'call alx');
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('Calling Alex'), findsWidgets);
+      expect(calls, 3);
+    } finally {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(phone, null);
+      debugDefaultTargetPlatformOverride = null;
       QueryLog.i.resetForTest();
       await mesh.stop();
     }
