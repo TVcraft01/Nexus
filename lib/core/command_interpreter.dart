@@ -94,6 +94,7 @@ class CommandInterpreter {
     'convert 5 miles to km',
     'convert 100 usd to eur',
     // Weather & getting around
+    'what is the weather',
     'weather in paris',
     'take me home',
     'navigate to the office',
@@ -365,14 +366,10 @@ class CommandInterpreter {
       r')(?: (?:in|at|for|a|dans|sur|de) (.+))?$',
     ).firstMatch(norm);
     if (weather != null) {
+      // No city given? "what is the weather" is still a real command — the
+      // device's location (one-time grant) or IP detection answers it. An
+      // empty place means auto, handled in the executor.
       final place = weather.group(1)?.trim() ?? '';
-      if (place.isEmpty) {
-        return InterpretResult.needsInfo(
-          'weather.get.place',
-          'Which city? Try "weather in Paris".',
-          const ParsedCommand(action: AgentActions.weatherGet, target: 'local'),
-        );
-      }
       final rainy = RegExp(
         r'rain|pleuvoir|pleut',
       ).hasMatch(norm);

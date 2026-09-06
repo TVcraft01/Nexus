@@ -8,12 +8,17 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.speech.RecognitionListener
@@ -73,6 +78,15 @@ class MainActivity : FlutterActivity() {
     private var pendingEmailContact: String? = null
     private var pendingEmailBody: String? = null
     private var pendingEmailResult: MethodChannel.Result? = null
+
+    // "what is the weather": a one-time coarse location grant so the
+    // forecast can be for where the phone is. The result is held across the
+    // dialog; a declined grant answers honestly with null (IP fallback).
+    private val REQUEST_LOCATION_PERMISSIONS = 42606
+    private var pendingLocationResult: MethodChannel.Result? = null
+    private val locationTimeout = Runnable {
+        finishLocation(null)
+    }
 
     // Voice input: RECORD_AUDIO is requested at runtime on first use, with
     // the MethodChannel result held across the dialog like the call flow.
@@ -168,6 +182,8 @@ class MainActivity : FlutterActivity() {
                         args?.get("body")?.toString(),
                         result,
                     )
+                } else if (call.method == "location") {
+                    requestLocation(result)
                 } else {
                     result.success(runDeviceAction(call.method, call.arguments))
                 }
@@ -322,6 +338,12 @@ class MainActivity : FlutterActivity() {
                 return
             }
             finishEmail(name ?: "", body, result)
+        }
+        if (requestCode == REQUEST_LOCATION_PERMISSIONS) {
+            val result = pendingLocationResult
+            if (result == null) return
+            if (granted(Manifest.permission.ACCESS_COARSE_LOCATION)) resolveLocation(result)
+            else result.success(null) // honest: no location → IP fallback
         }
         if (requestCode == REQUEST_SPEECH_PERMISSIONS) {
             val result = pendingSpeechResult
@@ -628,6 +650,90 @@ class MainActivity : FlutterActivity() {
                 number != null -> openSmsComposer(contact, number, msgBody)
                 else -> noContactResult(contact, ranked, matched, verb = "text them")
             }
+        )
+    }
+
+    /// "what is the weather" without a city: one-time coarse location grant,
+    /// then the best fix we can get quickly. The result resolves with a
+    /// {lat, lon} map or null — the Dart side falls back to IP detection,
+    /// never a dead end.
+    private fun requestLocation(result: MethodChannel.Result) {
+        if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingLocationResult = result
+            requestPermissions(
+                arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION),
+                REQUEST_LOCATION_PERMISSIONS,
+            )
+            return
+        }
+        resolveLocation(result)
+    }
+
+    /// Best fix within ~6s: the most recent cached fix first (fast, and
+    /// usually fresh enough for weather), then a one-shot network fix.
+    /// Times out honestly to null rather than blocking the assistant.
+    private fun resolveLocation(result: MethodChannel.Result) {
+        val lm = getSystemService(LocationManager::class.java)
+        try {
+            val cached = listOf(
+                LocationManager.NETWORK_PROVIDER,
+                LocationManager.GPS_PROVIDER,
+            ).firstNotNullOfOrNull { provider ->
+                try {
+                    lm.getLastKnownLocation(provider)
+                } catch (e: SecurityException) {
+                    null
+                }
+            }
+            if (cached != null) {
+                result.success(
+                    mapOf("ok" to true, "lat" to cached.latitude, "lon" to cached.longitude),
+                )
+                return
+            }
+            // No cache: ask for one quick network fix. A 6s timeout keeps the
+            // assistant honest instead of waiting forever indoors.
+            pendingLocationResult = result
+            Handler(Looper.getMainLooper()).postDelayed(locationTimeout, 6000)
+            lm.requestSingleUpdate(
+                LocationManager.NETWORK_PROVIDER,
+                locationListener,
+                Looper.getMainLooper(),
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "location resolve failed", e)
+            result.success(null)
+        }
+    }
+
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            finishLocation(location)
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+    }
+
+    private fun finishLocation(location: Location?) {
+        val result = pendingLocationResult ?: return
+        pendingLocationResult = null
+        Handler(Looper.getMainLooper()).removeCallbacks(locationTimeout)
+        try {
+            getSystemService(LocationManager::class.java)
+                .removeUpdates(locationListener)
+        } catch (e: Exception) {
+            // best effort — the listener dies with the activity anyway
+        }
+        result.success(
+            if (location != null)
+                mapOf("ok" to true, "lat" to location.latitude, "lon" to location.longitude)
+            else null,
         )
     }
 

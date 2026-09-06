@@ -9,15 +9,26 @@ import 'dart:io';
 /// One formatted weather line, e.g. "In Paris it's 18°C, Partly cloudy,
 /// feels like 17°C." or the rain forecast variant. Null when the lookup
 /// failed or the payload did not parse.
-typedef WeatherFetcher = Future<String?> Function(String place, String kind);
+typedef WeatherFetcher = Future<String?> Function(
+  String place,
+  String kind, {
+  String? coordinates,
+});
 
-/// The default fetcher: GETs wttr.in and formats the JSON reply.
-Future<String?> fetchWeather(String place, String kind) async {
+/// The default fetcher: GETs wttr.in and formats the JSON reply. With no
+/// [place] and no [coordinates] it hits wttr.in's IP-detected location
+/// (`auto`) — the fallback when a device has no location fix.
+Future<String?> fetchWeather(
+  String place,
+  String kind, {
+  String? coordinates,
+}) async {
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
   try {
-    final uri = Uri.parse(
-      'https://wttr.in/${Uri.encodeComponent(place)}?format=j1',
-    );
+    // wttr.in accepts "lat,lon" and "auto" as locations.
+    final location = coordinates ??
+        (place.isNotEmpty ? Uri.encodeComponent(place) : 'auto');
+    final uri = Uri.parse('https://wttr.in/$location?format=j1');
     final request = await client.getUrl(uri);
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
     final response = await request.close().timeout(const Duration(seconds: 10));
@@ -56,6 +67,22 @@ String? formatWttr(String body, {required String place, String kind = 'now'}) {
       ?.toString();
   if (tempC == null) return null;
 
+  // When the caller had no city (location/IP fetch), name the area wttr.in
+  // actually resolved — the answer names a real place, never a guess.
+  var label = place.isNotEmpty ? place : '';
+  if (label.isEmpty) {
+    final areas = (decoded['nearest_area'] as List? ?? const [])
+        .whereType<Map>()
+        .toList();
+    final name = ((areas.firstOrNull?['areaName'] as List? ?? const [])
+            .whereType<Map>()
+            .toList()
+            .firstOrNull?['value'])
+        ?.toString();
+    if (name != null && name.isNotEmpty) label = name;
+  }
+  if (label.isEmpty) label = 'Your area';
+
   if (kind == 'rain') {
     // Hourly chance-of-rain is the best "will it rain today" signal wttr.in
     // exposes; report the peak, not a made-up average.
@@ -70,8 +97,8 @@ String? formatWttr(String body, {required String place, String kind = 'now'}) {
         .map((h) => chanceOf(h['chanceofrain']))
         .fold<int>(0, (a, b) => b > a ? b : a);
     return peak > 0
-        ? 'In $place, there is up to a $peak% chance of rain today.'
-        : 'In $place, no rain is forecast today.';
+        ? 'In $label, there is up to a $peak% chance of rain today.'
+        : 'In $label, no rain is forecast today.';
   }
 
   final degrees = '$tempC°C';
@@ -79,5 +106,5 @@ String? formatWttr(String body, {required String place, String kind = 'now'}) {
       ? ' (feels like $feels°C)'
       : '';
   final withDesc = desc != null && desc.isNotEmpty ? ', $desc' : '';
-  return 'In $place it\'s $degrees$withFeels$withDesc.';
+  return 'In $label it\'s $degrees$withFeels$withDesc.';
 }
