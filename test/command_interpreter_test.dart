@@ -29,20 +29,31 @@ void main() {
     }
   });
 
-  test('"play <playlist>" maps to media with an honest query arg', () {
-    // The advertised surface now includes targeted play ("play my
-    // playlist"). It parses as media.play WITH the query — the executor
-    // answers honestly that library search isn't wired up, instead of
-    // silently pressing play on the wrong thing.
-    for (final phrase in ['play my playlist', 'play chill vibes']) {
+  test('"play my playlist" controls playback; a named song searches Deezer',
+      () {
+    // "play my playlist" is a control command — no library search, no
+    // query argument. A named song or vibe is a real music search that
+    // opens the top hit; never a silent fake play.
+    final playlist = interpreter.interpret('play my playlist');
+    expect(playlist.outcome, InterpretOutcome.matched);
+    expect(playlist.command!.action, AgentActions.mediaPlay);
+    expect(playlist.command!.arguments['query'], isNull);
+    final joe = interpreter.interpret('joue ma playlist');
+    expect(joe.command!.action, AgentActions.mediaPlay);
+    for (final phrase in [
+      'play chill vibes',
+      'play hotline bling',
+      'joue du jazz',
+    ]) {
       final result = interpreter.interpret(phrase);
       expect(result.outcome, InterpretOutcome.matched, reason: phrase);
-      expect(result.command!.action, AgentActions.mediaPlay, reason: phrase);
+      expect(result.command!.action, AgentActions.musicSearch, reason: phrase);
       expect(
         result.command!.arguments['query'],
         isNotEmpty,
         reason: phrase,
       );
+      expect(result.command!.target, 'local', reason: phrase);
     }
   });
 
@@ -149,10 +160,11 @@ void main() {
       );
     });
 
-    test('weather is a real command; news and calendar stay honest', () {
-      // Weather is now fetched live; news/calendar are still not promised
-      // commands — they route through memory first, then fall back to a web
-      // search. Never a claimed fake action.
+    test('weather and calendar are real commands; news stays honest', () {
+      // Weather is fetched live; the calendar opens the real calendar app
+      // (events go to the system's new-event screen). News is still not a
+      // promised command — it routes through memory first, then falls back
+      // to a web search. Never a claimed fake action.
       // No city is still a real command: empty place means location/IP.
       final bare = interpreter.interpret("what's the weather");
       expect(bare.outcome, InterpretOutcome.matched);
@@ -170,10 +182,9 @@ void main() {
         interpreter.interpret('what is the news').command!.action,
         AgentActions.memoryQuestion,
       );
-      expect(
-        interpreter.interpret('what is on my calendar').command!.action,
-        AgentActions.memoryQuestion,
-      );
+      final cal = interpreter.interpret('what is on my calendar');
+      expect(cal.command!.action, AgentActions.appOpen);
+      expect(cal.command!.arguments['query'], 'calendar');
     });
 
     test('music play/pause/skip maps to the media actions', () {
@@ -475,6 +486,114 @@ void main() {
         expect(r.outcome, InterpretOutcome.matched, reason: phrase);
         expect(r.command!.action, AgentActions.helpGet, reason: phrase);
       }
+    });
+
+    test('sun questions route to weather with sunrise/sunset kinds', () {
+      for (final phrase in [
+        'when is sunset',
+        'what time is sunset today',
+        'when is sunrise',
+        'a quelle heure est le coucher de soleil',
+        'quand est le lever du soleil',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.weatherGet, reason: phrase);
+      }
+      expect(
+        interpreter.interpret('when is sunset').command!.arguments['kind'],
+        'sunset',
+      );
+      expect(
+        interpreter.interpret('when is sunrise').command!.arguments['kind'],
+        'sunrise',
+      );
+      expect(
+        interpreter.interpret('a quelle heure est le coucher de soleil')
+            .command!.arguments['kind'],
+        'sunset',
+      );
+    });
+
+    test('calendar: adding opens the system event screen, opening the app', () {
+      final add = interpreter.interpret('add lunch with mom to my calendar');
+      expect(add.outcome, InterpretOutcome.matched);
+      expect(add.command!.action, AgentActions.calendarAdd);
+      expect(add.command!.arguments['title'], 'lunch with mom');
+      for (final phrase in [
+        'schedule a meeting on friday in my calendar',
+        'ajoute un rendez vous chez le medecin a mon calendrier',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.calendarAdd, reason: phrase);
+        expect(r.command!.arguments['title'], isNotEmpty, reason: phrase);
+      }
+      for (final phrase in [
+        'open my calendar',
+        'what is on my calendar',
+        'ouvre mon calendrier',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.appOpen, reason: phrase);
+        expect(r.command!.arguments['query'], 'calendar', reason: phrase);
+      }
+    });
+
+    test('shopping list: add and read a dedicated list', () {
+      final add = interpreter.interpret('add milk to my shopping list');
+      expect(add.outcome, InterpretOutcome.matched);
+      expect(add.command!.action, AgentActions.shoppingListAdd);
+      expect(add.command!.arguments['item'], 'milk');
+      for (final phrase in [
+        'put eggs on my shopping list',
+        'ajoute du pain a ma liste de courses',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.shoppingListAdd, reason: phrase);
+        expect(r.command!.arguments['item'], isNotEmpty, reason: phrase);
+      }
+      for (final phrase in [
+        'show my shopping list',
+        'what is on my shopping list',
+        'ma liste de courses',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.shoppingListGet, reason: phrase);
+      }
+    });
+
+    test('currency converts stay unitConvert; french words captured', () {
+      final usd = interpreter.interpret('convert 100 usd to eur');
+      expect(usd.outcome, InterpretOutcome.matched);
+      expect(usd.command!.action, AgentActions.unitConvert);
+      expect(usd.command!.arguments['from'], 'usd');
+      expect(usd.command!.arguments['to'], 'eur');
+      final fr = interpreter.interpret('convertis 100 euros en dollars');
+      expect(fr.outcome, InterpretOutcome.matched);
+      expect(fr.command!.action, AgentActions.unitConvert);
+      expect(fr.command!.arguments['from'], 'euros');
+      expect(fr.command!.arguments['to'], 'dollars');
+      final miles = interpreter.interpret('convert 5 miles to km');
+      expect(miles.command!.action, AgentActions.unitConvert);
+    });
+
+    test('timezone questions parse for curated and unknown places', () {
+      final tokyo = interpreter.interpret('what time is it in tokyo');
+      expect(tokyo.outcome, InterpretOutcome.matched);
+      expect(tokyo.command!.action, AgentActions.timezoneGet);
+      expect(tokyo.command!.arguments['place'], 'tokyo');
+      expect(
+        interpreter.interpret('quelle heure est il a montreal').command!
+            .arguments['place'],
+        'montreal',
+      );
+      final unknown = interpreter.interpret('what time is it in atlantis');
+      expect(unknown.command!.action, AgentActions.timezoneGet);
+      expect(unknown.command!.arguments['place'], 'atlantis');
     });
   });
 }

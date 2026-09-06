@@ -126,6 +126,23 @@ String? formatWttr(String body, {required String place, String kind = 'now'}) {
   }
   if (label.isEmpty) label = 'Your area';
 
+  if (kind == 'sunset' || kind == 'sunrise') {
+    // wttr.in's astronomy section carries today's sun times.
+    final day = (decoded['weather'] as List? ?? const [])
+        .whereType<Map>()
+        .toList()
+        .firstOrNull;
+    final astronomy = ((day?['astronomy'] as List? ?? const [])
+            .whereType<Map>()
+            .toList()
+            .firstOrNull);
+    final time = astronomy?[kind]?.toString();
+    if (time == null || time.isEmpty) return null;
+    final noun = kind == 'sunset' ? 'Sunset' : 'Sunrise';
+    final inPlace = label == 'Your area' ? '' : ' in $label';
+    return '$noun$inPlace is at $time today.';
+  }
+
   if (kind == 'rain') {
     // Hourly chance-of-rain is the best "will it rain today" signal wttr.in
     // exposes; report the peak, not a made-up average.

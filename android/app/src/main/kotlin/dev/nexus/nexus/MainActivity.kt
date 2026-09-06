@@ -19,6 +19,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.speech.RecognitionListener
@@ -375,6 +376,16 @@ class MainActivity : FlutterActivity() {
                     Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" +
                         Uri.encode(args?.get("place")?.toString() ?: ""))),
                     "opened directions",
+                )
+                "calendarEvent" -> startActionIntent(
+                    Intent(Intent.ACTION_INSERT).apply {
+                        data = CalendarContract.Events.CONTENT_URI
+                        putExtra(
+                            CalendarContract.Events.TITLE,
+                            args?.get("title")?.toString() ?: "",
+                        )
+                    },
+                    "opened a new event",
                 )
                 "torch" -> setTorch(args?.get("mode")?.toString() != "off")
                 "battery" -> batteryStatus()

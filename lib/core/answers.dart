@@ -9,6 +9,7 @@ import 'dart:math';
 import 'agent_contract.dart';
 import 'command_interpreter.dart';
 import 'reminders.dart';
+import 'timezones.dart';
 
 /// The window onto the assistant's state the catalog may touch while
 /// answering. Kept deliberately small so the catalog is readable and
@@ -289,10 +290,15 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
           // No city: "what is the weather" — the device's location or IP
-          // answers; the fetched line names the resolved area.
-          place.isEmpty
-              ? 'Checking the weather here…'
-              : 'Checking the weather in $place…',
+          // answers; the fetched line names the resolved area. Sun
+          // questions get their own honest intro line.
+          kind == 'sunset'
+              ? 'Checking sunset…'
+              : kind == 'sunrise'
+                  ? 'Checking sunrise…'
+                  : place.isEmpty
+                      ? 'Checking the weather here…'
+                      : 'Checking the weather in $place…',
           action: AgentActions.weatherGet,
           arguments: {'place': place, 'kind': kind},
         ),
@@ -303,6 +309,78 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         dispatch: AgentMessage(
           'Figuring out where you are…',
           action: AgentActions.locationGet,
+        ),
+      );
+    case AgentActions.musicSearch:
+      final query = command.arguments['query'] as String? ?? '';
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Searching for "$query"…',
+          action: AgentActions.musicSearch,
+          arguments: {'query': query},
+        ),
+      );
+    case AgentActions.timezoneGet:
+      final place = command.arguments['place'] as String? ?? '';
+      // Only curated cities answer inline; everywhere else goes to the web
+      // honestly — the app has no geocoder to guess a zone from a name.
+      if (zoneForCity(place) == null) {
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'I don\'t know $place\'s time zone — searching instead…',
+            action: AgentActions.webSearch,
+            arguments: {'query': 'current time in $place'},
+          ),
+        );
+      }
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Checking the time in $place…',
+          action: AgentActions.timezoneGet,
+          arguments: {'place': place},
+        ),
+      );
+    case AgentActions.calendarAdd:
+      final title = command.arguments['title'] as String? ?? '';
+      if (title.isEmpty) {
+        return const AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: 'What should I add to your calendar?',
+        );
+      }
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Opening a new event: "$title"…',
+          action: AgentActions.calendarAdd,
+          arguments: {'title': title},
+        ),
+      );
+    case AgentActions.shoppingListAdd:
+      final item = command.arguments['item'] as String? ?? '';
+      if (item.isEmpty) {
+        return const AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: 'What should I add to the shopping list?',
+        );
+      }
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Adding "$item" to your shopping list…',
+          action: AgentActions.shoppingListAdd,
+          arguments: {'item': item},
+        ),
+      );
+    case AgentActions.shoppingListGet:
+      return const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Reading your shopping list…',
+          action: AgentActions.shoppingListGet,
         ),
       );
     case AgentActions.navOpen:
@@ -689,19 +767,33 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final value = command.arguments['value'] ?? 0;
       final from = command.arguments['from'] as String? ?? '';
       final to = command.arguments['to'] as String? ?? '';
-      // Currency needs live rates the app has no source for — a plain unit
-      // conversion (miles->km) is computed inline; currency goes to the web.
+      // Currency needs live rates — fetched inline (ECB reference rates,
+      // free) when both sides are currencies; a plain unit conversion
+      // (miles->km) is computed locally.
       const currencies = {
         'usd', 'eur', 'gbp', 'chf', 'jpy', 'cad', 'aud', 'cny', 'inr', 'btc',
       };
-      if (currencies.contains(from.toLowerCase()) ||
-          currencies.contains(to.toLowerCase())) {
+      // French currency words ("100 euros en dollars") map to their codes.
+      const frWords = {
+        'dollars': 'usd', 'dollar': 'usd',
+        'euros': 'eur', 'euro': 'eur',
+        'livres': 'gbp', 'livre': 'gbp',
+        'yens': 'jpy', 'yen': 'jpy',
+        'francs': 'chf', 'franc': 'chf',
+      };
+      final fromCode = frWords[from.toLowerCase()] ?? from.toLowerCase();
+      final toCode = frWords[to.toLowerCase()] ?? to.toLowerCase();
+      if (currencies.contains(fromCode) && currencies.contains(toCode)) {
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage(
-            'I don\'t have live exchange rates — searching instead…',
-            action: AgentActions.webSearch,
-            arguments: {'query': 'convert $value $from to $to'},
+            'Converting $value $fromCode to $toCode…',
+            action: AgentActions.currencyGet,
+            arguments: {
+              'value': value,
+              'from': fromCode,
+              'to': toCode,
+            },
           ),
         );
       }
