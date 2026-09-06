@@ -196,7 +196,16 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           'Productivity:\n'
           '  \"alarm for 7am\" / \"remind me to buy milk\"\n'
           '  \"define serendipity\" / \"translate hello to French\"\n'
-          '  \"convert 5 miles to km\"\n'
+          '  "convert 5 miles to km" / "convert 100 usd to eur"\n'
+          '  "what is 15% of 80" — math with percents\n'
+          '\n'
+          'Weather & Getting Around:\n'
+          '  "what is the weather in paris" — live forecast\n'
+          '  "take me home" / "navigate to the office" — maps\n'
+          '\n'
+          'Email:\n'
+          '  "email mom saying hello" — opens your mail app\n'
+          '  "set volume to 50" — volume to a level\n'
           '\n'
           'Fun:\n'
           '  \"roll a dice\" / \"flip a coin\" / \"random 1 to 100\"\n'
@@ -262,6 +271,39 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         dispatch: AgentMessage(
           'Opening search for "$query"…',
           action: AgentActions.webSearch,
+          arguments: {'query': query},
+        ),
+      );
+    case AgentActions.weatherGet:
+      final place = command.arguments['place'] as String? ?? '';
+      if (place.isEmpty) {
+        return const AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: 'Which city? Try "weather in Paris".',
+        );
+      }
+      final kind = command.arguments['kind'] as String? ?? 'now';
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Checking the weather in $place…',
+          action: AgentActions.weatherGet,
+          arguments: {'place': place, 'kind': kind},
+        ),
+      );
+    case AgentActions.navOpen:
+      final query = command.arguments['query'] as String? ?? '';
+      if (query.isEmpty) {
+        return const AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: 'Where should I take you?',
+        );
+      }
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Opening maps for "$query"…',
+          action: AgentActions.navOpen,
           arguments: {'query': query},
         ),
       );
@@ -496,11 +538,46 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           arguments: {'contact': contact, 'number': ?number, 'body': ?body},
         ),
       );
+    case AgentActions.emailSend:
+      final contact = command.arguments['contact'] as String? ?? '';
+      if (contact.isEmpty) {
+        return const AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: 'Who should I email?',
+        );
+      }
+      final body = command.arguments['body'] as String?;
+      // The device's own address book resolves the address (like texts do
+      // with numbers); no taught-address concept exists yet, so email stays
+      // a device action unless nothing anywhere can run it.
+      if (!_somewhereRuns(ctx, AgentActions.emailSend)) {
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'I can\'t open email on this device — try on a device with a mail app.',
+          ),
+        );
+      }
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          body != null
+              ? 'Emailing $contact: "$body"'
+              : 'Opening email to $contact...',
+          action: AgentActions.emailSend,
+          arguments: {'contact': contact, 'body': ?body},
+        ),
+      );
     // --- Media ---
     case AgentActions.mediaPlay:
-      return const AgentDispatchResult(
+      final query = command.arguments['query'] as String?;
+      return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
-        dispatch: AgentMessage('Playing.', action: AgentActions.mediaPlay),
+        dispatch: AgentMessage(
+          query != null ? 'Playing "$query"…' : 'Playing.',
+          action: AgentActions.mediaPlay,
+          arguments: {if (query != null) 'query': query},
+        ),
       );
     case AgentActions.mediaPause:
       return const AgentDispatchResult(
@@ -598,12 +675,68 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final value = command.arguments['value'] ?? 0;
       final from = command.arguments['from'] as String? ?? '';
       final to = command.arguments['to'] as String? ?? '';
+      // Currency needs live rates the app has no source for — a plain unit
+      // conversion (miles->km) is computed inline; currency goes to the web.
+      const currencies = {
+        'usd', 'eur', 'gbp', 'chf', 'jpy', 'cad', 'aud', 'cny', 'inr', 'btc',
+      };
+      if (currencies.contains(from.toLowerCase()) ||
+          currencies.contains(to.toLowerCase())) {
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'I don\'t have live exchange rates — searching instead…',
+            action: AgentActions.webSearch,
+            arguments: {'query': 'convert $value $from to $to'},
+          ),
+        );
+      }
+      final converted = _convertUnit(value, from, to);
+      if (converted != null) {
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            '$value $from = ${_formatNumber(converted)} $to.',
+          ),
+        );
+      }
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
           'Converting $value $from to $to...',
           action: AgentActions.webSearch,
           arguments: {'query': 'convert $value $from to $to'},
+        ),
+      );
+    // --- Alarm dismiss / timer status & cancel: system apps own alarms and
+    // timers — apps can set them but cannot read or stop them. Say so
+    // instead of faking a win.
+    case AgentActions.alarmDismiss:
+      return const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'I can set alarms, but I can\'t turn them off from inside the app — open the Clock app to dismiss it.',
+        ),
+      );
+    case AgentActions.timerStatus:
+      return const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Timers live in your system Clock app, so I can\'t see the time left from here — open the Clock app to check.',
+        ),
+      );
+    case AgentActions.timerCancel:
+      return const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'I can start timers, but I can\'t stop one from inside the app — open the Clock app to cancel it.',
+        ),
+      );
+    case AgentActions.darkModeSet:
+      return const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Dark mode is a system setting — I can\'t switch it from inside the app. Open your display settings to change it.',
         ),
       );
     // --- Fun ---
@@ -851,6 +984,114 @@ String _formatTime(Object? kind) {
 String _formatNumber(double value) => value == value.roundToDouble()
     ? value.toInt().toString()
     : value.toString();
+
+/// Inline unit conversion for the units Siri converts without the web:
+/// lengths, weights, temperatures, speeds. Returns null when the pair is
+/// not known — the caller falls back to a web search, never a fake number.
+double? _convertUnit(double value, String from, String to) {
+  final f = from.trim().toLowerCase();
+  final t = to.trim().toLowerCase();
+  double? toBase(String unit) {
+    // Length → meters
+    switch (unit) {
+      case 'km' || 'kilometer' || 'kilometers':
+        return value * 1000;
+      case 'm' || 'meter' || 'meters':
+        return value;
+      case 'cm' || 'centimeter' || 'centimeters':
+        return value / 100;
+      case 'mm' || 'millimeter' || 'millimeters':
+        return value / 1000;
+      case 'mile' || 'miles' || 'mi':
+        return value * 1609.344;
+      case 'yard' || 'yards' || 'yd':
+        return value * 0.9144;
+      case 'foot' || 'feet' || 'ft':
+        return value * 0.3048;
+      case 'inch' || 'inches' || 'in':
+        return value * 0.0254;
+      // Weight → kilograms
+      case 'kg' || 'kilogram' || 'kilograms':
+        return value;
+      case 'g' || 'gram' || 'grams':
+        return value / 1000;
+      case 'mg' || 'milligram' || 'milligrams':
+        return value / 1e6;
+      case 'lb' || 'lbs' || 'pound' || 'pounds':
+        return value * 0.45359237;
+      case 'ounce' || 'ounces' || 'oz':
+        return value * 0.028349523;
+      case 'stone' || 'stones':
+        return value * 6.35029318;
+      // Temperature → celsius
+      case 'c' || 'celsius':
+        return value;
+      case 'f' || 'fahrenheit':
+        return (value - 32) * 5 / 9;
+      case 'k' || 'kelvin':
+        return value - 273.15;
+      // Speed → km/h
+      case 'kmh' || 'kph' || 'km/h':
+        return value;
+      case 'mph':
+        return value * 1.609344;
+      default:
+        return null;
+    }
+  }
+
+  double? fromBase(double v, String unit) {
+    switch (unit) {
+      case 'km' || 'kilometer' || 'kilometers':
+        return v / 1000;
+      case 'm' || 'meter' || 'meters':
+        return v;
+      case 'cm' || 'centimeter' || 'centimeters':
+        return v * 100;
+      case 'mm' || 'millimeter' || 'millimeters':
+        return v * 1000;
+      case 'mile' || 'miles' || 'mi':
+        return v / 1609.344;
+      case 'yard' || 'yards' || 'yd':
+        return v / 0.9144;
+      case 'foot' || 'feet' || 'ft':
+        return v / 0.3048;
+      case 'inch' || 'inches' || 'in':
+        return v / 0.0254;
+      case 'kg' || 'kilogram' || 'kilograms':
+        return v;
+      case 'g' || 'gram' || 'grams':
+        return v * 1000;
+      case 'mg' || 'milligram' || 'milligrams':
+        return v * 1e6;
+      case 'lb' || 'lbs' || 'pound' || 'pounds':
+        return v / 0.45359237;
+      case 'ounce' || 'ounces' || 'oz':
+        return v / 0.028349523;
+      case 'stone' || 'stones':
+        return v / 6.35029318;
+      case 'c' || 'celsius':
+        return v;
+      case 'f' || 'fahrenheit':
+        return v * 9 / 5 + 32;
+      case 'k' || 'kelvin':
+        return v + 273.15;
+      case 'kmh' || 'kph' || 'km/h':
+        return v;
+      case 'mph':
+        return v / 1.609344;
+      default:
+        return null;
+    }
+  }
+
+  final base = toBase(f);
+  if (base == null) return null;
+  final out = fromBase(base, t);
+  if (out == null) return null;
+  // Rounding to 4 significant decimals keeps answers clean and honest.
+  return double.parse(out.toStringAsPrecision(6));
+}
 
 /// "8:00pm" / "6:05am" — how the reminder echo says when it fires.
 String _clockLabel(DateTime t) {

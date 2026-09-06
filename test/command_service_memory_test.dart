@@ -74,19 +74,19 @@ void main() {
   test('a taught phrase is understood next time', () {
     final service = makeService();
 
-    // "bring me home" is unknown → teaching prompt.
-    final first = service.execute('bring me home');
+    // "teleport me to mars" is unknown → teaching prompt.
+    final first = service.execute('teleport me to mars');
     expect(first.status, AgentResultStatus.needsInfo);
     final ask = first.dispatch! as AgentClarification;
-    expect(ask.key, startsWith('teach:bring me home'));
+    expect(ask.key, startsWith('teach:teleport me to mars'));
 
     // Teach it: it means "show my devices".
     final taught = service.execute('show my devices', answerTo: ask.key);
     expect(taught.status, AgentResultStatus.succeeded);
     expect((taught.dispatch! as AgentDeviceList).devices, devices);
 
-    // Next time, "bring me home" just works.
-    final second = service.execute('bring me home');
+    // Next time, "teleport me to mars" just works.
+    final second = service.execute('teleport me to mars');
     expect(second.status, AgentResultStatus.succeeded);
     expect((second.dispatch! as AgentDeviceList).devices, devices);
   });

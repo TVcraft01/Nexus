@@ -35,6 +35,7 @@ abstract final class AgentActions {
   // --- Communication ---
   static const callPlace = 'comm.call';
   static const messageSend = 'comm.message';
+  static const emailSend = 'comm.email';
 
   // --- Media ---
   static const mediaPlay = 'media.play';
@@ -46,7 +47,13 @@ abstract final class AgentActions {
 
   // --- Productivity ---
   static const alarmSet = 'alarm.set';
+  static const alarmDismiss = 'alarm.dismiss';
+  static const timerStatus = 'timer.status';
+  static const timerCancel = 'timer.cancel';
   static const reminderSet = 'reminder.set';
+  static const weatherGet = 'weather.get';
+  static const navOpen = 'nav.open';
+  static const darkModeSet = 'display.dark';
   static const defineWord = 'define.word';
   static const translateText = 'translate.text';
   static const unitConvert = 'convert.unit';
@@ -214,6 +221,7 @@ List<DeviceCapability> defaultCapabilitiesFor(String platform) {
       // Communication
       DeviceCapability(AgentActions.callPlace),
       DeviceCapability(AgentActions.messageSend),
+      DeviceCapability(AgentActions.emailSend),
       // Media
       DeviceCapability(AgentActions.mediaPlay),
       DeviceCapability(AgentActions.mediaPause),
@@ -223,7 +231,13 @@ List<DeviceCapability> defaultCapabilitiesFor(String platform) {
       DeviceCapability(AgentActions.mediaRepeat),
       // Productivity
       DeviceCapability(AgentActions.alarmSet),
+      DeviceCapability(AgentActions.alarmDismiss),
+      DeviceCapability(AgentActions.timerStatus),
+      DeviceCapability(AgentActions.timerCancel),
       DeviceCapability(AgentActions.reminderSet),
+      DeviceCapability(AgentActions.weatherGet),
+      DeviceCapability(AgentActions.navOpen),
+      DeviceCapability(AgentActions.darkModeSet),
     ];
   }
   // Desktop (Linux, macOS, Windows) — no phone hardware.
@@ -231,6 +245,8 @@ List<DeviceCapability> defaultCapabilitiesFor(String platform) {
     DeviceCapability(AgentActions.webSearch),
     DeviceCapability(AgentActions.noteCreate),
     DeviceCapability(AgentActions.timerSet),
+    DeviceCapability(AgentActions.timerStatus),
+    DeviceCapability(AgentActions.timerCancel),
     DeviceCapability(AgentActions.openUrl),
     DeviceCapability(AgentActions.systemInfo),
     DeviceCapability(AgentActions.volumeSet),
@@ -238,10 +254,14 @@ List<DeviceCapability> defaultCapabilitiesFor(String platform) {
     DeviceCapability(AgentActions.appOpen),
     DeviceCapability(AgentActions.screenshot),
     DeviceCapability(AgentActions.batteryGet),
+    DeviceCapability(AgentActions.weatherGet),
+    DeviceCapability(AgentActions.navOpen),
+    DeviceCapability(AgentActions.darkModeSet),
     DeviceCapability(AgentActions.mediaPlay),
     DeviceCapability(AgentActions.mediaPause),
     DeviceCapability(AgentActions.mediaNext),
     DeviceCapability(AgentActions.mediaPrev),
+    DeviceCapability(AgentActions.emailSend),
   ];
 }
 

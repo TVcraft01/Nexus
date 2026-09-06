@@ -416,6 +416,12 @@ class CommandService {
         action == AgentActions.messageSend) {
       return _contactAction(command, approval, requestId, rawInput);
     }
+    if (action == AgentActions.emailSend) {
+      // Email runs through the same message+action path as texts, but the
+      // device's own mail app resolves the address — no cross-device offer
+      // needed (desktops open mailto: directly).
+      return localAnswer(command, _answerContext);
+    }
     if (action == AgentActions.greet ||
         action == AgentActions.timeGet ||
         action == AgentActions.mathCalc ||
@@ -424,6 +430,8 @@ class CommandService {
         action == AgentActions.noteCreate ||
         action == AgentActions.timerSet ||
         action == AgentActions.openUrl ||
+        action == AgentActions.weatherGet ||
+        action == AgentActions.navOpen ||
         action == AgentActions.systemInfo ||
         action == AgentActions.volumeSet ||
         action == AgentActions.appOpen ||
@@ -442,6 +450,10 @@ class CommandService {
         action == AgentActions.mediaShuffle ||
         action == AgentActions.mediaRepeat ||
         action == AgentActions.alarmSet ||
+        action == AgentActions.alarmDismiss ||
+        action == AgentActions.timerStatus ||
+        action == AgentActions.timerCancel ||
+        action == AgentActions.darkModeSet ||
         action == AgentActions.reminderSet ||
         action == AgentActions.defineWord ||
         action == AgentActions.translateText ||
@@ -716,6 +728,9 @@ class CommandService {
       case AgentActions.translateText:
       case AgentActions.unitConvert:
       case AgentActions.memoryQuestion:
+      case AgentActions.weatherGet:
+      case AgentActions.navOpen:
+      case AgentActions.emailSend:
         return localAnswer(command, _answerContext);
       default:
         // The requester already routed this to us as the capable device — run

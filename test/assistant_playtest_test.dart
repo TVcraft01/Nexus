@@ -328,7 +328,7 @@ void main() {
       // synchronously instead — the production path is unit-tested in
       // dream_test.
       QueryLog.readAllOverride = () async => [
-        '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
+        '{"ts":"t","kind":"ask","input":"turn on the lights","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
       ];
       try {
         await tester.pumpWidget(harness(mesh));
@@ -338,7 +338,10 @@ void main() {
         await tester.tap(find.byIcon(Icons.psychology_alt_outlined));
         await tester.pumpAndSettle();
         expect(find.text('What I still misunderstand'), findsOneWidget);
-        expect(find.text('"bring me home"  ·  asked 1 time'), findsOneWidget);
+        expect(
+          find.text('"turn on the lights"  ·  asked 1 time'),
+          findsOneWidget,
+        );
 
         // Teach it from the sheet; the row leaves the list.
         await tester.enterText(
@@ -347,13 +350,16 @@ void main() {
         );
         await tester.tap(find.byIcon(Icons.check_rounded));
         await tester.pumpAndSettle();
-        expect(find.text('"bring me home"  ·  asked 1 time'), findsNothing);
+        expect(
+          find.text('"turn on the lights"  ·  asked 1 time'),
+          findsNothing,
+        );
         expect(find.text('Sweet dreams.'), findsNothing);
 
         // The lesson is real: persisted, broadcast-eligible, and it runs —
         // typed straight into the composer, no question this time.
-        expect(store.agentLearned['bring me home'], 'show my devices');
-        await ask(tester, 'bring me home');
+        expect(store.agentLearned['turn on the lights'], 'show my devices');
+        await ask(tester, 'turn on the lights');
         expect(find.text('Question'), findsNothing);
         expect(find.text('Done'), findsOneWidget);
       } finally {
@@ -389,8 +395,8 @@ void main() {
       final (store, mesh) = await boot();
       // A phrase the assistant failed on twice, still untaught.
       QueryLog.readAllOverride = () async => [
-        '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
-        '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
+        '{"ts":"t","kind":"ask","input":"turn on the lights","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
+        '{"ts":"t","kind":"ask","input":"turn on the lights","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
       ];
       try {
         await tester.pumpWidget(harness(mesh));
@@ -402,7 +408,7 @@ void main() {
         final nudge = find.byKey(const ValueKey('dream-nudge'));
         expect(nudge, findsOneWidget);
         expect(
-          find.textContaining('"bring me home"'),
+          find.textContaining('"turn on the lights"'),
           findsWidgets,
           reason: 'the nudge should name the missed phrase',
         );
@@ -419,13 +425,16 @@ void main() {
         );
         await tester.tap(find.byIcon(Icons.check_rounded));
         await tester.pumpAndSettle();
-        expect(find.text('"bring me home"  ·  asked 1 time'), findsNothing);
+        expect(
+          find.text('"turn on the lights"  ·  asked 1 time'),
+          findsNothing,
+        );
 
         // Closing the sheet re-checks the log: no gaps left, nudge gone.
         await tester.tapAt(const Offset(10, 10)); // barrier above the sheet
         await tester.pumpAndSettle();
         expect(find.byKey(const ValueKey('dream-nudge')), findsNothing);
-        expect(store.agentLearned['bring me home'], 'show my devices');
+        expect(store.agentLearned['turn on the lights'], 'show my devices');
       } finally {
         QueryLog.readAllOverride = null;
         QueryLog.i.resetForTest();
@@ -539,7 +548,7 @@ void main() {
   ) async {
     final (store, mesh) = await boot();
     QueryLog.readAllOverride = () async => [
-      '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
+      '{"ts":"t","kind":"ask","input":"turn on the lights","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
     ];
     try {
       await tester.pumpWidget(harness(mesh));

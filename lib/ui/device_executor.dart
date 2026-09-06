@@ -19,6 +19,7 @@ import '../core/agent_contract.dart';
 import '../core/command_interpreter.dart';
 import '../core/device_actions.dart';
 import '../core/phone_actions.dart';
+import '../core/weather.dart';
 
 /// Executes device-local actions for the assistant on THIS platform.
 class DeviceExecutor {
@@ -59,6 +60,21 @@ class DeviceExecutor {
     if (request.action == AgentActions.openUrl) {
       return _openUrl(prepared['url']?.toString() ?? '');
     }
+    if (request.action == AgentActions.weatherGet) {
+      return _weather(
+        prepared['place']?.toString() ?? '',
+        prepared['kind']?.toString() ?? 'now',
+      );
+    }
+    if (request.action == AgentActions.navOpen) {
+      return _openMaps(prepared['query']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.emailSend) {
+      return _sendEmail(
+        prepared['contact']?.toString() ?? '',
+        prepared['body']?.toString(),
+      );
+    }
     if (request.action == AgentActions.systemInfo) {
       return _getSystemInfo();
     }
@@ -66,7 +82,10 @@ class DeviceExecutor {
       return _startTimer(prepared['seconds'] as int? ?? 0);
     }
     if (request.action == AgentActions.volumeSet) {
-      return _setVolume(prepared['mode']?.toString() ?? 'mute');
+      return _setVolume(
+        prepared['mode']?.toString() ?? 'mute',
+        level: prepared['level'] as int?,
+      );
     }
     if (request.action == AgentActions.appOpen) {
       return _openApp(prepared['query']?.toString() ?? '');
@@ -114,7 +133,20 @@ class DeviceExecutor {
         prepared['body']?.toString(),
       );
     }
-    if (request.action == AgentActions.mediaPlay) return _mediaControl('play');
+    if (request.action == AgentActions.mediaPlay) {
+      final query = prepared['query']?.toString();
+      if (query != null && query.isNotEmpty) {
+        // "play my playlist" — honest: playback control yes, library
+        // search no (there is no music-service integration to search).
+        return ActionResult(
+          false,
+          'I can play, pause and skip what is already playing, but I can\'t '
+          'search your music apps from here — open your music app and say '
+          '"play" to resume.',
+        );
+      }
+      return _mediaControl('play');
+    }
     if (request.action == AgentActions.mediaPause)
       return _mediaControl('pause');
     if (request.action == AgentActions.mediaNext) return _mediaControl('next');
@@ -1062,6 +1094,39 @@ class DeviceExecutor {
     }
   }
 
+  /// Fetches and formats live weather for [place] — the wttr.in payload is
+  /// parsed in the core layer so it stays testable without a network.
+  Future<ActionResult> _weather(String place, String kind) async {
+    if (place.isEmpty) {
+      return const ActionResult(false, 'Which city? Try "weather in Paris".');
+    }
+    final line = await fetchWeather(place, kind);
+    if (line == null) {
+      return ActionResult(
+        false,
+        'I couldn\'t reach the weather service for "$place" — check the internet and try again.',
+      );
+    }
+    return ActionResult(true, line);
+  }
+
+  /// Opens the map app (or the browser on desktops) with a search for
+  /// [query] — the honest "take me home" path.
+  Future<ActionResult> _openMaps(String query) async {
+    if (query.isEmpty) return const ActionResult(false, 'Where to?');
+    try {
+      final url =
+          'https://www.google.com/maps/search/?api=1&query=${Uri.encodeQueryComponent(query)}';
+      if (await canLaunchUrl(Uri.parse(url))) {
+        await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+        return ActionResult(true, 'Opened maps for "$query".');
+      }
+      return const ActionResult(false, 'Could not open maps on this device.');
+    } catch (_) {
+      return const ActionResult(false, 'Could not open maps on this device.');
+    }
+  }
+
   /// Opens a URL in the default browser.
   Future<ActionResult> _openUrl(String url) async {
     if (url.isEmpty) return const ActionResult(false, 'What should I open?');
@@ -1111,12 +1176,54 @@ class DeviceExecutor {
     return ActionResult(true, 'Timer set for $label.');
   }
 
-  /// Sets system volume.
-  Future<ActionResult> _setVolume(String mode) async {
+  /// Sends an email to [contact]: the Android side resolves the address
+  /// from the address book (like texts do with numbers); desktops get the
+  /// mailto: link the OS handles.
+  Future<ActionResult> _sendEmail(String contact, String? body) async {
+    if (contact.isEmpty) {
+      return const ActionResult(false, 'Who should I email?');
+    }
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return await _deviceBackend.run(AgentActions.emailSend, {
+        'contact': contact,
+        'body': ?body,
+      });
+    }
+    try {
+      final subject = 'From Nexus';
+      final uri = Uri(
+        scheme: 'mailto',
+        queryParameters: {
+          'subject': subject,
+          'body': ?body,
+        },
+      );
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        return ActionResult(
+          true,
+          body != null ? 'Opened your mail app to email "$body".' : 'Opened your mail app.',
+        );
+      }
+      return const ActionResult(
+        false,
+        'No mail app found on this device — I can\'t open email here.',
+      );
+    } catch (_) {
+      return const ActionResult(false, 'Could not open your mail app.');
+    }
+  }
+
+  /// Sets system volume — mode "set" carries an explicit 0-100 level (the
+  /// "volume 50" phrasing), the rest are up/down/mute steps.
+  Future<ActionResult> _setVolume(String mode, {int? level}) async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Use MethodChannel → Kotlin AudioManager (works without root)
-        return await _deviceBackend.run(AgentActions.volumeSet, {'mode': mode});
+        return await _deviceBackend.run(AgentActions.volumeSet, {
+          'mode': mode,
+          'level': ?level,
+        });
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
         final (args, okText) = switch (mode) {
@@ -1127,6 +1234,14 @@ class DeviceExecutor {
           'down' => (
             <String>['set-sink-volume', '@DEFAULT_SINK@', '-10%'],
             'Volume down.',
+          ),
+          'set' => (
+            <String>[
+              'set-sink-volume',
+              '@DEFAULT_SINK@',
+              '${level ?? 50}%',
+            ],
+            'Volume set to ${level ?? 50}%.',
           ),
           _ => (
             <String>['set-sink-mute', '@DEFAULT_SINK@', 'toggle'],

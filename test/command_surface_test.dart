@@ -195,6 +195,50 @@ void main() {
         AgentActions.unitConvert,
         target: 'local',
       );
+      expectAction(
+        'what is 15% of 80',
+        AgentActions.mathCalc,
+        target: 'local',
+        args: {'expr': '15/100*80'},
+      );
+    });
+    test('weather, navigation & email', () {
+      expectAction(
+        'what is the weather in paris',
+        AgentActions.weatherGet,
+        target: 'local',
+        args: {'place': 'paris', 'kind': 'now'},
+      );
+      expectAction(
+        'will it rain in paris',
+        AgentActions.weatherGet,
+        target: 'local',
+        args: {'place': 'paris', 'kind': 'rain'},
+      );
+      expectAction(
+        'take me home',
+        AgentActions.navOpen,
+        target: 'local',
+        args: {'query': 'home'},
+      );
+      expectAction(
+        'navigate to the office',
+        AgentActions.navOpen,
+        target: 'local',
+        args: {'query': 'the office'},
+      );
+      expectAction(
+        'email mom saying hello',
+        AgentActions.emailSend,
+        target: 'local',
+        args: {'contact': 'mom', 'body': 'hello'},
+      );
+      expectAction(
+        'play my playlist',
+        AgentActions.mediaPlay,
+        target: 'local',
+        args: {'query': 'my playlist'},
+      );
     });
     test('fun', () {
       expectAction('roll a dice', AgentActions.randomDice, target: 'local');
@@ -668,6 +712,11 @@ void main() {
             'open github.com': AgentActions.openUrl,
             'note that buy milk': AgentActions.noteCreate,
             'set a timer for 5 minutes': AgentActions.timerSet,
+            'what is the weather in paris': AgentActions.weatherGet,
+            'take me home': AgentActions.navOpen,
+            'email mom': AgentActions.emailSend,
+            'play my playlist': AgentActions.mediaPlay,
+            'volume 50': AgentActions.volumeSet,
           };
           final svc = service();
           expected.forEach((phrase, action) {
