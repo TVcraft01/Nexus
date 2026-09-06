@@ -55,6 +55,12 @@ abstract final class AgentActions {
   static const navOpen = 'nav.open';
   static const locationGet = 'location.get';
   static const intro = 'intro';
+  static const musicSearch = 'music.search';
+  static const currencyGet = 'currency.get';
+  static const timezoneGet = 'timezone.get';
+  static const calendarAdd = 'calendar.add';
+  static const shoppingListAdd = 'note.shopping.add';
+  static const shoppingListGet = 'note.shopping.get';
   static const darkModeSet = 'display.dark';
   static const defineWord = 'define.word';
   static const translateText = 'translate.text';

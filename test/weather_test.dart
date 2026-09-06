@@ -74,6 +74,28 @@ void main() {
       expect(rain, contains('In Montpellier'));
     });
 
+    test('sunrise and sunset come from wttr.in astronomy, honestly', () {
+      const body = '''
+      {"nearest_area":[{"areaName":[{"value":"Paris"}]}],
+       "current_condition":[{"temp_C":"18"}],
+       "weather":[{"astronomy":[{"sunrise":"6:12 AM",
+         "sunset":"8:31 PM"}]}]}
+      ''';
+      expect(
+        formatWttr(body, place: '', kind: 'sunset'),
+        'Sunset in Paris is at 8:31 PM today.',
+      );
+      expect(
+        formatWttr(body, place: 'Paris', kind: 'sunrise'),
+        'Sunrise in Paris is at 6:12 AM today.',
+      );
+      // No astronomy payload → null, never an invented time.
+      expect(
+        formatWttr('{"weather":[]}', place: '', kind: 'sunset'),
+        isNull,
+      );
+    });
+
     test('areaFromWttr names the resolved area, never a guess', () {
       const body = '''
       {"nearest_area":[{"areaName":[{"value":"Montpellier"}],

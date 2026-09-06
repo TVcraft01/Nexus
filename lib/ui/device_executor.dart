@@ -18,7 +18,9 @@ import 'package:url_launcher/url_launcher.dart'
 import '../core/agent_contract.dart';
 import '../core/command_interpreter.dart';
 import '../core/device_actions.dart';
+import '../core/live.dart';
 import '../core/phone_actions.dart';
+import '../core/timezones.dart';
 import '../core/weather.dart';
 
 /// Executes device-local actions for the assistant on THIS platform.
@@ -28,15 +30,24 @@ class DeviceExecutor {
     PhoneActionBackend? phoneBackend,
     WeatherFetcher? weatherFetcher,
     AreaDetector? areaDetector,
+    MusicSearcher? musicSearcher,
+    RateFetcher? rateFetcher,
+    ZoneTimeFetcher? zoneTimeFetcher,
   }) : _deviceBackend = deviceBackend ?? deviceActionBackend(),
        _phoneBackend = phoneBackend ?? RealPhoneActionBackend(),
        _weatherFetcher = weatherFetcher ?? fetchWeather,
-       _areaDetector = areaDetector ?? detectArea;
+       _areaDetector = areaDetector ?? detectArea,
+       _musicSearcher = musicSearcher ?? searchMusic,
+       _rateFetcher = rateFetcher ?? fetchRate,
+       _zoneTimeFetcher = zoneTimeFetcher ?? fetchZoneTime;
 
   final DeviceActionBackend _deviceBackend;
   final PhoneActionBackend _phoneBackend;
   final WeatherFetcher _weatherFetcher;
   final AreaDetector _areaDetector;
+  final MusicSearcher _musicSearcher;
+  final RateFetcher _rateFetcher;
+  final ZoneTimeFetcher _zoneTimeFetcher;
 
   /// Parses follow-up answers ('time': '7am') into what the native side
   /// expects, then runs the action through the platform backend (or the
@@ -145,16 +156,31 @@ class DeviceExecutor {
     if (request.action == AgentActions.mediaPlay) {
       final query = prepared['query']?.toString();
       if (query != null && query.isNotEmpty) {
-        // "play my playlist" — honest: playback control yes, library
-        // search no (there is no music-service integration to search).
-        return ActionResult(
-          false,
-          'I can play, pause and skip what is already playing, but I can\'t '
-          'search your music apps from here — open your music app and say '
-          '"play" to resume.',
-        );
+        return _musicSearch(query);
       }
       return _mediaControl('play');
+    }
+    if (request.action == AgentActions.musicSearch) {
+      return _musicSearch(prepared['query']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.currencyGet) {
+      return _currency(
+        (prepared['value'] as num?)?.toDouble() ?? 0,
+        prepared['from']?.toString() ?? '',
+        prepared['to']?.toString() ?? '',
+      );
+    }
+    if (request.action == AgentActions.timezoneGet) {
+      return _timeZone(prepared['place']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.calendarAdd) {
+      return _calendarAdd(prepared['title']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.shoppingListAdd) {
+      return _shoppingAdd(prepared['item']?.toString() ?? '');
+    }
+    if (request.action == AgentActions.shoppingListGet) {
+      return _shoppingList();
     }
     if (request.action == AgentActions.mediaPause)
       return _mediaControl('pause');
@@ -1163,6 +1189,143 @@ class DeviceExecutor {
       );
     }
     return ActionResult(true, line);
+  }
+
+  /// Searches the real music catalog (Deezer, free API) for [query] and
+  /// opens the top hit in the music app or browser — a real result, never
+  /// a fake "playing!".
+  Future<ActionResult> _musicSearch(String query) async {
+    if (query.isEmpty) {
+      return const ActionResult(false, 'What should I play?');
+    }
+    final hit = await _musicSearcher(query);
+    if (hit == null) {
+      return ActionResult(
+        false,
+        'I couldn\'t find "$query" on Deezer — check the internet or try another title.',
+      );
+    }
+    final opened = await _openUrl(hit.url);
+    if (!opened.ok) {
+      return ActionResult(
+        false,
+        'Found "${hit.title}" by ${hit.artist}, but I couldn\'t open it.',
+      );
+    }
+    return ActionResult(
+      true,
+      'Found "${hit.title}" by ${hit.artist} — opening it…',
+    );
+  }
+
+  /// Converts an amount between currencies with today's ECB reference rate
+  /// (frankfurter.app, free) — a real rate, never an invented one.
+  Future<ActionResult> _currency(
+    double value,
+    String from,
+    String to,
+  ) async {
+    final rate = await _rateFetcher(from, to);
+    if (rate == null) {
+      return ActionResult(
+        false,
+        'I couldn\'t fetch today\'s $from→$to rate — check the internet and try again.',
+      );
+    }
+    final converted = value * rate;
+    final rounded =
+        converted.toStringAsFixed(converted < 100 ? 2 : 0);
+    return ActionResult(
+      true,
+      '$value ${from.toUpperCase()} = $rounded ${to.toUpperCase()} (ECB rate today).',
+    );
+  }
+
+  /// Local time for a curated city (worldtimeapi.org) — unmapped cities
+  /// never get here (the answer layer sends those to the web).
+  Future<ActionResult> _timeZone(String place) async {
+    final zone = zoneForCity(place);
+    if (zone == null) {
+      return ActionResult(
+        false,
+        'I don\'t know $place\'s time zone — try "search the web for current time in $place".',
+      );
+    }
+    final result = await _zoneTimeFetcher(zone);
+    if (result == null) {
+      return const ActionResult(
+        false,
+        'I couldn\'t reach the time service — check the internet and try again.',
+      );
+    }
+    final (time, abbrev) = result;
+    return ActionResult(
+      true,
+      abbrev.isNotEmpty ? 'In $place it\'s $time ($abbrev).' : 'In $place it\'s $time.',
+    );
+  }
+
+  /// Opens the system's new-event screen with the title pre-filled — the
+  /// user confirms; apps cannot silently write the calendar.
+  Future<ActionResult> _calendarAdd(String title) async {
+    if (title.isEmpty) {
+      return const ActionResult(false, 'What should I add to your calendar?');
+    }
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return _deviceBackend.run(AgentActions.calendarAdd, {'title': title});
+    }
+    return const ActionResult(
+      false,
+      'Calendar lives in a system app — I can open it, but adding events needs the phone.',
+    );
+  }
+
+  /// A dedicated shopping scratch list, separate from notes.
+  Future<File> _shoppingFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}${Platform.pathSeparator}nexus_shopping.txt');
+  }
+
+  Future<ActionResult> _shoppingAdd(String item) async {
+    if (item.isEmpty) {
+      return const ActionResult(
+        false,
+        'What should I add to the shopping list?',
+      );
+    }
+    try {
+      final f = await _shoppingFile();
+      await f.writeAsString('$item\n', mode: FileMode.append);
+      return ActionResult(true, 'Added "$item" to your shopping list.');
+    } catch (_) {
+      return const ActionResult(
+        false,
+        'Could not save the shopping list on this device.',
+      );
+    }
+  }
+
+  Future<ActionResult> _shoppingList() async {
+    try {
+      final f = await _shoppingFile();
+      if (!await f.exists()) {
+        return const ActionResult(true, 'Your shopping list is empty.');
+      }
+      final items = (await f.readAsString())
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      if (items.isEmpty) {
+        return const ActionResult(true, 'Your shopping list is empty.');
+      }
+      return ActionResult(true, 'Shopping list: ${items.join(', ')}.');
+    } catch (_) {
+      return const ActionResult(
+        false,
+        'Could not read the shopping list on this device.',
+      );
+    }
   }
 
   /// Opens the map app (or the browser on desktops) with a search for

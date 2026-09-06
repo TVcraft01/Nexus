@@ -243,7 +243,60 @@ void main() {
         'play my playlist',
         AgentActions.mediaPlay,
         target: 'local',
-        args: {'query': 'my playlist'},
+      );
+    });
+    test('live services: music, currency, timezone, sun, calendar, shopping',
+        () {
+      expectAction(
+        'play hotline bling',
+        AgentActions.musicSearch,
+        target: 'local',
+      );
+      expectAction(
+        'convert 100 usd to eur',
+        AgentActions.unitConvert,
+        target: 'local',
+        args: {'value': 100.0, 'from': 'usd', 'to': 'eur'},
+      );
+      expectAction(
+        'convertis 100 euros en dollars',
+        AgentActions.unitConvert,
+        target: 'local',
+      );
+      expectAction(
+        'what time is it in tokyo',
+        AgentActions.timezoneGet,
+        target: 'local',
+        args: {'place': 'tokyo'},
+      );
+      expectAction(
+        'when is sunset',
+        AgentActions.weatherGet,
+        target: 'local',
+        args: {'place': '', 'kind': 'sunset'},
+      );
+      expectAction(
+        'add milk to my shopping list',
+        AgentActions.shoppingListAdd,
+        target: 'local',
+        args: {'item': 'milk'},
+      );
+      expectAction(
+        'show my shopping list',
+        AgentActions.shoppingListGet,
+        target: 'local',
+      );
+      expectAction(
+        'add lunch with mom to my calendar',
+        AgentActions.calendarAdd,
+        target: 'local',
+        args: {'title': 'lunch with mom'},
+      );
+      expectAction(
+        'open my calendar',
+        AgentActions.appOpen,
+        target: 'local',
+        args: {'query': 'calendar'},
       );
     });
     test('siri phrasing: wake words, weather, getting around', () {
@@ -788,6 +841,14 @@ void main() {
             'turn on the flashlight': AgentActions.flashlightToggle,
             'how much battery do i have': AgentActions.batteryGet,
             'take me to the airport': AgentActions.navOpen,
+            'play hotline bling': AgentActions.musicSearch,
+            'convert 100 usd to eur': AgentActions.currencyGet,
+            'what time is it in tokyo': AgentActions.timezoneGet,
+            'when is sunset': AgentActions.weatherGet,
+            'add milk to my shopping list': AgentActions.shoppingListAdd,
+            'show my shopping list': AgentActions.shoppingListGet,
+            'add lunch with mom to my calendar': AgentActions.calendarAdd,
+            'open my calendar': AgentActions.appOpen,
           };
           final svc = service();
           expected.forEach((phrase, action) {

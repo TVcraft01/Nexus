@@ -66,6 +66,7 @@ class CommandInterpreter {
     'copy hello to my devices',
     // Media
     'play music',
+    'play hotline bling',
     'pause music',
     'next track',
     'previous track',
@@ -87,6 +88,8 @@ class CommandInterpreter {
     'restart',
     // Productivity
     'set a timer for 5 minutes',
+    'add milk to my shopping list',
+    'add lunch with mom to my calendar',
     'set an alarm for 7am',
     'remind me to buy milk',
     'define serendipity',
@@ -96,6 +99,8 @@ class CommandInterpreter {
     // Weather & getting around
     'what is the weather',
     'weather in paris',
+    'when is sunset',
+    'what time is it in tokyo',
     'take me home',
     'navigate to the office',
     'where am i',
@@ -495,16 +500,108 @@ class CommandInterpreter {
       );
     }
 
-    // --- Timezone questions ("what time is it in paris") — honest web
-    // search; this app has no timezone database to answer inline.
+    // --- Calendar: "add lunch with mom to my calendar" opens the system's
+    // new-event screen with the title pre-filled (the user confirms — apps
+    // cannot silently write calendars). Opening the calendar launches the
+    // calendar app itself.
+    final calAdd = RegExp(
+      r'^(?:add|put|schedule|plan|ajoute|mets|planifie) (.+?) (?:to|on|in|dans|sur|a) (?:my |the |mon |le |la )?(?:calendar|agenda|calendrier)$',
+    ).firstMatch(norm);
+    if (calAdd != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.calendarAdd,
+          target: 'local',
+          arguments: {'title': calAdd.group(1)!.trim()},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'open my calendar',
+      'open the calendar',
+      'open calendar',
+      'what is on my calendar',
+      'what is on the calendar',
+      'show my calendar',
+      'show the calendar',
+      'show calendar',
+      'ouvre mon calendrier',
+      'ouvre le calendrier',
+      'ouvre mon agenda',
+      'mon calendrier',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.appOpen,
+          target: 'local',
+          arguments: {'query': 'calendar'},
+        ),
+      );
+    }
+
+    // --- Shopping list: a dedicated scratch list, separate from notes.
+    final shopAdd = RegExp(
+      r'^(?:add|put|get|remember to buy|ajoute|mets|prends) (.+?) (?:to|on|dans|sur|a) (?:my |the |ma |la |mon |le )?(?:shopping list|liste de courses|liste des courses)$',
+    ).firstMatch(norm);
+    if (shopAdd != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.shoppingListAdd,
+          target: 'local',
+          arguments: {'item': shopAdd.group(1)!.trim()},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'show my shopping list',
+      'what is on my shopping list',
+      'show the shopping list',
+      'what is on the shopping list',
+      'my shopping list',
+      'shopping list',
+      'ma liste de courses',
+      'ma liste des courses',
+      'mes courses',
+      'ma liste',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.shoppingListGet, target: 'local'),
+      );
+    }
+
+    // --- Sun: "when is sunset" — wttr.in's astronomy section answers
+    // inline through the existing weather path.
+    final sun = RegExp(
+      r'^(?:when is|what time is) (?:the )?(sunset|sunrise)(?: today| tonight| tomorrow)?$|'
+      r'^(?:a quelle heure est|quand est|a quelle heure) (?:le |la |au |a la )?(coucher de soleil|lever du soleil|leve du soleil)(?: aujourd hui)?$',
+    ).firstMatch(norm);
+    if (sun != null) {
+      final which = sun.group(1) ?? sun.group(2) ?? '';
+      final isRise =
+          which.contains('rise') || which.contains('leve');
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.weatherGet,
+          target: 'local',
+          arguments: {
+            'place': '',
+            'kind': isRise ? 'sunrise' : 'sunset',
+          },
+        ),
+      );
+    }
+
+    // --- Timezone questions ("what time is it in tokyo") — a curated
+    // city map answers inline via a live time service; unmapped places
+    // honestly fall back to a web search.
     final tz = RegExp(r'^what time is it in (.+)$').firstMatch(norm) ??
         RegExp(r'^quelle heure est il (?:a|dans|en) (.+)$').firstMatch(norm);
     if (tz != null) {
       return InterpretResult.matched(
         ParsedCommand(
-          action: AgentActions.webSearch,
+          action: AgentActions.timezoneGet,
           target: 'local',
-          arguments: {'query': 'current time in ${tz.group(1)!.trim()}'},
+          arguments: {'place': tz.group(1)!.trim()},
         ),
       );
     }
@@ -1585,17 +1682,23 @@ class CommandInterpreter {
         const ParsedCommand(action: AgentActions.mediaRepeat, target: 'local'),
       );
     }
-    // "play my playlist" / "play chill vibes" / "joue ma playlist" —
-    // media with a target. The executor answers honestly: playback
-    // control yes, library search no (no music-service integration).
+    // "play my playlist" stays a control command (no library search); a
+    // named song or vibe searches the real catalog (Deezer, free API) and
+    // opens the top hit — never a fake "playing!".
     final playQuery = RegExp(r'^play (.+)$').firstMatch(norm) ??
         RegExp(r'^joue (?:ma |la |de la )?(.+)$').firstMatch(norm);
     if (playQuery != null) {
+      final target = playQuery.group(1)!.trim();
+      if (target == 'my playlist' || target == 'playlist') {
+        return InterpretResult.matched(
+          const ParsedCommand(action: AgentActions.mediaPlay, target: 'local'),
+        );
+      }
       return InterpretResult.matched(
         ParsedCommand(
-          action: AgentActions.mediaPlay,
+          action: AgentActions.musicSearch,
           target: 'local',
-          arguments: {'query': playQuery.group(1)!.trim()},
+          arguments: {'query': target},
         ),
       );
     }
@@ -1718,7 +1821,7 @@ class CommandInterpreter {
 
     // --- Unit conversion
     final convert = RegExp(
-      r'^(?:convert|how (?:many|much)|what is) (\d+(?:\.\d+)?)\s*(\w+)\s+(?:to|in|into) (\w+)$',
+      r'^(?:convert|convertis|how (?:many|much)|what is) (\d+(?:\.\d+)?)\s*(\w+)\s+(?:to|in|into|en) (\w+)$',
     ).firstMatch(norm);
     if (convert != null) {
       return InterpretResult.matched(

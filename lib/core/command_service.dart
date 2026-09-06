@@ -434,6 +434,12 @@ class CommandService {
         action == AgentActions.weatherGet ||
         action == AgentActions.navOpen ||
         action == AgentActions.locationGet ||
+        action == AgentActions.musicSearch ||
+        action == AgentActions.currencyGet ||
+        action == AgentActions.timezoneGet ||
+        action == AgentActions.calendarAdd ||
+        action == AgentActions.shoppingListAdd ||
+        action == AgentActions.shoppingListGet ||
         action == AgentActions.systemInfo ||
         action == AgentActions.volumeSet ||
         action == AgentActions.appOpen ||
@@ -734,6 +740,12 @@ class CommandService {
       case AgentActions.weatherGet:
       case AgentActions.navOpen:
       case AgentActions.locationGet:
+      case AgentActions.musicSearch:
+      case AgentActions.currencyGet:
+      case AgentActions.timezoneGet:
+      case AgentActions.calendarAdd:
+      case AgentActions.shoppingListAdd:
+      case AgentActions.shoppingListGet:
       case AgentActions.emailSend:
         return localAnswer(command, _answerContext);
       default:

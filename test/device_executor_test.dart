@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/device_actions.dart';
+import 'package:nexus/core/live.dart';
 import 'package:nexus/core/phone_actions.dart';
 import 'package:nexus/ui/device_executor.dart';
 
@@ -37,6 +38,39 @@ class _FakeAreaDetector {
 
   Future<String?> call({String? coordinates}) async {
     calls.add(coordinates);
+    return reply;
+  }
+}
+
+/// Records the queries of a fake Deezer search.
+class _FakeMusicSearcher {
+  final queries = <String>[];
+  MusicHit? reply;
+
+  Future<MusicHit?> call(String query) async {
+    queries.add(query);
+    return reply;
+  }
+}
+
+/// Records the (from, to) pairs of a fake rate service.
+class _FakeRateFetcher {
+  final pairs = <(String, String)>[];
+  double? reply;
+
+  Future<double?> call(String from, String to) async {
+    pairs.add((from, to));
+    return reply;
+  }
+}
+
+/// Records the zones of a fake time service.
+class _FakeZoneTimeFetcher {
+  final zones = <String>[];
+  (String, String)? reply;
+
+  Future<(String, String)?> call(String zone) async {
+    zones.add(zone);
     return reply;
   }
 }
@@ -153,14 +187,100 @@ void main() {
     expect(args['level'], 50);
   });
 
-  test('targeted play answers honestly — no fake library search', () async {
+  test('a named song searches the catalog and opens the top hit', () async {
+    final searcher = _FakeMusicSearcher()
+      ..reply = const MusicHit('Hotline Bling', 'Drake', 'https://deezer.page.link/x');
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: searcher.call,
+    );
     final out = await executor.run(req(
-      AgentActions.mediaPlay,
-      {'query': 'my playlist'},
+      AgentActions.musicSearch,
+      {'query': 'hotline bling'},
     ));
-    expect(out.ok, isFalse); // honest: cannot search the library
-    expect(out.message, contains('search'));
+    expect(searcher.queries, ['hotline bling']);
+    // The hit was found honestly; opening the link is a browser/app task
+    // that failed in this headless test — the message says exactly that.
+    expect(out.message, contains('Hotline Bling'));
+    expect(out.message, contains('Drake'));
+  });
+
+  test('an unfindable song answers honestly, never a fake play', () async {
+    final searcher = _FakeMusicSearcher()..reply = null;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: searcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'qqqqqq'},
+    ));
+    expect(out.ok, isFalse);
+    expect(out.message, contains('couldn\'t find'));
     expect(device.calls, isEmpty); // never a silent media key press
+  });
+
+  test('currency converts with today\'s fetched rate, honestly', () async {
+    final rates = _FakeRateFetcher()..reply = 0.92;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      rateFetcher: rates.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.currencyGet,
+      {'value': 100.0, 'from': 'usd', 'to': 'eur'},
+    ));
+    expect(rates.pairs, [('usd', 'eur')]);
+    expect(out.ok, isTrue);
+    expect(out.message, '100.0 USD = 92.00 EUR (ECB rate today).');
+    final offline = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      rateFetcher: (f, t) async => null,
+    );
+    final fail = await offline.run(req(
+      AgentActions.currencyGet,
+      {'value': 1.0, 'from': 'usd', 'to': 'eur'},
+    ));
+    expect(fail.ok, isFalse);
+    expect(fail.message, contains('rate'));
+  });
+
+  test('timezone answers from the live service for a curated city', () async {
+    final zones = _FakeZoneTimeFetcher()..reply = ('15:42', 'JST');
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      zoneTimeFetcher: zones.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.timezoneGet,
+      {'place': 'tokyo'},
+    ));
+    expect(zones.zones, ['Asia/Tokyo']);
+    expect(out.ok, isTrue);
+    expect(out.message, 'In tokyo it\'s 15:42 (JST).');
+    // Unmapped cities never guess a zone.
+    final unknown = await executor.run(req(
+      AgentActions.timezoneGet,
+      {'place': 'atlantis'},
+    ));
+    expect(unknown.ok, isFalse);
+    expect(unknown.message, contains('time zone'));
+  });
+
+  test('adding a calendar event goes through the device backend on Android',
+      () async {
+    final out = await executor.run(req(
+      AgentActions.calendarAdd,
+      {'title': 'lunch with mom'},
+    ));
+    expect(out.ok, isTrue);
+    expect(device.calls.single.$1, AgentActions.calendarAdd);
+    expect(device.calls.single.$2['title'], 'lunch with mom');
   });
 
   test('weather with a city fetches that city, never the location', () async {
