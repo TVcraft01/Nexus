@@ -246,6 +246,65 @@ void main() {
         args: {'query': 'my playlist'},
       );
     });
+    test('siri phrasing: wake words, weather, getting around', () {
+      expectAction(
+        'hey siri, what time is it',
+        AgentActions.timeGet,
+        target: 'local',
+      );
+      expectAction(
+        'how is the weather today',
+        AgentActions.weatherGet,
+        target: 'local',
+        args: {'place': '', 'kind': 'now'},
+      );
+      expectAction(
+        'tell me the weather in paris',
+        AgentActions.weatherGet,
+        target: 'local',
+        args: {'place': 'paris', 'kind': 'now'},
+      );
+      expectAction(
+        'will it rain today',
+        AgentActions.weatherGet,
+        target: 'local',
+        args: {'place': '', 'kind': 'rain'},
+      );
+      expectAction(
+        'take me to the airport',
+        AgentActions.navOpen,
+        target: 'local',
+        args: {'query': 'the airport'},
+      );
+      expectAction('drive me to work', AgentActions.navOpen, target: 'local');
+    });
+    test('about the assistant: identity, location, camera, devices', () {
+      expectAction('who are you', AgentActions.intro, target: 'local');
+      expectAction('are you there', AgentActions.intro, target: 'local');
+      expectAction('where am i', AgentActions.locationGet, target: 'local');
+      expectAction(
+        'take a picture',
+        AgentActions.appOpen,
+        target: 'local',
+        args: {'query': 'camera'},
+      );
+      expectAction(
+        'turn on the flashlight',
+        AgentActions.flashlightToggle,
+        target: 'local',
+        args: {'state': 'on'},
+      );
+      expectAction(
+        'how much battery do i have',
+        AgentActions.batteryGet,
+        target: 'local',
+      );
+      expectAction(
+        'timer 10 minutes',
+        AgentActions.timerSet,
+        target: 'local',
+      );
+    });
     test('fun', () {
       expectAction('roll a dice', AgentActions.randomDice, target: 'local');
       expectAction('flip a coin', AgentActions.randomCoin, target: 'local');
@@ -723,6 +782,12 @@ void main() {
             'email mom': AgentActions.emailSend,
             'play my playlist': AgentActions.mediaPlay,
             'volume 50': AgentActions.volumeSet,
+            'where am i': AgentActions.locationGet,
+            'take a picture': AgentActions.appOpen,
+            'timer 10 minutes': AgentActions.timerSet,
+            'turn on the flashlight': AgentActions.flashlightToggle,
+            'how much battery do i have': AgentActions.batteryGet,
+            'take me to the airport': AgentActions.navOpen,
           };
           final svc = service();
           expected.forEach((phrase, action) {
@@ -751,6 +816,9 @@ void main() {
           'flip a coin',
           'random 1 to 100',
           'tell me a joke',
+          'who are you',
+          'how old are you',
+          'are you there',
         ]) {
           final result = svc.execute(phrase);
           expect(result.status, AgentResultStatus.succeeded, reason: phrase);

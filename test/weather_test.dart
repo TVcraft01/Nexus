@@ -73,5 +73,18 @@ void main() {
       final rain = formatWttr(body, place: '', kind: 'rain');
       expect(rain, contains('In Montpellier'));
     });
+
+    test('areaFromWttr names the resolved area, never a guess', () {
+      const body = '''
+      {"nearest_area":[{"areaName":[{"value":"Montpellier"}],
+        "country":[{"value":"France"}]}],
+       "current_condition":[{"temp_C":"24"}],
+       "weather":[]}
+      ''';
+      expect(areaFromWttr(body), 'Montpellier');
+      // No named area → null, never a fabricated place.
+      expect(areaFromWttr('{"nearest_area":[]}'), isNull);
+      expect(areaFromWttr('not json'), isNull);
+    });
   });
 }

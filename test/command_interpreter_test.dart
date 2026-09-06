@@ -316,5 +316,165 @@ void main() {
         interpreter.interpret('call cafe').command!.arguments['contact'],
       );
     });
+
+    test('siri-style wake words and commas normalize away', () {
+      for (final phrase in [
+        'hey siri, call mom',
+        'hey, what time is it',
+        'okay, call mom',
+        'please, what is the weather in paris',
+        'call mom,',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+      }
+      // A bare "hey," is still a greeting, not empty input.
+      expect(
+        interpreter.interpret('hey,').command!.action,
+        AgentActions.greet,
+      );
+      // Wake-word stripping never eats a contact: "call siri" stays a call.
+      expect(
+        interpreter.interpret('call siri').command!.action,
+        AgentActions.callPlace,
+      );
+    });
+
+    test('siri weather phrasing: today, like, tell me, will it rain', () {
+      for (final phrase in [
+        'how is the weather today',
+        'whats the weather like',
+        'what is the weather like in paris',
+        'tell me the weather in paris',
+        'will it rain today',
+        'is it going to rain in paris',
+        'is it raining outside',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.weatherGet, reason: phrase);
+      }
+      final withCity = interpreter.interpret('tell me the weather in paris');
+      expect(withCity.command!.arguments['place'], 'paris');
+      final rainy = interpreter.interpret('will it rain today');
+      expect(rainy.command!.arguments['kind'], 'rain');
+    });
+
+    test('siri getting-around phrasing: take me to, drive me to', () {
+      for (final phrase in [
+        'take me to the office',
+        'take me to the airport',
+        'drive me to work',
+        'get me to the station',
+        'emmene moi a la gare',
+        'conduis moi a l aeroport',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.navOpen, reason: phrase);
+        expect(r.command!.arguments['query'], isNotEmpty, reason: phrase);
+      }
+    });
+
+    test('timer accepts durations without "for" and french forms', () {
+      for (final phrase in [
+        'timer 10 minutes',
+        'set timer 10 minutes',
+        'countdown 5 minutes',
+        'mets un minuteur de 10 minutes',
+        'minuteur 5 minutes',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.timerSet, reason: phrase);
+        expect(r.command!.arguments['seconds'], isNotNull, reason: phrase);
+      }
+      // Bare "timer" still asks how long instead of guessing.
+      final bare = interpreter.interpret('timer');
+      expect(bare.command!.action, AgentActions.timerSet);
+      expect(bare.command!.arguments['seconds'], isNull);
+    });
+
+    test('siri device phrasing: the flashlight, battery, camera', () {
+      for (final phrase in [
+        'turn on the flashlight',
+        'turn off the torch',
+        'turn the flashlight on',
+        'allume la torche',
+        'eteins la lampe',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.flashlightToggle, reason: phrase);
+      }
+      for (final phrase in [
+        'how much battery do i have',
+        'how much battery is left',
+        'what is my battery at',
+        'my battery',
+        'combien de batterie il me reste',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.batteryGet, reason: phrase);
+      }
+      for (final phrase in [
+        'take a picture',
+        'take a photo',
+        'take a selfie',
+        'prends une photo',
+        'fais un selfie',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.appOpen, reason: phrase);
+        expect(r.command!.arguments['query'], 'camera', reason: phrase);
+      }
+      // "take a screenshot" stays a screenshot, not a camera open.
+      expect(
+        interpreter.interpret('take a screenshot').command!.action,
+        AgentActions.screenshot,
+      );
+    });
+
+    test('who am i talking to: intro and location answers exist', () {
+      for (final phrase in [
+        'who are you',
+        'how old are you',
+        'are you there',
+        'are you a robot',
+        'qui es tu',
+        'tu es la',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.intro, reason: phrase);
+      }
+      for (final phrase in [
+        'where am i',
+        'where am i at',
+        'what is my location',
+        'ou suis je',
+        'ma position',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.locationGet, reason: phrase);
+      }
+    });
+
+    test('siri help phrasing reaches the catalog', () {
+      for (final phrase in [
+        'what are you able to do',
+        'what can you help with',
+        'what commands do you know',
+        'liste des commandes',
+        'tu sais faire quoi',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.helpGet, reason: phrase);
+      }
+    });
   });
 }

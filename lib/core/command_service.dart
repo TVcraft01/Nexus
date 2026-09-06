@@ -422,7 +422,8 @@ class CommandService {
       // needed (desktops open mailto: directly).
       return localAnswer(command, _answerContext);
     }
-    if (action == AgentActions.greet ||
+    if (        action == AgentActions.greet ||
+        action == AgentActions.intro ||
         action == AgentActions.timeGet ||
         action == AgentActions.mathCalc ||
         action == AgentActions.helpGet ||
@@ -432,6 +433,7 @@ class CommandService {
         action == AgentActions.openUrl ||
         action == AgentActions.weatherGet ||
         action == AgentActions.navOpen ||
+        action == AgentActions.locationGet ||
         action == AgentActions.systemInfo ||
         action == AgentActions.volumeSet ||
         action == AgentActions.appOpen ||
@@ -715,6 +717,7 @@ class CommandService {
           requestId: request.requestId,
         );
       case AgentActions.greet:
+      case AgentActions.intro:
       case AgentActions.timeGet:
       case AgentActions.mathCalc:
       case AgentActions.helpGet:
@@ -730,6 +733,7 @@ class CommandService {
       case AgentActions.memoryQuestion:
       case AgentActions.weatherGet:
       case AgentActions.navOpen:
+      case AgentActions.locationGet:
       case AgentActions.emailSend:
         return localAnswer(command, _answerContext);
       default:
