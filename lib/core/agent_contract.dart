@@ -53,6 +53,8 @@ abstract final class AgentActions {
   static const reminderSet = 'reminder.set';
   static const weatherGet = 'weather.get';
   static const navOpen = 'nav.open';
+  static const locationGet = 'location.get';
+  static const intro = 'intro';
   static const darkModeSet = 'display.dark';
   static const defineWord = 'define.word';
   static const translateText = 'translate.text';

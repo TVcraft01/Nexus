@@ -27,13 +27,16 @@ class DeviceExecutor {
     DeviceActionBackend? deviceBackend,
     PhoneActionBackend? phoneBackend,
     WeatherFetcher? weatherFetcher,
+    AreaDetector? areaDetector,
   }) : _deviceBackend = deviceBackend ?? deviceActionBackend(),
        _phoneBackend = phoneBackend ?? RealPhoneActionBackend(),
-       _weatherFetcher = weatherFetcher ?? fetchWeather;
+       _weatherFetcher = weatherFetcher ?? fetchWeather,
+       _areaDetector = areaDetector ?? detectArea;
 
   final DeviceActionBackend _deviceBackend;
   final PhoneActionBackend _phoneBackend;
   final WeatherFetcher _weatherFetcher;
+  final AreaDetector _areaDetector;
 
   /// Parses follow-up answers ('time': '7am') into what the native side
   /// expects, then runs the action through the platform backend (or the
@@ -68,6 +71,9 @@ class DeviceExecutor {
         prepared['place']?.toString() ?? '',
         prepared['kind']?.toString() ?? 'now',
       );
+    }
+    if (request.action == AgentActions.locationGet) {
+      return _whereAmI();
     }
     if (request.action == AgentActions.navOpen) {
       return _openMaps(prepared['query']?.toString() ?? '');
@@ -279,7 +285,10 @@ class DeviceExecutor {
       'playstore': 'com.android.vending',
       'store': 'com.android.vending',
     };
-    final lower = query.toLowerCase().trim();
+    final lower = query
+        .toLowerCase()
+        .trim()
+        .replaceFirst(RegExp(r'^the '), '');
     return aliases[lower] ?? lower;
   }
 
@@ -1095,6 +1104,31 @@ class DeviceExecutor {
     } catch (_) {
       return const ActionResult(false, 'Could not open the browser.');
     }
+  }
+
+  /// "where am I" — names the area from the device fix (one-time grant),
+  /// or the network location when there is no fix. Never a guess: the name
+  /// comes from the service that resolved it.
+  Future<ActionResult> _whereAmI() async {
+    (double, double)? fix;
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      fix = await _deviceBackend.currentLocation();
+    }
+    final area = fix != null
+        ? await _areaDetector(coordinates: '${fix.$1},${fix.$2}')
+        : await _areaDetector();
+    if (area == null) {
+      return const ActionResult(
+        false,
+        'I couldn\'t determine your location — check the internet and try again.',
+      );
+    }
+    return ActionResult(
+      true,
+      fix != null
+          ? 'You\'re in $area.'
+          : 'You appear to be near $area — that\'s your network location.',
+    );
   }
 
   /// Fetches and formats live weather. With a city, that city is fetched;

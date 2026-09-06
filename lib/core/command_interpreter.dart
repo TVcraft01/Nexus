@@ -98,8 +98,10 @@ class CommandInterpreter {
     'weather in paris',
     'take me home',
     'navigate to the office',
+    'where am i',
     // Communication
     'email mom saying hi',
+    'take a picture',
     // Math with words
     'what is 15% of 80',
     // Fun
@@ -107,6 +109,7 @@ class CommandInterpreter {
     'flip a coin',
     'random 1 to 100',
     'tell me a joke',
+    'who are you',
     // Help & French
     'help',
     'quelle heure est il',
@@ -208,6 +211,16 @@ class CommandInterpreter {
       RegExp('[àáâäãåèéêëìíîïòóôöõùúûüçñýÿ]'),
       (m) => accents[m.group(0)]!,
     );
+    // Siri-style wake words and comma-dropped filler: "hey siri, call mom",
+    // "hey, what time is it". The lookahead keeps a bare "hey," intact.
+    t = t.replaceAll(
+      RegExp(r'^(?:hey|ok|okay|yo|so|alright|right|um|uh|please)[,\s]+(?=\S)'),
+      '',
+    );
+    t = t.replaceAll(
+      RegExp(r'^(?:(?:hey|ok|okay|yo)[,\s]*)?siri[,\s]+(?=\S)'),
+      '',
+    );
     // Strip conversational prefixes that friends naturally type
     t = t
         .replaceAll(
@@ -247,6 +260,8 @@ class CommandInterpreter {
         .replaceAll(RegExp(r"whats(?!app)"), 'what is')
         .replaceAll("'s", ' is')
         .replaceAll(RegExp(r'\s+'), ' ')
+        // Siri dictation often appends commas — "call mom," is still a call.
+        .replaceAll(RegExp(r',$'), '')
         .trim();
   }
 
@@ -278,9 +293,66 @@ class CommandInterpreter {
       'how are you doing',
       'what\'s good',
       'how do you do',
+      'hi there',
+      'hello there',
+      'hey there',
+      'howdy',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.greet, target: 'local'),
+      );
+    }
+
+    // --- About the assistant: identity questions get honest answers, never
+    // pretend sentience — "I'm Nexus, born August 2026".
+    if (_oneOf(norm, const [
+      'who are you',
+      'what are you',
+      'what is your name',
+      'how old are you',
+      'what is your age',
+      'are you a robot',
+      'are you an ai',
+      'are you human',
+      'are you real',
+      'are you there',
+      'are you listening',
+      'are you awake',
+      'are you alive',
+      'who made you',
+      'who created you',
+      'qui es tu',
+      'tu es qui',
+      'comment tu t appelles',
+      'quel age as tu',
+      'tu es un robot',
+      'tu es la',
+      'tu es reveille',
+      'c est quoi ton nom',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.intro, target: 'local'),
+      );
+    }
+
+    // --- Where am I? The device fix (one-time grant) or network detection
+    // answers; the reply names the area it resolved, never a guess.
+    if (_oneOf(norm, const [
+      'where am i',
+      'where am i at',
+      'where am i right now',
+      'where are we',
+      'what is my location',
+      'where am i located',
+      'my location',
+      'ou suis je',
+      'ou es je',
+      'ou sommes nous',
+      'ma position',
+      'quelle est ma position',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.locationGet, target: 'local'),
       );
     }
 
@@ -357,11 +429,16 @@ class CommandInterpreter {
     // become a memory question about "the weather in paris").
     final weather = RegExp(
       r'^(?:'
-      r'what is the weather|weather today|weather now|weather forecast|'
-      r'how is the weather|check the weather|weather|'
-      r'is it going to rain|will it rain|is it raining|'
-      r'temperature|what is the temperature|how hot is it|how cold is it|'
-      r'quel temps fait il|meteo|il pleut|va t il pleuvoir|'
+      r'what is the weather(?: like)?(?: today| now| right now| outside)?|'
+      r'how is the weather(?: like)?(?: today| now| right now| outside)?|'
+      r'tell me the weather(?: today| now| outside)?|'
+      r'check the weather|'
+      r'weather(?: today| now| forecast| report)?|'
+      r'(?:is it going to|will it|is it) rain(?: today| now| later)?|'
+      r'is it raining(?: today| now| outside)?|'
+      r'temperature|what is the temperature(?: today| now| outside)?|'
+      r'how hot is it|how cold is it|'
+      r'quel temps fait il|meteo|il pleut|il va pleuvoir|va t il pleuvoir|'
       r'quelle est la temperature|il fait quel temps'
       r')(?: (?:in|at|for|a|dans|sur|de) (.+))?$',
     ).firstMatch(norm);
@@ -404,7 +481,9 @@ class CommandInterpreter {
     }
     final navTo = RegExp(
       r'^(?:navigate to|directions to|route to|how do i get to|'
-      r'show me the way to|navigue vers|itineraire vers|comment aller a) (.+)$',
+      r'take me to|get me to|drive me to|show me the way to|'
+      r'navigue vers|itineraire vers|comment aller a|'
+      r'emmene moi (?:a|vers)|conduis moi (?:a|vers)) (.+)$',
     ).firstMatch(norm);
     if (navTo != null) {
       return InterpretResult.matched(
@@ -427,6 +506,51 @@ class CommandInterpreter {
           target: 'local',
           arguments: {'query': 'current time in ${tz.group(1)!.trim()}'},
         ),
+      );
+    }
+
+    // --- Battery (before math: "what is my battery at" must never become
+    // a memory question about "my battery at").
+    if (_oneOf(norm, const [
+      'battery',
+      'battery level',
+      'how much battery',
+      'how much charge',
+      'power left',
+      'battery percentage',
+      'charge level',
+      'battery status',
+      'what is my battery',
+      'how charged is my phone',
+      'how charged is my battery',
+      'how full is the battery',
+      'am i running low',
+      'battery life',
+      'how much battery do i have',
+      'how much battery do i have left',
+      'how much battery is left',
+      'how much battery left',
+      'how much battery remains',
+      'how much charge do i have',
+      'how much charge is left',
+      'what percentage is my battery',
+      'what is my battery at',
+      'battery left',
+      'how is my battery',
+      'is my battery low',
+      'am i low on battery',
+      'my battery',
+      'combien de batterie il me reste',
+      'batterie restante',
+      'quel est le niveau de batterie',
+      'what is my battery level',
+      'check battery',
+      'battery check',
+      'batterie',
+      'niveau de batterie',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.batteryGet, target: 'local'),
       );
     }
 
@@ -555,7 +679,9 @@ class CommandInterpreter {
 
     // --- Timer
     final timer = RegExp(
-      r'^((?:set|start|begin) (?:a |the )?timer|(?:a )?timer)(?: for (.+))?$',
+      r'^((?:set|start|begin|mets) (?:a |the |un |le )?(?:timer|countdown|minuteur)|'
+      r'(?:a )?(?:timer|countdown|minuteur))'
+      r'(?: (?:for |to |de )?(.+))?$',
     ).firstMatch(norm);
     if (timer != null) {
       final length = timer.group(2)?.trim();
@@ -734,33 +860,6 @@ class CommandInterpreter {
       );
     }
 
-    // --- Battery
-    if (_oneOf(norm, const [
-      'battery',
-      'battery level',
-      'how much battery',
-      'how much charge',
-      'power left',
-      'battery percentage',
-      'charge level',
-      'battery status',
-      'what is my battery',
-      'how charged is my phone',
-      'how charged is my battery',
-      'how full is the battery',
-      'am i running low',
-      'battery life',
-      'what is my battery level',
-      'check battery',
-      'battery check',
-      'batterie',
-      'niveau de batterie',
-    ])) {
-      return InterpretResult.matched(
-        const ParsedCommand(action: AgentActions.batteryGet, target: 'local'),
-      );
-    }
-
     // --- Screenshot
     if (_oneOf(norm, const [
       'take a screenshot',
@@ -776,15 +875,60 @@ class CommandInterpreter {
       );
     }
 
+    // --- Camera: "take a picture" opens the camera app. The shutter itself
+    // lives in the system app — Nexus never fakes a photo it didn't take.
+    if (_oneOf(norm, const [
+      'take a picture',
+      'take a photo',
+      'take a selfie',
+      'take a pic',
+      'take picture',
+      'take photo',
+      'snap a picture',
+      'snap a photo',
+      'snap a selfie',
+      'shoot a picture',
+      'shoot a photo',
+      'prends une photo',
+      'prends une selfie',
+      'prends moi en photo',
+      'prends moi en selfie',
+      'fais une photo',
+      'fais un selfie',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.appOpen,
+          target: 'local',
+          arguments: {'query': 'camera'},
+        ),
+      );
+    }
+
     // --- Flashlight
     if (_oneOf(norm, const [
       'flashlight on',
       'torch on',
       'turn on flashlight',
       'turn on torch',
+      'turn on the flashlight',
+      'turn on the torch',
+      'turn the flashlight on',
+      'turn the torch on',
+      'switch on the flashlight',
+      'switch on the torch',
+      'switch the flashlight on',
+      'switch the torch on',
       'enable flashlight',
       'enable torch',
+      'enable the flashlight',
+      'enable the torch',
       'light on',
+      'the flashlight on',
+      'the torch on',
+      'allume la torche',
+      'allume la lampe',
+      'allume la lampe torche',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(
@@ -799,9 +943,24 @@ class CommandInterpreter {
       'torch off',
       'turn off flashlight',
       'turn off torch',
+      'turn off the flashlight',
+      'turn off the torch',
+      'turn the flashlight off',
+      'turn the torch off',
+      'switch off the flashlight',
+      'switch off the torch',
+      'switch the flashlight off',
+      'switch the torch off',
       'disable flashlight',
       'disable torch',
+      'disable the flashlight',
+      'disable the torch',
       'light off',
+      'the flashlight off',
+      'the torch off',
+      'eteins la torche',
+      'eteins la lampe',
+      'eteins la lampe torche',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(
@@ -814,9 +973,15 @@ class CommandInterpreter {
     if (_oneOf(norm, const [
       'flashlight',
       'torch',
+      'the flashlight',
+      'the torch',
       'toggle flashlight',
       'toggle torch',
+      'toggle the flashlight',
+      'toggle the torch',
       'flip flashlight',
+      'la torche',
+      'la lampe',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(
@@ -1632,8 +1797,17 @@ class CommandInterpreter {
       'i need help',
       'what can you do',
       'what can i do',
+      'what are you able to do',
+      'what can you help with',
+      'what commands do you know',
+      'what do you know how to do',
+      'show me what you can do',
+      'what are your abilities',
+      'what are you capable of',
       'commands',
       'what do you know',
+      'liste des commandes',
+      'tu sais faire quoi',
       'abilities',
       'how do you work',
       'options',

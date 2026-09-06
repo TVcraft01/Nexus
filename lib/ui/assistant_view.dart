@@ -282,6 +282,7 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.openUrl,
     AgentActions.weatherGet,
     AgentActions.navOpen,
+    AgentActions.locationGet,
     AgentActions.emailSend,
     AgentActions.systemInfo,
     AgentActions.volumeSet,

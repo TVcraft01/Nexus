@@ -236,6 +236,13 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           'Hello! I can tell you the time, do math, search the web, save notes, show your PC specs, and copy text between your devices. Ask me anything — and if I don\'t understand, I\'ll ask you to teach me.',
         ),
       );
+    case AgentActions.intro:
+      return const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'I\'m here! I\'m Nexus, your assistant, running right on this device. I\'m brand new — my first release shipped in August 2026 — so I\'m still learning. Ask me anything, and if I don\'t understand, I\'ll ask you to teach me.',
+        ),
+      );
     case AgentActions.timeGet:
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
@@ -288,6 +295,14 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
               : 'Checking the weather in $place…',
           action: AgentActions.weatherGet,
           arguments: {'place': place, 'kind': kind},
+        ),
+      );
+    case AgentActions.locationGet:
+      return const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Figuring out where you are…',
+          action: AgentActions.locationGet,
         ),
       );
     case AgentActions.navOpen:

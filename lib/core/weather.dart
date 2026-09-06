@@ -15,6 +15,10 @@ typedef WeatherFetcher = Future<String?> Function(
   String? coordinates,
 });
 
+/// Resolves an area name for a device fix or the network location.
+/// Returns null when wttr.in couldn't be reached or named anything.
+typedef AreaDetector = Future<String?> Function({String? coordinates});
+
 /// The default fetcher: GETs wttr.in and formats the JSON reply. With no
 /// [place] and no [coordinates] it hits wttr.in's IP-detected location
 /// (`auto`) — the fallback when a device has no location fix.
@@ -23,18 +27,57 @@ Future<String?> fetchWeather(
   String kind, {
   String? coordinates,
 }) async {
+  // wttr.in accepts "lat,lon" and "auto" as locations.
+  final location =
+      coordinates ?? (place.isNotEmpty ? Uri.encodeComponent(place) : 'auto');
+  final decoded = await _fetchWttr(location);
+  if (decoded == null) return null;
+  return formatWttr(jsonEncode(decoded), place: place, kind: kind);
+}
+
+/// Names the area for [coordinates] (device fix), or the IP-detected area
+/// when [coordinates] is null — the "where am I" answer source.
+Future<String?> detectArea({String? coordinates}) async {
+  final decoded = await _fetchWttr(coordinates ?? 'auto');
+  if (decoded == null) return null;
+  return areaFromWttr(jsonEncode(decoded));
+}
+
+/// Extracts the resolved area name from a wttr.in `format=j1` payload, or
+/// null when the payload names nothing.
+String? areaFromWttr(String body) {
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(body);
+  } catch (_) {
+    return null;
+  }
+  if (decoded is! Map<String, dynamic>) return null;
+  final areas = (decoded['nearest_area'] as List? ?? const [])
+      .whereType<Map>()
+      .toList();
+  final name = ((areas.firstOrNull?['areaName'] as List? ?? const [])
+          .whereType<Map>()
+          .toList()
+          .firstOrNull?['value'])
+      ?.toString();
+  if (name == null || name.isEmpty) return null;
+  return name;
+}
+
+/// GETs wttr.in `format=j1` and returns the decoded JSON, or null on any
+/// network or parse failure.
+Future<Map<String, dynamic>?> _fetchWttr(String location) async {
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
   try {
-    // wttr.in accepts "lat,lon" and "auto" as locations.
-    final location = coordinates ??
-        (place.isNotEmpty ? Uri.encodeComponent(place) : 'auto');
     final uri = Uri.parse('https://wttr.in/$location?format=j1');
     final request = await client.getUrl(uri);
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
     final response = await request.close().timeout(const Duration(seconds: 10));
     if (response.statusCode != 200) return null;
     final body = await response.transform(utf8.decoder).join();
-    return formatWttr(body, place: place, kind: kind);
+    final decoded = jsonDecode(body);
+    return decoded is Map<String, dynamic> ? decoded : null;
   } catch (_) {
     return null;
   } finally {

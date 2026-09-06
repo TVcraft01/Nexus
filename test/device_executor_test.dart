@@ -30,6 +30,17 @@ class _FakeWeatherFetcher {
   }
 }
 
+/// Records the coordinates each area lookup was asked for.
+class _FakeAreaDetector {
+  final calls = <String?>[];
+  String? reply = 'Montpellier';
+
+  Future<String?> call({String? coordinates}) async {
+    calls.add(coordinates);
+    return reply;
+  }
+}
+
 class _FakePhoneBackend implements PhoneActionBackend {
   final dials = <String?>[]; // every number passed to callContact
   final names = <String>[];
@@ -199,6 +210,45 @@ void main() {
     ));
     expect(out.ok, isTrue);
     expect(fetcher.calls, [('', 'now', null)]);
+  });
+
+  test('"where am i" names the area from the device fix', () async {
+    device.location = (43.61, 3.87);
+    final detector = _FakeAreaDetector();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      areaDetector: detector.call,
+    );
+    final out = await executor.run(req(AgentActions.locationGet));
+    expect(out.ok, isTrue);
+    expect(out.message, 'You\'re in Montpellier.');
+    expect(detector.calls, ['43.61,3.87']);
+  });
+
+  test('"where am i" falls back to the network area without a fix', () async {
+    final detector = _FakeAreaDetector();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      areaDetector: detector.call,
+    );
+    final out = await executor.run(req(AgentActions.locationGet));
+    expect(out.ok, isTrue);
+    expect(out.message, contains('You appear to be near Montpellier'));
+    expect(detector.calls, [null]);
+  });
+
+  test('"where am i" fails honestly when nothing resolves', () async {
+    final detector = _FakeAreaDetector()..reply = null;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      areaDetector: detector.call,
+    );
+    final out = await executor.run(req(AgentActions.locationGet));
+    expect(out.ok, isFalse);
+    expect(out.message, contains('couldn\'t determine your location'));
   });
 
   test('weather reports a fetch failure honestly, never a fake forecast',
