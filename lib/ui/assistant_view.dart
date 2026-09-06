@@ -38,6 +38,8 @@ class _AssistantViewState extends State<AssistantView> {
   final List<_ThreadEntry> _thread = [];
   late final CommandService _service;
   String? _pendingKey; // a clarification is open; the next input answers it
+  // — unless that input is itself a command (then the command wins and the
+  // question is dropped, see _onSubmit).
   String? _reply; // outcome shown on whichever plan card is open
   bool _sending = false;
 
@@ -459,9 +461,14 @@ class _AssistantViewState extends State<AssistantView> {
     _lastInput = text;
     _controller.clear();
     final pending = _pendingKey;
-    if (pending != null) {
+    // A clarification is open. The next input answers it — UNLESS it is
+    // itself a command: the user moved on, so the new request runs and the
+    // stale question is dropped instead of silently swallowing the command
+    // ("call mom" must never be learned as the meaning of "open deezer").
+    if (pending != null && !_service.parsesAsCommand(text)) {
       _execute(text, answerTo: pending);
     } else {
+      if (pending != null) _service.cancelPending(pending);
       _execute(text);
     }
   }
@@ -993,7 +1000,7 @@ class _AssistantViewState extends State<AssistantView> {
                   decoration: InputDecoration(
                     hintText: _pendingKey == null
                         ? 'Ask anything — "play my playlist", "bring me home"…'
-                        : 'Type your answer…',
+                        : 'Answer the question — or type a new command',
                     border: InputBorder.none,
                     contentPadding: EdgeInsets.symmetric(
                       horizontal: 16,
