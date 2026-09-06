@@ -158,6 +158,11 @@ void main() {
   testWidgets('start/stop/dispose: the ticker is owned and released', (
     tester,
   ) async {
+    // Freeze the clock: the fixed t0 date must never go stale — once the
+    // suite runs past 09:00 on that day the "1 hour from now" reminder is
+    // already due and silently fires, emptying the list mid-test.
+    Reminders.nowOverride = () => t0;
+    addTearDown(() => Reminders.nowOverride = null);
     final e = ReminderEngine();
     e.onPersist = (_) {};
     // A pending reminder so each tick does real work.
