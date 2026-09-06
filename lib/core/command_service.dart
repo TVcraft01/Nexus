@@ -54,6 +54,38 @@ class CommandService {
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
 
+  /// The contact [name] resolves to after a confirmed "did you mean?" or a
+  /// taught fact ("alx means alex" / "remember that tv is TVcraft01"), or
+  /// null when none is known. A phone fact ("mom is 06…") never counts as
+  /// an alias — that number is the dial target, not a rewritten name.
+  String? _contactAlias(String name) {
+    final lower = name.trim().toLowerCase();
+    if (lower.isEmpty) return null;
+    for (final fact in _facts) {
+      final m = RegExp(
+        r'^' + RegExp.escape(lower) + r'\s+(?:is|means)\s+(.+)$',
+        caseSensitive: false,
+      ).firstMatch(fact);
+      if (m == null) continue;
+      final value = m.group(1)!.trim();
+      final digits = value.replaceAll(RegExp(r'[^\d+]'), '');
+      if (digits.length >= 9 && digits.length <= 15) return null;
+      return value;
+    }
+    return null;
+  }
+
+  /// Remembers that the user's wording [from] means contact [to], so the
+  /// next "call $from" resolves straight to $to without asking again.
+  /// Persists as a fact, like anything the user teaches.
+  void learnContactAlias(String from, String to) {
+    final fact = '${from.trim()} means ${to.trim()}';
+    if (_facts.any((f) => f.toLowerCase() == fact.toLowerCase())) return;
+    _facts.add(fact);
+    onMemoryChanged?.call();
+    onFactLearned?.call(fact);
+  }
+
   /// Whether [input] parses as something actionable — a known command, or a
   /// known command still missing one argument — rather than an unknown
   /// phrase. The view uses this to decide that a message typed while a
@@ -160,6 +192,16 @@ class CommandService {
             approval,
             requestId,
           );
+        }
+        // A fact may already answer this ("remember that my name is john"
+        // then "what is my name") — don't ask for what the user already
+        // told us. Only a plain fact answer qualifies: the web-search
+        // fallback carries an action, so asking still wins there.
+        final fromFacts = localAnswer(interpreted.command!, _answerContext);
+        if (fromFacts.status == AgentResultStatus.succeeded &&
+            fromFacts.dispatch is AgentMessage &&
+            (fromFacts.dispatch as AgentMessage).action == null) {
+          return fromFacts;
         }
         _pendingContext['arg:$key'] = normalized;
         return AgentDispatchResult(
@@ -503,7 +545,23 @@ class CommandService {
     String requestId,
     String? rawInput,
   ) {
-    final answer = localAnswer(command, _answerContext);
+    // Resolve learned "did you mean" aliases first: the user said "call
+    // alx", confirmed Alex once, and the fact "alx means alex" now routes
+    // straight to Alex — no question on the next try. ("remember that tv
+    // is TVcraft01" teaches the same way.)
+    var resolved = command;
+    final contact = (command.arguments['contact'] as String?) ?? '';
+    final alias = _contactAlias(contact);
+    if (alias != null) {
+      final args = Map<String, dynamic>.of(command.arguments);
+      args['contact'] = alias;
+      resolved = ParsedCommand(
+        action: command.action,
+        target: command.target,
+        arguments: args,
+      );
+    }
+    final answer = localAnswer(resolved, _answerContext);
     // Only an executable action card can be offered elsewhere — teach
     // prompts, "who should I call" re-asks and plain answers stay put.
     final card = answer.dispatch;

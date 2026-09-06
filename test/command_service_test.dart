@@ -710,4 +710,125 @@ void main() {
       expect(service.learnedSnapshot, isEmpty); // nothing stored
     });
   });
+
+  group('conversational ask-back: the assistant asks for what it lacks', () {
+    test('"what is my name" asks back, then remembers the answer like a conversation', () {
+      final service = CommandService(devices: () => const []);
+      final asked = service.execute('what is my name');
+      expect(asked.status, AgentResultStatus.needsInfo);
+      final ask = asked.dispatch! as AgentClarification;
+      expect(ask.key, 'arg:memory.ask.my name');
+      expect(ask.question, contains('what is your name'));
+      // The user answers — it saves and answers the original question.
+      final answered = service.execute('John', answerTo: ask.key);
+      expect(answered.status, AgentResultStatus.succeeded);
+      expect((answered.dispatch! as AgentMessage).text, contains('John'));
+      // Next time, no question — it remembers.
+      final again = service.execute('what is my name');
+      expect(again.status, AgentResultStatus.succeeded);
+      expect(
+        (again.dispatch! as AgentMessage).text,
+        contains('Your name is John'),
+      );
+    });
+
+    test('a fact already told is never asked for again', () {
+      final service = CommandService(devices: () => const []);
+      service.execute('remember that my name is john');
+      final result = service.execute('what is my name');
+      expect(result.status, AgentResultStatus.succeeded);
+      expect(
+        (result.dispatch! as AgentMessage).text,
+        contains('john'),
+      );
+      expect(result.dispatch, isNot(isA<AgentClarification>()));
+    });
+
+    test('"who am i" asks back and remembers', () {
+      final service = CommandService(devices: () => const []);
+      final asked = service.execute('who am i');
+      expect(asked.status, AgentResultStatus.needsInfo);
+      final ask = asked.dispatch! as AgentClarification;
+      final answered = service.execute('Sam', answerTo: ask.key);
+      expect((answered.dispatch! as AgentMessage).text, contains('Sam'));
+      final again = service.execute('who am i');
+      expect((again.dispatch! as AgentMessage).text, contains('Sam'));
+    });
+
+    test('an unknown personal fact asks back instead of searching the web', () {
+      final service = CommandService(devices: () => const []);
+      final result = service.execute('what is my wifi password');
+      expect(result.status, AgentResultStatus.needsInfo);
+      final ask = result.dispatch! as AgentClarification;
+      expect(ask.question, contains('wifi password'));
+      final answered = service.execute('nexus123', answerTo: ask.key);
+      expect(
+        (answered.dispatch! as AgentMessage).text,
+        contains('nexus123'),
+      );
+    });
+
+    test('general knowledge still goes to the web, never a question', () {
+      final service = CommandService(devices: () => const []);
+      final result = service.execute('what is the capital of france');
+      expect(result.status, AgentResultStatus.succeeded);
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.action, AgentActions.webSearch);
+    });
+  });
+
+  group('contact aliases: confirmed "did you mean" answers are learned', () {
+    test('learnContactAlias stores a fact and notifies', () {
+      var changed = 0;
+      final learned = <String>[];
+      final service = CommandService(
+        devices: () => const [],
+        onMemoryChanged: () => changed++,
+        onFactLearned: learned.add,
+      );
+      service.learnContactAlias('alx', 'Alex');
+      expect(service.factsSnapshot, ['alx means Alex']);
+      expect(changed, 1);
+      expect(learned, ['alx means Alex']);
+      // Idempotent.
+      service.learnContactAlias('alx', 'Alex');
+      expect(service.factsSnapshot.length, 1);
+    });
+
+    test('a learned alias resolves the contact on the next call', () {
+      final service = CommandService(
+        devices: () => const [],
+        local: const AgentDeviceSnapshot(
+          id: 'callphone',
+          name: 'My Phone',
+          online: true,
+          capabilities: [DeviceCapability(AgentActions.callPlace)],
+        ),
+      );
+      service.learnContactAlias('alx', 'Alex');
+      final result = service.execute('call alx');
+      expect(result.status, AgentResultStatus.succeeded);
+      final msg = result.dispatch! as AgentMessage;
+      expect(msg.arguments?['contact'], 'Alex');
+      expect(msg.text, contains('Alex'));
+    });
+
+    test('"remember that tv is TVcraft01" works as a taught alias too', () {
+      final service = CommandService(
+        devices: () => const [],
+        local: const AgentDeviceSnapshot(
+          id: 'callphone',
+          name: 'My Phone',
+          online: true,
+          capabilities: [DeviceCapability(AgentActions.callPlace)],
+        ),
+      );
+      service.execute('remember that tv is TVcraft01');
+      final result = service.execute('call tv');
+      final msg = result.dispatch! as AgentMessage;
+      // Normalization lowercases the fact; the Android contact lookup is
+      // case-insensitive, so the lowercase alias still dials TVcraft01.
+      expect(msg.arguments?['contact'], 'tvcraft01');
+    });
+  });
 }

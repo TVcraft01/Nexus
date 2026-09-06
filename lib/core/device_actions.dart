@@ -11,7 +11,12 @@ import 'agent_contract.dart';
 class ActionResult {
   final bool ok;
   final String message;
-  const ActionResult(this.ok, this.message);
+
+  /// Closest contact names when a call couldn't be placed — the assistant
+  /// offers them as "who did you mean?" and learns from the answer.
+  final List<String> candidates;
+
+  const ActionResult(this.ok, this.message, {this.candidates = const []});
 }
 
 /// Runs the small device-local actions the assistant can execute natively.
@@ -22,6 +27,11 @@ abstract class DeviceActionBackend {
   /// city. Null when the platform can't provide one — the weather fetch
   /// then falls back to IP detection, never a dead end.
   Future<(double, double)?> currentLocation() async => null;
+
+  /// Opens [url] through the system app chooser so the user picks the app
+  /// (music player, browser, …). False when this platform has no chooser —
+  /// the caller then falls back to the default app.
+  Future<bool> openLinkChooser(String url, String title) async => false;
 }
 
 /// Returns the platform-appropriate backend.
@@ -54,6 +64,19 @@ class RealDeviceActionBackend implements DeviceActionBackend {
   }
 
   @override
+  Future<bool> openLinkChooser(String url, String title) async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'openChooser',
+        {'url': url, 'title': title},
+      );
+      return raw?['ok'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async {
     try {
       final raw = await _channel.invokeMapMethod<String, dynamic>(
@@ -72,6 +95,7 @@ class RealDeviceActionBackend implements DeviceActionBackend {
           AgentActions.appClose => 'closeApp',
           AgentActions.messageSend => 'sendText',
           AgentActions.emailSend => 'sendEmail',
+          AgentActions.navOpen => 'navigateTo',
           AgentActions.calendarAdd => 'calendarEvent',
           AgentActions.mediaPlay ||
           AgentActions.mediaPause ||
@@ -87,6 +111,9 @@ class RealDeviceActionBackend implements DeviceActionBackend {
       return ActionResult(
         raw['ok'] == true,
         raw['message']?.toString() ?? 'Done.',
+        candidates: (raw['candidates'] as List<dynamic>? ?? const [])
+            .map((c) => c.toString())
+            .toList(),
       );
     } catch (_) {
       return const ActionResult(
@@ -106,12 +133,18 @@ class UnavailableDeviceActionBackend implements DeviceActionBackend {
 
   @override
   Future<(double, double)?> currentLocation() async => null;
+
+  @override
+  Future<bool> openLinkChooser(String url, String title) async => false;
 }
 
 /// The desktop executor: timers via notify-send, web search via xdg-open.
 class DesktopDeviceActionBackend implements DeviceActionBackend {
   @override
   Future<(double, double)?> currentLocation() async => null;
+
+  @override
+  Future<bool> openLinkChooser(String url, String title) async => false;
 
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async {

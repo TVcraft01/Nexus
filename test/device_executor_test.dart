@@ -9,6 +9,8 @@ import 'package:nexus/ui/device_executor.dart';
 /// Captures every backend call so tests assert routing without a widget tree.
 class _FakeDeviceBackend implements DeviceActionBackend {
   final calls = <(String action, Map<String, dynamic> args)>[];
+  final chooserCalls = <(String url, String title)>[];
+  bool chooserResult = false;
   (double, double)? location;
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async {
@@ -18,6 +20,12 @@ class _FakeDeviceBackend implements DeviceActionBackend {
 
   @override
   Future<(double, double)?> currentLocation() async => location;
+
+  @override
+  Future<bool> openLinkChooser(String url, String title) async {
+    chooserCalls.add((url, title));
+    return chooserResult;
+  }
 }
 
 /// Records the place/coordinates each weather fetch was asked for.
@@ -78,11 +86,13 @@ class _FakeZoneTimeFetcher {
 class _FakePhoneBackend implements PhoneActionBackend {
   final dials = <String?>[]; // every number passed to callContact
   final names = <String>[];
+  PhoneCallOutcome reply =
+      const PhoneCallOutcome(placed: true, message: 'Calling.');
   @override
   Future<PhoneCallOutcome> callContact(String name, {String? number}) async {
     names.add(name);
     dials.add(number);
-    return const PhoneCallOutcome(placed: true, message: 'Calling.');
+    return reply;
   }
 
   @override
@@ -220,6 +230,36 @@ void main() {
     expect(out.ok, isFalse);
     expect(out.message, contains('couldn\'t find'));
     expect(device.calls, isEmpty); // never a silent media key press
+  });
+
+  test('music opens through the app chooser, never a silent default', () async {
+    final searcher = _FakeMusicSearcher()
+      ..reply = const MusicHit('Hotline Bling', 'Drake', 'https://deezer.page.link/x');
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: searcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'hotline bling'},
+    ));
+    expect(out.ok, isTrue);
+    expect(device.chooserCalls, [('https://deezer.page.link/x', 'Open in')]);
+    expect(out.message, contains('opening it'));
+  });
+
+  test('unresolved calls carry the candidate names for "who did you mean?"', () async {
+    phone.reply = const PhoneCallOutcome(
+      placed: false,
+      candidates: ['Alex', 'Alicia'],
+      message: 'No contact named "alx" on this device. Did you mean "Alex"?',
+    );
+    final out = await executor.run(req(AgentActions.callPlace, {'contact': 'alx'}));
+    expect(out.ok, isFalse);
+    expect(out.candidates, ['Alex', 'Alicia']);
+    expect(out.message, contains('Did you mean'));
   });
 
   test('currency converts with today\'s fetched rate, honestly', () async {

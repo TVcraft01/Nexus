@@ -919,6 +919,7 @@ class DeviceExecutor {
         return ActionResult(
           outcome.placed || outcome.launched,
           outcome.message,
+          candidates: outcome.candidates,
         );
       }
       return const ActionResult(
@@ -950,6 +951,7 @@ class DeviceExecutor {
         return ActionResult(
           outcome.placed || outcome.launched,
           outcome.message,
+          candidates: outcome.candidates,
         );
       }
       return const ActionResult(
@@ -1205,8 +1207,13 @@ class DeviceExecutor {
         'I couldn\'t find "$query" on Deezer — check the internet or try another title.',
       );
     }
-    final opened = await _openUrl(hit.url);
-    if (!opened.ok) {
+    // Ask which app should play it (Deezer, a browser, …) instead of
+    // silently choosing one — Android shows the system picker.
+    final opened = await _deviceBackend.openLinkChooser(
+      hit.url,
+      'Open in',
+    ) ? true : await _openUrl(hit.url).then((r) => r.ok);
+    if (!opened) {
       return ActionResult(
         false,
         'Found "${hit.title}" by ${hit.artist}, but I couldn\'t open it.',
@@ -1333,6 +1340,14 @@ class DeviceExecutor {
   Future<ActionResult> _openMaps(String query) async {
     if (query.isEmpty) return const ActionResult(false, 'Where to?');
     try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        // Android opens the geo: URI through the system chooser, so the
+        // user picks Maps, Waze, … — never a silent default app.
+        return await _deviceBackend.run(
+          AgentActions.navOpen,
+          {'place': query},
+        );
+      }
       final url =
           'https://www.google.com/maps/search/?api=1&query=${Uri.encodeQueryComponent(query)}';
       if (await canLaunchUrl(Uri.parse(url))) {

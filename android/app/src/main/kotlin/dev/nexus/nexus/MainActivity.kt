@@ -372,12 +372,13 @@ class MainActivity : FlutterActivity() {
                     },
                     "searched the web",
                 )
-                "navigateTo" -> startActionIntent(
+                "navigateTo" -> startActionIntentChooser(
                     Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" +
                         Uri.encode(args?.get("place")?.toString() ?: ""))),
                     "opened directions",
+                    "Open with",
                 )
-                "calendarEvent" -> startActionIntent(
+                "calendarEvent" -> startActionIntentChooser(
                     Intent(Intent.ACTION_INSERT).apply {
                         data = CalendarContract.Events.CONTENT_URI
                         putExtra(
@@ -386,6 +387,13 @@ class MainActivity : FlutterActivity() {
                         )
                     },
                     "opened a new event",
+                    "Open with",
+                )
+                "openChooser" -> startActionIntentChooser(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(
+                        args?.get("url")?.toString() ?: "")),
+                    "opened link",
+                    args?.get("title")?.toString() ?: "Open with",
                 )
                 "torch" -> setTorch(args?.get("mode")?.toString() != "off")
                 "battery" -> batteryStatus()
@@ -454,6 +462,22 @@ class MainActivity : FlutterActivity() {
 
     private fun startActionIntent(intent: Intent, done: String): Map<String, Any?> {
         startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        return mapOf("ok" to true, "message" to done.replaceFirstChar { it.uppercase() } + ".")
+    }
+
+    /// Launches [intent] through the system app chooser, so "navigate to X"
+    /// lets the user pick Maps, Waze, … instead of silently defaulting to
+    /// one app. The chosen app is remembered by Android for next time.
+    private fun startActionIntentChooser(
+        intent: Intent,
+        done: String,
+        title: String,
+    ): Map<String, Any?> {
+        val chooser = Intent.createChooser(intent, title).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(chooser)
+        Log.i(TAG, done)
         return mapOf("ok" to true, "message" to done.replaceFirstChar { it.uppercase() } + ".")
     }
 
@@ -822,6 +846,9 @@ class MainActivity : FlutterActivity() {
                 val lower = contactMatchKey(q)
                 if (lower.isEmpty()) return@use Triple(null, null, emptyList())
                 val matched = allNames.firstOrNull { contactMatchKey(it) == lower }
+                    ?: if (lower.length >= 3) allNames.firstOrNull {
+                        Regex("\\b" + Regex.escape(lower)).containsMatchIn(contactMatchKey(it))
+                    } else null
                 val address = matched?.let { addressByName[it] }
                 val ranked = rankedContactMatches(addressByName.keys.toList(), name)
                 Triple(address, matched, ranked)
@@ -1209,7 +1236,16 @@ class MainActivity : FlutterActivity() {
                 val q = name.trim()
                 val lower = contactMatchKey(q)
                 if (lower.isEmpty()) return@use Triple(null, null, emptyList())
+                // Exact (case/accents folded) match dials straight away. When
+                // the user's wording is a word inside a longer display name
+                // ("call TVcraft01" -> "TVcraft01 Dad"), a strong word-boundary
+                // substring match dials too — the full word they said is right
+                // there in the contact name. Short queries stay exact-only so
+                // "call a" never rings Anna by accident.
                 val matched = allNames.firstOrNull { contactMatchKey(it) == lower }
+                    ?: if (lower.length >= 3) allNames.firstOrNull {
+                        Regex("\\b" + Regex.escape(lower)).containsMatchIn(contactMatchKey(it))
+                    } else null
                 // Normalize once, here, so calls, the dialer fallback, texts
                 // and video all receive the same clean international number.
                 val number = matched?.let { numberByName[it] }
@@ -1351,7 +1387,11 @@ fun rankedContactMatches(candidates: List<String>, query: String, limit: Int = 3
         candidates.asSequence().filter { it.lowercase() == lower },
         candidates.asSequence().filter { contactMatchKey(it) == lower },
         candidates.asSequence().filter { contactMatchKey(it).startsWith(lower) },
-        candidates.asSequence().filter { contactMatchKey(it).contains(lower) },
+        candidates.asSequence().filter {
+            // Word-boundary contains: "call tom" must offer Tom, never Atom —
+            // but "TVcraft01" inside "TVcraft01 Dad" is a real hit.
+            Regex("\\b" + Regex.escape(lower)).containsMatchIn(contactMatchKey(it))
+        },
     )
         .flatten()
         .distinct()
