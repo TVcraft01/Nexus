@@ -2,7 +2,7 @@ name: nexus
 description: "Nexus — your devices, one system. A local-first mesh where your devices find, pair, and talk to each other directly — no cloud, no account."
 publish_to: 'none'
 
-version: 0.1.44+144
+version: 0.1.45+145
 
 environment:
   sdk: ^3.13.0
