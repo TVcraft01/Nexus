@@ -414,13 +414,27 @@ void main() {
     }
     expect(learned, isTrue, reason: 'B never learned A\'s new name');
 
-    // The new name is persisted in B's store, not just in memory.
-    final reloaded = NexusStore(explicitPath: storeB.explicitPath);
-    await reloaded.load();
-    final stored = reloaded.pairedDevices.firstWhere(
-      (d) => d['id'] == 'device-a',
-    );
-    expect(stored['name'], 'New PC Name');
+    // The new name is persisted in B's store, not just in memory. B's
+    // in-memory name updates before its awaited store save lands on disk
+    // (async I/O between the temp write and the atomic rename), so reading
+    // the file once right after `learned` can catch the pre-rename snapshot
+    // and flake on slow disks. Poll the FILE instead — bounded, and the
+    // fast path is a single read when the save already landed.
+    var persisted = false;
+    for (var i = 0; i < 30 && !persisted; i++) {
+      final reloaded = NexusStore(explicitPath: storeB.explicitPath);
+      await reloaded.load();
+      persisted =
+          reloaded.pairedDevices
+              .where((d) => d['id'] == 'device-a')
+              .map((d) => d['name'])
+              .firstOrNull ==
+          'New PC Name';
+      if (!persisted) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
+    expect(persisted, isTrue, reason: "B's store never persisted A's new name");
   });
 
   test(
