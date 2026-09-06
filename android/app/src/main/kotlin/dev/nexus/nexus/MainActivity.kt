@@ -67,6 +67,13 @@ class MainActivity : FlutterActivity() {
     private var pendingVideoApp: String? = null
     private var pendingVideoResult: MethodChannel.Result? = null
 
+    // "email mom": resolving the address needs READ_CONTACTS too, requested
+    // on first use with the MethodChannel result held across the dialog.
+    private val REQUEST_EMAIL_PERMISSIONS = 42605
+    private var pendingEmailContact: String? = null
+    private var pendingEmailBody: String? = null
+    private var pendingEmailResult: MethodChannel.Result? = null
+
     // Voice input: RECORD_AUDIO is requested at runtime on first use, with
     // the MethodChannel result held across the dialog like the call flow.
     private val SPEECH_CHANNEL = "dev.nexus.nexus/speech"
@@ -149,6 +156,15 @@ class MainActivity : FlutterActivity() {
                     sendText(
                         args?.get("contact")?.toString() ?: "",
                         args?.get("number")?.toString(),
+                        args?.get("body")?.toString(),
+                        result,
+                    )
+                } else if (call.method == "sendEmail") {
+                    // Emailing resolves the recipient's address first, exactly
+                    // like texts — same READ_CONTACTS flow.
+                    val args = call.arguments as? Map<*, *>
+                    sendEmail(
+                        args?.get("contact")?.toString() ?: "",
                         args?.get("body")?.toString(),
                         result,
                     )
@@ -290,6 +306,23 @@ class MainActivity : FlutterActivity() {
             }
             finishVideo(name ?: "", app ?: "", result)
         }
+        if (requestCode == REQUEST_EMAIL_PERMISSIONS) {
+            val name = pendingEmailContact
+            val body = pendingEmailBody
+            val result = pendingEmailResult
+            pendingEmailContact = null
+            pendingEmailBody = null
+            pendingEmailResult = null
+            if (result == null) return
+            if (!granted(Manifest.permission.READ_CONTACTS)) {
+                result.success(mapOf(
+                    "ok" to false,
+                    "message" to "Contacts permission was not granted — I can't look up \"${name ?: ""}\".",
+                ))
+                return
+            }
+            finishEmail(name ?: "", body, result)
+        }
         if (requestCode == REQUEST_SPEECH_PERMISSIONS) {
             val result = pendingSpeechResult
             pendingSpeechResult = null
@@ -323,7 +356,10 @@ class MainActivity : FlutterActivity() {
                 )
                 "torch" -> setTorch(args?.get("mode")?.toString() != "off")
                 "battery" -> batteryStatus()
-                "volume" -> adjustVolume(args?.get("mode")?.toString() ?: "up")
+                "volume" -> adjustVolume(
+                    args?.get("mode")?.toString() ?: "up",
+                    (args?.get("level") as? Number)?.toInt(),
+                )
                 "openApp" -> openApp(
                     args?.get("query")?.toString() ?: "",
                     args?.get("hint")?.toString(),
@@ -420,13 +456,25 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    private fun adjustVolume(mode: String): Map<String, Any?> {
+    private fun adjustVolume(mode: String, level: Int? = null): Map<String, Any?> {
         val am = getSystemService(AudioManager::class.java)
         when (mode) {
             "mute" -> am.adjustStreamVolume(
                 AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
             "down" -> am.adjustStreamVolume(
                 AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
+            "set" -> {
+                // "volume 50" — scale the 0-100 level onto the stream's real
+                // range so it maps to the same loudness on every device.
+                val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                val clamped = (level ?: 50).coerceIn(0, 100)
+                am.setStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    (clamped * max) / 100,
+                    0,
+                )
+                return mapOf("ok" to true, "message" to "Volume set to $clamped%.")
+            }
             else -> am.adjustStreamVolume(
                 AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
         }
@@ -581,6 +629,90 @@ class MainActivity : FlutterActivity() {
                 else -> noContactResult(contact, ranked, matched, verb = "text them")
             }
         )
+    }
+
+    /// "email mom": resolves the recipient's address from the address book
+    /// (READ_CONTACTS requested on first use, result held across the dialog)
+    /// and opens the mail composer with the address and draft — mirror of
+    /// the text path, honest at every step.
+    private fun sendEmail(
+        contact: String,
+        body: String?,
+        result: MethodChannel.Result,
+    ) {
+        val name = contact.trim()
+        if (name.isEmpty()) {
+            result.success(mapOf("ok" to false, "message" to "Who should I email?"))
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            pendingEmailContact = name
+            pendingEmailBody = body
+            pendingEmailResult = result
+            requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), REQUEST_EMAIL_PERMISSIONS)
+            return
+        }
+        finishEmail(name, body, result)
+    }
+
+    /// Resolves [name]'s address and completes [result] with the outcome.
+    private fun finishEmail(name: String, body: String?, result: MethodChannel.Result) {
+        val (address, matched, ranked) = lookupContactEmail(name)
+        result.success(
+            when {
+                address != null -> openMailComposer(name, address, body)
+                else -> noContactResult(name, ranked, matched, verb = "email them")
+            }
+        )
+    }
+
+    /// Opens the mail composer addressed to [address] with [body] drafted.
+    private fun openMailComposer(name: String, address: String, body: String?): Map<String, Any?> = try {
+        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$address")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (!body.isNullOrBlank()) putExtra(Intent.EXTRA_TEXT, body)
+        }
+        startActivity(intent)
+        mapOf("ok" to true, "message" to "Opened an email to $name — ready to send.")
+    } catch (e: Exception) {
+        Log.e(TAG, "could not open the mail composer", e)
+        mapOf("ok" to false, "message" to "Could not open your mail app.")
+    }
+
+    /// Best email address for [name] plus the closest matching display
+    /// names. Returns (address-or-null, matched-name-or-null, ranked). Only
+    /// an exact or case-insensitive full name match is trusted; looser
+    /// matches come back as candidates so the assistant can ask "who did you
+    /// mean?" like calls and texts do.
+    private fun lookupContactEmail(name: String): Triple<String?, String?, List<String>> {
+        return try {
+            val uri = ContactsContract.CommonDataKinds.Email.CONTENT_URI
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Email.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Email.ADDRESS,
+            )
+            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                // First non-blank address wins per display name.
+                val addressByName = LinkedHashMap<String, String>()
+                val allNames = LinkedHashSet<String>()
+                while (cursor.moveToNext()) {
+                    val displayName = cursor.getString(0) ?: continue
+                    allNames.add(displayName)
+                    val address = cursor.getString(1)
+                    if (!address.isNullOrBlank()) addressByName.putIfAbsent(displayName, address)
+                }
+                val q = name.trim()
+                val lower = contactMatchKey(q)
+                if (lower.isEmpty()) return@use Triple(null, null, emptyList())
+                val matched = allNames.firstOrNull { contactMatchKey(it) == lower }
+                val address = matched?.let { addressByName[it] }
+                val ranked = rankedContactMatches(addressByName.keys.toList(), name)
+                Triple(address, matched, ranked)
+            } ?: Triple(null, null, emptyList())
+        } catch (e: Exception) {
+            Log.e(TAG, "email lookup failed", e)
+            Triple(null, null, emptyList())
+        }
     }
 
     /// Voice input: RECORD_AUDIO is requested on first use, then one

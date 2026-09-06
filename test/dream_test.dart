@@ -10,9 +10,9 @@ void main() {
   // user's re-ask answer "no" — the phrase must come from the route), one
   // phrase since understood, one succeeded ask, a torn line, a fact event.
   final lines = [
-    '{"ts":"t","kind":"ask","input":"bring me home","status":"needsInfo","route":"teach:bring me home","detail":""}',
-    '{"ts":"t","kind":"ask","input":"no","status":"needsInfo","route":"teach:bring me home","detail":""}',
-    '{"ts":"t","kind":"ask","input":"wake me at 7","status":"needsInfo","route":"teach:wake me at 7","detail":""}',
+    '{"ts":"t","kind":"ask","input":"turn on the lights","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
+    '{"ts":"t","kind":"ask","input":"no","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
+    '{"ts":"t","kind":"ask","input":"lock the door","status":"needsInfo","route":"teach:lock the door","detail":""}',
     '{"ts":"t","kind":"ask","input":"show my devices","status":"succeeded","route":"message","detail":""}',
     'not json at all',
     '{"ts":"t","kind":"fact","op":"remember","text":"x"}',
@@ -21,8 +21,8 @@ void main() {
   test('groups dead-end phrases, counts repeats, sorts most-asked first', () {
     final insights = dream.unknownPhrases(lines);
     expect(insights.map((i) => i.phrase).toList(), [
-      'bring me home',
-      'wake me at 7',
+      'turn on the lights',
+      'lock the door',
     ]);
     expect(insights.first.count, 2);
   });
@@ -32,9 +32,9 @@ void main() {
     () {
       expect(
         dream
-            .unknownPhrases(lines, exclude: {'bring me home'})
+            .unknownPhrases(lines, exclude: {'turn on the lights'})
             .map((i) => i.phrase),
-        ['wake me at 7'],
+        ['lock the door'],
       );
       // A stale route can carry a phrase the interpreter understands by
       // now (a pattern landed since) — it must never be shown.
@@ -43,8 +43,8 @@ void main() {
         '{"ts":"t","kind":"ask","input":"no","status":"needsInfo","route":"teach:show my devices","detail":""}',
       ];
       expect(dream.unknownPhrases(understoodNow).map((i) => i.phrase), [
-        'bring me home',
-        'wake me at 7',
+        'turn on the lights',
+        'lock the door',
       ]);
     },
   );

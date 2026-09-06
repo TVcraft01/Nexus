@@ -51,6 +51,7 @@ class RealDeviceActionBackend implements DeviceActionBackend {
           AgentActions.appOpen => 'openApp',
           AgentActions.appClose => 'closeApp',
           AgentActions.messageSend => 'sendText',
+          AgentActions.emailSend => 'sendEmail',
           AgentActions.mediaPlay ||
           AgentActions.mediaPause ||
           AgentActions.mediaNext ||

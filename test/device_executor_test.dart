@@ -104,4 +104,37 @@ void main() {
     expect(out.ok, isFalse);
     expect(device.calls, isEmpty);
   });
+
+  test('email forwards contact and body to the device backend', () async {
+    await executor.run(req(
+      AgentActions.emailSend,
+      {'contact': 'mom', 'body': 'hi'},
+    ));
+    final (action, args) = device.calls.single;
+    expect(action, AgentActions.emailSend);
+    expect(args['contact'], 'mom');
+    expect(args['body'], 'hi');
+  });
+
+  test('a volume level reaches the backend as a set mode', () async {
+    await executor.run(req(
+      AgentActions.volumeSet,
+      {'mode': 'set', 'level': 50},
+    ));
+    final (action, args) = device.calls.single;
+    expect(action, AgentActions.volumeSet);
+    expect(args['mode'], 'set');
+    expect(args['level'], 50);
+  });
+
+  test('targeted play answers honestly — no fake library search', () async {
+    final out = await executor.run(req(
+      AgentActions.mediaPlay,
+      {'query': 'my playlist'},
+    ));
+    expect(out.ok, isFalse); // honest: cannot search the library
+    expect(out.message, contains('search'));
+    expect(device.calls, isEmpty); // never a silent media key press
+  });
 }
+

@@ -39,7 +39,7 @@ void main() {
       expect(find.text('No devices found.'), findsOneWidget);
 
       // Unknown command → the assistant asks what it should mean (teachable).
-      await tester.enterText(find.byType(TextField), 'bring me home');
+      await tester.enterText(find.byType(TextField), 'teleport me to mars');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pump();
       expect(find.text('Question'), findsOneWidget);

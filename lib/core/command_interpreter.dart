@@ -92,6 +92,15 @@ class CommandInterpreter {
     'define serendipity',
     'translate hello to french',
     'convert 5 miles to km',
+    'convert 100 usd to eur',
+    // Weather & getting around
+    'weather in paris',
+    'take me home',
+    'navigate to the office',
+    // Communication
+    'email mom saying hi',
+    // Math with words
+    'what is 15% of 80',
     // Fun
     'roll a dice',
     'flip a coin',
@@ -343,13 +352,94 @@ class CommandInterpreter {
       );
     }
 
+    // --- Weather (before math: "what is the weather in paris" must never
+    // become a memory question about "the weather in paris").
+    final weather = RegExp(
+      r'^(?:'
+      r'what is the weather|weather today|weather now|weather forecast|'
+      r'how is the weather|check the weather|weather|'
+      r'is it going to rain|will it rain|is it raining|'
+      r'temperature|what is the temperature|how hot is it|how cold is it|'
+      r'quel temps fait il|meteo|il pleut|va t il pleuvoir|'
+      r'quelle est la temperature|il fait quel temps'
+      r')(?: (?:in|at|for|a|dans|sur|de) (.+))?$',
+    ).firstMatch(norm);
+    if (weather != null) {
+      final place = weather.group(1)?.trim() ?? '';
+      if (place.isEmpty) {
+        return InterpretResult.needsInfo(
+          'weather.get.place',
+          'Which city? Try "weather in Paris".',
+          const ParsedCommand(action: AgentActions.weatherGet, target: 'local'),
+        );
+      }
+      final rainy = RegExp(
+        r'rain|pleuvoir|pleut',
+      ).hasMatch(norm);
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.weatherGet,
+          target: 'local',
+          arguments: {'place': place, 'kind': rainy ? 'rain' : 'now'},
+        ),
+      );
+    }
+
+    // --- Navigation: "take me home" and friends open the map app.
+    if (_oneOf(norm, const [
+      'take me home',
+      'bring me home',
+      'get me home',
+      'how do i get home',
+      'navigate home',
+      'directions home',
+      'ramene moi a la maison',
+      'ramene moi chez moi',
+      'je veux rentrer',
+    ])) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.navOpen,
+          target: 'local',
+          arguments: {'query': 'home'},
+        ),
+      );
+    }
+    final navTo = RegExp(
+      r'^(?:navigate to|directions to|route to|how do i get to|'
+      r'show me the way to|navigue vers|itineraire vers|comment aller a) (.+)$',
+    ).firstMatch(norm);
+    if (navTo != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.navOpen,
+          target: 'local',
+          arguments: {'query': navTo.group(1)!.trim()},
+        ),
+      );
+    }
+
+    // --- Timezone questions ("what time is it in paris") — honest web
+    // search; this app has no timezone database to answer inline.
+    final tz = RegExp(r'^what time is it in (.+)$').firstMatch(norm) ??
+        RegExp(r'^quelle heure est il (?:a|dans|en) (.+)$').firstMatch(norm);
+    if (tz != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.webSearch,
+          target: 'local',
+          arguments: {'query': 'current time in ${tz.group(1)!.trim()}'},
+        ),
+      );
+    }
+
     // --- Math
     final what = RegExp(
       r'^(what is|how much is|calculate|compute|work out|solve) (.+)$',
     ).firstMatch(norm);
     if (what != null) {
       final expr = _toSymbols(what.group(2)!);
-      if (RegExp(r'^[0-9+\-*/(). ]+$').hasMatch(expr) &&
+      if (RegExp(r'^[0-9+\-*/().% ]+$').hasMatch(expr) &&
           RegExp(r'\d').hasMatch(expr)) {
         return InterpretResult.matched(
           ParsedCommand(
@@ -370,18 +460,23 @@ class CommandInterpreter {
         ),
       );
     }
-    // Bare arithmetic: "2 + 2"
+    // Bare arithmetic: "2 + 2" (also "15% of 80", via _toSymbols). Spaced
+    // expressions stay untouched so the echo shows what was typed.
     final bare = norm.trim();
     if (RegExp(r'^\d').hasMatch(bare) &&
-        RegExp(r'^[0-9+\-*/(). ]+$').hasMatch(bare) &&
-        RegExp(r'[+\-*/]').hasMatch(bare)) {
-      return InterpretResult.matched(
-        ParsedCommand(
-          action: AgentActions.mathCalc,
-          target: 'local',
-          arguments: {'expr': bare},
-        ),
-      );
+        RegExp(r'^[0-9+\-*/().%a-z ]+$').hasMatch(bare) &&
+        RegExp(r'[+\-*/%]').hasMatch(bare)) {
+      final expr = RegExp(r'[a-z]').hasMatch(bare) ? _toSymbols(bare) : bare;
+      if (RegExp(r'^[0-9+\-*/().% ]+$').hasMatch(expr) &&
+          RegExp(r'\d').hasMatch(expr)) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.mathCalc,
+            target: 'local',
+            arguments: {'expr': expr},
+          ),
+        );
+      }
     }
 
     // --- Find/ring my device (before web-search & call: "find my phone"
@@ -427,6 +522,37 @@ class CommandInterpreter {
           target: 'local',
           arguments: {'query': 'define ${define.group(1)!.trim()}'},
         ),
+      );
+    }
+
+    // --- Timer status & cancel. System timers (set via the Clock app
+    // intent) cannot be read or stopped from inside an app — the honest
+    // answer lives in the catalog.
+    if (_oneOf(norm, const [
+      'how much time is left',
+      'time left',
+      'time remaining',
+      'timer status',
+      'how long until the timer',
+      'combien de temps reste il',
+      'temps restant',
+      'etat du minuteur',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.timerStatus, target: 'local'),
+      );
+    }
+    if (_oneOf(norm, const [
+      'cancel the timer',
+      'stop the timer',
+      'end the timer',
+      'delete the timer',
+      'arrete le minuteur',
+      'stop le minuteur',
+      'annule le minuteur',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.timerCancel, target: 'local'),
       );
     }
 
@@ -743,6 +869,26 @@ class CommandInterpreter {
       }
     }
 
+    // --- Volume to a level: "volume 50" / "set volume to 50%" — Siri's
+    // numeric phrasing, mapped to a set mode the executor can honor.
+    final volumeNum = RegExp(
+      r'^(?:set )?volume (?:to |at )?(\d{1,3})(?:\s*%)?$',
+    ).firstMatch(norm) ??
+        RegExp(r'^mets (?:le |la )?volume (?:a|sur) (\d{1,3})(?:\s*%)?$')
+            .firstMatch(norm);
+    if (volumeNum != null) {
+      final level = int.tryParse(volumeNum.group(1)!);
+      if (level != null && level >= 0 && level <= 100) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.volumeSet,
+            target: 'local',
+            arguments: {'mode': 'set', 'level': level},
+          ),
+        );
+      }
+    }
+
     // --- Volume. Every alternative is captured so "mute", "unmute",
     // "volume up and down" and "toggle volume" each map to the mode they
     // mean — never silently all the way to mute.
@@ -859,6 +1005,22 @@ class CommandInterpreter {
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.lockScreen, target: 'local'),
+      );
+    }
+
+    // --- Dark mode (honest answer in the service layer — an app cannot
+    // switch the system theme by itself).
+    if (_oneOf(norm, const [
+      'dark mode on',
+      'turn on dark mode',
+      'enable dark mode',
+      'dark mode',
+      'dark theme',
+      'mode sombre',
+      'theme sombre',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.darkModeSet, target: 'local'),
       );
     }
 
@@ -1078,6 +1240,70 @@ class CommandInterpreter {
       );
     }
 
+    // --- Email: "email mom", "email mom saying hi", "send an email to
+    // mom" — mirrors the text flow; the native side resolves the contact's
+    // email address.
+    final emailTo = RegExp(
+      r'^(?:email|e mail|mail) (.+?)(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
+    ).firstMatch(norm);
+    if (emailTo != null) {
+      final contact = _stripDeviceSuffix(emailTo.group(1)!);
+      final body = _stripDeviceSuffix(emailTo.group(2) ?? '');
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.emailSend,
+          target: 'local',
+          arguments: {'contact': contact, if (body.isNotEmpty) 'body': body},
+        ),
+      );
+    }
+    final emailSendTo = RegExp(
+      r'^send (?:an? )?(?:email|e mail|mail) to '
+      r'(.+?)(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
+    ).firstMatch(norm);
+    if (emailSendTo != null) {
+      final contact = _stripDeviceSuffix(emailSendTo.group(1)!);
+      final body = _stripDeviceSuffix(emailSendTo.group(2) ?? '');
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.emailSend,
+          target: 'local',
+          arguments: {'contact': contact, if (body.isNotEmpty) 'body': body},
+        ),
+      );
+    }
+    final emailObj = RegExp(
+      r'^send (.+?) (?:an email|an e mail|a mail)'
+      r'(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
+    ).firstMatch(norm);
+    if (emailObj != null) {
+      final contact = _stripDeviceSuffix(emailObj.group(1)!);
+      final body = _stripDeviceSuffix(emailObj.group(2) ?? '');
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.emailSend,
+          target: 'local',
+          arguments: {'contact': contact, if (body.isNotEmpty) 'body': body},
+        ),
+      );
+    }
+    // French: "envoie un email a mom disant salut"
+    final frEmail = RegExp(
+      r'^envoie (?:un |une )?(?:email|mail|e mail) a '
+      r'(.+?)(?:\s+(?:disant|en disant|saying)\s+(.+))?$',
+    ).firstMatch(norm);
+    if (frEmail != null) {
+      final contact = _stripDeviceSuffix(frEmail.group(1)!);
+      final body = _stripDeviceSuffix(frEmail.group(2) ?? '');
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.emailSend,
+          target: 'local',
+          arguments: {'contact': contact, if (body.isNotEmpty) 'body': body},
+        ),
+      );
+    }
+
     // --- Clipboard: "copy <text>" or "send <text> to <device>". Only the
     // "copy" verb and device-targeted sends land here — a bare "send papi
     // salut" is a message to a person, never a clipboard write.
@@ -1196,6 +1422,69 @@ class CommandInterpreter {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.mediaRepeat, target: 'local'),
       );
+    }
+    // "play my playlist" / "play chill vibes" / "joue ma playlist" —
+    // media with a target. The executor answers honestly: playback
+    // control yes, library search no (no music-service integration).
+    final playQuery = RegExp(r'^play (.+)$').firstMatch(norm) ??
+        RegExp(r'^joue (?:ma |la |de la )?(.+)$').firstMatch(norm);
+    if (playQuery != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.mediaPlay,
+          target: 'local',
+          arguments: {'query': playQuery.group(1)!.trim()},
+        ),
+      );
+    }
+
+    // --- Alarm dismiss: "turn off the alarm" — the honest answer opens
+    // the Clock app (apps cannot dismiss system alarms).
+    if (_oneOf(norm, const [
+      'turn off the alarm',
+      'turn off my alarm',
+      'stop the alarm',
+      'cancel the alarm',
+      'dismiss the alarm',
+      'cancel my alarm',
+      'arrete le reveil',
+      'arrete mon reveil',
+      'stop le reveil',
+      'eteins le reveil',
+      'annule le reveil',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.alarmDismiss, target: 'local'),
+      );
+    }
+
+    // "wake me up at 7" — Siri's phrasing for setting an alarm.
+    final wake = RegExp(r'^wake me (?:up )?(?:at|for)? ?(.+)$').firstMatch(norm);
+    if (wake != null) {
+      final parsed = parseClockTime(wake.group(1)!.trim());
+      if (parsed != null) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.alarmSet,
+            target: 'local',
+            arguments: {'hour': parsed.$1, 'minute': parsed.$2},
+          ),
+        );
+      }
+    }
+    final reveil = RegExp(r'^reveille (?:moi|me) (?:a|sur)? ?(.+)$')
+        .firstMatch(norm);
+    if (reveil != null) {
+      final parsed = parseClockTime(reveil.group(1)!.trim());
+      if (parsed != null) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.alarmSet,
+            target: 'local',
+            arguments: {'hour': parsed.$1, 'minute': parsed.$2},
+          ),
+        );
+      }
     }
 
     // --- Alarm
@@ -1366,7 +1655,13 @@ class CommandInterpreter {
   }
 
   static (int, int)? parseClockTime(String raw) {
-    final t = raw.trim().toLowerCase().replaceAll('.', '');
+    final t = raw
+        .trim()
+        .toLowerCase()
+        .replaceAll('.', '')
+        // French clock format: "7h" / "7h30" / "19h30" — only when the h
+        // follows digits, so "midnight" never becomes "mid:nit".
+        .replaceAllMapped(RegExp(r'(?<=\d)h'), (_) => ':');
     if (t == 'noon') return (12, 0);
     if (t == 'midnight') return (0, 0);
     final m = RegExp(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$').firstMatch(t);
@@ -1422,6 +1717,10 @@ class CommandInterpreter {
         .replaceAll('plus', '+')
         .replaceAll('minus', '-')
         .replaceAll('over', '/')
+        // "15 percent of 80" / "15% of 80" -> 15/100*80
+        .replaceAll('percent', '%')
+        .replaceAll('%', '/100')
+        .replaceAll(RegExp(r'\bof\b'), '*')
         .replaceAll(RegExp(r'\s+'), '');
   }
 }

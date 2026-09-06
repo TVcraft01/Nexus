@@ -280,6 +280,9 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.noteCreate,
     AgentActions.timerSet,
     AgentActions.openUrl,
+    AgentActions.weatherGet,
+    AgentActions.navOpen,
+    AgentActions.emailSend,
     AgentActions.systemInfo,
     AgentActions.volumeSet,
     AgentActions.appOpen,
@@ -626,13 +629,13 @@ class _AssistantViewState extends State<AssistantView> {
           'what can you do',
           'what time is it',
           'what do you know about me',
-          'battery',
+          'what is the weather in paris',
+          'take me home',
+          'play my playlist',
           'open youtube',
           'call mom',
-          'roll a dice',
+          'email mom',
           'flashlight on',
-          'tell me a joke',
-          'screenshot',
         ];
     return SizedBox(
       height: 40,
@@ -999,7 +1002,7 @@ class _AssistantViewState extends State<AssistantView> {
                   onSubmitted: (_) => _onSubmit(),
                   decoration: InputDecoration(
                     hintText: _pendingKey == null
-                        ? 'Ask anything — "play my playlist", "bring me home"…'
+                        ? 'Ask anything — "what is the weather", "take me home"…'
                         : 'Answer the question — or type a new command',
                     border: InputBorder.none,
                     contentPadding: EdgeInsets.symmetric(

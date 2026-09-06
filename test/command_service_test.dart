@@ -166,7 +166,7 @@ void main() {
         // must never be a silent unavailable.
         for (final phrase in [
           'set an alarm for 7am',
-          "what's the weather",
+          'what is the weather in paris',
           'search for cats',
           'pause the music',
         ]) {
@@ -193,7 +193,7 @@ void main() {
     });
 
     test('unrecognized phrases ask to be taught — never fake a result', () {
-      for (final phrase in ['navigate to the office', 'turn on the lights']) {
+      for (final phrase in ['turn on the lights', 'lock the door']) {
         final result = service.execute(phrase);
         expect(result.status, AgentResultStatus.needsInfo, reason: phrase);
         expect(
@@ -290,8 +290,8 @@ void main() {
 
     test('phrases with no near match still go straight to the teach loop', () {
       for (final phrase in [
-        'navigate to the office',
         'turn on the lights',
+        'lock the door',
         'teleport me to mars',
       ]) {
         final result = service.execute(phrase);

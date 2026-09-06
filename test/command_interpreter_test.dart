@@ -29,28 +29,33 @@ void main() {
     }
   });
 
-  test(
-    '"play <playlist>" stays teachable — playlists are not a separate command',
-    () {
-      // The advertised media surface is play/pause/skip, not playlist
-      // selection. These phrasings must never silently press play on the
-      // wrong thing — they stay unknown so the assistant offers to learn.
-      for (final phrase in ['play my playlist', 'play chill vibes']) {
-        final result = interpreter.interpret(phrase);
-        expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
-      }
-    },
-  );
-
-  test('context-dependent phrases like "bring me home" ask to be taught', () {
-    for (final phrase in [
-      'bring me home',
-      'take me home',
-      'show me the way home',
-    ]) {
+  test('"play <playlist>" maps to media with an honest query arg', () {
+    // The advertised surface now includes targeted play ("play my
+    // playlist"). It parses as media.play WITH the query — the executor
+    // answers honestly that library search isn't wired up, instead of
+    // silently pressing play on the wrong thing.
+    for (final phrase in ['play my playlist', 'play chill vibes']) {
       final result = interpreter.interpret(phrase);
-      expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
+      expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+      expect(result.command!.action, AgentActions.mediaPlay, reason: phrase);
+      expect(
+        result.command!.arguments['query'],
+        isNotEmpty,
+        reason: phrase,
+      );
     }
+  });
+
+  test('"bring me home" and friends open navigation', () {
+    for (final phrase in ['bring me home', 'take me home']) {
+      final result = interpreter.interpret(phrase);
+      expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+      expect(result.command!.action, AgentActions.navOpen, reason: phrase);
+      expect(result.command!.arguments['query'], 'home', reason: phrase);
+    }
+    final office = interpreter.interpret('navigate to the office');
+    expect(office.command!.action, AgentActions.navOpen);
+    expect(office.command!.arguments['query'], 'the office');
   });
 
   test('unrecognized input is a teaching opportunity', () {
@@ -144,26 +149,31 @@ void main() {
       );
     });
 
-    test(
-      'unadvertised extras (weather, news, calendar) never fake an answer',
-      () {
-        // None of these are promised commands. They route through memory first
-        // (a taught fact wins); with nothing stored the service falls back to
-        // a web search — still honest, never a claimed fake action.
-        expect(
-          interpreter.interpret("what's the weather").command!.action,
-          AgentActions.memoryQuestion,
-        );
-        expect(
-          interpreter.interpret('what is the news').command!.action,
-          AgentActions.memoryQuestion,
-        );
-        expect(
-          interpreter.interpret('what is on my calendar').command!.action,
-          AgentActions.memoryQuestion,
-        );
-      },
-    );
+    test('weather is a real command; news and calendar stay honest', () {
+      // Weather is now fetched live; news/calendar are still not promised
+      // commands — they route through memory first, then fall back to a web
+      // search. Never a claimed fake action.
+      expect(
+        interpreter.interpret("what's the weather").outcome,
+        InterpretOutcome.needsInfo,
+      );
+      final inParis = interpreter.interpret('what is the weather in paris');
+      expect(inParis.command!.action, AgentActions.weatherGet);
+      expect(inParis.command!.arguments['place'], 'paris');
+      expect(
+        interpreter.interpret('will it rain in paris').command!
+            .arguments['kind'],
+        'rain',
+      );
+      expect(
+        interpreter.interpret('what is the news').command!.action,
+        AgentActions.memoryQuestion,
+      );
+      expect(
+        interpreter.interpret('what is on my calendar').command!.action,
+        AgentActions.memoryQuestion,
+      );
+    });
 
     test('music play/pause/skip maps to the media actions', () {
       expect(
@@ -199,16 +209,10 @@ void main() {
       expect(modeOf('make it quieter'), (AgentActions.volumeSet, 'down'));
     });
 
-    test('unadvertised smart-home/navigation phrases stay teachable', () {
+    test('unadvertised smart-home phrases stay teachable', () {
       // No fake "home control" action exists — these stay teachable
-      // (unknown), never a pretend success.
-      for (final phrase in [
-        'turn on the lights',
-        'lock the door',
-        'navigate to the office',
-        'take me home',
-        'bring me home',
-      ]) {
+      // (unknown), never a pretend success. Navigation is real now.
+      for (final phrase in ['turn on the lights', 'lock the door']) {
         expect(
           interpreter.interpret(phrase).outcome,
           InterpretOutcome.unknown,
