@@ -54,6 +54,25 @@ class CommandService {
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
 
+  /// Whether [input] parses as something actionable — a known command, or a
+  /// known command still missing one argument — rather than an unknown
+  /// phrase. The view uses this to decide that a message typed while a
+  /// clarification is open is a NEW request, never the answer to a stale
+  /// question ("call mom" while "teach me 'open deezer'" is open must call
+  /// mom, not become a lesson about deezer).
+  bool parsesAsCommand(String input) {
+    final normalized = CommandInterpreter.normalizePhrase(input);
+    return _interpreter.interpret(normalized).outcome !=
+        InterpretOutcome.unknown;
+  }
+
+  /// Drops a pending clarification. Called when the user moves on and types
+  /// a new command instead of answering — the question must vanish from the
+  /// service's memory so it can never swallow a later input.
+  void cancelPending(String key) {
+    _pendingContext.remove(key);
+  }
+
   /// The device pinned for an action ("call mom" -> My Phone), keyed by the
   /// action. Sticky on purpose: the approval re-run of the original command
   /// must not forget it, and "I'll remember which one" is the promise.

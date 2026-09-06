@@ -80,8 +80,12 @@ void main() {
       expect(find.text('Question'), findsOneWidget);
       expect(find.textContaining('Did you mean'), findsOneWidget);
       expect(find.textContaining('what time is it'), findsWidgets);
-      // The composer tells the user it is now an answer box.
-      expect(find.text('Type your answer…'), findsOneWidget);
+      // The composer tells the user it is now an answer box — while a
+      // typed command still runs as its own request.
+      expect(
+        find.text('Answer the question — or type a new command'),
+        findsOneWidget,
+      );
 
       // Confirming with "yes" runs it…
       await ask(tester, 'yes');
@@ -133,12 +137,20 @@ void main() {
         expect(find.text('Question'), findsOneWidget);
         expect(find.textContaining('still don\'t understand'), findsOneWidget);
 
-        // Teaching a real command closes the loop.
+        // A real command typed while the question is open is a NEW request,
+        // not a lesson: it runs and drops the stale teach question instead
+        // of silently re-mapping the failed phrase. (Teaching lives in the
+        // dedicated dream review — covered by the dream flow tests.)
         await ask(tester, 'roll a dice');
         expect(find.text('Question'), findsNothing);
         expect(find.text('Done'), findsOneWidget);
         expect(find.textContaining(RegExp(r'Rolled a [1-6]!')), findsOneWidget);
-        expect(store.agentLearned['zzz qqq xyz'], 'roll a dice');
+        expect(
+          store.agentLearned['zzz qqq xyz'],
+          isNull,
+          reason: 'a fresh command must never be learned as the meaning of '
+              'the phrase the assistant failed on',
+        );
       } finally {
         QueryLog.i.resetForTest();
         await mesh.stop();
@@ -173,6 +185,55 @@ void main() {
         await ask(tester, 'what time is is');
         expect(find.text('Question'), findsNothing);
         expect(find.text('Done'), findsOneWidget);
+      } finally {
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets(
+    'a command typed while a question is open wins: the stale question is '
+    'dropped, never answered or silently learned',
+    (tester) async {
+      final (store, mesh) = await boot();
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump();
+
+        // The user asks something the assistant doesn't know yet.
+        await ask(tester, 'teleport me to mars');
+        expect(
+          find.textContaining('don\'t understand "teleport me to mars"'),
+          findsOneWidget,
+        );
+
+        // Instead of answering the teach question they move on and type a
+        // real command — it must RUN, not be eaten as a lesson.
+        await ask(tester, 'what time is it');
+        expect(find.textContaining("It's "), findsOneWidget);
+        expect(
+          store.agentLearned['teleport me to mars'],
+          isNull,
+          reason: 'a fresh command must never be learned as the meaning of '
+              'the phrase it interrupted',
+        );
+
+        // The dropped question must not haunt the conversation: the next
+        // unknown phrase opens a fresh teach question about ITSELF, not a
+        // re-ask about the old one.
+        await ask(tester, 'turn on the lights');
+        expect(
+          find.textContaining('"turn on the lights" yet'),
+          findsOneWidget,
+          reason: 'a new unknown phrase gets its own question — the stale '
+              'teach context is gone',
+        );
+        expect(
+          find.textContaining('still don\'t understand "teleport me to '
+              'mars"'),
+          findsNothing,
+        );
       } finally {
         QueryLog.i.resetForTest();
         await mesh.stop();
