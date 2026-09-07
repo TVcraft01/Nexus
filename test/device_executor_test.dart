@@ -708,6 +708,13 @@ void main() {
       {'query': 'hotline bling'},
     ));
     expect(out.ok, isTrue);
+    expect(out.message, 'Playing "hotline bling" in Deezer.');
+    expect(device.chooserCalls,
+        [('https://www.deezer.com/search/hotline%20bling', 'Open in')]);
+  });
+
+  test('an explicitly named app still overrides the remembered default',
+      () async {
     final store = MemoryAppDefaultsStore();
     await store.write(AppDefaultDomain.music, 'deezer');
     device.chooserResult = true;

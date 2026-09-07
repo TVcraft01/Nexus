@@ -786,6 +786,88 @@ void main() {
         expect(r.command?.action, isNot(AgentActions.appDefault),
             reason: phrase);
       }
+    });
+
+    test('everyday user phrasings route to the right action', () {
+      // "stop" family: music pauses, never a fake app-close of "the music".
+      for (final phrase in ['stop', 'stop the music', 'stop music',
+          'stop the song', 'stop it', 'arrete la musique']) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command!.action, AgentActions.mediaPause, reason: phrase);
+      }
+      // …while real close/timer phrases stay untouched.
+      expect(interpreter.interpret('close spotify').command!.action,
+          AgentActions.appClose);
+      expect(interpreter.interpret('stop the timer').command!.action,
+          AgentActions.timerCancel);
+      expect(interpreter.interpret('stop the alarm').command!.action,
+          AgentActions.alarmDismiss);
+      // Volume asymmetry: "turn volume down" works like "volume up".
+      expect(interpreter.interpret('turn volume down').command!.action,
+          AgentActions.volumeSet);
+      expect(interpreter.interpret('turn volume down').command!.arguments['mode'],
+          'down');
+      expect(interpreter.interpret('turn volume up').command!.arguments['mode'],
+          'up');
+      expect(interpreter.interpret('turn it up').command!.arguments['mode'],
+          'up');
+      expect(interpreter.interpret('unmute').command!.arguments['mode'],
+          'toggle');
+      // Weather: bare-city and tomorrow forms are real commands.
+      final w = interpreter.interpret('weather paris');
+      expect(w.command!.action, AgentActions.weatherGet);
+      expect(w.command!.arguments['place'], 'paris');
+      expect(interpreter.interpret('whats the weather tomorrow').command!.action,
+          AgentActions.weatherGet);
+      expect(interpreter.interpret('weather in london').command!.arguments['place'],
+          'london');
+      // "remind me in 10 minutes" is a delay → a real timer.
+      final t = interpreter.interpret('remind me in 10 minutes');
+      expect(t.command!.action, AgentActions.timerSet);
+      expect(t.command!.arguments['seconds'], 600);
+      expect(interpreter.interpret('remind me to call mom').command!.action,
+          AgentActions.reminderSet);
+      // "call mom on facetime" is a video call, never a polluted contact.
+      final c = interpreter.interpret('call mom on facetime');
+      expect(c.command!.action, AgentActions.callPlace);
+      expect(c.command!.arguments['contact'], 'mom');
+      expect(c.command!.arguments['mode'], 'video');
+      expect(c.command!.arguments['app'], 'facetime');
+      // Pronouns resume playback; never a Deezer search for the word "it".
+      expect(interpreter.interpret('play it again').command!.action,
+          AgentActions.mediaPlay);
+      expect(interpreter.interpret('play that song').command!.action,
+          AgentActions.mediaPlay);
+      final p = interpreter.interpret('play it on spotify');
+      expect(p.command!.action, AgentActions.musicSearch);
+      expect(p.command!.arguments['query'], '');
+      expect(p.command!.arguments['app'], 'spotify');
+      // Device suffixes never pollute the song title.
+      expect(
+          interpreter.interpret('play hotline bling on my phone')
+              .command!.arguments['query'],
+          'hotline bling');
+      // Calendar horizons understand day names and "anything" forms.
+      expect(
+          interpreter.interpret('what do i have on friday')
+              .command!.arguments['when'],
+          'week');
+      expect(
+          interpreter.interpret('do i have anything tomorrow')
+              .command!.arguments['when'],
+          'tomorrow');
+      // Bare arithmetic with word operators.
+      final m = interpreter.interpret('15 percent of 80');
+      expect(m.command!.action, AgentActions.mathCalc);
+      expect(m.command!.arguments['expr'], '15/100*80');
+      // "15 minutes" alone is a duration, not arithmetic.
+      expect(interpreter.interpret('15 minutes').command?.action,
+          isNot(AgentActions.mathCalc));
+      // Bare cancel-timer and thanks.
+      expect(interpreter.interpret('cancel timer').command!.action,
+          AgentActions.timerCancel);
+      expect(interpreter.interpret('thanks').command!.action,
+          AgentActions.greet);
     test('currency converts stay unitConvert; french words captured', () {
       final usd = interpreter.interpret('convert 100 usd to eur');
       expect(usd.outcome, InterpretOutcome.matched);
