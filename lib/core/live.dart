@@ -16,7 +16,13 @@ class MusicHit {
   final String title;
   final String artist;
   final String url;
-  const MusicHit(this.title, this.artist, this.url);
+
+  /// Deezer's free 30-second preview stream — lets Nexus actually PLAY the
+  /// track in-app instead of only opening an external app. Null when the
+  /// catalog has no preview for the hit.
+  final String? preview;
+
+  const MusicHit(this.title, this.artist, this.url, {this.preview});
 }
 
 /// Injectable seam: search music and return the top hit, or null.
@@ -65,10 +71,11 @@ MusicHit? parseDeezerHit(String body) {
   final title = track['title']?.toString();
   final artist = ((track['artist'] as Map?)?? {})['name']?.toString();
   final url = track['link']?.toString();
+  final preview = track['preview']?.toString();
   if (title == null || title.isEmpty || url == null || url.isEmpty) {
     return null;
   }
-  return MusicHit(title, artist ?? 'Unknown artist', url);
+  return MusicHit(title, artist ?? 'Unknown artist', url, preview: preview);
 }
 
 /// Fetches today's ECB reference rate from [from] to [to] (frankfurter.app).

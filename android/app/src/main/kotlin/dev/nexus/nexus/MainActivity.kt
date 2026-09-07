@@ -11,7 +11,9 @@ import android.hardware.camera2.CameraManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
@@ -36,6 +38,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.Calendar
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "dev.nexus.nexus/installer"
@@ -94,6 +97,22 @@ class MainActivity : FlutterActivity() {
     private val SPEECH_CHANNEL = "dev.nexus.nexus/speech"
     private val REQUEST_SPEECH_PERMISSIONS = 42605
     private var pendingSpeechResult: MethodChannel.Result? = null
+
+    // "what is on my calendar": reading the next events needs READ_CALENDAR,
+    // requested on first use with the MethodChannel result held across the
+    // dialog, exactly like the contacts flows.
+    private val REQUEST_CALENDAR_PERMISSIONS = 42607
+    private var pendingCalendarResult: MethodChannel.Result? = null
+    private var pendingCalendarWhen: String? = null
+
+    // In-app music: "play hotline bling" streams Deezer's 30-second preview
+    // right inside Nexus (free API, no key). One player, owned by the
+    // assistant; released when the track ends, a new one starts, or the
+    // activity is destroyed. previewReady tells buffering apart from paused,
+    // so pause during buffering cancels the pending start instead of
+    // silently playing a moment later.
+    private var previewPlayer: MediaPlayer? = null
+    private var previewReady = false
 
     private lateinit var usbSerial: UsbSerialBridge
 
@@ -185,6 +204,14 @@ class MainActivity : FlutterActivity() {
                     )
                 } else if (call.method == "location") {
                     requestLocation(result)
+                } else if (call.method == "calendarRead") {
+                    // Reading the next events needs READ_CALENDAR, requested on
+                    // first use — the result is held across the dialog.
+                    val args = call.arguments as? Map<*, *>
+                    requestCalendarEvents(
+                        result,
+                        args?.get("when")?.toString() ?: "today",
+                    )
                 } else {
                     result.success(runDeviceAction(call.method, call.arguments))
                 }
@@ -353,6 +380,21 @@ class MainActivity : FlutterActivity() {
             if (granted(Manifest.permission.RECORD_AUDIO)) startSpeech(result)
             else result.success(null) // honest: nothing was recognized
         }
+        if (requestCode == REQUEST_CALENDAR_PERMISSIONS) {
+            val result = pendingCalendarResult
+            val whenAsked = pendingCalendarWhen
+            pendingCalendarResult = null
+            pendingCalendarWhen = null
+            if (result == null) return
+            if (!granted(Manifest.permission.READ_CALENDAR)) {
+                result.success(mapOf(
+                    "ok" to false,
+                    "message" to "Calendar permission was not granted — I can't read your events.",
+                ))
+                return
+            }
+            finishCalendarEvents(result, whenAsked ?: "today")
+        }
     }
 
     /// Runs a device-local action and returns {ok, message}. Everything is
@@ -412,6 +454,10 @@ class MainActivity : FlutterActivity() {
                 // sendText is intercepted in the channel handler — it resolves
                 // the recipient like calls do, which may request READ_CONTACTS.
                 "mediaControl" -> mediaControl(args?.get("mode")?.toString() ?: "play")
+                "mediaPreview" -> mediaPreview(
+                    args?.get("action")?.toString() ?: "stop",
+                    args?.get("url")?.toString(),
+                )
                 "wifi" -> openSettingsPanel(
                     Settings.ACTION_WIFI_SETTINGS,
                     "Apps can't switch Wi-Fi for you — I opened the Wi-Fi settings, flip the switch there.",
@@ -467,17 +513,27 @@ class MainActivity : FlutterActivity() {
 
     /// Launches [intent] through the system app chooser, so "navigate to X"
     /// lets the user pick Maps, Waze, … instead of silently defaulting to
-    /// one app. The chosen app is remembered by Android for next time.
+    /// one app. Android's resolver offers "Just once" and "Always" — the
+    /// "Always" pick is remembered, so the next request goes straight to
+    /// the chosen app, just like Siri.
     private fun startActionIntentChooser(
         intent: Intent,
         done: String,
         title: String,
     ): Map<String, Any?> {
-        val chooser = Intent.createChooser(intent, title).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val resolved = intent.resolveActivity(packageManager)
+        if (resolved == null) {
+            return mapOf(
+                "ok" to false,
+                "message" to "No app on this device can do that.",
+            )
         }
-        startActivity(chooser)
-        Log.i(TAG, done)
+        // With several handlers and no default yet, Android shows its own
+        // resolver (package "android") for the user to pick from; a single
+        // handler — or a remembered "Always" pick — launches straight away.
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
+        Log.i(TAG, "$done ($title)")
         return mapOf("ok" to true, "message" to done.replaceFirstChar { it.uppercase() } + ".")
     }
 
@@ -772,6 +828,98 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    /// "what is on my calendar": reads the next few events. READ_CALENDAR is
+    /// requested on first use (held across the dialog like the contacts
+    /// flows); a declined grant answers honestly with an error, never a guess.
+    private fun requestCalendarEvents(result: MethodChannel.Result, whenAsked: String) {
+        if (checkSelfPermission(Manifest.permission.READ_CALENDAR) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingCalendarResult = result
+            pendingCalendarWhen = whenAsked
+            requestPermissions(
+                arrayOf(Manifest.permission.READ_CALENDAR),
+                REQUEST_CALENDAR_PERMISSIONS,
+            )
+            return
+        }
+        finishCalendarEvents(result, whenAsked)
+    }
+
+    /// Queries the user's calendars for the next events from now until the
+    /// horizon requested (today / tomorrow / this week), soonest first, at
+    /// most 6. The Dart side formats them into the spoken answer.
+    private fun finishCalendarEvents(result: MethodChannel.Result, whenAsked: String) {
+        try {
+            // "today" → end of today, "tomorrow" → end of tomorrow, anything
+            // else ("this week") → 7 days out.
+            val cal = Calendar.getInstance().apply { timeInMillis = System.currentTimeMillis() }
+            val end: Long = when (whenAsked) {
+                "tomorrow" -> cal.apply {
+                    add(Calendar.DAY_OF_YEAR, 1)
+                    set(Calendar.HOUR_OF_DAY, 23)
+                    set(Calendar.MINUTE, 59)
+                    set(Calendar.SECOND, 59)
+                }.timeInMillis
+                "week" -> cal.apply { add(Calendar.DAY_OF_YEAR, 7) }.timeInMillis
+                else -> cal.apply {
+                    set(Calendar.HOUR_OF_DAY, 23)
+                    set(Calendar.MINUTE, 59)
+                    set(Calendar.SECOND, 59)
+                }.timeInMillis
+            }
+            val start = System.currentTimeMillis()
+            // The Instances table materializes every OCCURRENCE of recurring
+            // events — the Events table only knows the series' original start,
+            // which lies in the past, so "what is on my calendar" would
+            // report "Nothing" for any calendar built on repeating meetings.
+            val events = mutableListOf<Map<String, Any?>>()
+            CalendarContract.Instances.query(
+                contentResolver,
+                arrayOf(
+                    CalendarContract.Instances.TITLE,
+                    CalendarContract.Instances.BEGIN,
+                    CalendarContract.Instances.EVENT_LOCATION,
+                ),
+                start,
+                end,
+            )?.use { cursor ->
+                while (cursor.moveToNext() && events.size < 6) {
+                    val title = cursor.getString(0) ?: "Untitled"
+                    val begin = cursor.getLong(1)
+                    val location = cursor.getString(2)
+                    // An event already in progress isn't "upcoming" — it
+                    // belongs to the past the user didn't ask about.
+                    if (begin < start) continue
+                    events.add(
+                        mapOf(
+                            "title" to title,
+                            "start" to begin,
+                            "location" to (location ?: ""),
+                        ),
+                    )
+                }
+                // Instance order is not guaranteed — present soonest first.
+                events.sortBy { it["start"] as Long }
+            }
+            result.success(
+                mapOf(
+                    "ok" to true,
+                    "events" to events,
+                    "message" to if (events.isEmpty()) "Nothing on your calendar." else "",
+                ),
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "calendar read failed", e)
+            result.success(
+                mapOf(
+                    "ok" to false,
+                    "message" to "I couldn't read your calendar: ${e.message ?: "unknown error"}",
+                ),
+            )
+        }
+    }
+
     /// "email mom": resolves the recipient's address from the address book
     /// (READ_CONTACTS requested on first use, result held across the dialog)
     /// and opens the mail composer with the address and draft — mirror of
@@ -1041,9 +1189,27 @@ class MainActivity : FlutterActivity() {
     }
 
     /// Sends the media key events most players honour: play, pause, skip.
+    /// A plain "play music" with nothing queued asks WHICH app should play
+    /// it (the system music-app chooser) instead of silently picking one;
+    /// if music is already playing it just says so, and a paused in-app
+    /// preview resumes.
     private fun mediaControl(mode: String): Map<String, Any?> {
+        if (mode == "play") {
+            val p = previewPlayer
+            if (p != null) {
+                // A ready, paused preview resumes; one still buffering would
+                // throw on start(), so it just gets the same "Playing." and
+                // starts itself when prepared.
+                if (previewReady && !p.isPlaying) p.start()
+                return mapOf("ok" to true, "message" to "Playing.")
+            }
+            val am = getSystemService(AudioManager::class.java)
+            if (am.isMusicActive) {
+                return mapOf("ok" to true, "message" to "Music is already playing.")
+            }
+            return openMusicAppChooser()
+        }
         val key = when (mode) {
-            "play" -> KeyEvent.KEYCODE_MEDIA_PLAY
             "pause" -> KeyEvent.KEYCODE_MEDIA_PAUSE
             "next" -> KeyEvent.KEYCODE_MEDIA_NEXT
             "previous" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
@@ -1065,6 +1231,117 @@ class MainActivity : FlutterActivity() {
             else -> "Playing."
         }
         return mapOf("ok" to true, "message" to verb)
+    }
+
+    /// "play music" with nothing playing: launches the music-player intent
+    /// so Android opens the user's preferred player, or shows its resolver
+    /// with "Just once / Always" when several could play — the picked app
+    /// is remembered, exactly like Siri asking once and never again. Falls
+    /// back to a plain play key when no music app exists on the device.
+    private fun openMusicAppChooser(): Map<String, Any?> {
+        val intent = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_APP_MUSIC)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val resolved = intent.resolveActivity(packageManager)
+        if (resolved == null) {
+            // No music app installed: fall back to a plain play key.
+            val am = getSystemService(AudioManager::class.java)
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY))
+            return mapOf("ok" to true, "message" to "Playing.")
+        }
+        startActivity(intent)
+        // "android" is the resolver's own package — it shows when several
+        // music apps could play and none is preferred yet, so we're asking.
+        val asking = resolved.activityInfo.packageName == "android"
+        return mapOf(
+            "ok" to true,
+            "message" to if (asking) "Which app should play it?" else "Playing.",
+        )
+    }
+
+    /// In-app music: plays Deezer's 30-second preview stream right inside
+    /// Nexus ("play hotline bling" becomes real, immediate sound — the
+    /// honest no-key path). Action play/pause/stop. Stops cleanly, and a
+    /// new track replaces the old one.
+    private fun mediaPreview(action: String, url: String?): Map<String, Any?> {
+        return try {
+            when (action) {
+                "play" -> {
+                    if (url.isNullOrEmpty()) {
+                        return mapOf("ok" to false, "message" to "No preview to play.")
+                    }
+                    previewPlayer?.release()
+                    previewReady = false
+                    val player = MediaPlayer().apply {
+                        setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .build(),
+                        )
+                        setDataSource(url)
+                        // Listener before prepareAsync — and each callback
+                        // only clears the field when it still belongs to
+                        // THIS player, so a slow old track can never release
+                        // a newer one that replaced it.
+                        setOnPreparedListener {
+                            // Skip if this player was paused-cancelled or
+                            // replaced while buffering.
+                            if (previewPlayer === this) {
+                                previewReady = true
+                                it.start()
+                            }
+                        }
+                        setOnCompletionListener {
+                            if (previewPlayer === this) {
+                                previewPlayer = null
+                                previewReady = false
+                            }
+                            release()
+                        }
+                        setOnErrorListener { _, _, _ ->
+                            if (previewPlayer === this) {
+                                previewPlayer = null
+                                previewReady = false
+                            }
+                            release()
+                            true
+                        }
+                    }
+                    previewPlayer = player
+                    player.prepareAsync()
+                    mapOf("ok" to true, "message" to "Playing.")
+                }
+                "pause" -> {
+                    val p = previewPlayer
+                    if (p == null) {
+                        return mapOf("ok" to false, "message" to "Nothing is playing here.")
+                    }
+                    if (p.isPlaying) {
+                        p.pause()
+                    } else if (!previewReady) {
+                        // Still buffering: cancel it, or it would auto-start
+                        // right after we answered "Paused.".
+                        previewPlayer = null
+                        p.release()
+                    }
+                    mapOf("ok" to true, "message" to "Paused.")
+                }
+                else -> {
+                    previewPlayer?.release()
+                    previewPlayer = null
+                    previewReady = false
+                    mapOf("ok" to true, "message" to "Stopped.")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "preview playback failed", e)
+            previewPlayer?.release()
+            previewPlayer = null
+            previewReady = false
+            mapOf("ok" to false, "message" to "I couldn't play that preview: ${e.message ?: "unknown error"}")
+        }
     }
 
     /// Opens a system settings panel (Wi-Fi, Bluetooth, display…).
@@ -1257,6 +1534,16 @@ class MainActivity : FlutterActivity() {
             Log.e(TAG, "contact lookup failed", e)
             Triple(null, null, emptyList())
         }
+    }
+
+    override fun onDestroy() {
+        // The in-app preview must die with the activity — otherwise the
+        // audio keeps playing after Nexus is closed, and reopening stacks a
+        // second player over the ghost.
+        previewPlayer?.release()
+        previewPlayer = null
+        previewReady = false
+        super.onDestroy()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

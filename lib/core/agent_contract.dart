@@ -59,6 +59,7 @@ abstract final class AgentActions {
   static const currencyGet = 'currency.get';
   static const timezoneGet = 'timezone.get';
   static const calendarAdd = 'calendar.add';
+  static const calendarRead = 'calendar.read';
   static const shoppingListAdd = 'note.shopping.add';
   static const shoppingListGet = 'note.shopping.get';
   static const darkModeSet = 'display.dark';
@@ -82,6 +83,46 @@ abstract final class AgentActions {
   static const findDevice = 'device.find';
   static const ringDevice = 'device.ring';
 }
+
+/// "play hotline bling on spotify": the known music players the assistant
+/// can route to. Key is the normalized spoken name; value is the display
+/// name and the app's search deep link. https links are used so the system
+/// chooser can offer the installed player AND the browser fallback (the
+/// web player) — the first pick is remembered by Android, like Siri.
+/// The query text is appended URL-encoded.
+const Map<String, (String, String)> musicApps = {
+  'spotify': ('Spotify', 'https://open.spotify.com/search/'),
+  'deezer': ('Deezer', 'https://www.deezer.com/search/'),
+  'youtube music': ('YouTube Music', 'https://music.youtube.com/search?q='),
+  'yt music': ('YouTube Music', 'https://music.youtube.com/search?q='),
+  'youtube': ('YouTube', 'https://www.youtube.com/results?search_query='),
+  'apple music': ('Apple Music', 'https://music.apple.com/search?term='),
+  'amazon music': ('Amazon Music', 'https://music.amazon.com/search/'),
+  'tidal': ('Tidal', 'https://tidal.com/search?q='),
+  'soundcloud': ('SoundCloud', 'https://soundcloud.com/search?q='),
+  'pandora': ('Pandora', 'https://www.pandora.com/search/'),
+};
+
+/// "navigate home with waze": the known navigation apps for voice routing,
+/// keyed by normalized spoken name. https links keep the browser fallback
+/// (web maps) alongside the installed app in the chooser.
+const Map<String, (String, String)> navApps = {
+  'waze': ('Waze', 'https://waze.com/ul?q='),
+  'google maps':
+      ('Google Maps', 'https://www.google.com/maps/dir/?api=1&destination='),
+  'maps': ('Google Maps', 'https://www.google.com/maps/dir/?api=1&destination='),
+  'apple maps': ('Apple Maps', 'https://maps.apple.com/?daddr='),
+};
+
+/// "add dinner to google calendar": the known calendar apps for voice
+/// routing. The deep links open the app's new-event form with the title
+/// pre-filled — the user still confirms, exactly like the system intent.
+const Map<String, (String, String)> calendarApps = {
+  'google':
+      ('Google Calendar', 'https://calendar.google.com/calendar/render?action=TEMPLATE&text='),
+  'outlook':
+      ('Outlook Calendar', 'https://outlook.live.com/calendar/0/deeplink/compose?subject='),
+};
 
 class ParsedCommand {
   final String action;
@@ -245,6 +286,8 @@ List<DeviceCapability> defaultCapabilitiesFor(String platform) {
       DeviceCapability(AgentActions.reminderSet),
       DeviceCapability(AgentActions.weatherGet),
       DeviceCapability(AgentActions.navOpen),
+      DeviceCapability(AgentActions.calendarAdd),
+      DeviceCapability(AgentActions.calendarRead),
       DeviceCapability(AgentActions.darkModeSet),
     ];
   }

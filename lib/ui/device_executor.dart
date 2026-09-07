@@ -87,7 +87,10 @@ class DeviceExecutor {
       return _whereAmI();
     }
     if (request.action == AgentActions.navOpen) {
-      return _openMaps(prepared['query']?.toString() ?? '');
+      return _openMaps(
+        prepared['query']?.toString() ?? '',
+        prepared['app']?.toString(),
+      );
     }
     if (request.action == AgentActions.emailSend) {
       return _sendEmail(
@@ -161,7 +164,12 @@ class DeviceExecutor {
       return _mediaControl('play');
     }
     if (request.action == AgentActions.musicSearch) {
-      return _musicSearch(prepared['query']?.toString() ?? '');
+      final query = prepared['query']?.toString() ?? '';
+      final app = prepared['app']?.toString();
+      if (app != null && app.isNotEmpty) {
+        return _musicPlayOn(query, app);
+      }
+      return _musicSearch(query);
     }
     if (request.action == AgentActions.currencyGet) {
       return _currency(
@@ -174,7 +182,13 @@ class DeviceExecutor {
       return _timeZone(prepared['place']?.toString() ?? '');
     }
     if (request.action == AgentActions.calendarAdd) {
-      return _calendarAdd(prepared['title']?.toString() ?? '');
+      return _calendarAdd(
+        prepared['title']?.toString() ?? '',
+        prepared['app']?.toString(),
+      );
+    }
+    if (request.action == AgentActions.calendarRead) {
+      return _calendarRead(prepared['when']?.toString() ?? 'today');
     }
     if (request.action == AgentActions.shoppingListAdd) {
       return _shoppingAdd(prepared['item']?.toString() ?? '');
@@ -989,6 +1003,14 @@ class DeviceExecutor {
   Future<ActionResult> _mediaControl(String action) async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
+        // "pause music" first pauses the in-app preview when one is playing;
+        // otherwise the media key goes to whatever player is active.
+        if (action == 'pause') {
+          final preview = await _deviceBackend.run('mediaPreview', {
+            'action': 'pause',
+          });
+          if (preview.ok) return preview;
+        }
         final agentAction = switch (action) {
           'play' => AgentActions.mediaPlay,
           'pause' => AgentActions.mediaPause,
@@ -1193,9 +1215,44 @@ class DeviceExecutor {
     return ActionResult(true, line);
   }
 
-  /// Searches the real music catalog (Deezer, free API) for [query] and
-  /// opens the top hit in the music app or browser — a real result, never
-  /// a fake "playing!".
+  /// Searches the real music catalog (Deezer, free API) for [query]. When the
+  /// hit has a free 30-second preview, Nexus PLAYS it right here in the app;
+  /// otherwise the full track opens through the app chooser. Either way it's
+  /// a real result, never a fake "playing!".
+  /// Opens [query] through the named app's deep-link template: registry
+  /// lookup → system chooser (first pick asks, then the app is remembered
+  /// by Android, like Siri) → target-confirming reply from [replyFor]. The
+  /// one flow shared by music ("play X on spotify"), navigation ("take me
+  /// home with waze") and calendar ("add dinner to google calendar").
+  Future<ActionResult> _openInApp(
+    String query,
+    String app,
+    Map<String, (String, String)> apps,
+    String Function(String name, String q) replyFor,
+  ) async {
+    final entry = apps[app];
+    if (entry == null) {
+      return ActionResult(false, "I don't know an app called '$app'.");
+    }
+    final (name, template) = entry;
+    final q = query.trim();
+    final url = template + Uri.encodeComponent(q);
+    final opened = await _deviceBackend.openLinkChooser(url, 'Open in');
+    if (!opened) {
+      return ActionResult(false, "I couldn't open $name — is it installed?");
+    }
+    return ActionResult(true, replyFor(name, q));
+  }
+
+  /// "play hotline bling on spotify": routes to the named player instead of
+  /// searching Deezer for the literal phrase — see [_openInApp].
+  Future<ActionResult> _musicPlayOn(String query, String app) => _openInApp(
+        query,
+        app,
+        musicApps,
+        (name, q) => q.isEmpty ? 'Playing in $name.' : 'Playing "$q" in $name.',
+      );
+
   Future<ActionResult> _musicSearch(String query) async {
     if (query.isEmpty) {
       return const ActionResult(false, 'What should I play?');
@@ -1207,8 +1264,24 @@ class DeviceExecutor {
         'I couldn\'t find "$query" on Deezer — check the internet or try another title.',
       );
     }
-    // Ask which app should play it (Deezer, a browser, …) instead of
-    // silently choosing one — Android shows the system picker.
+    // In-app playback: stream Deezer's 30-second preview inside Nexus.
+    final preview = hit.preview;
+    if (preview != null && preview.isNotEmpty) {
+      final played = await _deviceBackend.run('mediaPreview', {
+        'action': 'play',
+        'url': preview,
+      });
+      if (played.ok) {
+        return ActionResult(
+          true,
+          'Playing "${hit.title}" by ${hit.artist} — a 30-second preview. '
+          'Say "pause music" to stop it, or "open deezer" for the full version.',
+        );
+      }
+    }
+    // No preview: ask which app should open the full track (Deezer, a
+    // browser, …) instead of silently choosing one — Android shows the
+    // system picker.
     final opened = await _deviceBackend.openLinkChooser(
       hit.url,
       'Open in',
@@ -1273,10 +1346,20 @@ class DeviceExecutor {
   }
 
   /// Opens the system's new-event screen with the title pre-filled — the
-  /// user confirms; apps cannot silently write the calendar.
-  Future<ActionResult> _calendarAdd(String title) async {
+  /// user confirms; apps cannot silently write the calendar. With a known
+  /// [app] ("add dinner to google calendar") it deep-links into that app's
+  /// new-event form instead, through the chooser so the pick is remembered.
+  Future<ActionResult> _calendarAdd(String title, [String? app]) async {
     if (title.isEmpty) {
       return const ActionResult(false, 'What should I add to your calendar?');
+    }
+    if (app != null && app.isNotEmpty) {
+      return _openInApp(
+        title,
+        app,
+        calendarApps,
+        (name, q) => 'Adding "$q" to $name.',
+      );
     }
     if (defaultTargetPlatform == TargetPlatform.android) {
       return _deviceBackend.run(AgentActions.calendarAdd, {'title': title});
@@ -1285,6 +1368,44 @@ class DeviceExecutor {
       false,
       'Calendar lives in a system app — I can open it, but adding events needs the phone.',
     );
+  }
+
+  /// "what is on my calendar": reads the next real events (READ_CALENDAR,
+  /// asked on first use) and formats them into a spoken answer — never a
+  /// guess. Horizons: today / tomorrow / this week.
+  Future<ActionResult> _calendarRead(String when) async {
+    final out = await _deviceBackend.run(AgentActions.calendarRead, {
+      'when': when,
+    });
+    if (!out.ok) return out;
+    final events = (out.data?['events'] as List?) ?? const [];
+    final head = switch (when) {
+      'tomorrow' => 'Tomorrow on your calendar: ',
+      'week' => 'This week on your calendar: ',
+      _ => 'Today on your calendar: ',
+    };
+    if (events.isEmpty) {
+      return ActionResult(true, 'Nothing on your calendar ${when == 'tomorrow' ? 'tomorrow' : (when == 'week' ? 'this week' : 'today')}.');
+    }
+    final lines = events.take(3).map((e) {
+      final title = (e as Map)['title']?.toString() ?? 'Untitled';
+      final start = (e['start'] as num?)?.toInt();
+      final time = start == null
+          ? ''
+          : _clockTime(DateTime.fromMillisecondsSinceEpoch(start));
+      final location = e['location']?.toString() ?? '';
+      final at = time.isEmpty ? '' : ' at $time';
+      return location.isEmpty
+          ? '"$title"$at'
+          : '"$title"$at ($location)';
+    }).join(', ');
+    return ActionResult(true, '$head$lines.');
+  }
+
+  static String _clockTime(DateTime dt) {
+    final h = dt.hour.toString().padLeft(2, '0');
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m';
   }
 
   /// A dedicated shopping scratch list, separate from notes.
@@ -1336,9 +1457,19 @@ class DeviceExecutor {
   }
 
   /// Opens the map app (or the browser on desktops) with a search for
-  /// [query] — the honest "take me home" path.
-  Future<ActionResult> _openMaps(String query) async {
+  /// [query] — the honest "take me home" path. With a known [app] ("navigate
+  /// home with waze") it deep-links into that app's directions instead,
+  /// through the chooser so the pick is remembered, like Siri.
+  Future<ActionResult> _openMaps(String query, [String? app]) async {
     if (query.isEmpty) return const ActionResult(false, 'Where to?');
+    if (app != null && app.isNotEmpty) {
+      return _openInApp(
+        query,
+        app,
+        navApps,
+        (name, q) => 'Directions to "$q" in $name.',
+      );
+    }
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Android opens the geo: URI through the system chooser, so the

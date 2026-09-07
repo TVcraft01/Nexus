@@ -514,6 +514,25 @@ class CommandInterpreter {
     }
 
     // --- Navigation: "take me home" and friends open the map app.
+    // "navigate home with waze": home phrasings plus a known nav app route
+    // there directly (the picked app is remembered by Android, like Siri).
+    // An unknown "with …" — usually a companion — falls through untouched.
+    final homeApp = _appTargetAtFirst(
+      norm,
+      prefix: _navHomePhrases,
+      connector: _navConnectors,
+      apps: navApps,
+      allowEmptyTitle: true,
+    );
+    if (homeApp != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.navOpen,
+          target: 'local',
+          arguments: {'query': 'home', 'app': homeApp.$2},
+        ),
+      );
+    }
     if (_oneOf(norm, const [
       'take me home',
       'bring me home',
@@ -540,11 +559,24 @@ class CommandInterpreter {
       r'emmene moi (?:a|vers)|conduis moi (?:a|vers)) (.+)$',
     ).firstMatch(norm);
     if (navTo != null) {
+      final place = navTo.group(1)!.trim();
+      // "take me to paris on google maps" routes to that app; "with my
+      // brother" stays part of the destination, never an app guess.
+      final appTarget = _appTargetAtFirst(
+        place,
+        prefix: '',
+        connector: _navConnectors,
+        apps: navApps,
+      );
+      final app = appTarget?.$2;
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.navOpen,
           target: 'local',
-          arguments: {'query': navTo.group(1)!.trim()},
+          arguments: {
+            'query': app == null ? place : appTarget!.$1,
+            if (app != null) 'app': app,
+          },
         ),
       );
     }
@@ -554,23 +586,61 @@ class CommandInterpreter {
     // cannot silently write calendars). Opening the calendar launches the
     // calendar app itself.
     final calAdd = RegExp(
-      r'^(?:add|put|schedule|plan|ajoute|mets|planifie) (.+?) (?:to|on|in|dans|sur|a) (?:my |the |mon |le |la )?(?:calendar|agenda|calendrier)$',
+      r'^(?:add|put|schedule|plan|ajoute|mets|planifie) (.+?) (?:to|on|in|dans|sur|a) (?:my |the |mon |le |la )?((?:google|outlook) )?(?:calendar|agenda|calendrier)$',
     ).firstMatch(norm);
     if (calAdd != null) {
+      // The app rides inside the noun phrase ("google calendar") — the one
+      // grammar that cannot be a connector split — but resolves through the
+      // same registry lookup as the music and nav routes.
+      final raw = calAdd.group(2)?.trim();
+      final app = raw == null ? null : _appFor(raw, calendarApps);
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.calendarAdd,
           target: 'local',
-          arguments: {'title': calAdd.group(1)!.trim()},
+          arguments: {
+            'title': calAdd.group(1)!.trim(),
+            if (app != null) 'app': app,
+          },
         ),
       );
+    }
+    // Reading the calendar is a question, not an app launch: "what is on my
+    // calendar" returns the real next events (READ_CALENDAR, asked on first
+    // use). The horizon is captured so the native side can bound the query.
+    final calRead = RegExp(
+      r'^(what is on my calendar|what is on the calendar|what is my schedule|what is my agenda|what is on|what do i have on|show me (?:my )?calendar|mon agenda|mes rendez vous|qu est ce que j ai (?:sur mon |au |dans mon )?(?:calendrier|agenda))(.*)$',
+    ).firstMatch(norm);
+    if (calRead != null) {
+      final prefix = calRead.group(1)!;
+      final rest = calRead.group(2)!.trim();
+      // A bare "what is on" (normalized from "whats on") is a schedule
+      // question — but "what is on netflix" is not. Only treat it as a
+      // calendar read when nothing follows or a calendar-ish word does;
+      // otherwise fall through to the other rules.
+      final isCalendarRest = rest.isEmpty ||
+          rest.contains(RegExp(
+            r'calendar|agenda|schedule|calendrier|tomorrow|demain|week|semaine',
+          ));
+      if (prefix != 'what is on' || isCalendarRest) {
+        final when = rest.contains('tomorrow') || rest.contains('demain')
+            ? 'tomorrow'
+            : (rest.contains('week') || rest.contains('semaine'))
+                ? 'week'
+                : 'today';
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.calendarRead,
+            target: 'local',
+            arguments: {'when': when},
+          ),
+        );
+      }
     }
     if (_oneOf(norm, const [
       'open my calendar',
       'open the calendar',
       'open calendar',
-      'what is on my calendar',
-      'what is on the calendar',
       'show my calendar',
       'show the calendar',
       'show calendar',
@@ -1782,14 +1852,54 @@ class CommandInterpreter {
         const ParsedCommand(action: AgentActions.mediaRepeat, target: 'local'),
       );
     }
+    // "play hotline bling on spotify" routes to that player (deep link into
+    // its search) instead of searching Deezer for the literal phrase — the
+    // picked app is remembered by Android, exactly like Siri. The title is
+    // everything up to the connector right before the player ("love on the
+    // brain on spotify" → "love on the brain"); an unknown "on <thing>"
+    // never strips — the whole literal is searched, so song titles like
+    // "rolling in the deep" survive exactly as before this feature.
+    // Greedy last-connector split first so titles keep their full text
+    // ("love on the brain on spotify" → "love on the brain"), then a
+    // lenient split for an empty title ("play on spotify").
+    final appTarget =
+        _appTargetAtLast(norm,
+            prefix: _playPrefix, connector: _musicConnectors, apps: musicApps) ??
+            _appTargetAtFirst(norm,
+                prefix: _playPrefix,
+                connector: _musicConnectors,
+                apps: musicApps,
+                allowEmptyTitle: true);
+    if (appTarget != null) {
+      final (song, app) = appTarget;
+      // A generic "some music"-style song part opens the player itself;
+      // a named song deep-links into its search.
+      final generic = song.isEmpty ||
+          song == 'my playlist' ||
+          song == 'playlist' ||
+          _genericPlayPhrases.contains(song);
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.musicSearch,
+          target: 'local',
+          arguments: {'query': generic ? '' : song, 'app': app},
+        ),
+      );
+    }
+
     // "play my playlist" stays a control command (no library search); a
     // named song or vibe searches the real catalog (Deezer, free API) and
     // opens the top hit — never a fake "playing!".
     final playQuery = RegExp(r'^play (.+)$').firstMatch(norm) ??
-        RegExp(r'^joue (?:ma |la |de la )?(.+)$').firstMatch(norm);
+        RegExp(r'^joue (?:moi )?(?:ma |la |de la )?(.+)$').firstMatch(norm);
     if (playQuery != null) {
       final target = playQuery.group(1)!.trim();
-      if (target == 'my playlist' || target == 'playlist') {
+      // "play some music" isn't a song title — it's a generic play, which
+      // asks which app should play (or resumes what's playing). Searching
+      // Deezer for "some music" would be nonsense.
+      if (target == 'my playlist' ||
+          target == 'playlist' ||
+          _genericPlayPhrases.contains(target)) {
         return InterpretResult.matched(
           const ParsedCommand(action: AgentActions.mediaPlay, target: 'local'),
         );
@@ -2090,6 +2200,78 @@ class CommandInterpreter {
   }
 
   bool _oneOf(String norm, List<String> forms) => forms.contains(norm);
+
+  /// "play some music"-style phrasings that mean generic play (which app
+  /// should play, or resume) — never a Deezer search for nonsense.
+  static const _genericPlayPhrases = {
+    'some music',
+    'music',
+    'a song',
+    'something',
+    'anything',
+    'de la musique',
+    'la musique',
+    'musique',
+    'un truc',
+  };
+
+  /// Connector words for "X on <app>" phrasings. Music omits "via" —
+  /// navigation accepts it ("take me to paris via waze"); the sets stay
+  /// per-domain so each route parses exactly as before.
+  static const _musicConnectors = r'(?:on|in|with|sur|dans|avec)';
+  static const _navConnectors = r'(?:with|on|in|via|sur|avec|dans)';
+  static const _playPrefix = r'(?:play|joue (?:moi )?(?:ma |la |de la )?)';
+  static const _navHomePhrases =
+      r'(?:take me home|bring me home|get me home|navigate home|directions home|'
+      r'ramene moi (?:a la maison|chez moi)|je veux rentrer)';
+
+  /// The canonical app id for a spoken app name ("spotify", "youtube
+  /// music", "the waze app"…), or null when it isn't a known app in
+  /// [apps]. The one resolver shared by the music, navigation and
+  /// calendar routes.
+  String? _appFor(String raw, Map<String, (String, String)> apps) {
+    var name = raw.trim();
+    name = name.replaceFirst(RegExp(r'^(?:the |my )?'), '');
+    name = name.replaceFirst(RegExp(r' (?:app|application)$'), '');
+    return apps.containsKey(name) ? name : null;
+  }
+
+  /// Splits "<prefix> X <connector> <app>" at the connector right before
+  /// a known app, so titles that contain connectors keep their full text
+  /// ("love on the brain on spotify" → "love on the brain"). Null when no
+  /// known app is named — callers then keep the whole literal, which is
+  /// the one ambiguity policy for every domain.
+  (String, String)? _appTargetAtLast(
+    String text, {
+    required String prefix,
+    required String connector,
+    required Map<String, (String, String)> apps,
+  }) {
+    final m = RegExp('^$prefix (.+) $connector (.+)\$').firstMatch(text);
+    if (m == null) return null;
+    final app = _appFor(m.group(2)!, apps);
+    return app == null ? null : (m.group(1)!.trim(), app);
+  }
+
+  /// First-connector variant of [_appTargetAtLast]: destinations rarely
+  /// contain connectors, so "take me to paris on google maps" splits at
+  /// the first one and a companion clause ("with my brother") never looks
+  /// like an app. [allowEmptyTitle] lets the title be absent ("play on
+  /// spotify", "navigate home with waze").
+  (String, String)? _appTargetAtFirst(
+    String text, {
+    required String prefix,
+    required String connector,
+    required Map<String, (String, String)> apps,
+    bool allowEmptyTitle = false,
+  }) {
+    final gap = allowEmptyTitle ? ' ?' : ' ';
+    final lead = prefix.isEmpty ? '' : gap;
+    final m = RegExp('^$prefix$lead(.*?)$gap$connector (.+)\$').firstMatch(text);
+    if (m == null) return null;
+    final app = _appFor(m.group(2)!, apps);
+    return app == null ? null : (m.group(1)!.trim(), app);
+  }
 
   /// Removes a trailing device marker ("on my phone") so it never becomes
   /// part of a contact name or a message draft.

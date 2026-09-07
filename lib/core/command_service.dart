@@ -480,6 +480,7 @@ class CommandService {
         action == AgentActions.currencyGet ||
         action == AgentActions.timezoneGet ||
         action == AgentActions.calendarAdd ||
+        action == AgentActions.calendarRead ||
         action == AgentActions.shoppingListAdd ||
         action == AgentActions.shoppingListGet ||
         action == AgentActions.systemInfo ||
@@ -802,6 +803,7 @@ class CommandService {
       case AgentActions.currencyGet:
       case AgentActions.timezoneGet:
       case AgentActions.calendarAdd:
+      case AgentActions.calendarRead:
       case AgentActions.shoppingListAdd:
       case AgentActions.shoppingListGet:
       case AgentActions.emailSend:

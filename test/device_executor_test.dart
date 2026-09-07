@@ -11,10 +11,20 @@ class _FakeDeviceBackend implements DeviceActionBackend {
   final calls = <(String action, Map<String, dynamic> args)>[];
   final chooserCalls = <(String url, String title)>[];
   bool chooserResult = false;
+  bool previewOk = true;
   (double, double)? location;
+  List<Map<String, dynamic>> calendarEvents = const [];
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async {
     calls.add((action, args));
+    if (action == AgentActions.calendarRead) {
+      return ActionResult(true, 'ok', data: {'events': calendarEvents});
+    }
+    if (action == 'mediaPreview') {
+      return previewOk
+          ? const ActionResult(true, 'Playing.')
+          : const ActionResult(false, 'Preview failed');
+    }
     return ActionResult(true, 'ran $action');
   }
 
@@ -248,6 +258,243 @@ void main() {
     expect(out.ok, isTrue);
     expect(device.chooserCalls, [('https://deezer.page.link/x', 'Open in')]);
     expect(out.message, contains('opening it'));
+  });
+
+  test('play X on spotify deep-links into Spotify, never a Deezer search',
+      () async {
+    final searcher = _FakeMusicSearcher();
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: searcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'hotline bling', 'app': 'spotify'},
+    ));
+    expect(out.ok, isTrue);
+    expect(searcher.queries, isEmpty, reason: 'never hits the Deezer API');
+    expect(device.chooserCalls,
+        [('https://open.spotify.com/search/hotline%20bling', 'Open in')]);
+    expect(out.message, 'Playing "hotline bling" in Spotify.');
+  });
+
+  test('generic play on a player opens it with an empty search', () async {
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': '', 'app': 'deezer'},
+    ));
+    expect(out.ok, isTrue);
+    expect(device.chooserCalls,
+        [('https://www.deezer.com/search/', 'Open in')]);
+    expect(out.message, 'Playing in Deezer.');
+  });
+
+  test('play X on a player answers honestly when it cannot open', () async {
+    // chooserResult stays false: no app/browser took the deep link.
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'hotline bling', 'app': 'spotify'},
+    ));
+    expect(out.ok, isFalse);
+    expect(out.message, contains('Spotify'));
+    expect(device.calls, isEmpty, reason: 'never a silent media key press');
+  });
+
+  test('an unknown player answers honestly, never a literal search', () async {
+    final searcher = _FakeMusicSearcher();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: searcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'hotline bling', 'app': 'netflix'},
+    ));
+    expect(out.ok, isFalse);
+    expect(out.message, contains('netflix'));
+    expect(searcher.queries, isEmpty);
+  });
+
+  test('navigate home with waze deep-links into Waze', () async {
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+    );
+    final out = await executor.run(req(
+      AgentActions.navOpen,
+      {'query': 'home', 'app': 'waze'},
+    ));
+    expect(out.ok, isTrue);
+    expect(device.chooserCalls, [('https://waze.com/ul?q=home', 'Open in')]);
+    expect(out.message, 'Directions to "home" in Waze.');
+    expect(device.calls, isEmpty, reason: 'no geo: chooser on the app path');
+  });
+
+  test('navigate with an unknown app answers honestly', () async {
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+    );
+    final out = await executor.run(req(
+      AgentActions.navOpen,
+      {'query': 'home', 'app': 'netflix'},
+    ));
+    expect(out.ok, isFalse);
+    expect(out.message, contains('netflix'));
+    expect(device.chooserCalls, isEmpty);
+  });
+
+  test('add dinner to google calendar deep-links into its compose form',
+      () async {
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+    );
+    final out = await executor.run(req(
+      AgentActions.calendarAdd,
+      {'title': 'dinner', 'app': 'google'},
+    ));
+    expect(out.ok, isTrue);
+    expect(device.chooserCalls, [
+      ('https://calendar.google.com/calendar/render?action=TEMPLATE&text=dinner',
+          'Open in'),
+    ]);
+    expect(out.message, 'Adding "dinner" to Google Calendar.');
+    expect(device.calls, isEmpty, reason: 'no ACTION_INSERT on the app path');
+  });
+
+  test('calendar add with an unknown app answers honestly', () async {
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+    );
+    final out = await executor.run(req(
+      AgentActions.calendarAdd,
+      {'title': 'dinner', 'app': 'notion'},
+    ));
+    expect(out.ok, isFalse);
+    expect(out.message, contains('notion'));
+    expect(device.chooserCalls, isEmpty);
+  });
+
+  test('music with a free preview plays in-app, no chooser needed', () async {
+    final searcher = _FakeMusicSearcher()
+      ..reply = const MusicHit(
+        'Hotline Bling',
+        'Drake',
+        'https://deezer.page.link/x',
+        preview: 'https://cdn-preview.example/stream.mp3',
+      );
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: searcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'hotline bling'},
+    ));
+    expect(out.ok, isTrue);
+    expect(device.chooserCalls, isEmpty); // Nexus plays it itself
+    expect(device.calls.length, 1);
+    expect(device.calls.first.$1, 'mediaPreview');
+    expect(device.calls.first.$2, {
+      'action': 'play',
+      'url': 'https://cdn-preview.example/stream.mp3',
+    });
+    expect(out.message, contains('preview'));
+    expect(out.message, contains('Hotline Bling'));
+  });
+
+  test('music preview failure falls back to the app chooser', () async {
+    final searcher = _FakeMusicSearcher()
+      ..reply = const MusicHit(
+        'Hotline Bling',
+        'Drake',
+        'https://deezer.page.link/x',
+        preview: 'https://cdn-preview.example/stream.mp3',
+      );
+    device.chooserResult = true;
+    device.previewOk = false;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: searcher.call,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'hotline bling'},
+    ));
+    expect(out.ok, isTrue);
+    expect(device.chooserCalls, [('https://deezer.page.link/x', 'Open in')]);
+  });
+
+  test('"pause music" pauses the in-app preview first, then media keys', () async {
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+    );
+    final out = await executor.run(req(AgentActions.mediaPause));
+    expect(out.ok, isTrue);
+    expect(device.calls.first.$1, 'mediaPreview');
+    expect(device.calls.first.$2, {'action': 'pause'});
+  });
+
+  test('calendar read formats the next events with times', () async {
+    final lunch = DateTime(2026, 9, 8, 12, 30).millisecondsSinceEpoch;
+    device.calendarEvents = [
+      {'title': 'Lunch with mom', 'start': lunch, 'location': 'Café'},
+      {'title': 'Dentist', 'start': lunch + 2 * 3600 * 1000, 'location': ''},
+    ];
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+    );
+    final out = await executor.run(req(
+      AgentActions.calendarRead,
+      {'when': 'today'},
+    ));
+    expect(out.ok, isTrue);
+    expect(device.calls.length, 1);
+    expect(device.calls.first.$1, AgentActions.calendarRead);
+    expect(device.calls.first.$2, {'when': 'today'});
+    expect(out.message, contains('Today on your calendar'));
+    expect(out.message, contains('Lunch with mom'));
+    expect(out.message, contains('12:30'));
+    expect(out.message, contains('Café'));
+  });
+
+  test('calendar read answers honestly when nothing is scheduled', () async {
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+    );
+    final out = await executor.run(req(
+      AgentActions.calendarRead,
+      {'when': 'tomorrow'},
+    ));
+    expect(out.ok, isTrue);
+    expect(out.message, contains('Nothing on your calendar tomorrow'));
   });
 
   test('unresolved calls carry the candidate names for "who did you mean?"', () async {

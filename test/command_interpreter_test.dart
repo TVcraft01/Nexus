@@ -69,6 +69,33 @@ void main() {
     expect(office.command!.arguments['query'], 'the office');
   });
 
+  test('"navigate … with <app>" routes to the named nav app', () {
+    for (final (phrase, place, app) in [
+      ('navigate home with waze', 'home', 'waze'),
+      ('take me home on google maps', 'home', 'google maps'),
+      ('take me to paris on google maps', 'paris', 'google maps'),
+      ('drive me to work with the waze app', 'work', 'waze'),
+      ('ramene moi a la maison avec waze', 'home', 'waze'),
+      ('navigate to the airport via google maps', 'the airport', 'google maps'),
+    ]) {
+      final r = interpreter.interpret(phrase);
+      expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+      expect(r.command!.action, AgentActions.navOpen, reason: phrase);
+      expect(r.command!.arguments['query'], place, reason: phrase);
+      expect(r.command!.arguments['app'], app, reason: phrase);
+    }
+    // "with my brother" is a companion, not an app — the destination keeps
+    // the whole phrase and no app is claimed.
+    final companion = interpreter.interpret('take me to the restaurant with my brother');
+    expect(companion.command!.action, AgentActions.navOpen);
+    expect(companion.command!.arguments['query'],
+        'the restaurant with my brother');
+    expect(companion.command!.arguments['app'], isNull);
+    // "with netflix" is not a nav app: never mis-routes, stays unmatched.
+    final unknown = interpreter.interpret('navigate home with netflix');
+    expect(unknown.outcome, InterpretOutcome.unknown);
+  });
+
   test('unrecognized input is a teaching opportunity', () {
     final result = interpreter.interpret('teleport me to mars');
     expect(result.outcome, InterpretOutcome.unknown);
@@ -183,8 +210,17 @@ void main() {
         AgentActions.memoryQuestion,
       );
       final cal = interpreter.interpret('what is on my calendar');
-      expect(cal.command!.action, AgentActions.appOpen);
-      expect(cal.command!.arguments['query'], 'calendar');
+      expect(cal.command!.action, AgentActions.calendarRead);
+      expect(cal.command!.arguments['when'], 'today');
+      // "play some music" is generic play, not a song-title search.
+      expect(
+        interpreter.interpret('play some music').command!.action,
+        AgentActions.mediaPlay,
+      );
+      expect(
+        interpreter.interpret('play some music').command!.arguments['query'],
+        isNull,
+      );
     });
 
     test('music play/pause/skip maps to the media actions', () {
@@ -405,6 +441,29 @@ void main() {
         expect(r.outcome, InterpretOutcome.matched, reason: phrase);
         expect(r.command!.action, AgentActions.navOpen, reason: phrase);
         expect(r.command!.arguments['query'], isNotEmpty, reason: phrase);
+        expect(r.command!.arguments['app'], isNull, reason: phrase);
+      }
+    });
+
+    test('"add … to google/outlook calendar" routes to that app', () {
+      for (final (phrase, title, app) in [
+        ('add dinner to google calendar', 'dinner', 'google'),
+        ('add dinner to my google calendar', 'dinner', 'google'),
+        ('schedule a meeting in outlook calendar', 'a meeting', 'outlook'),
+        ('add lunch with mom to my google calendar', 'lunch with mom', 'google'),
+        ('plan diner sur outlook calendrier', 'diner', 'outlook'),
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.calendarAdd, reason: phrase);
+        expect(r.command!.arguments['title'], title, reason: phrase);
+        expect(r.command!.arguments['app'], app, reason: phrase);
+      }
+      // Without an app name the system new-event screen still opens.
+      for (final phrase in ['add dinner to my calendar', 'add dinner to the calendar']) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command!.action, AgentActions.calendarAdd, reason: phrase);
+        expect(r.command!.arguments['app'], isNull, reason: phrase);
       }
     });
 
@@ -550,15 +609,55 @@ void main() {
         expect(r.command!.action, AgentActions.calendarAdd, reason: phrase);
         expect(r.command!.arguments['title'], isNotEmpty, reason: phrase);
       }
-      for (final phrase in [
-        'open my calendar',
-        'what is on my calendar',
-        'ouvre mon calendrier',
-      ]) {
+      for (final phrase in ['open my calendar', 'ouvre mon calendrier']) {
         final r = interpreter.interpret(phrase);
         expect(r.outcome, InterpretOutcome.matched, reason: phrase);
         expect(r.command!.action, AgentActions.appOpen, reason: phrase);
         expect(r.command!.arguments['query'], 'calendar', reason: phrase);
+      }
+      // Reading is a question, not an app launch: "what is on my calendar"
+      // returns the real next events, with the horizon captured.
+      for (final phrase in [
+        'what is on my calendar',
+        'what is on my calendar tomorrow',
+        'what do i have on my calendar this week',
+        'mon agenda',
+        'qu est ce que j ai au calendrier demain',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.calendarRead, reason: phrase);
+        final when = r.command!.arguments['when'];
+        expect(
+          when,
+          phrase.contains('tomorrow') || phrase.contains('demain')
+              ? 'tomorrow'
+              : (phrase.contains('week') ? 'week' : 'today'),
+          reason: phrase,
+        );
+      }
+      // "whats on" normalizes to "what is on": alone it is a schedule
+      // question, but "what is on netflix" must not become a calendar read.
+      for (final phrase in ['whats on', 'whats on tomorrow', "what's on my agenda"]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.calendarRead, reason: phrase);
+        expect(
+          r.command!.arguments['when'],
+          phrase.contains('tomorrow') ? 'tomorrow' : 'today',
+          reason: phrase,
+        );
+      }
+      for (final phrase in ['what is on netflix tonight', 'whats on tv']) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command!.action, isNot(AgentActions.calendarRead), reason: phrase);
+      }
+      // Generic play stays a control command, never a Deezer search.
+      for (final phrase in ['play some music', 'joue de la musique']) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.mediaPlay, reason: phrase);
+        expect(r.command!.arguments['query'], isNull, reason: phrase);
       }
     });
 
@@ -585,6 +684,62 @@ void main() {
         expect(r.outcome, InterpretOutcome.matched, reason: phrase);
         expect(r.command!.action, AgentActions.shoppingListGet, reason: phrase);
       }
+    });
+
+    test('play X on/in/with a known player routes to that app', () {
+      for (final (phrase, query, app) in [
+        ('play music on spotify', '', 'spotify'),
+        ('play on spotify', '', 'spotify'),
+        ('play some music on spotify', '', 'spotify'),
+        ('play hotline bling on deezer', 'hotline bling', 'deezer'),
+        ('play hotline bling with spotify', 'hotline bling', 'spotify'),
+        ('play hotline bling in youtube music', 'hotline bling', 'youtube music'),
+        ('play hotline bling on the deezer app', 'hotline bling', 'deezer'),
+        ('joue hotline bling sur deezer', 'hotline bling', 'deezer'),
+        ('joue de la musique sur spotify', '', 'spotify'),
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.musicSearch, reason: phrase);
+        expect(r.command!.arguments['query'], query, reason: phrase);
+        expect(r.command!.arguments['app'], app, reason: phrase);
+      }
+      // Multi-connector titles keep their full text on the known-app route:
+      // the title is everything up to the connector before the player.
+      for (final (phrase, query, app) in [
+        ('play love on the brain on spotify', 'love on the brain', 'spotify'),
+        ('play rolling in the deep on deezer', 'rolling in the deep', 'deezer'),
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command!.action, AgentActions.musicSearch, reason: phrase);
+        expect(r.command!.arguments['query'], query, reason: phrase);
+        expect(r.command!.arguments['app'], app, reason: phrase);
+      }
+      // Unknown targets never strip: the whole literal is searched, so song
+      // titles containing connectors survive (pre-feature behavior).
+      for (final (phrase, query) in [
+        ('play hotline bling on netflix', 'hotline bling on netflix'),
+        ('play poker face in vegas', 'poker face in vegas'),
+        ('play rolling in the deep', 'rolling in the deep'),
+        ('play man in the mirror', 'man in the mirror'),
+        ('play livin on a prayer', 'livin on a prayer'),
+        ('play love on the brain', 'love on the brain'),
+        ('play love on top', 'love on top'),
+        ('play crazy in love', 'crazy in love'),
+        ('play dancing in the dark', 'dancing in the dark'),
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.musicSearch, reason: phrase);
+        expect(r.command!.arguments['query'], query, reason: phrase);
+        expect(r.command!.arguments['app'], isNull, reason: phrase);
+      }
+      // Song titles that merely contain "on" keep the literal search.
+      final band = interpreter.interpret('play in the band');
+      expect(band.command!.action, AgentActions.musicSearch,
+          reason: 'song title');
+      expect(band.command!.arguments['query'], 'in the band',
+          reason: 'song title');
     });
 
     test('currency converts stay unitConvert; french words captured', () {
