@@ -513,6 +513,30 @@ class CommandInterpreter {
       );
     }
 
+    // --- App defaults: "always use deezer (from now on)" remembers a
+    // Nexus-level favorite per domain, so bare phrases ("play music",
+    // "navigate home", "add dinner to my calendar") route there directly
+    // while a phrase that names an app still wins for that one command.
+    // Android's chooser "Always" memory has no voice escape hatch buried
+    // in system settings — this is it: "stop using deezer" clears it.
+    // Unknown names fall through untouched, never misfiring.
+    final appDefault = _appDefaultTarget(norm);
+    if (appDefault != null) {
+      final (verb, domain, app, name) = appDefault;
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.appDefault,
+          target: 'local',
+          arguments: {
+            'verb': verb,
+            'domain': domain,
+            'app': app,
+            'name': name,
+          },
+        ),
+      );
+    }
+
     // --- Navigation: "take me home" and friends open the map app.
     // "navigate home with waze": home phrasings plus a known nav app route
     // there directly (the picked app is remembered by Android, like Siri).
@@ -2272,6 +2296,67 @@ class CommandInterpreter {
     final app = _appFor(m.group(2)!, apps);
     return app == null ? null : (m.group(1)!.trim(), app);
   }
+
+  /// "always use deezer", "use spotify from now on", "use waze for
+  /// directions", "stop using google calendar": SET/CLEAR a remembered
+  /// per-domain default app. Returns (verb, domain, appId, displayName) or
+  /// null so the phrase falls through to the existing rules untouched.
+  (String, String, String, String)? _appDefaultTarget(String norm) {
+    // SET: use X | always use X | use X from now on | use X for <domain>.
+    final set = RegExp(
+      r'^(?:always |please )?(?:use|utilise|utilises|utilisez) (?:the )?'
+      r'(.+?)(?: from now on| desormais)?'
+      r'(?: for (music|musique|navigation|directions|nav|calendar|calendrier))?$',
+    ).firstMatch(norm);
+    if (set != null) {
+      final target =
+          _resolveDefaultApp(set.group(1)!.trim(), set.group(2));
+      if (target == null) return null;
+      final (domain, app, name) = target;
+      return ('set', domain, app, name);
+    }
+    // CLEAR: stop using X | dont use X (anymore) | no longer use X.
+    final clear = RegExp(
+      r'^(?:stop using|quit using|dont use|do not use|no longer use|'
+      r'arrete d utiliser|arretez d utiliser|ne plus utiliser) (?:the )?'
+      r'(.+?)(?: anymore)?'
+      r'(?: for (music|musique|navigation|directions|nav|calendar|calendrier))?$',
+    ).firstMatch(norm);
+    if (clear != null) {
+      final target =
+          _resolveDefaultApp(clear.group(1)!.trim(), clear.group(2));
+      if (target == null) return null;
+      final (domain, app, name) = target;
+      return ('clear', domain, app, name);
+    }
+    return null;
+  }
+
+  /// Registry lookup for default phrases: full key first ("youtube music"),
+  /// then first word ("google calendar" → "google"); the first registry to
+  /// hit owns the domain, so "use spotify" can never claim navigation.
+  /// [domainHint] ("music"/"navigation"/"calendar") restricts the search
+  /// when the phrase names the domain explicitly.
+  (String, String, String)? _resolveDefaultApp(String raw, String? domainHint) {
+    for (final (domain, apps) in const [
+      ('music', musicApps),
+      ('navigation', navApps),
+      ('calendar', calendarApps),
+    ]) {
+      if (domainHint != null && !_domainMatches(domainHint, domain)) continue;
+      for (final key in {raw, raw.split(' ').first}) {
+        final entry = apps[key];
+        if (entry != null) return (domain, key, entry.$1);
+      }
+    }
+      .join(' ');
+
+  bool _domainMatches(String hint, String domain) => switch (hint) {
+        'music' || 'musique' => domain == 'music',
+        'navigation' || 'directions' || 'nav' => domain == 'navigation',
+        'calendar' || 'calendrier' => domain == 'calendar',
+        _ => true,
+      };
 
   /// Removes a trailing device marker ("on my phone") so it never becomes
   /// part of a contact name or a message draft.

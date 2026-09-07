@@ -331,6 +331,7 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.mediaRepeat,
     AgentActions.alarmSet,
     AgentActions.defineWord,
+    AgentActions.appDefault,
   };
 
   /// Appends to (or, for re-runs, updates the end of) the thread. No

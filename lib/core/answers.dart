@@ -369,6 +369,25 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           arguments: {'title': title, if (app != null) 'app': app},
         ),
       );
+    case AgentActions.appDefault:
+      final verb = command.arguments['verb'] as String? ?? 'set';
+      final name = command.arguments['name'] as String? ?? '';
+      final word = switch (command.arguments['domain'] as String?) {
+        'music' => 'music',
+        'navigation' => 'navigation',
+        'calendar' => 'calendar',
+        _ => '',
+      };
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          verb == 'clear'
+              ? 'Forgetting $name…'
+              : 'Setting $name as your $word default…',
+          action: AgentActions.appDefault,
+          arguments: command.arguments,
+        ),
+      );
     case AgentActions.calendarRead:
       final when = command.arguments['when'] as String? ?? 'today';
       return AgentDispatchResult(

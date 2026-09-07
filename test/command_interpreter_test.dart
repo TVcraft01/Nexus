@@ -742,6 +742,50 @@ void main() {
           reason: 'song title');
     });
 
+    test('always use X / stop using X set and clear the app default', () {
+      for (final (phrase, verb, domain, app, name) in [
+        ('always use deezer', 'set', 'music', 'deezer', 'Deezer'),
+        ('use spotify', 'set', 'music', 'spotify', 'Spotify'),
+        ('use spotify from now on', 'set', 'music', 'spotify', 'Spotify'),
+        ('use youtube music from now on', 'set', 'music', 'youtube music',
+            'YouTube Music'),
+        ('use spotify for music', 'set', 'music', 'spotify', 'Spotify'),
+        ('utilise spotify', 'set', 'music', 'spotify', 'Spotify'),
+        ('use waze for directions', 'set', 'navigation', 'waze', 'Waze'),
+        ('use google maps from now on', 'set', 'navigation', 'google maps',
+            'Google Maps'),
+        ('always use google', 'set', 'calendar', 'google', 'Google Calendar'),
+        ('use outlook for calendar', 'set', 'calendar', 'outlook',
+            'Outlook Calendar'),
+        ('use google calendar from now on', 'set', 'calendar', 'google',
+            'Google Calendar'),
+        ('stop using deezer', 'clear', 'music', 'deezer', 'Deezer'),
+        ('dont use spotify anymore', 'clear', 'music', 'spotify', 'Spotify'),
+        ('arrete d utiliser spotify', 'clear', 'music', 'spotify', 'Spotify'),
+        ('no longer use waze', 'clear', 'navigation', 'waze', 'Waze'),
+        ('quit using google calendar', 'clear', 'calendar', 'google',
+            'Google Calendar'),
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.appDefault, reason: phrase);
+        expect(r.command!.arguments['verb'], verb, reason: phrase);
+        expect(r.command!.arguments['domain'], domain, reason: phrase);
+        expect(r.command!.arguments['app'], app, reason: phrase);
+        expect(r.command!.arguments['name'], name, reason: phrase);
+      }
+      // Unknown names never claim a domain — they fall through untouched
+      // instead of misfiring into another rule family.
+      for (final phrase in [
+        'use netflix',
+        'use the flashlight',
+        'always use notion',
+        'stop using netflix',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command?.action, isNot(AgentActions.appDefault),
+            reason: phrase);
+      }
     test('currency converts stay unitConvert; french words captured', () {
       final usd = interpreter.interpret('convert 100 usd to eur');
       expect(usd.outcome, InterpretOutcome.matched);

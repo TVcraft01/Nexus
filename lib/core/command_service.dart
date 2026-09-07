@@ -481,6 +481,7 @@ class CommandService {
         action == AgentActions.timezoneGet ||
         action == AgentActions.calendarAdd ||
         action == AgentActions.calendarRead ||
+        action == AgentActions.appDefault ||
         action == AgentActions.shoppingListAdd ||
         action == AgentActions.shoppingListGet ||
         action == AgentActions.systemInfo ||
@@ -804,6 +805,7 @@ class CommandService {
       case AgentActions.timezoneGet:
       case AgentActions.calendarAdd:
       case AgentActions.calendarRead:
+      case AgentActions.appDefault:
       case AgentActions.shoppingListAdd:
       case AgentActions.shoppingListGet:
       case AgentActions.emailSend:

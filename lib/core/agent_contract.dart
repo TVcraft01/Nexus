@@ -60,6 +60,7 @@ abstract final class AgentActions {
   static const timezoneGet = 'timezone.get';
   static const calendarAdd = 'calendar.add';
   static const calendarRead = 'calendar.read';
+  static const appDefault = 'assistant.appDefault';
   static const shoppingListAdd = 'note.shopping.add';
   static const shoppingListGet = 'note.shopping.get';
   static const darkModeSet = 'display.dark';

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
+import 'package:nexus/core/app_defaults.dart';
 import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/live.dart';
 import 'package:nexus/core/phone_actions.dart';
@@ -672,6 +673,158 @@ void main() {
     ));
     expect(out.ok, isFalse);
     expect(out.message, contains('couldn\'t reach the weather service'));
+  });
+
+  test('a remembered music default routes bare play to that app', () async {
+    final store = MemoryAppDefaultsStore();
+    await store.write(AppDefaultDomain.music, 'spotify');
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+      defaultsStore: store,
+    );
+    final out = await executor.run(req(AgentActions.mediaPlay));
+    expect(out.ok, isTrue);
+    expect(out.message, 'Playing in Spotify.');
+    expect(device.chooserCalls,
+        [('https://open.spotify.com/search/', 'Open in')]);
+  });
+
+  test('a remembered music default routes named-song searches to that app',
+      () async {
+    final store = MemoryAppDefaultsStore();
+    await store.write(AppDefaultDomain.music, 'deezer');
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+      defaultsStore: store,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'hotline bling'},
+    ));
+    expect(out.ok, isTrue);
+    final store = MemoryAppDefaultsStore();
+    await store.write(AppDefaultDomain.music, 'deezer');
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+      defaultsStore: store,
+    );
+    final out = await executor.run(req(
+      AgentActions.musicSearch,
+      {'query': 'hotline bling', 'app': 'spotify'},
+    ));
+    expect(out.ok, isTrue);
+    expect(out.message, 'Playing "hotline bling" in Spotify.');
+    expect(device.chooserCalls,
+        [('https://open.spotify.com/search/hotline%20bling', 'Open in')]);
+  });
+
+  test('navigate home honors the remembered nav default', () async {
+    final store = MemoryAppDefaultsStore();
+    await store.write(AppDefaultDomain.navigation, 'waze');
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      defaultsStore: store,
+    );
+    final out = await executor.run(req(
+      AgentActions.navOpen,
+      {'query': 'home'},
+    ));
+    expect(out.ok, isTrue);
+    expect(out.message, 'Directions to "home" in Waze.');
+    expect(device.chooserCalls, [('https://waze.com/ul?q=home', 'Open in')]);
+  });
+
+  test('add dinner to my calendar honors the remembered calendar default',
+      () async {
+    final store = MemoryAppDefaultsStore();
+    await store.write(AppDefaultDomain.calendar, 'google');
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      defaultsStore: store,
+    );
+    final out = await executor.run(req(
+      AgentActions.calendarAdd,
+      {'title': 'dinner'},
+    ));
+    expect(out.ok, isTrue);
+    expect(out.message, 'Adding "dinner" to Google Calendar.');
+    expect(
+      device.chooserCalls,
+      [
+        (
+          'https://calendar.google.com/calendar/render?action=TEMPLATE&text=dinner',
+          'Open in',
+        ),
+      ],
+    );
+  });
+
+  test('nav default answers with the directions confirmation', () async {
+    final store = MemoryAppDefaultsStore();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      defaultsStore: store,
+    );
+    final out = await executor.run(req(
+      AgentActions.appDefault,
+      {'verb': 'set', 'domain': 'navigation', 'app': 'waze', 'name': 'Waze'},
+    ));
+    expect(out.ok, isTrue);
+    expect(out.message, 'I\'ll use Waze for directions from now on.');
+    expect(await store.read(AppDefaultDomain.navigation), 'waze');
+  });
+
+  test('always use X persists, clears, and restores old behavior', () async {
+    final store = MemoryAppDefaultsStore();
+    device.chooserResult = true;
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      musicSearcher: _FakeMusicSearcher().call,
+      defaultsStore: store,
+    );
+    // Set through the real dispatch surface, exactly as the interpreter emits.
+    final set = await executor.run(req(
+      AgentActions.appDefault,
+      {'verb': 'set', 'domain': 'music', 'app': 'deezer', 'name': 'Deezer'},
+    ));
+    expect(set.ok, isTrue);
+    expect(set.message, 'Using Deezer from now on.');
+    expect(await store.read(AppDefaultDomain.music), 'deezer');
+    // Bare phrases now route there…
+    final bare = await executor.run(req(AgentActions.mediaPlay));
+    expect(bare.message, 'Playing in Deezer.');
+    // …and clearing restores plain media-control behavior.
+    final clear = await executor.run(req(
+      AgentActions.appDefault,
+      {'verb': 'clear', 'domain': 'music', 'app': 'deezer', 'name': 'Deezer'},
+    ));
+    expect(clear.ok, isTrue);
+    expect(clear.message, 'Stopping use of Deezer.');
+    expect(await store.read(AppDefaultDomain.music), isNull);
+    device.chooserCalls.clear();
+    final after = await executor.run(req(AgentActions.mediaPlay));
+    expect(after.ok, isTrue);
+    expect(device.chooserCalls, isEmpty);
+    expect(
+      device.calls.any((c) => c.$1 == 'media.play' && c.$2['mode'] == 'play'),
+      isTrue,
+      reason: 'bare play without a default goes back to the media key',
+    );
   });
 }
 
