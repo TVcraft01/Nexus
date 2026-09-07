@@ -1242,8 +1242,12 @@ class MainActivity : FlutterActivity() {
         val intent = Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_APP_MUSIC)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        val resolved = intent.resolveActivity(packageManager)
-        if (resolved == null) {
+        // queryIntentActivities, not resolveActivity: the same pattern the
+        // app-open path uses, and the handler count tells us directly
+        // whether the resolver will ask (no fragile "android" package
+        // detection). <queries> in the manifest keeps music apps visible.
+        val handlers = packageManager.queryIntentActivities(intent, 0)
+        if (handlers.isEmpty()) {
             // No music app installed: fall back to a plain play key.
             val am = getSystemService(AudioManager::class.java)
             am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
@@ -1251,9 +1255,9 @@ class MainActivity : FlutterActivity() {
             return mapOf("ok" to true, "message" to "Playing.")
         }
         startActivity(intent)
-        // "android" is the resolver's own package — it shows when several
-        // music apps could play and none is preferred yet, so we're asking.
-        val asking = resolved.activityInfo.packageName == "android"
+        // Several players with none preferred yet: Android's own resolver
+        // asks (Just once / Always) — that is the ask, and it is remembered.
+        val asking = handlers.size > 1
         return mapOf(
             "ok" to true,
             "message" to if (asking) "Which app should play it?" else "Playing.",
