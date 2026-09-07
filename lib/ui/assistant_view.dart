@@ -306,6 +306,7 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.currencyGet,
     AgentActions.timezoneGet,
     AgentActions.calendarAdd,
+    AgentActions.calendarRead,
     AgentActions.shoppingListAdd,
     AgentActions.shoppingListGet,
     AgentActions.emailSend,
@@ -1747,6 +1748,8 @@ class _AssistantViewState extends State<AssistantView> {
         return 'Toggle repeat';
       case AgentActions.alarmSet:
         return 'Set an alarm';
+      case AgentActions.calendarRead:
+        return 'Read calendar';
       case AgentActions.defineWord:
         return 'Define ${a['word']}';
       case AgentActions.translateText:

@@ -16,7 +16,16 @@ class ActionResult {
   /// offers them as "who did you mean?" and learns from the answer.
   final List<String> candidates;
 
-  const ActionResult(this.ok, this.message, {this.candidates = const []});
+  /// Structured payload from the native side (e.g. calendar events) that the
+  /// executor formats into the answer. Null when the action has no payload.
+  final Map<String, dynamic>? data;
+
+  const ActionResult(
+    this.ok,
+    this.message, {
+    this.candidates = const [],
+    this.data,
+  });
 }
 
 /// Runs the small device-local actions the assistant can execute natively.
@@ -103,6 +112,10 @@ class RealDeviceActionBackend implements DeviceActionBackend {
           AgentActions.mediaPrev ||
           AgentActions.mediaShuffle ||
           AgentActions.mediaRepeat => 'mediaControl',
+          AgentActions.calendarRead => 'calendarRead',
+          // Not an agent action — a Kotlin-side playback method for the
+          // in-app 30s Deezer preview ("play hotline bling" actually plays).
+          'mediaPreview' => 'mediaPreview',
           _ => 'unknown',
         },
         args,
@@ -114,6 +127,9 @@ class RealDeviceActionBackend implements DeviceActionBackend {
         candidates: (raw['candidates'] as List<dynamic>? ?? const [])
             .map((c) => c.toString())
             .toList(),
+        data: raw['events'] is List
+            ? {'events': raw['events'] as List}
+            : null,
       );
     } catch (_) {
       return const ActionResult(

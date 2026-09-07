@@ -313,12 +313,18 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       );
     case AgentActions.musicSearch:
       final query = command.arguments['query'] as String? ?? '';
+      final app = command.arguments['app'] as String?;
+      final name = app == null ? null : musicApps[app]?.$1;
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          'Searching for "$query"…',
+          name == null
+              ? 'Searching for "$query"…'
+              : (query.isEmpty
+                  ? 'Playing in $name…'
+                  : 'Playing "$query" in $name…'),
           action: AgentActions.musicSearch,
-          arguments: {'query': query},
+          arguments: {'query': query, if (app != null) 'app': app},
         ),
       );
     case AgentActions.timezoneGet:
@@ -351,12 +357,28 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           message: 'What should I add to your calendar?',
         );
       }
+      final app = command.arguments['app'] as String?;
+      final name = app == null ? null : calendarApps[app]?.$1;
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          'Opening a new event: "$title"…',
+          name == null
+              ? 'Opening a new event: "$title"…'
+              : 'Adding "$title" to $name…',
           action: AgentActions.calendarAdd,
-          arguments: {'title': title},
+          arguments: {'title': title, if (app != null) 'app': app},
+        ),
+      );
+    case AgentActions.calendarRead:
+      final when = command.arguments['when'] as String? ?? 'today';
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          when == 'tomorrow'
+              ? 'Checking tomorrow…'
+              : (when == 'week' ? 'Checking this week…' : 'Checking today…'),
+          action: AgentActions.calendarRead,
+          arguments: {'when': when},
         ),
       );
     case AgentActions.shoppingListAdd:
@@ -391,12 +413,16 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           message: 'Where should I take you?',
         );
       }
+      final app = command.arguments['app'] as String?;
+      final name = app == null ? null : navApps[app]?.$1;
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          'Opening maps for "$query"…',
+          name == null
+              ? 'Opening maps for "$query"…'
+              : 'Directions to "$query" in $name…',
           action: AgentActions.navOpen,
-          arguments: {'query': query},
+          arguments: {'query': query, if (app != null) 'app': app},
         ),
       );
     case AgentActions.noteCreate:
