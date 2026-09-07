@@ -362,6 +362,64 @@ class CommandInterpreter {
       );
     }
 
+    // --- Identity: "call me sam" / "my name is sam smith" — the
+    // assistant calls you by name from then on (greetings included). Must
+    // run before the call rule, which would otherwise dial "me sam". Time
+    // words ("call me tomorrow") are not names and fall through untouched.
+    final setName = RegExp(
+      r'^(?:call me|my name is|my names|you can call me|please call me|'
+      r'je m appelle|mon nom est) (.+)$',
+    ).firstMatch(norm);
+    if (setName != null) {
+      final name = _titleCase(setName.group(1)!.trim());
+      final isPlausible = name.isNotEmpty &&
+          name.length <= 32 &&
+          !RegExp(
+            r'^(?:tomorrow|later|tonight|back|soon|now|again|when|'
+            r'in |at |on |for |from |after )',
+          ).hasMatch(name.toLowerCase()) &&
+          !RegExp(r'\d').hasMatch(name);
+      if (isPlausible) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.profileSet,
+            target: 'local',
+            arguments: {'kind': 'user', 'name': name},
+          ),
+        );
+      }
+    }
+    // "call yourself sophie" / "your name is sophie" renames the
+    // assistant itself (set on first run, changed here anytime).
+    final rename = RegExp(
+      r'^(?:call yourself|your name is|rename yourself|renames toi) (.+)$',
+    ).firstMatch(norm);
+    if (rename != null) {
+      final name = _titleCase(rename.group(1)!.trim());
+      if (name.isNotEmpty &&
+          name.length <= 24 &&
+          !RegExp(r'\d').hasMatch(name)) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.profileSet,
+            target: 'local',
+            arguments: {'kind': 'assistant', 'name': name},
+          ),
+        );
+      }
+    }
+    if (_oneOf(norm, const [
+      'what is my name',
+      'whats my name',
+      'do you know my name',
+      'who am i',
+      'what do you call me',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.profileGet, target: 'local'),
+      );
+    }
+
     // --- About the assistant: identity questions get honest answers, never
     // pretend sentience — "I'm Nexus, born August 2026".
     if (_oneOf(norm, const [
@@ -2456,6 +2514,14 @@ class CommandInterpreter {
         if (entry != null) return (domain, key, entry.$1);
       }
     }
+    return null;
+  }
+
+  /// "sam smith" → "Sam Smith": stored and spoken names are proper.
+  String _titleCase(String s) => s
+      .split(' ')
+      .where((w) => w.isNotEmpty)
+      .map((w) => w[0].toUpperCase() + w.substring(1))
       .join(' ');
 
   bool _domainMatches(String hint, String domain) => switch (hint) {

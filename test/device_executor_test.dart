@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/app_defaults.dart';
 import 'package:nexus/core/device_actions.dart';
+import 'package:nexus/core/profile.dart';
 import 'package:nexus/core/live.dart';
 import 'package:nexus/core/phone_actions.dart';
 import 'package:nexus/ui/device_executor.dart';
@@ -793,6 +794,54 @@ void main() {
     expect(out.ok, isTrue);
     expect(out.message, 'I\'ll use Waze for directions from now on.');
     expect(await store.read(AppDefaultDomain.navigation), 'waze');
+  });
+
+  test('call me X persists the name and greets back; what is my name reads it',
+      () async {
+    final profile = MemoryProfileStore();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      profileStore: profile,
+    );
+    final set = await executor.run(req(
+      AgentActions.profileSet,
+      {'kind': 'user', 'name': 'Sam'},
+    ));
+    expect(set.ok, isTrue);
+    expect(set.message, 'Nice to meet you, Sam.');
+    expect((await profile.read()).userName, 'Sam');
+    final get = await executor.run(req(AgentActions.profileGet));
+    expect(get.ok, isTrue);
+    expect(get.message, 'Your name is Sam.');
+  });
+
+  test('what is my name answers honestly before any name is set', () async {
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      profileStore: MemoryProfileStore(),
+    );
+    final get = await executor.run(req(AgentActions.profileGet));
+    expect(get.ok, isTrue);
+    expect(get.message, contains('I don\'t know your name yet'));
+    expect(get.message, contains('call me Sam'));
+  });
+
+  test('call yourself X renames the assistant', () async {
+    final profile = MemoryProfileStore();
+    executor = DeviceExecutor(
+      deviceBackend: device,
+      phoneBackend: phone,
+      profileStore: profile,
+    );
+    final out = await executor.run(req(
+      AgentActions.profileSet,
+      {'kind': 'assistant', 'name': 'Sophie'},
+    ));
+    expect(out.ok, isTrue);
+    expect(out.message, 'Okay — call me Sophie from now on.');
+    expect((await profile.read()).assistantName, 'Sophie');
   });
 
   test('always use X persists, clears, and restores old behavior', () async {

@@ -18,6 +18,7 @@ import 'package:url_launcher/url_launcher.dart'
 import '../core/agent_contract.dart';
 import '../core/app_defaults.dart';
 import '../core/command_interpreter.dart';
+import '../core/profile.dart';
 import '../core/device_actions.dart';
 import '../core/live.dart';
 import '../core/phone_actions.dart';
@@ -35,6 +36,7 @@ class DeviceExecutor {
     RateFetcher? rateFetcher,
     ZoneTimeFetcher? zoneTimeFetcher,
     AppDefaultsStore? defaultsStore,
+    ProfileStore? profileStore,
   }) : _deviceBackend = deviceBackend ?? deviceActionBackend(),
        _phoneBackend = phoneBackend ?? RealPhoneActionBackend(),
        _weatherFetcher = weatherFetcher ?? fetchWeather,
@@ -43,6 +45,7 @@ class DeviceExecutor {
        _rateFetcher = rateFetcher ?? fetchRate,
        _zoneTimeFetcher = zoneTimeFetcher ?? fetchZoneTime,
        _defaults = defaultsStore ?? SharedPrefsAppDefaultsStore(),
+       _profile = profileStore ?? SharedPrefsProfileStore();
 
   final DeviceActionBackend _deviceBackend;
   final PhoneActionBackend _phoneBackend;
@@ -52,6 +55,7 @@ class DeviceExecutor {
   final RateFetcher _rateFetcher;
   final ZoneTimeFetcher _zoneTimeFetcher;
   final AppDefaultsStore _defaults;
+  final ProfileStore _profile;
 
   /// Parses follow-up answers ('time': '7am') into what the native side
   /// expects, then runs the action through the platform backend (or the
@@ -203,6 +207,12 @@ class DeviceExecutor {
     }
     if (request.action == AgentActions.appDefault) {
       return _setAppDefault(prepared);
+    }
+    if (request.action == AgentActions.profileSet) {
+      return _setProfile(prepared);
+    }
+    if (request.action == AgentActions.profileGet) {
+      return _getProfile();
     }
     if (request.action == AgentActions.calendarRead) {
       return _calendarRead(prepared['when']?.toString() ?? 'today');
@@ -1284,6 +1294,37 @@ class DeviceExecutor {
           ? 'I\'ll use $name for directions from now on.'
           : 'Using $name from now on.',
     );
+  }
+
+  /// "call me sam" / "call yourself sophie": persists what the assistant
+  /// calls its person (and what it should answer to), with a confirm.
+  Future<ActionResult> _setProfile(Map<String, dynamic> args) async {
+    final kind = args['kind'] as String? ?? 'user';
+    final name = (args['name'] as String? ?? '').trim();
+    if (name.isEmpty) {
+      return const ActionResult(false, 'I didn\'t catch the name — try "call me Sam".');
+    }
+    final profile = await _profile.read();
+    if (kind == 'assistant') {
+      await _profile.save(profile.copyWith(assistantName: name));
+      return ActionResult(true, 'Okay — call me $name from now on.');
+    }
+    await _profile.save(profile.copyWith(userName: name));
+    return ActionResult(true, 'Nice to meet you, $name.');
+  }
+
+  /// "what is my name" — honest, including the "I don't know you yet" case.
+  Future<ActionResult> _getProfile() async {
+    final name = (await _profile.read()).userName;
+    if (name == null || name.isEmpty) {
+      return const ActionResult(
+        true,
+        'I don\'t know your name yet — say "call me Sam" and I\'ll remember it.',
+      );
+    }
+    return ActionResult(true, 'Your name is $name.');
+  }
+
   String? _defaultKeyFor(String? domain) => switch (domain) {
         'music' => AppDefaultDomain.music,
         'navigation' => AppDefaultDomain.navigation,

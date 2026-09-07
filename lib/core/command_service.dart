@@ -482,6 +482,8 @@ class CommandService {
         action == AgentActions.calendarAdd ||
         action == AgentActions.calendarRead ||
         action == AgentActions.appDefault ||
+        action == AgentActions.profileSet ||
+        action == AgentActions.profileGet ||
         action == AgentActions.shoppingListAdd ||
         action == AgentActions.shoppingListGet ||
         action == AgentActions.systemInfo ||
@@ -806,6 +808,8 @@ class CommandService {
       case AgentActions.calendarAdd:
       case AgentActions.calendarRead:
       case AgentActions.appDefault:
+      case AgentActions.profileSet:
+      case AgentActions.profileGet:
       case AgentActions.shoppingListAdd:
       case AgentActions.shoppingListGet:
       case AgentActions.emailSend:
@@ -867,12 +871,29 @@ class CommandService {
   /// The catalog's window onto this service — built once, sees the live
   /// [_facts] list and the persistence/broadcast callbacks memory writes fire.
   AnswerContext? _answerCtx;
+  /// What the assistant calls this user, and what the user calls it — set
+  /// by first-run setup and by "call me sam" / "call yourself sophie".
+  String? _userName;
+  String _assistantName = 'Nexus';
+
+  /// Updates identity and invalidates the cached answer context so
+  /// greetings pick up the new name immediately.
+  void setIdentity({String? userName, String? assistantName}) {
+    if (userName != null) _userName = userName;
+    if (assistantName != null && assistantName.isNotEmpty) {
+      _assistantName = assistantName;
+    }
+    _answerCtx = null;
+  }
+
   AnswerContext get _answerContext => _answerCtx ??= AnswerContext(
     facts: _facts,
     devices: devices,
     local: local,
     onMemoryChanged: onMemoryChanged,
     onFactLearned: onFactLearned,
+    userName: _userName,
+    assistantName: _assistantName,
   );
 
   ParsedCommand _withArgument(

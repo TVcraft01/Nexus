@@ -350,11 +350,11 @@ void main() {
     test("the assistant asks back for personal facts instead of searching the web", () {
       // "what is my name" / "what is my wifi password" must ask the user
       // for the answer (and remember it), never search the web for their
-      // own secret.
+      // own secret. "what is my name" moved OUT of this class: the name now
+      // has a real profile store and personalizes greetings, so it routes
+      // to profile.get (which answers honestly when unknown and points to
+      // "call me Sam") instead of a generic memory ask-back.
       for (final pair in [
-        ('what is my name', 'memory.ask.my name', 'your name'),
-        ('whats my name', 'memory.ask.my name', 'your name'),
-        ('who am i', 'memory.ask.my name', 'your name'),
         (
           'what is my wifi password',
           'memory.ask.my wifi password',
@@ -868,6 +868,47 @@ void main() {
           AgentActions.timerCancel);
       expect(interpreter.interpret('thanks').command!.action,
           AgentActions.greet);
+    });
+
+    test('call me X / my name is X set the profile; what is my name reads it',
+        () {
+      for (final (phrase, kind, name) in [
+        ('call me sam', 'user', 'Sam'),
+        ('call me sam smith', 'user', 'Sam Smith'),
+        ('my name is sam', 'user', 'Sam'),
+        ('my names sam', 'user', 'Sam'),
+        ('you can call me sam', 'user', 'Sam'),
+        ('je m appelle sam', 'user', 'Sam'),
+        ('call yourself sophie', 'assistant', 'Sophie'),
+        ('your name is sophie', 'assistant', 'Sophie'),
+        ('renames toi sophie', 'assistant', 'Sophie'),
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.profileSet, reason: phrase);
+        expect(r.command!.arguments['kind'], kind, reason: phrase);
+        expect(r.command!.arguments['name'], name, reason: phrase);
+      }
+      for (final phrase in [
+        'what is my name',
+        'whats my name',
+        'do you know my name',
+        'who am i',
+        'what do you call me',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command!.action, AgentActions.profileGet, reason: phrase);
+      }
+      // Time words are not names: "call me tomorrow" stays a call phrase
+      // and must never claim the profile.
+      final t = interpreter.interpret('call me tomorrow');
+      expect(t.command?.action, isNot(AgentActions.profileSet));
+      // Real calls are untouched.
+      final c = interpreter.interpret('call mom');
+      expect(c.command!.action, AgentActions.callPlace);
+      expect(c.command!.arguments['contact'], 'mom');
+    });
+
     test('currency converts stay unitConvert; french words captured', () {
       final usd = interpreter.interpret('convert 100 usd to eur');
       expect(usd.outcome, InterpretOutcome.matched);

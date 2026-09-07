@@ -28,12 +28,20 @@ class AnswerContext {
     required this.local,
     this.onMemoryChanged,
     this.onFactLearned,
+    this.userName,
+    this.assistantName = 'Nexus',
   });
 
   final List<String> facts;
   final List<AgentDeviceSnapshot> Function() devices;
   final AgentDeviceSnapshot? local;
   final void Function()? onMemoryChanged;
+
+  /// What the assistant calls this user ("call me sam"), used in greetings.
+  final String? userName;
+
+  /// What the user calls the assistant (default Nexus, renamed on setup).
+  final String assistantName;
   final void Function(String fact)? onFactLearned;
 }
 
@@ -231,17 +239,52 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         ),
       );
     case AgentActions.greet:
-      return const AgentDispatchResult(
+      final name = ctx.userName;
+      const base =
+          'I can tell you the time, do math, search the web, save notes, show your PC specs, and copy text between your devices. Ask me anything — and if I don\'t understand, I\'ll ask you to teach me.';
+      return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          'Hello! I can tell you the time, do math, search the web, save notes, show your PC specs, and copy text between your devices. Ask me anything — and if I don\'t understand, I\'ll ask you to teach me.',
+          name == null || name.isEmpty ? 'Hello! $base' : 'Hello, $name! $base',
         ),
       );
     case AgentActions.intro:
-      return const AgentDispatchResult(
+      return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          'I\'m here! I\'m Nexus, your assistant, running right on this device. I\'m brand new — my first release shipped in August 2026 — so I\'m still learning. Ask me anything, and if I don\'t understand, I\'ll ask you to teach me.',
+          'I\'m here! I\'m ${ctx.assistantName}, your assistant, running right on this device. I\'m brand new — my first release shipped in August 2026 — so I\'m still learning. Ask me anything, and if I don\'t understand, I\'ll ask you to teach me.',
+        ),
+      );
+    case AgentActions.profileSet:
+      final name = command.arguments['name'] as String? ?? '';
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          'Got it — $name.',
+          action: AgentActions.profileSet,
+          arguments: command.arguments,
+        ),
+      );
+    case AgentActions.profileGet:
+      // A name taught as a memory fact ("remember that my name is john")
+      // still answers here; otherwise the executor reads the profile store
+      // — the first-class home — and answers honestly when unknown.
+      for (final fact in ctx.facts) {
+        final name = RegExp(
+          r'^(?:my name is|i am called|call me) (.+)$',
+        ).firstMatch(fact.trim());
+        if (name != null) {
+          return AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage('Your name is ${name.group(1)}.'),
+          );
+        }
+      }
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: const AgentMessage(
+          'Checking…',
+          action: AgentActions.profileGet,
         ),
       );
     case AgentActions.timeGet:

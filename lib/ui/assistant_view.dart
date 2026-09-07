@@ -8,6 +8,7 @@ import '../core/agent_contract.dart';
 import '../core/command_service.dart';
 import '../core/dream.dart';
 import '../core/predictions.dart';
+import '../core/profile.dart';
 import '../core/query_log.dart';
 import '../core/reminders.dart';
 import '../core/speech.dart';
@@ -89,6 +90,16 @@ class _AssistantViewState extends State<AssistantView> {
   /// only decides when to run them.
   final DeviceExecutor _executor = DeviceExecutor();
 
+  /// The user's profile: names and first-run state, persisted per device.
+  final ProfileStore _profile = SharedPrefsProfileStore();
+  UserProfile? _profileState;
+  bool _profileLoaded = false;
+
+  /// First-run setup form state.
+  final TextEditingController _onboardName = TextEditingController();
+  final TextEditingController _onboardAssistant = TextEditingController();
+  final Map<String, bool?> _onboardPerms = {}; // action -> granted/denied/null
+
   @override
   void initState() {
     super.initState();
@@ -137,6 +148,10 @@ class _AssistantViewState extends State<AssistantView> {
     widget.mesh.onFactReceived = (fact) {
       _service.adoptFact(fact);
     };
+
+    // First-run profile: names + onboarded flag, loaded after the first
+    // frame so the welcome card can become a real setup flow.
+    unawaited(_loadProfile());
 
     // Reminders: this device's copy comes back from the store (a promise
     // made before a restart still fires), and peers' reminders arrive live.
@@ -198,6 +213,8 @@ class _AssistantViewState extends State<AssistantView> {
     _reminderEngine.removeListener(_onRemindersChanged);
     _reminderEngine.dispose();
     _controller.dispose();
+    _onboardName.dispose();
+    _onboardAssistant.dispose();
     _focus.dispose();
     super.dispose();
   }
@@ -332,6 +349,8 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.alarmSet,
     AgentActions.defineWord,
     AgentActions.appDefault,
+    AgentActions.profileSet,
+    AgentActions.profileGet,
   };
 
   /// Appends to (or, for re-runs, updates the end of) the thread. No
@@ -525,6 +544,10 @@ class _AssistantViewState extends State<AssistantView> {
         replaceLast: true,
       );
     });
+    // "call me sam" changed the profile — greet by the new name immediately.
+    if (request?.action == AgentActions.profileSet) {
+      unawaited(_syncProfile());
+    }
   }
 
   void _onSubmit({bool voice = false}) {
@@ -807,8 +830,18 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
-  /// First-run guidance: three steps, one screen, no jargon.
+  /// First-run guidance: a real setup flow (names + permissions) the very
+  /// first time the app runs; the plain welcome card afterwards.
   Widget _welcomeView() {
+    final p = _profileState;
+    if (_profileLoaded && p != null && !p.onboarded) {
+      return _onboardingView(p);
+    }
+    return _legacyWelcomeView();
+  }
+
+  /// The plain first-run card once setup is done.
+  Widget _legacyWelcomeView() {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
@@ -859,6 +892,258 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// The first-run setup: your name, the assistant's name, and the three
+  /// permissions it works with — each granted through the REAL flow the
+  /// action uses (the system asks, exactly like Siri's setup), never a
+  /// pretend toggle. "Start" saves everything and the assistant greets
+  /// you by name.
+  Widget _onboardingView(UserProfile p) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: NexusColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: NexusColors.accent.withValues(alpha: 0.35),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Set me up — 30 seconds.',
+                style: TextStyle(
+                  color: NexusColors.text,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Tell me your name and what to call me, then grant the '
+                'permissions I work with. You can change all of this later.',
+                style: TextStyle(color: NexusColors.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _onboardAssistant,
+                decoration: InputDecoration(
+                  labelText: 'What should I call you?',
+                  hintText: 'Nexus',
+                  labelStyle: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 12,
+                  ),
+                  hintStyle: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 13,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: NexusColors.border),
+                  ),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
+                style: const TextStyle(color: NexusColors.text, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _onboardName,
+                decoration: InputDecoration(
+                  labelText: 'Your name',
+                  hintText: 'what should I call you?',
+                  labelStyle: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 12,
+                  ),
+                  hintStyle: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 13,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: NexusColors.border),
+                  ),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
+                style: const TextStyle(color: NexusColors.text, fontSize: 13),
+              ),
+              const SizedBox(height: 14),
+              _permRow(
+                'Voice',
+                'ask me things out loud',
+                'voice',
+                Icons.mic_rounded,
+              ),
+              _permRow(
+                'Calendar',
+                'see what is on your calendar',
+                'calendar',
+                Icons.calendar_month_rounded,
+              ),
+              _permRow(
+                'Location',
+                'weather where you are',
+                'location',
+                Icons.place_rounded,
+              ),
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => unawaited(_finishOnboarding()),
+                  child: const Text('Start'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _permRow(String title, String what, String kind, IconData icon) {
+    final state = _onboardPerms[kind];
+    final status = switch (state) {
+      true => 'Ready ✓',
+      false => 'Not yet — retry, or allow it in Settings',
+      _ => 'Needs your permission',
+    };
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Icon(
+            icon,
+            size: 18,
+            color: state == true ? NexusColors.accent : NexusColors.muted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: NexusColors.text,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  '$what — $status',
+                  style: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: state == true
+                ? null
+                : () => unawaited(_setupPermission(kind)),
+            child: Text(state == true ? 'Done' : 'Set up'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Runs the REAL capability flow so the system permission dialog appears
+  /// (voice listen, calendar read, location) — the setup is not a fake
+  /// toggle, it is the action itself, once.
+  Future<void> _setupPermission(String kind) async {
+    bool? result;
+    switch (kind) {
+      case 'voice':
+        final speech = SpeechInput.current;
+        if (!speech.available) {
+          result = false;
+        } else {
+          final heard = await speech.listen();
+          result = heard != null && heard.trim().isNotEmpty;
+        }
+      case 'calendar':
+        final out = await _executor.run(
+          AgentRequest(
+            requestId: 'onboard-${DateTime.now().microsecondsSinceEpoch}',
+            target: widget.mesh.identity.id,
+            action: AgentActions.calendarRead,
+            arguments: const {'when': 'today'},
+          ),
+        );
+        result = out.ok;
+      case 'location':
+        final out = await _executor.run(
+          AgentRequest(
+            requestId: 'onboard-${DateTime.now().microsecondsSinceEpoch}',
+            target: widget.mesh.identity.id,
+            action: AgentActions.locationGet,
+          ),
+        );
+        result = out.ok;
+    }
+    if (!mounted) return;
+    setState(() => _onboardPerms[kind] = result);
+  }
+
+  /// Saves the names, marks setup done, and says the first real hello —
+  /// by name, with a time-of-day greeting, exactly like a person would.
+  Future<void> _finishOnboarding() async {
+    final raw = _onboardName.text.trim();
+    final assistant = _onboardAssistant.text.trim().isEmpty
+        ? 'Nexus'
+        : _proper(_onboardAssistant.text.trim());
+    final p = UserProfile(
+      userName: raw.isEmpty ? null : _proper(raw),
+      assistantName: assistant,
+      onboarded: true,
+    );
+    await _profile.save(p);
+    if (!mounted) return;
+    _service.setIdentity(userName: p.userName, assistantName: p.assistantName);
+    setState(() {
+      _profileState = p;
+      final hour = DateTime.now().hour;
+      final dayPart = hour < 12
+          ? 'Good morning'
+          : (hour < 18 ? 'Good afternoon' : 'Good evening');
+      final who = p.userName == null ? '' : ', ${p.userName}';
+      _appendResult(
+        AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            '$dayPart$who! I\'m $assistant, your assistant — running right '
+            'on this device. Ask me for the weather, directions, music, '
+            'timers, or what is on your calendar. If I don\'t understand, '
+            'tell me what you meant and I\'ll learn.',
+          ),
+        ),
+      );
+    });
+  }
+
+  /// "sam smith" → "Sam Smith": names are proper when spoken back.
+  static String _proper(String s) => s
+      .split(' ')
+      .where((w) => w.isNotEmpty)
+      .map((w) => w[0].toUpperCase() + w.substring(1))
+      .join(' ');
+
   /// Opens the dream review: phrases the assistant had to give up on,
   /// straight from its own log. Teaching one closes that gap forever.
   Future<void> _showDreamReview(BuildContext context) async {
@@ -880,6 +1165,39 @@ class _AssistantViewState extends State<AssistantView> {
     // Teaching inside the sheet closes gaps — refresh so the nudge
     // disappears without a restart when everything is understood.
     await _refreshFromLog();
+  }
+
+  /// Loads the persisted profile once after the first frame: names feed
+  /// the service's identity (personalized greetings) and the welcome card
+  /// becomes a real setup flow when first-run setup is pending.
+  Future<void> _loadProfile() async {
+    final p = await _profile.read();
+    if (!mounted) return;
+    _service.setIdentity(
+      userName: p.userName,
+      assistantName: p.assistantName,
+    );
+    setState(() {
+      _profileState = p;
+      _profileLoaded = true;
+      // Prefill the assistant name once so first-run setup starts with
+      // the default, ready to edit.
+      if (!p.onboarded && _onboardAssistant.text.isEmpty) {
+        _onboardAssistant.text = p.assistantName;
+      }
+    });
+  }
+
+  /// Re-reads the profile after a name change ("call me sam") so greetings
+  /// and the onboarded flag stay fresh without a restart.
+  Future<void> _syncProfile() async {
+    final p = await _profile.read();
+    if (!mounted) return;
+    _service.setIdentity(
+      userName: p.userName,
+      assistantName: p.assistantName,
+    );
+    setState(() => _profileState = p);
   }
 
   /// Reads the ask log once and updates both proactive surfaces from it:
