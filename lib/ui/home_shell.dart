@@ -38,11 +38,9 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    // Check for updates on startup when auto-update is enabled and the
-    // platform supports it (Linux + Android).
-    if (widget.mesh.store.autoUpdate &&
-        (defaultTargetPlatform == TargetPlatform.linux ||
-            defaultTargetPlatform == TargetPlatform.android)) {
+    // Check for updates on startup when auto-update is enabled. Updater decides
+    // whether this platform has a safe, matching release asset.
+    if (widget.mesh.store.autoUpdate) {
       unawaited(_checkForUpdates());
     }
   }
@@ -108,8 +106,9 @@ class _HomeShellState extends State<HomeShell> {
             _updateError = 'Could not open the installer. Try downloading from GitHub manually.';
           }
         });
-      } else {
-        // Linux: extract, swap, and relaunch.
+      } else if (defaultTargetPlatform == TargetPlatform.linux ||
+          defaultTargetPlatform == TargetPlatform.windows) {
+        // Desktop: extract, swap, and relaunch.
         final installDir = File(Platform.resolvedExecutable).parent.path;
         final applied = await Updater.applyUpdate(path, installDir: installDir);
         if (applied) {
@@ -117,7 +116,12 @@ class _HomeShellState extends State<HomeShell> {
         }
         setState(() {
           _applying = false;
-          _updateError = 'The update could not be applied. Run update.sh to update manually.';
+          _updateError = 'The update could not be applied. Run the installer manually to update.';
+        });
+      } else {
+        setState(() {
+          _applying = false;
+          _updateError = 'Automatic updates are not available on this platform yet.';
         });
       }
     } catch (e) {
@@ -223,9 +227,6 @@ class _HomeShellState extends State<HomeShell> {
                       destinations: _destinations,
                     ),
                     const VerticalDivider(width: 1),
-                    // Desktop windows can be very wide — cap the content
-                    // column so cards and text don't stretch across the
-                    // whole monitor.
                     Expanded(
                       child: Center(
                         child: ConstrainedBox(
@@ -261,20 +262,6 @@ class _HomeShellState extends State<HomeShell> {
                     ),
                   ],
                 ),
-          // A + button to pair a new device — it belongs to the Devices tab,
-          // where pairing lives, so it only appears there.
-          floatingActionButton: _index == 0
-              ? FloatingActionButton(
-                  onPressed: () {
-                    HapticFeedback.selectionClick();
-                    showPairSheet(context, mesh: widget.mesh);
-                  },
-                  tooltip: 'Pair a new device',
-                  backgroundColor: NexusColors.accent,
-                  foregroundColor: const Color(0xFF06251F),
-                  child: const Icon(Icons.add_rounded),
-                )
-              : null,
         );
       },
     );
@@ -298,75 +285,27 @@ class _UpdateBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
-      decoration: BoxDecoration(
-        color: NexusColors.accent.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+    return MaterialBanner(
+      leading: const Icon(Icons.system_update_rounded),
+      content: Text(
+        applying
+            ? 'Updating to v${info.version}…'
+            : 'Nexus v${info.version} is available',
       ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.system_update_alt_rounded,
-            size: 20,
-            color: NexusColors.accent,
+      actions: [
+        TextButton(
+          onPressed: applying ? null : onDismiss,
+          child: const Text('Later'),
+        ),
+        FilledButton(
+          onPressed: applying ? null : onUpdate,
+          child: Text(
+            defaultTargetPlatform == TargetPlatform.android
+                ? 'Update & install'
+                : 'Update & restart',
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  applying
-                      ? 'Updating to v${info.version}…'
-                      : 'Nexus v${info.version} is available',
-                  style: const TextStyle(
-                    color: NexusColors.text,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13.5,
-                  ),
-                ),
-                if (error != null)
-                  Text(
-                    error!,
-                    style: const TextStyle(
-                      color: NexusColors.danger,
-                      fontSize: 12,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          if (!applying)
-            TextButton(
-              onPressed: onUpdate,
-              child: Text(
-                defaultTargetPlatform == TargetPlatform.android
-                    ? 'Update & install'
-                    : 'Update & restart',
-              ),
-            )
-          else
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 12),
-              child: SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          IconButton(
-            onPressed: applying ? null : onDismiss,
-            icon: const Icon(
-              Icons.close_rounded,
-              size: 18,
-              color: NexusColors.muted,
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
