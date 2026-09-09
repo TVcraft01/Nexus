@@ -8,20 +8,7 @@ import '../mesh/updater.dart';
 ///
 /// Only runs when the user explicitly asks for it (the "Pair over cable"
 /// flow) — nothing here ever auto-detects or auto-pairs in the background.
-///
-/// What it does, per device type:
-/// - **Android phone over USB**: detected via `adb`. If the Nexus app is not
-///   installed yet, the latest release APK is downloaded from GitHub and
-///   installed over the cable. Then `adb reverse` maps the phone's mesh port
-///   to this PC's mesh port, so the phone can reach this PC *through the
-///   cable* — no Wi-Fi needed — and the user completes normal code pairing.
-/// - **Other Linux device (e.g. a Raspberry Pi)**: no app is pushed; a setup
-///   script is generated that installs the Linux build on that device, after
-///   which the two devices pair over the network as usual.
-/// - **Anything else (car, etc.)**: there is no app to send; the flow just
-///   tells the user how that device connects (e.g. Android Auto).
 class CablePairing {
-  /// True when the `adb` binary is available on this PC.
   static Future<bool> get adbAvailable async {
     try {
       final result = await Process.run('adb', ['version']);
@@ -31,11 +18,8 @@ class CablePairing {
     }
   }
 
-  /// A device detected on the cable.
   static const packageId = 'dev.nexus.nexus';
 
-  /// Lists devices currently attached over ADB (cable or wireless adb).
-  /// Returns an empty list when adb is missing or nothing is attached.
   static Future<List<String>> connectedDevices() async {
     try {
       final result = await Process.run('adb', ['devices']);
@@ -46,33 +30,21 @@ class CablePairing {
     }
   }
 
-  /// Parses `adb devices` output into serials. Split out so it is
-  /// unit-testable without adb.
   static List<String> parseDevicesOutput(String output) {
     final devices = <String>[];
     for (final line in output.split('\n').skip(1)) {
       final trimmed = line.trim();
       if (trimmed.isEmpty) continue;
       final parts = trimmed.split(RegExp(r'\s+'));
-      // "serial\tdevice" (authorized) — ignore "unauthorized"/"offline".
-      if (parts.length >= 2 && parts[1] == 'device') {
-        devices.add(parts[0]);
-      }
+      if (parts.length >= 2 && parts[1] == 'device') devices.add(parts[0]);
     }
     return devices;
   }
 
-  /// Whether the Nexus app is already installed on [serial].
   static Future<bool> hasNexusInstalled(String serial) async {
     try {
       final result = await Process.run('adb', [
-        '-s',
-        serial,
-        'shell',
-        'pm',
-        'list',
-        'packages',
-        packageId,
+        '-s', serial, 'shell', 'pm', 'list', 'packages', packageId,
       ]);
       return result.exitCode == 0 &&
           (result.stdout as String).contains('package:$packageId');
@@ -81,8 +53,6 @@ class CablePairing {
     }
   }
 
-  /// Installs the latest release APK on [serial] over the cable. Returns the
-  /// installed version tag (e.g. "v0.1.8") or null on failure.
   static Future<String?> installAppOn(String serial) async {
     final url = await Updater.latestApkUrl();
     if (url == null) {
@@ -99,7 +69,6 @@ class CablePairing {
       debugPrint('NEXUS cable: adb install failed: ${result.stderr}');
       return null;
     }
-    // The tag is the version of the APK we just installed, e.g. v0.1.8.
     String? tag;
     for (final segment in Uri.parse(url).pathSegments) {
       if (segment.startsWith('v')) tag = segment;
@@ -107,49 +76,30 @@ class CablePairing {
     return tag ?? 'latest';
   }
 
-  /// Candidate phone-side ports for the cable tunnel. [pcPort] itself is
-  /// tried first; following ports cover the case where the phone already has
-  /// something listening on that local port.
   static List<int> tunnelCandidates(int pcPort) =>
       [pcPort, pcPort + 1, pcPort + 2, pcPort + 3];
 
-  /// Opens a reverse tunnel so the phone can reach this PC's mesh server
-  /// ([pcPort]) over the cable — no Wi-Fi needed. Maps a free port on the
-  /// phone to the PC's mesh port and returns the phone-side port the phone
-  /// should connect to.
+  /// Opens a reverse tunnel from phone localhost to the PC mesh server.
   ///
-  /// A common ADB failure mode is a stale reverse mapping left behind after
-  /// an earlier Nexus run, cable unplug, or app crash. We explicitly remove
-  /// each candidate mapping before recreating it. This is safer than
-  /// `reverse --remove-all`, which could destroy reverse tunnels belonging to
-  /// other developer tools.
+  /// We remove only Nexus' candidate mappings first. A stale ADB reverse is
+  /// otherwise enough to make pairing look like it succeeded while traffic
+  /// is sent to an old/dead PC process.
   static Future<int?> openTunnel(String serial, int pcPort) async {
     for (final local in tunnelCandidates(pcPort)) {
       try {
-        // Best-effort cleanup of only this candidate. It is expected to fail
-        // when no mapping existed, so its exit code is intentionally ignored.
         await Process.run(
-          'adb',
-          ['-s', serial, 'reverse', '--remove', 'tcp:$local'],
+          'adb', ['-s', serial, 'reverse', '--remove', 'tcp:$local'],
         );
-
         final result = await Process.run(
-          'adb',
-          ['-s', serial, 'reverse', 'tcp:$local', 'tcp:$pcPort'],
+          'adb', ['-s', serial, 'reverse', 'tcp:$local', 'tcp:$pcPort'],
         );
         if (result.exitCode == 0) return local;
-        debugPrint(
-          'NEXUS cable: adb reverse tcp:$local failed: ${result.stderr}',
-        );
-      } catch (_) {
-        // adb missing or device gone — try the next candidate.
-      }
+        debugPrint('NEXUS cable: adb reverse tcp:$local failed: ${result.stderr}');
+      } catch (_) {}
     }
     return null;
   }
 
-  /// Generates a setup script that installs the Linux build of Nexus on a
-  /// Linux device (Raspberry Pi, other PC) so it can then pair with this one.
   static String linuxSetupScript() {
     return '''
 #!/usr/bin/env bash
@@ -176,40 +126,26 @@ echo "After pairing, both devices talk directly — no cloud, no account."
 ''';
   }
 
-  /// Detects a phone attached over USB *without adb* — i.e. with USB
-  /// tethering on. Android's tethering presents an RNDIS/ECM link named
-  /// `usb0` (or an `enp*s0u*` on some kernels) and usually hands the PC a
-  /// 192.168.42.x address. When present, the phone and this PC are on the
-  /// same link and the mesh works over the cable with no developer mode.
-  /// Returns a short human-readable description, or null when nothing is
-  /// found.
   static Future<String?> detectUsbTether() async {
     try {
       final links = await Process.run('ip', ['-o', 'link', 'show']);
       if (links.exitCode == 0) {
         final text = links.stdout as String;
         for (final line in text.split('\n')) {
-          final iface =
-              RegExp(r'\d+:\s+(\S+)').firstMatch(line)?.group(1) ?? '';
+          final iface = RegExp(r'\d+:\s+(\S+)').firstMatch(line)?.group(1) ?? '';
           final lower = iface.toLowerCase();
-          if (lower == 'usb0' ||
-              lower == 'usb1' ||
-              lower.startsWith('enp') && lower.contains('s0u')) {
-            return 'Phone on USB tethering ($iface) — it can reach this PC '
-                'over the cable. Pair it with a code as usual (no adb, no '
-                'developer mode needed).';
+          if (lower == 'usb0' || lower == 'usb1' ||
+              (lower.startsWith('enp') && lower.contains('s0u'))) {
+            return 'Phone on USB tethering ($iface) — it can reach this PC over the cable. Pair it with a code as usual (no adb, no developer mode needed).';
           }
         }
       }
       final routes = await Process.run('ip', ['route']);
       if (routes.exitCode == 0 &&
           (routes.stdout as String).contains('192.168.42.')) {
-        return 'Phone on USB tethering detected — it can reach this PC over '
-            'the cable. Pair it with a code as usual.';
+        return 'Phone on USB tethering detected — it can reach this PC over the cable. Pair it with a code as usual.';
       }
-    } catch (_) {
-      // ip may be missing — fall through.
-    }
+    } catch (_) {}
     return null;
   }
 }
