@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint, defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show debugPrint, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/services.dart';
 
 /// Info about a newer Nexus release, if one exists.
@@ -13,16 +14,17 @@ class UpdateInfo {
 
 /// Cross-platform auto-update.
 ///
-/// How it works: the app asks GitHub "what is the latest release?" on
-/// startup. If it is newer than the running version, the app offers
-/// "Update & restart" (Linux) or "Update & install" (Android).
+/// The app asks GitHub for the latest release on startup. If it is newer than
+/// the running version, the app offers an update when a matching release asset
+/// exists for the current platform.
 ///
-/// - **Linux**: downloads the tarball, extracts next to the running install,
-///   swaps directories, and relaunches itself.
-/// - **Android**: downloads the APK and hands it to the system installer
-///   (the OS shows "Do you want to install this update?").
+/// - Linux: downloads the tarball, swaps the install directory, and relaunches.
+/// - Windows: downloads the zip, swaps the install directory, and relaunches.
+/// - Android: downloads the APK and hands it to the system installer.
+/// - macOS: waits for a published macOS asset; it is not silently substituted
+///   with another platform's package.
 ///
-/// If anything fails it says so — it never silently half-updates.
+/// If anything fails it reports the failure — it never silently half-updates.
 class Updater {
   /// The Android method channel used to open the APK installer.
   static const _androidChannel = MethodChannel('dev.nexus.nexus/installer');
@@ -48,22 +50,36 @@ class Updater {
     return 0;
   }
 
-  /// The expected asset name for the current platform.
-  static String get _assetName {
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'nexus.apk';
+  /// The expected release asset for the current platform.
+  static String? get _assetName {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return 'nexus.apk';
+      case TargetPlatform.linux:
+        return 'nexus-linux-x64.tar.gz';
+      case TargetPlatform.windows:
+        return 'nexus-windows-x64.zip';
+      case TargetPlatform.macOS:
+        // Do not download or install a package built for another OS.
+        return null;
+      case TargetPlatform.iOS:
+      case TargetPlatform.fuchsia:
+        return null;
     }
-    return 'nexus-linux-x64.tar.gz';
   }
 
   /// Asks GitHub for the latest release and returns [UpdateInfo] when it is
-  /// newer than [currentVersion]. [fetch] is injectable for tests.
+  /// newer than [currentVersion] and has a matching platform asset.
+  /// [fetch] is injectable for tests.
   static Future<UpdateInfo?> checkForUpdate({
     required String currentVersion,
     String owner = 'TVcraft01',
     String repo = 'Nexus',
     Future<String> Function(String url)? fetch,
   }) async {
+    final assetName = _assetName;
+    if (assetName == null) return null;
+
     final fetcher = fetch ?? _httpGet;
     try {
       final json = await _latestReleaseJson(fetcher, owner: owner, repo: repo);
@@ -73,10 +89,15 @@ class Updater {
       final version = tag.replaceFirst(RegExp(r'^v'), '');
       if (compareVersions(version, currentVersion) <= 0) return null;
 
-      final info = UpdateInfo(
-        version: version,
-        downloadUrl: _assetUrl(json, _assetName),
-      );
+      final downloadUrl = _assetUrl(json, assetName);
+      if (downloadUrl == null) {
+        debugPrint(
+          'NEXUS updater: v$version exists but has no $assetName asset',
+        );
+        return null;
+      }
+
+      final info = UpdateInfo(version: version, downloadUrl: downloadUrl);
       debugPrint('NEXUS updater: update available v$version');
       return info;
     } catch (e) {
@@ -92,7 +113,9 @@ class Updater {
     required String owner,
     required String repo,
   }) async {
-    final body = await fetch('https://api.github.com/repos/$owner/$repo/releases/latest');
+    final body = await fetch(
+      'https://api.github.com/repos/$owner/$repo/releases/latest',
+    );
     final json = jsonDecode(body);
     return json is Map<String, dynamic> ? json : null;
   }
@@ -110,8 +133,7 @@ class Updater {
   }
 
   /// The GitHub download URL of the latest published `nexus.apk`, if the
-  /// latest release has one. Used by cable pairing to push the app to a
-  /// phone that does not have it yet. [fetch] is injectable for tests.
+  /// latest release has one. Used by cable pairing to push Nexus to Android.
   static Future<String?> latestApkUrl({
     String owner = 'TVcraft01',
     String repo = 'Nexus',
@@ -130,8 +152,14 @@ class Updater {
 
   /// Downloads the update archive/APK to a temp file. Returns the path.
   static Future<String?> download(String url) async {
-    final ext = defaultTargetPlatform == TargetPlatform.android ? '.apk' : '.tar.gz';
-    final tmp = File('${Directory.systemTemp.path}/nexus-update-${DateTime.now().millisecondsSinceEpoch}$ext');
+    final ext = switch (defaultTargetPlatform) {
+      TargetPlatform.android => '.apk',
+      TargetPlatform.windows => '.zip',
+      _ => '.tar.gz',
+    };
+    final tmp = File(
+      '${Directory.systemTemp.path}/nexus-update-${DateTime.now().millisecondsSinceEpoch}$ext',
+    );
     final client = HttpClient();
     try {
       final request = await client.getUrl(Uri.parse(url));
@@ -148,13 +176,7 @@ class Updater {
     }
   }
 
-  /// Applies a downloaded update:
-  /// - **Linux**: extract, swap dirs, relaunch; needs [installDir].
-  /// - **Android**: check the unknown-sources permission, hand the APK to the
-  ///   system installer.
-  ///
-  /// Returns true when the update flow has been started (the app should
-  /// step back and let the user/system finish).
+  /// Applies a downloaded update for Android, Linux, or Windows.
   static Future<bool> applyUpdate(String archivePath, {String? installDir}) async {
     if (defaultTargetPlatform == TargetPlatform.android) {
       try {
@@ -162,10 +184,6 @@ class Updater {
           'path': archivePath,
         });
         debugPrint('NEXUS updater: Android installer status: $status');
-        // "launched" — installer open. "permission" — the app routed the
-        // user to the system unknown-sources screen first; the install
-        // continues automatically when they grant it and come back. Either
-        // way the flow is in the user's hands, so it is not an error.
         return status == 'launched' || status == 'permission';
       } catch (e) {
         debugPrint('NEXUS updater: Android install failed: $e');
@@ -174,13 +192,19 @@ class Updater {
     }
 
     if (installDir == null) return false;
-    if (!await extractAndSwap(archivePath, installDir)) return false;
+
+    final applied = defaultTargetPlatform == TargetPlatform.windows
+        ? await extractAndSwapWindows(archivePath, installDir)
+        : defaultTargetPlatform == TargetPlatform.linux
+            ? await extractAndSwap(archivePath, installDir)
+            : false;
+    if (!applied) return false;
+
+    final executable = defaultTargetPlatform == TargetPlatform.windows
+        ? '$installDir${Platform.pathSeparator}nexus.exe'
+        : '$installDir${Platform.pathSeparator}nexus';
     try {
-      await Process.start(
-        '$installDir${Platform.pathSeparator}nexus',
-        const [],
-        mode: ProcessStartMode.detached,
-      );
+      await Process.start(executable, const [], mode: ProcessStartMode.detached);
     } catch (e) {
       debugPrint('NEXUS updater: relaunch failed: $e');
     }
@@ -188,8 +212,7 @@ class Updater {
     return true;
   }
 
-  /// Extracts the archive next to [installDir] and swaps the directories.
-  /// Split out so the swap logic is unit-testable without relaunching.
+  /// Extracts a Linux tarball and swaps the install directory.
   static Future<bool> extractAndSwap(String archivePath, String installDir) async {
     final tmp = Directory('$installDir.new');
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
@@ -204,12 +227,44 @@ class Updater {
       debugPrint('NEXUS updater: archive has no nexus binary — refusing');
       return false;
     }
+    return _swapDirectories(tmp, installDir);
+  }
 
-    // Swap: current install -> .old, new -> current.
+  /// Extracts the Windows zip produced by the release workflow and swaps the
+  /// install directory. PowerShell is used because it is available on
+  /// supported Windows installations without adding a Dart archive package.
+  static Future<bool> extractAndSwapWindows(
+    String archivePath,
+    String installDir,
+  ) async {
+    final tmp = Directory('$installDir.new');
+    if (tmp.existsSync()) tmp.deleteSync(recursive: true);
+    tmp.createSync(recursive: true);
+
+    final extract = await Process.run('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      'Expand-Archive -LiteralPath ${_psQuote(archivePath)} -DestinationPath ${_psQuote(tmp.path)} -Force',
+    ]);
+    if (extract.exitCode != 0) {
+      debugPrint('NEXUS updater: Windows extract failed: ${extract.stderr}');
+      return false;
+    }
+    if (!File('${tmp.path}${Platform.pathSeparator}nexus.exe').existsSync()) {
+      debugPrint('NEXUS updater: Windows archive has no nexus.exe — refusing');
+      return false;
+    }
+    return _swapDirectories(tmp, installDir);
+  }
+
+  static String _psQuote(String value) => "'${value.replaceAll("'", "''")}'";
+
+  static Future<bool> _swapDirectories(Directory tmp, String installDir) async {
     final old = Directory('$installDir.old');
     if (old.existsSync()) old.deleteSync(recursive: true);
     try {
-      await Directory(installDir).rename('$installDir.old');
+      await Directory(installDir).rename(old.path);
       await tmp.rename(installDir);
     } catch (e) {
       debugPrint('NEXUS updater: swap failed: $e');
