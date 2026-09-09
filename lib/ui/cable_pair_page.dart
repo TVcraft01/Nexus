@@ -7,11 +7,9 @@ import '../mesh/mesh_service.dart';
 import '../mesh/serial_bridge.dart';
 import 'theme.dart';
 
-/// The "Pair over cable" flow. Steps through identifying the connected
-/// device, installing the Nexus app on it if needed, opening the cable
-/// tunnel, and showing the pairing code for the other device to enter.
-///
-/// Pops with `true` once the mesh reports the device as paired.
+/// USB provisioning flow. Android authorization is handled by Android/ADB;
+/// once authorized, Nexus installs itself, opens the tunnel and sends a
+/// one-time pairing URI to the phone so no manual code entry is needed.
 class CablePairPage extends StatefulWidget {
   final MeshService mesh;
   const CablePairPage({super.key, required this.mesh});
@@ -23,13 +21,15 @@ class CablePairPage extends StatefulWidget {
 class _CablePairPageState extends State<CablePairPage> {
   bool _checking = true;
   List<String> _devices = const [];
-  String? _device; // selected serial
+  bool _awaitingAuthorization = false;
+  String? _device;
   bool _installing = false;
   String? _installError;
   String? _installedVersion;
   bool _tunnelOk = false;
-  int? _cablePort; // phone-side port the tunnel mapped (may differ from mesh port)
-  String? _guide; // fallback guide for non-Android devices
+  int? _cablePort;
+  String? _provisionError;
+  String? _guide;
   Timer? _poll;
   int _pairedAtStart = 0;
   Timer? _refresh;
@@ -41,11 +41,11 @@ class _CablePairPageState extends State<CablePairPage> {
   @override
   void initState() {
     super.initState();
-    _detect();
-    // Microcontrollers on the cable announce periodically; keep the list
-    // fresh while this page is open.
+    unawaited(_detect());
     _refresh = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      unawaited(_detect());
+      setState(() {});
     });
     unawaited(widget.mesh.ensureSerialBridge());
     unawaited(_checkTether());
@@ -57,18 +57,21 @@ class _CablePairPageState extends State<CablePairPage> {
   }
 
   Future<void> _detect() async {
-    setState(() {
-      _checking = true;
-      _guide = null;
-    });
-    final devices = await CablePairing.connectedDevices();
     if (!mounted) return;
+    final states = await CablePairing.deviceStates();
+    if (!mounted) return;
+    final authorized = states.entries
+        .where((entry) => entry.value == 'device')
+        .map((entry) => entry.key)
+        .toList();
+    final awaiting = states.values.any((state) => state == 'unauthorized');
     setState(() {
       _checking = false;
-      _devices = devices;
+      _devices = authorized;
+      _awaitingAuthorization = awaiting && authorized.isEmpty;
     });
-    if (devices.isNotEmpty) {
-      _select(devices.first);
+    if (_device == null && authorized.isNotEmpty) {
+      await _select(authorized.first);
     }
   }
 
@@ -77,16 +80,15 @@ class _CablePairPageState extends State<CablePairPage> {
       _device = serial;
       _installedVersion = null;
       _installError = null;
+      _provisionError = null;
     });
     final hasApp = await CablePairing.hasNexusInstalled(serial);
     if (!mounted) return;
-    setState(() {
-      if (hasApp) {
-        _installedVersion = 'already installed';
-      } else {
-        _install(); // fire-and-forget install for the newly selected device
-      }
-    });
+    if (hasApp) {
+      setState(() => _installedVersion = 'already installed');
+    } else {
+      await _install();
+    }
   }
 
   Future<void> _install() async {
@@ -103,36 +105,48 @@ class _CablePairPageState extends State<CablePairPage> {
       if (version != null) {
         _installedVersion = version;
       } else {
-        _installError = 'Could not install the app over the cable. Is the '
-            'phone set to allow USB debugging, and does this PC have internet '
-            'to fetch the latest release?';
+        _installError = 'Nexus could not be installed on this device.';
       }
     });
   }
 
-  Future<void> _openTunnelAndShowCode() async {
+  Future<void> _openTunnelAndProvision() async {
     final serial = _device;
     if (serial == null) return;
     setState(() {
       _tunnelOk = false;
       _cablePort = null;
+      _provisionError = null;
     });
+
     final cablePort = await CablePairing.openTunnel(serial, widget.mesh.port);
     if (!mounted) return;
-    setState(() {
-      _tunnelOk = cablePort != null;
-      _cablePort = cablePort;
-    });
-    if (cablePort == null) return;
+    if (cablePort == null) {
+      setState(() => _provisionError =
+          'Nexus could not create the secure cable tunnel. The phone is authorized, but ADB reverse-port forwarding failed.');
+      return;
+    }
 
     setState(() {
+      _tunnelOk = true;
+      _cablePort = cablePort;
       _session = widget.mesh.beginPairing();
       _pairedAtStart = widget.mesh.pairedDevices.length;
     });
-    // Watch for a brand-new pair to appear; ignore devices that were
-    // already paired before this flow started.
+
+    final error = await CablePairing.launchProvisioning(
+      serial: serial,
+      address: '127.0.0.1',
+      port: cablePort,
+      code: _code,
+    );
+    if (!mounted) return;
+    if (error != null) {
+      setState(() => _provisionError = error);
+    }
+
     _poll?.cancel();
-    _poll = Timer.periodic(const Duration(seconds: 2), (_) {
+    _poll = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       if (widget.mesh.pairedDevices.length > _pairedAtStart) {
         _poll?.cancel();
@@ -154,7 +168,7 @@ class _CablePairPageState extends State<CablePairPage> {
       backgroundColor: NexusColors.surface,
       appBar: AppBar(
         backgroundColor: NexusColors.surface,
-        title: const Text('Pair over cable'),
+        title: const Text('Connect device'),
       ),
       body: ListView(
         padding: const EdgeInsets.all(20),
@@ -164,75 +178,115 @@ class _CablePairPageState extends State<CablePairPage> {
               padding: EdgeInsets.symmetric(vertical: 40),
               child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
             )
-          else if (_devices.isEmpty)
+          else if (_devices.isEmpty && !_awaitingAuthorization)
             _buildNoDevice(context)
+          else if (_awaitingAuthorization)
+            _buildAuthorization(context)
           else ...[
             _buildDevicePicker(context),
             const SizedBox(height: 14),
             if (_installing)
               const _Row(
                 icon: Icons.download_rounded,
-                text: 'Installing the Nexus app on the device…',
+                text: 'Installing Nexus on the device…',
               )
             else if (_installError != null)
-              _ErrorRow(text: _installError!)
+              _ExpandableError(
+                title: 'Unable to connect',
+                summary: _installError!,
+                details:
+                    'Nexus could not use ADB to install the current Android build. Check that the phone is unlocked, USB debugging is enabled, the computer is authorized, and the PC can download the latest Nexus release.',
+              )
             else if (_installedVersion != null && !_tunnelOk)
               _Row(
                 icon: Icons.check_circle_rounded,
                 text: _installedVersion == 'already installed'
-                    ? 'Nexus is already on this device.'
-                    : 'Installed Nexus $_installedVersion on the device.',
+                    ? 'Nexus is already installed.'
+                    : 'Nexus installed successfully.',
               ),
             if (_device != null && _installError == null && !_installing) ...[
               const SizedBox(height: 14),
               FilledButton.icon(
-                onPressed: _tunnelOk ? null : _openTunnelAndShowCode,
+                onPressed: _tunnelOk ? null : _openTunnelAndProvision,
                 icon: const Icon(Icons.usb_rounded, size: 18),
-                label: Text(_tunnelOk ? 'Tunnel open' : 'Open the cable tunnel'),
+                label: Text(_tunnelOk ? 'Connecting…' : 'Connect device'),
               ),
             ],
             if (_tunnelOk) ...[
               const SizedBox(height: 18),
-              _buildCodeCard(context),
+              _buildProvisioningCard(context),
+            ],
+            if (_provisionError != null) ...[
+              const SizedBox(height: 12),
+              _ExpandableError(
+                title: 'Unable to connect',
+                summary: _provisionError!,
+                details:
+                    'The phone is installed and the cable tunnel is open, but Nexus could not finish the automatic pairing handshake. You can retry the connection or use the temporary pairing code below as a fallback.',
+              ),
             ],
           ],
           const SizedBox(height: 26),
           _buildSerialSection(context),
           if (_tetherHint != null) ...[
             const SizedBox(height: 14),
-            _Row(
-              icon: Icons.link_rounded,
-              text: _tetherHint!,
-            ),
+            _Row(icon: Icons.link_rounded, text: _tetherHint!),
           ],
         ],
       ),
     );
   }
 
-  /// Microcontrollers (ESP32, …) plugged into this machine over USB. They
-  /// announce themselves and show up here to be paired and messaged.
+  Widget _buildAuthorization(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: NexusColors.accent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.verified_user_rounded, color: NexusColors.accent),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Authorize this computer on the device',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 10),
+          Text(
+            'Unlock the Android device and accept the USB debugging request. Nexus will continue automatically once Android authorizes this computer.',
+            style: TextStyle(fontSize: 13, color: NexusColors.muted),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSerialSection(BuildContext context) {
     final devices = widget.mesh.serialDevices;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Microcontrollers on the cable',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
+        Text('Microcontrollers on the cable',
+            style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 4),
         Text(
-          'ESP32 and friends announce themselves here when plugged in over '
-          'USB — no driver or flashing needed to see them.',
+          'ESP32 and compatible boards can appear here when connected over USB.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 10),
         if (devices.isEmpty)
           const _Row(
             icon: Icons.memory_rounded,
-            text: 'No microcontroller detected. Plug one in over USB and it '
-                'appears here within seconds.',
+            text: 'No microcontroller detected.',
           )
         else
           for (final d in devices)
@@ -269,51 +323,13 @@ class _CablePairPageState extends State<CablePairPage> {
   }
 
   Widget _buildNoDevice(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const _Row(
-          icon: Icons.usb_off_rounded,
-          text: 'No Android device detected on the cable. Make sure USB '
-              'debugging is enabled on the phone and it is unlocked.',
-        ),
-        const SizedBox(height: 16),
-        Text('Pairing a Raspberry Pi or other Linux device?',
-            style: Theme.of(context).textTheme.titleSmall),
-        const SizedBox(height: 8),
-        const Text(
-          'This PC can generate a setup script that installs Nexus on that '
-          'device. After it runs, both devices pair over the network with a code.',
-          style: TextStyle(fontSize: 13),
-        ),
-        const SizedBox(height: 12),
-        OutlinedButton.icon(
-          onPressed: () {
-            setState(() => _guide = CablePairing.linuxSetupScript());
-          },
-          icon: const Icon(Icons.terminal_rounded, size: 18),
-          label: const Text('Generate Linux setup script'),
-        ),
-        if (_guide != null) ...[
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: NexusColors.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: NexusColors.border),
-            ),
-            child: SelectableText(
-              _guide!,
-              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
-            ),
-          ),
-        ],
-      ],
+    return const _Row(
+      icon: Icons.usb_off_rounded,
+      text: 'No supported device is connected. Plug in a phone or PC and Nexus will detect it.',
     );
   }
 
-  Widget _buildCodeCard(BuildContext context) {
+  Widget _buildProvisioningCard(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -324,40 +340,35 @@ class _CablePairPageState extends State<CablePairPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
-            'On the device: open Nexus → Pair a device → Enter a code',
-            style: TextStyle(fontSize: 13, color: NexusColors.text),
+          const Row(
+            children: [
+              Icon(Icons.sync_rounded, color: NexusColors.accent),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Finishing connection…',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           const Text(
-            'Address 127.0.0.1, port below, code:',
+            'Nexus is opening on the device and completing the secure pairing automatically.',
             style: TextStyle(fontSize: 12, color: NexusColors.muted),
           ),
-          const SizedBox(height: 10),
-          Center(
-            child: Text(
-              _code,
-              style: const TextStyle(
-                fontSize: 30,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 4,
-                color: NexusColors.text,
-              ),
-            ),
-          ),
-          const SizedBox(height: 6),
-          Center(
-            child: Text(
-              'port ${_cablePort ?? widget.mesh.port} · expires in 5 minutes',
+          if (_provisionError != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Fallback code: $_code · port ${_cablePort ?? widget.mesh.port}',
               style: const TextStyle(fontSize: 12, color: NexusColors.muted),
             ),
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'The cable is the connection — no Wi-Fi needed for this pairing. '
-            'Once the code is accepted, this page closes automatically.',
-            style: TextStyle(fontSize: 12, color: NexusColors.muted),
-          ),
+          ],
         ],
       ),
     );
@@ -381,25 +392,33 @@ class _Row extends StatelessWidget {
   }
 }
 
-class _ErrorRow extends StatelessWidget {
-  final String text;
-  const _ErrorRow({required this.text});
+class _ExpandableError extends StatelessWidget {
+  final String title;
+  final String summary;
+  final String details;
+  const _ExpandableError({
+    required this.title,
+    required this.summary,
+    required this.details,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: NexusColors.danger.withValues(alpha: 0.1),
+        color: NexusColors.danger.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: NexusColors.danger.withValues(alpha: 0.4)),
+        border: Border.all(color: NexusColors.danger.withValues(alpha: 0.35)),
       ),
-      child: Row(
+      child: ExpansionTile(
+        leading: const Icon(Icons.error_outline_rounded, color: NexusColors.danger),
+        title: Text(title, style: const TextStyle(color: NexusColors.danger)),
+        subtitle: Text(summary, style: const TextStyle(fontSize: 12)),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
         children: [
-          const Icon(Icons.error_outline_rounded, size: 18, color: NexusColors.danger),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(text, style: const TextStyle(color: NexusColors.danger, fontSize: 13)),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(details, style: const TextStyle(fontSize: 12)),
           ),
         ],
       ),
@@ -436,26 +455,17 @@ class _SerialDeviceTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  device.name,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
-                  ),
-                ),
+                Text(device.name,
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
                 const SizedBox(height: 2),
-                Text(
-                  '${device.id} · ${device.port}',
-                  style: const TextStyle(fontSize: 11, color: NexusColors.muted),
-                ),
+                Text('${device.id} · ${device.port}',
+                    style: const TextStyle(fontSize: 11, color: NexusColors.muted)),
               ],
             ),
           ),
           if (device.paired)
-            const Text(
-              'Paired ✓',
-              style: TextStyle(fontSize: 12, color: NexusColors.accent),
-            )
+            const Text('Paired ✓',
+                style: TextStyle(fontSize: 12, color: NexusColors.accent))
           else
             FilledButton.tonal(
               onPressed: () async {
@@ -482,9 +492,9 @@ class _SerialDeviceTile extends StatelessWidget {
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text(
-                      ok ? 'Sent to ${device.name}.' : 'Could not reach ${device.name}.',
-                    ),
+                    content: Text(ok
+                        ? 'Sent to ${device.name}.'
+                        : 'Could not reach ${device.name}.'),
                   ),
                 );
               }
