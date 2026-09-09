@@ -6,30 +6,22 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Creating releases (for auto-update) needs write access to contents.
 permissions:
   contents: write
 
 jobs:
-  # Every release is gated on the analyzer and the full test suite first.
-  # The build jobs below declare `needs: test` so a failing test or analyze
-  # run stops the release before any asset is published.
   test:
     name: Analyze + test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-
       - name: Get packages
         run: flutter pub get
-
       - name: Analyze
         run: flutter analyze --no-fatal-infos
-
       - name: Test
         run: flutter test
 
@@ -39,142 +31,110 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev libayatana-appindicator3-dev
-
       - name: Build
         run: |
           flutter pub get
           flutter build linux --release
-
       - name: Package
         run: |
           cd build/linux/x64/release/bundle
           tar -czf "$GITHUB_WORKSPACE/nexus-linux-x64.tar.gz" .
-
       - uses: actions/upload-artifact@v4
         with:
           name: nexus-linux
           path: nexus-linux-x64.tar.gz
 
-      - name: Version
-        id: ver
-        run: echo "version=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)" >> "$GITHUB_OUTPUT"
-
-      # PRs only validate the build — releases (for auto-update) are created
-      # on push to main or manual dispatch, never from an unmerged branch.
-      - name: Publish release (for auto-update)
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          V="v${{ steps.ver.outputs.version }}"
-          if gh release view "$V" >/dev/null 2>&1; then
-            gh release upload "$V" nexus-linux-x64.tar.gz --clobber
-            echo "Updated release $V"
-          else
-            gh release create "$V" nexus-linux-x64.tar.gz \
-              --title "Nexus $V" \
-              --notes "Linux bundle for Nexus $V — the app will offer this as an in-app update."
-            echo "Created release $V"
-          fi
-
-  apk:
+  android:
     name: Android APK
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-
       - name: Build
         run: |
           flutter pub get
           flutter build apk --release
-
+      - name: Rename APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk nexus.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: nexus-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Version
-        id: ver
-        run: echo "version=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)" >> "$GITHUB_OUTPUT"
-
-      - name: Attach APK to release (for Android auto-update)
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          V="v${{ steps.ver.outputs.version }}"
-          APK="build/app/outputs/flutter-apk/app-release.apk"
-          cp "$APK" nexus.apk
-          if gh release view "$V" >/dev/null 2>&1; then
-            gh release upload "$V" nexus.apk --clobber
-            echo "Attached APK to release $V"
-          else
-            gh release create "$V" nexus.apk \
-              --title "Nexus $V" \
-              --notes "Nexus $V"
-            echo "Created release $V with APK"
-          fi
+          name: nexus-android
+          path: nexus.apk
 
   windows:
-    name: Windows build
+    name: Windows bundle
     needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-
       - name: Build
         run: |
           flutter pub get
-          # Generate the Windows runner (not committed; kept out of the repo).
           flutter create --platforms=windows .
           flutter build windows --release
-
       - name: Package
         shell: powershell
         run: |
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath nexus-windows-x64.zip -Force
-
       - uses: actions/upload-artifact@v4
         with:
           name: nexus-windows
           path: nexus-windows-x64.zip
 
-      - name: Version
+  release:
+    name: Publish release
+    needs: [linux, android, windows]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus-linux
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus-android
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus-windows
+      - name: Read version
         id: ver
         shell: bash
         run: echo "version=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)" >> "$GITHUB_OUTPUT"
-
-      - name: Publish release (for auto-update)
-        if: github.event_name != 'pull_request'
+      - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           V="v${{ steps.ver.outputs.version }}"
+          NOTES="Nexus $V — platform bundles for Linux, Windows, and Android."
           if gh release view "$V" >/dev/null 2>&1; then
-            gh release upload "$V" nexus-windows-x64.zip --clobber
-            echo "Updated release $V"
+            gh release upload "$V" \
+              nexus-linux-x64.tar.gz \
+              nexus.apk \
+              nexus-windows-x64.zip \
+              --clobber
+            gh release edit "$V" --title "Nexus $V" --notes "$NOTES"
           else
-            gh release create "$V" nexus-windows-x64.zip \
+            gh release create "$V" \
+              nexus-linux-x64.tar.gz \
+              nexus.apk \
+              nexus-windows-x64.zip \
               --title "Nexus $V" \
-              --notes "Windows installer for Nexus $V."
-            echo "Created release $V"
+              --notes "$NOTES"
           fi
