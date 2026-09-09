@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
@@ -82,7 +83,19 @@ class _HomeShellState extends State<HomeShell> {
 
   Future<void> _updateNow() async {
     final info = _update;
-    if (info == null || info.downloadUrl == null || _applying) return;
+    if (info == null || _applying) return;
+
+    // Windows currently uses the normal release package rather than trying to
+    // replace a running executable in-place. Open the exact release page.
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      final url = info.releaseUrl;
+      if (url == null || !await launchUrl(Uri.parse(url))) {
+        setState(() => _updateError = 'Could not open the GitHub release page.');
+      }
+      return;
+    }
+
+    if (info.downloadUrl == null) return;
     setState(() {
       _applying = true;
       _updateError = null;
@@ -106,9 +119,8 @@ class _HomeShellState extends State<HomeShell> {
             _updateError = 'Could not open the installer. Try downloading from GitHub manually.';
           }
         });
-      } else if (defaultTargetPlatform == TargetPlatform.linux ||
-          defaultTargetPlatform == TargetPlatform.windows) {
-        // Desktop: extract, swap, and relaunch.
+      } else if (defaultTargetPlatform == TargetPlatform.linux) {
+        // Linux: extract, swap, and relaunch.
         final installDir = File(Platform.resolvedExecutable).parent.path;
         final applied = await Updater.applyUpdate(path, installDir: installDir);
         if (applied) {
@@ -116,7 +128,7 @@ class _HomeShellState extends State<HomeShell> {
         }
         setState(() {
           _applying = false;
-          _updateError = 'The update could not be applied. Run the installer manually to update.';
+          _updateError = 'The update could not be applied. Run update.sh to update manually.';
         });
       } else {
         setState(() {
@@ -128,14 +140,11 @@ class _HomeShellState extends State<HomeShell> {
       debugPrint('NEXUS updater: ${e.runtimeType}: $e');
       setState(() {
         _applying = false;
-        _updateError =
-            'The update failed. Check your connection and try again.';
+        _updateError = 'The update failed. Check your connection and try again.';
       });
     }
   }
 
-  /// Desktop screens are wide — a stretched bottom bar looks wrong there, so
-  /// they get a left rail instead; phones keep the familiar bottom bar.
   bool get _isDesktop =>
       defaultTargetPlatform == TargetPlatform.linux ||
       defaultTargetPlatform == TargetPlatform.windows ||
@@ -170,8 +179,6 @@ class _HomeShellState extends State<HomeShell> {
       listenable: widget.mesh,
       builder: (context, _) {
         _checkPeerUpdate();
-        // Show a friendly notification the moment a clip arrives from another
-        // device — the text is already on the clipboard, this just says so.
         final incoming = widget.mesh.lastIncomingClip;
         if (incoming != null && incoming != _lastShown) {
           _lastShown = incoming;
@@ -285,12 +292,18 @@ class _UpdateBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final windows = defaultTargetPlatform == TargetPlatform.windows;
     return MaterialBanner(
-      leading: const Icon(Icons.system_update_rounded),
+      leading: Icon(
+        error == null ? Icons.system_update_rounded : Icons.error_outline_rounded,
+      ),
       content: Text(
-        applying
-            ? 'Updating to v${info.version}…'
-            : 'Nexus v${info.version} is available',
+        error ??
+            (applying
+                ? 'Updating to v${info.version}…'
+                : windows
+                    ? 'Nexus v${info.version} is available'
+                    : 'Nexus v${info.version} is available'),
       ),
       actions: [
         TextButton(
@@ -300,9 +313,11 @@ class _UpdateBanner extends StatelessWidget {
         FilledButton(
           onPressed: applying ? null : onUpdate,
           child: Text(
-            defaultTargetPlatform == TargetPlatform.android
-                ? 'Update & install'
-                : 'Update & restart',
+            windows
+                ? 'View update'
+                : defaultTargetPlatform == TargetPlatform.android
+                    ? 'Update & install'
+                    : 'Update & restart',
           ),
         ),
       ],
