@@ -65,8 +65,17 @@ class CablePairing {
   /// Whether the Nexus app is already installed on [serial].
   static Future<bool> hasNexusInstalled(String serial) async {
     try {
-      final result = await Process.run('adb', ['-s', serial, 'shell', 'pm', 'list', 'packages', packageId]);
-      return result.exitCode == 0 && (result.stdout as String).contains('package:$packageId');
+      final result = await Process.run('adb', [
+        '-s',
+        serial,
+        'shell',
+        'pm',
+        'list',
+        'packages',
+        packageId,
+      ]);
+      return result.exitCode == 0 &&
+          (result.stdout as String).contains('package:$packageId');
     } catch (_) {
       return false;
     }
@@ -99,25 +108,39 @@ class CablePairing {
   }
 
   /// Candidate phone-side ports for the cable tunnel. [pcPort] itself is
-  /// tried first (it works when the app is not yet running on the phone);
-  /// the following ports cover the common case where the phone's own mesh
-  /// is already listening on [pcPort], which makes that exact mapping fail.
+  /// tried first; following ports cover the case where the phone already has
+  /// something listening on that local port.
   static List<int> tunnelCandidates(int pcPort) =>
       [pcPort, pcPort + 1, pcPort + 2, pcPort + 3];
 
   /// Opens a reverse tunnel so the phone can reach this PC's mesh server
-  /// ([pcPort]) over the cable — no Wi-Fi needed. Maps a *free* port on the
+  /// ([pcPort]) over the cable — no Wi-Fi needed. Maps a free port on the
   /// phone to the PC's mesh port and returns the phone-side port the phone
-  /// should connect to, or null when every candidate failed.
+  /// should connect to.
+  ///
+  /// A common ADB failure mode is a stale reverse mapping left behind after
+  /// an earlier Nexus run, cable unplug, or app crash. We explicitly remove
+  /// each candidate mapping before recreating it. This is safer than
+  /// `reverse --remove-all`, which could destroy reverse tunnels belonging to
+  /// other developer tools.
   static Future<int?> openTunnel(String serial, int pcPort) async {
     for (final local in tunnelCandidates(pcPort)) {
       try {
+        // Best-effort cleanup of only this candidate. It is expected to fail
+        // when no mapping existed, so its exit code is intentionally ignored.
+        await Process.run(
+          'adb',
+          ['-s', serial, 'reverse', '--remove', 'tcp:$local'],
+        );
+
         final result = await Process.run(
           'adb',
           ['-s', serial, 'reverse', 'tcp:$local', 'tcp:$pcPort'],
         );
         if (result.exitCode == 0) return local;
-        debugPrint('NEXUS cable: adb reverse tcp:$local failed: ${result.stderr}');
+        debugPrint(
+          'NEXUS cable: adb reverse tcp:$local failed: ${result.stderr}',
+        );
       } catch (_) {
         // adb missing or device gone — try the next candidate.
       }
@@ -166,7 +189,8 @@ echo "After pairing, both devices talk directly — no cloud, no account."
       if (links.exitCode == 0) {
         final text = links.stdout as String;
         for (final line in text.split('\n')) {
-          final iface = RegExp(r'\d+:\s+(\S+)').firstMatch(line)?.group(1) ?? '';
+          final iface =
+              RegExp(r'\d+:\s+(\S+)').firstMatch(line)?.group(1) ?? '';
           final lower = iface.toLowerCase();
           if (lower == 'usb0' ||
               lower == 'usb1' ||
