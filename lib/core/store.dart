@@ -123,6 +123,26 @@ class NexusStore {
     _agentSection()['facts'] = List<String>.of(value);
   }
 
+  /// The user's name as synced from a paired device. The live profile lives
+  /// in SharedPreferences; these are the mesh's fallback so a rename
+  /// survives even when no assistant is listening (headless / startup).
+  String? get profileUserName =>
+      (_data['agent'] as Map<String, dynamic>?)?['profileUserName'] as String?;
+
+  set profileUserName(String? value) {
+    _agentSection()['profileUserName'] = value;
+  }
+
+  /// The assistant's name as synced from a paired device — same role as
+  /// [profileUserName].
+  String? get profileAssistantName =>
+      (_data['agent'] as Map<String, dynamic>?)?['profileAssistantName']
+          as String?;
+
+  set profileAssistantName(String? value) {
+    _agentSection()['profileAssistantName'] = value;
+  }
+
   /// Promises the assistant made to say something back later ("remind me to
   /// take out the trash at 8"), one JSON line each. Survives restarts, so a
   /// reminder set before quitting still fires after launching again.

@@ -1284,14 +1284,21 @@ void main() {
       // startup window / headless use), so it survives for the next boot.
       await meshA.broadcastLearnedPhrase('call tvcraft', 'call bob');
       await meshA.broadcastFact('my wifi password is nexus');
+      await meshA.broadcastDefault('timer.set.seconds', '5 minutes');
+      await meshA.broadcastProfile(userName: 'Sam', assistantName: 'Nexus');
 
       await _waitFor(
         () =>
             meshB.store.agentLearned.containsKey('call tvcraft') &&
-            meshB.store.agentFacts.isNotEmpty,
+            meshB.store.agentFacts.isNotEmpty &&
+            meshB.store.agentDefaults.containsKey('timer.set.seconds') &&
+            meshB.store.profileAssistantName != null,
       );
       expect(meshB.store.agentLearned['call tvcraft'], 'call bob');
       expect(meshB.store.agentFacts, ['my wifi password is nexus']);
+      expect(meshB.store.agentDefaults['timer.set.seconds'], '5 minutes');
+      expect(meshB.store.profileUserName, 'Sam');
+      expect(meshB.store.profileAssistantName, 'Nexus');
     },
   );
 
@@ -1404,6 +1411,103 @@ void main() {
     await _waitFor(() => seenLine != null);
     expect(seenLine, line);
     expect(meshB.store.agentReminders, [line]);
+  });
+
+  test('a remembered default syncs to its paired peers', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    String? seenKey;
+    dynamic seenValue;
+    // The live assistant claims the default: it adopts it and its funnel
+    // writes the store (the mesh only delivers when a listener is attached).
+    meshB.onDefaultReceived = (key, value) {
+      seenKey = key;
+      seenValue = value;
+      meshB.store.agentDefaults = {...meshB.store.agentDefaults, key: value};
+    };
+
+    await meshA.broadcastDefault('timer.set.seconds', '5 minutes');
+
+    await _waitFor(() => seenKey != null);
+    expect(seenKey, 'timer.set.seconds');
+    expect(seenValue, '5 minutes');
+    expect(meshB.store.agentDefaults['timer.set.seconds'], '5 minutes');
+  });
+
+  test('a rename on one device syncs the profile to its paired peers',
+      () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    String? seenUser;
+    String? seenAssistant;
+    // The live assistant claims the rename: it adopts it and its funnel
+    // writes the store (the mesh only delivers when a listener is attached).
+    meshB.onProfileReceived = (userName, assistantName) {
+      seenUser = userName;
+      seenAssistant = assistantName;
+      meshB.store.profileUserName = userName;
+      meshB.store.profileAssistantName = assistantName;
+    };
+
+    await meshA.broadcastProfile(userName: 'Sam', assistantName: 'Nexus');
+
+    await _waitFor(() => seenAssistant != null);
+    expect(seenUser, 'Sam');
+    expect(seenAssistant, 'Nexus');
+    expect(meshB.store.profileAssistantName, 'Nexus');
+  });
+
+  test('an assistant rename syncs even when the user has no name', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue);
+
+    String? seenUser;
+    String? seenAssistant;
+    var delivered = false;
+    // The user skipped their own name, so only the assistant rename travels.
+    meshB.onProfileReceived = (userName, assistantName) {
+      delivered = true;
+      seenUser = userName;
+      seenAssistant = assistantName;
+      if (assistantName != null) {
+        meshB.store.profileAssistantName = assistantName;
+      }
+      if (userName != null) meshB.store.profileUserName = userName;
+    };
+
+    await meshA.broadcastProfile(assistantName: 'Atlas');
+
+    await _waitFor(() => delivered);
+    expect(seenUser, isNull); // no user name was sent — nothing to adopt
+    expect(seenAssistant, 'Atlas');
+    expect(meshB.store.profileAssistantName, 'Atlas');
+    expect(meshB.store.profileUserName, isNull);
   });
 }
 

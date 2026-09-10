@@ -25,12 +25,11 @@ class UserProfile {
     String? userName,
     String? assistantName,
     bool? onboarded,
-  }) =>
-      UserProfile(
-        userName: userName ?? this.userName,
-        assistantName: assistantName ?? this.assistantName,
-        onboarded: onboarded ?? this.onboarded,
-      );
+  }) => UserProfile(
+    userName: userName ?? this.userName,
+    assistantName: assistantName ?? this.assistantName,
+    onboarded: onboarded ?? this.onboarded,
+  );
 }
 
 /// Where the profile lives — injectable so tests use an in-memory fake and

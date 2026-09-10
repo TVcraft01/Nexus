@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory, getExternalStorageDirectory;
 
 import '../core/agent_contract.dart';
+import '../core/brain.dart';
 import '../core/command_interpreter.dart';
 import '../core/relay_client.dart';
 import '../core/crypto.dart';
@@ -365,9 +366,21 @@ class MeshService extends ChangeNotifier {
   /// persists the reminder itself so it survives for the next boot.
   void Function(String line)? onReminderReceived;
 
+  /// Fired when a paired device answers a "which …?" question and syncs the
+  /// remembered default here. Same ownership rule as [onFactReceived]: with
+  /// a listener attached, the live assistant's own funnel writes the store;
+  /// otherwise the mesh persists it so it survives for the next boot.
+  void Function(String key, dynamic value)? onDefaultReceived;
+
+  /// Fired when a paired device renames the user or the assistant and syncs
+  /// the profile here, so every device answers as one person. Same
+  /// ownership rule as [onFactReceived].
+  void Function(String? userName, String? assistantName)? onProfileReceived;
+
   /// In-flight replies keyed by request id. Completed by `agent.result` or a
   /// timeout, so a sender can await the remote's answer.
   final Map<String, Completer<AgentDispatchResult?>> _pendingAgentResults = {};
+  final Map<String, Completer<BrainReply?>> _pendingBrainResults = {};
 
   List<SerialDevice> get remoteSerialDevices {
     final now = DateTime.now();
@@ -506,6 +519,109 @@ class MeshService extends ChangeNotifier {
     await _serial?.pair(id);
   }
 
+  // ---------------------------------------------------------------------
+  // The distributed brain
+  // ---------------------------------------------------------------------
+
+  /// The local brain this device answers delegated questions with — set on
+  /// devices with their own strong model (desktops). Never a
+  /// [DistributedBrain]: distributed brains ASK, strong local brains
+  /// ANSWER, or a delegated question would bounce between devices forever.
+  /// Also advertised in ping/pong, so peers can find who to escalate to.
+  LocalBrain? brain;
+
+  /// deviceId → whether it advertises a local brain of its own.
+  final Map<String, bool> _peerHasBrain = {};
+
+  bool peerHasBrain(String id) => _peerHasBrain[id] ?? false;
+
+  /// Paired devices that advertise a local brain, in pairing order — the
+  /// escalation targets for [DistributedBrain].
+  List<String> get brainPeerIds => [
+    for (final id in _paired.keys)
+      if (peerHasBrain(id)) id,
+  ];
+
+  void _notePeerBrain(String peerId, bool hasBrain) {
+    if (!_paired.containsKey(peerId)) return;
+    final previous = _peerHasBrain[peerId];
+    if (previous == hasBrain) return;
+    _peerHasBrain[peerId] = hasBrain;
+    notifyListeners();
+  }
+
+  /// Asks a paired device's brain a question and waits for its reply — the
+  /// mesh half of [DistributedBrain]. Completes with null when the request
+  /// could not be delivered or the peer never answered within [timeout].
+  /// The completer is registered BEFORE sending, so an instant reply can
+  /// never be missed — exactly like [sendAgentRequest].
+  Future<BrainReply?> requestBrainAnswer(
+    String deviceId, {
+    required String system,
+    required List<ChatTurn> history,
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    final peer = _paired[deviceId];
+    if (peer == null) return null;
+    final requestId = 'brain-${DateTime.now().microsecondsSinceEpoch}';
+    final completer = Completer<BrainReply?>();
+    _pendingBrainResults[requestId] = completer;
+    Timer(timeout, () {
+      final pending = _pendingBrainResults.remove(requestId);
+      if (pending != null && !pending.isCompleted) pending.complete(null);
+    });
+    final delivered = await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.brainAsk,
+        from: identity.id,
+        to: deviceId,
+        payload: {
+          'requestId': requestId,
+          'system': system,
+          'history': [
+            for (final turn in history)
+              {'role': turn.role, 'content': turn.content},
+          ],
+        },
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (!delivered) {
+      final pending = _pendingBrainResults.remove(requestId);
+      if (pending != null && !pending.isCompleted) pending.complete(null);
+      return null;
+    }
+    return completer.future;
+  }
+
+  /// Sends a brain's reply back to the device that delegated the question.
+  Future<bool> sendBrainAnswer(
+    String deviceId,
+    String requestId,
+    BrainReply reply,
+  ) async {
+    final peer = _paired[deviceId];
+    if (peer == null) return false;
+    return await _sendEnc(
+      peer,
+      NexusMessage(
+        type: NexusMessage.brainAnswer,
+        from: identity.id,
+        to: deviceId,
+        payload: {
+          'requestId': requestId,
+          if (reply.text != null && reply.text!.isNotEmpty)
+            'text': reply.text,
+          'reachable': reply.reachable,
+        },
+        id: _newId(),
+        ts: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
   /// Sends an approved action to a paired device ("call mom" routed to the
   /// phone). Completes with the remote device's typed reply, or null when the
   /// request could not be delivered or the peer never answered within ten
@@ -582,6 +698,55 @@ class MeshService extends ChangeNotifier {
             from: identity.id,
             to: peer.id,
             payload: {'text': fact},
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Tells every paired device a "which …?" answer the user just picked
+  /// (e.g. timer length -> "5 minutes"), so one answer works on all of
+  /// them. Fire-and-forget, like [broadcastFact].
+  Future<void> broadcastDefault(String key, dynamic value) async {
+    final peers = _paired.values.toList();
+    if (peers.isEmpty) return;
+    await Future.wait(
+      peers.map(
+        (peer) => _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.agentDefault,
+            from: identity.id,
+            to: peer.id,
+            payload: {'key': key, 'value': value},
+            id: _newId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Tells every paired device the user's and the assistant's names after a
+  /// rename ("call me sam", first-run setup), so every device knows the
+  /// person. Fire-and-forget, like [broadcastFact].
+  Future<void> broadcastProfile({
+    String? userName,
+    String? assistantName,
+  }) async {
+    final peers = _paired.values.toList();
+    if (peers.isEmpty) return;
+    await Future.wait(
+      peers.map(
+        (peer) => _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.agentProfile,
+            from: identity.id,
+            to: peer.id,
+            payload: {'userName': userName, 'assistantName': assistantName},
             id: _newId(),
             ts: DateTime.now().millisecondsSinceEpoch,
           ),
@@ -1140,6 +1305,7 @@ class MeshService extends ChangeNotifier {
         if (_paired.containsKey(msg.from)) {
           _notePeerVersion(msg.from, payload['appVersion']);
           _noteSerialHosts(msg.from, payload['serial']);
+          _notePeerBrain(msg.from, payload['brain'] == true);
         }
         final name = payload['name'] as String? ?? 'Unknown device';
         final port = (payload['port'] as num?)?.toInt();
@@ -1171,6 +1337,7 @@ class MeshService extends ChangeNotifier {
               'port': store.port,
               'ips': await _myIps(),
               'serial': _serialAnnouncement(),
+              'brain': brain != null,
               if (_tailscale != null)
                 'tailscale': {
                   'online': _tailscale!.online,
@@ -1189,6 +1356,7 @@ class MeshService extends ChangeNotifier {
         if (_paired.containsKey(msg.from)) {
           _notePeerVersion(msg.from, payload['appVersion']);
           _noteSerialHosts(msg.from, payload['serial']);
+          _notePeerBrain(msg.from, payload['brain'] == true);
         }
         final name = payload['name'] as String?;
         final port = (payload['port'] as num?)?.toInt();
@@ -1337,6 +1505,51 @@ class MeshService extends ChangeNotifier {
         if (pending != null && !pending.isCompleted) pending.complete(result);
         notifyListeners();
 
+      case NexusMessage.brainAsk:
+        // A peer delegated a conversation question to this device's brain.
+        // Answered automatically — this is transport, not an action, so no
+        // approval gate. A device without a brain refuses honestly and
+        // quickly, so the asker never waits out the timeout.
+        if (!encrypted) return;
+        final brainRequestId = msg.payload['requestId']?.toString();
+        final system = msg.payload['system']?.toString();
+        if (brainRequestId == null || system == null) break;
+        final responder = brain;
+        if (responder == null) {
+          await sendBrainAnswer(
+            msg.from,
+            brainRequestId,
+            (text: null, reachable: false),
+          );
+          break;
+        }
+        final history = <ChatTurn>[
+          for (final raw in (msg.payload['history'] as List?) ?? const [])
+            if (raw is Map<String, dynamic>)
+              (
+                role: raw['role']?.toString() ?? 'user',
+                content: raw['content']?.toString() ?? '',
+              ),
+        ];
+        final reply = await responder.reply(system: system, history: history);
+        await sendBrainAnswer(msg.from, brainRequestId, reply);
+
+      case NexusMessage.brainAnswer:
+        // The peer's brain answered our delegated question.
+        if (!encrypted) return;
+        final brainAnswerId = msg.payload['requestId']?.toString();
+        if (brainAnswerId == null) break;
+        final answerText = msg.payload['text']?.toString();
+        final reachable = msg.payload['reachable'] == true;
+        final brainPending = _pendingBrainResults.remove(brainAnswerId);
+        if (brainPending != null && !brainPending.isCompleted) {
+          brainPending.complete(
+            answerText == null || answerText.isEmpty
+                ? (text: null, reachable: reachable)
+                : (text: answerText, reachable: reachable),
+          );
+        }
+
       case NexusMessage.agentLearned:
         // A paired device taught a phrase — adopt it silently (it is
         // knowledge, not an action, so no approval gate). The phrase arrives
@@ -1406,6 +1619,44 @@ class MeshService extends ChangeNotifier {
           _queueSave();
         }
         onReminderReceived?.call(line);
+        notifyListeners();
+
+      case NexusMessage.agentDefault:
+        // A paired device remembered a "which …?" answer — adopt it
+        // silently (knowledge, not an action). A local answer wins over an
+        // incoming one; we never re-broadcast (that would loop forever).
+        if (!encrypted) return;
+        final key = msg.payload['key']?.toString().trim() ?? '';
+        final value = msg.payload['value'];
+        if (key.isEmpty || value == null) break;
+        if (store.agentDefaults.containsKey(key)) break;
+        // No live assistant: persist it ourselves so it survives.
+        if (onDefaultReceived == null) {
+          store.agentDefaults = {...store.agentDefaults, key: value};
+          _queueSave();
+        }
+        onDefaultReceived?.call(key, value);
+        notifyListeners();
+
+      case NexusMessage.agentProfile:
+        // A paired device renamed the user or the assistant — adopt it
+        // silently (knowledge, not an action); last write wins, per field.
+        // Each name travels independently: a rename can legitimately carry a
+        // null userName (the user never set their own name), and an absent
+        // field means "no information" — never "erase".
+        if (!encrypted) return;
+        final userName = msg.payload['userName']?.toString().trim();
+        final assistantName = msg.payload['assistantName']?.toString().trim();
+        final hasUser = userName != null && userName.isNotEmpty;
+        final hasAssistant = assistantName != null && assistantName.isNotEmpty;
+        if (!hasUser && !hasAssistant) break;
+        // No live assistant: persist it ourselves so it survives.
+        if (onProfileReceived == null) {
+          if (hasUser) store.profileUserName = userName;
+          if (hasAssistant) store.profileAssistantName = assistantName;
+          _queueSave();
+        }
+        onProfileReceived?.call(hasUser ? userName : null, hasAssistant ? assistantName : null);
         notifyListeners();
     }
   }
@@ -2764,6 +3015,7 @@ class MeshService extends ChangeNotifier {
             'port': store.port,
             'ips': await _myIps(),
             'serial': _serialAnnouncement(),
+            'brain': brain != null,
             if (_tailscale != null)
               'tailscale': {
                 'online': _tailscale!.online,

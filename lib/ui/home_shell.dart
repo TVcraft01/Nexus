@@ -6,6 +6,9 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
+import '../core/brain.dart';
+import '../core/distributed_brain.dart';
+import '../core/tiny_brain.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
@@ -28,6 +31,13 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   ClipEntry? _lastShown;
 
+  /// The conversational brain, one per platform: desktops run a strong
+  /// local model (Ollama) and answer brain asks from paired phones; the
+  /// phone runs a tiny on-device model for everyday questions and escalates
+  /// the rest over the mesh to the PC — one assistant living everywhere,
+  /// fully offline.
+  late final LocalBrain? _brain;
+
   UpdateInfo? _update;
   bool _applying = false;
   String? _updateError;
@@ -38,6 +48,23 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
+    _brain = switch (defaultTargetPlatform) {
+      TargetPlatform.linux ||
+      TargetPlatform.windows ||
+      TargetPlatform.macOS => LocalBrain(),
+      TargetPlatform.android => DistributedBrain(
+        mesh: widget.mesh,
+        tiny: TinyBrain(),
+      ),
+      _ => null,
+    };
+    // Only a device with its own strong model answers delegated brain
+    // questions — the phone's distributed brain ASKS, it never serves (a
+    // served question must not escalate back, or the mesh would bounce it
+    // forever).
+    if (_brain case final LocalBrain strong when strong is! DistributedBrain) {
+      widget.mesh.brain = strong;
+    }
     // Check for updates on startup when auto-update is enabled and the
     // platform supports it (Linux + Android).
     if (widget.mesh.store.autoUpdate &&
@@ -187,7 +214,7 @@ class _HomeShellState extends State<HomeShell> {
         final views = [
           DevicesView(mesh: widget.mesh),
           FilesView(mesh: widget.mesh),
-          AssistantView(mesh: widget.mesh),
+          AssistantView(mesh: widget.mesh, brain: _brain),
           SettingsView(
             mesh: widget.mesh,
             onCheckForUpdate: () => _checkForUpdates(force: true),

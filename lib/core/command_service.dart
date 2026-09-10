@@ -50,6 +50,12 @@ class CommandService {
   /// from a peer (that would re-broadcast and loop the mesh).
   final void Function(String fact)? onFactLearned;
 
+  /// Fired when the user answers a "which …?" question on THIS device, so
+  /// the view can broadcast the remembered default to paired devices. Never
+  /// fired for defaults adopted from a peer (that would re-broadcast and
+  /// loop the mesh).
+  final void Function(String key, dynamic value)? onDefaultLearned;
+
   /// The last input behind each open clarification, keyed by the
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
@@ -116,6 +122,7 @@ class CommandService {
     this.onMemoryChanged,
     this.onPhraseLearned,
     this.onFactLearned,
+    this.onDefaultLearned,
     this.local,
     this.locallyExecutable = const {},
     this._interpreter = const CommandInterpreter(),
@@ -131,6 +138,17 @@ class CommandService {
 
   /// Snapshot of the facts the user told us, for persisting.
   List<String> get factsSnapshot => List.unmodifiable(_facts);
+
+  /// Adopts a remembered default told to a paired device and synced over the
+  /// mesh. A local answer wins over an incoming one; never fires
+  /// [onDefaultLearned] — the default came FROM the mesh, broadcasting it
+  /// back would loop forever.
+  void adoptDefault(String key, dynamic value) {
+    if (key.isEmpty || value == null) return;
+    if (_defaults.containsKey(key)) return;
+    _defaults[key] = value;
+    onMemoryChanged?.call();
+  }
 
   /// Adopts a fact told to a paired device and synced over the mesh.
   /// Persists like a local remember, but never fires [onFactLearned] — the
@@ -317,6 +335,7 @@ class CommandService {
       }
       _defaults[argKey] = answer;
       onMemoryChanged?.call();
+      onDefaultLearned?.call(argKey, answer);
       return original != null
           ? execute(original, approval: approval, requestId: requestId)
           : null;

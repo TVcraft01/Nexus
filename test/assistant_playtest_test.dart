@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart'
@@ -6,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:nexus/core/brain.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/query_log.dart';
 import 'package:nexus/core/reminders.dart';
@@ -26,6 +28,67 @@ class _FakeSpeechInput extends SpeechInput {
 
   @override
   Future<String?> listen() async => heard;
+}
+
+/// A speaker that records every utterance instead of saying it — the test
+/// stand-in for Android's text-to-speech engine.
+class _FakeSpeechOutput extends SpeechOutput {
+  final List<String> spoken = [];
+
+  @override
+  bool get available => true;
+
+  @override
+  Future<bool> speak(String text) async {
+    spoken.add(text);
+    return true;
+  }
+}
+
+/// A brain that answers instantly and records everything it was given — the
+/// stand-in for the real Ollama-backed [LocalBrain], proving what actually
+/// reaches the model: the persona, the memory, and the history.
+class _RecordingBrain extends LocalBrain {
+  String? lastSystem;
+  List<ChatTurn>? lastHistory;
+  int replyCalls = 0;
+
+  @override
+  Future<String?> availableModel({bool refresh = false}) async => 'llama3.2:3b';
+
+  @override
+  Future<BrainReply> reply({
+    required String system,
+    required List<ChatTurn> history,
+    double temperature = 0.7,
+    int maxTokens = 300,
+  }) {
+    replyCalls++;
+    lastSystem = system;
+    lastHistory = history;
+    return Future.value((text: 'brain answer: rough days are allowed.', reachable: true));
+  }
+}
+
+/// A brain whose replies the test releases by hand, in order — for proving
+/// that a slower exchange answering after a faster one still speaks.
+class _GatedBrain extends LocalBrain {
+  final List<Completer<BrainReply>> gates = [];
+
+  @override
+  Future<String?> availableModel({bool refresh = false}) async => 'llama3.2:3b';
+
+  @override
+  Future<BrainReply> reply({
+    required String system,
+    required List<ChatTurn> history,
+    double temperature = 0.7,
+    int maxTokens = 300,
+  }) {
+    final gate = Completer<BrainReply>();
+    gates.add(gate);
+    return gate.future;
+  }
 }
 
 /// Playtest of the assistant as a first real user drives it: the real
@@ -59,10 +122,10 @@ void main() {
     return (store, mesh);
   }
 
-  Widget harness(MeshService mesh, {Key? key}) => MaterialApp(
+  Widget harness(MeshService mesh, {Key? key, LocalBrain? brain}) => MaterialApp(
     theme: buildNexusTheme(),
     home: Scaffold(
-      body: AssistantView(key: key, mesh: mesh),
+      body: AssistantView(key: key, mesh: mesh, brain: brain),
     ),
   );
 
@@ -625,6 +688,141 @@ void main() {
       expect(find.textContaining('didn\'t catch that'), findsWidgets);
     } finally {
       SpeechInput.override = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('voice: replies to spoken asks are read out loud — typed stays quiet', (tester) async {
+    final (store, mesh) = await boot();
+    final speaker = _FakeSpeechOutput();
+    SpeechInput.override = () => _FakeSpeechInput('what time is it');
+    SpeechOutput.override = () => speaker;
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump(); // listening
+      await tester.pump(); // recognized text resolves
+
+      // The spoken ask got a spoken answer — the reply was handed to TTS.
+      expect(speaker.spoken, isNotEmpty);
+      expect(speaker.spoken.last, startsWith("It's "));
+
+      // The same ask typed afterwards stays quiet — no new utterance.
+      final before = speaker.spoken.length;
+      await ask(tester, 'what time is it');
+      expect(speaker.spoken.length, before);
+    } finally {
+      SpeechInput.override = null;
+      SpeechOutput.override = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('voice: nothing heard is said back out loud', (tester) async {
+    final (store, mesh) = await boot();
+    final speaker = _FakeSpeechOutput();
+    SpeechInput.override = () => _FakeSpeechInput(null);
+    SpeechOutput.override = () => speaker;
+    try {
+      await tester.pumpWidget(harness(mesh));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump();
+      await tester.pump();
+
+      // The retry prompt is spoken, not just shown — the mic attempt is a
+      // spoken exchange, so Nexus answers aloud.
+      expect(speaker.spoken, isNotEmpty);
+      expect(speaker.spoken.last, contains('didn\'t catch that'));
+    } finally {
+      SpeechInput.override = null;
+      SpeechOutput.override = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('voice: a slower spoken answer still speaks after a faster one', (tester) async {
+    final (store, mesh) = await boot();
+    final speaker = _FakeSpeechOutput();
+    final brain = _GatedBrain();
+    var heard = 'blorble one';
+    SpeechInput.override = () => _FakeSpeechInput(heard);
+    SpeechOutput.override = () => speaker;
+    try {
+      await tester.pumpWidget(harness(mesh, brain: brain));
+      await tester.pump();
+      await tester.pump();
+
+      // Two rapid spoken unknown phrases — each opens a conversational
+      // exchange that waits on the brain.
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump();
+      await tester.pump();
+      expect(brain.gates, hasLength(1));
+      heard = 'blorble two';
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump();
+      await tester.pump();
+      expect(brain.gates, hasLength(2));
+
+      // The second exchange answers first…
+      brain.gates[1].complete((text: 'Second answer!', reachable: true));
+      await tester.pump();
+      await tester.pump();
+      expect(speaker.spoken, ['Second answer!']);
+
+      // …then the slower first exchange's reply lands mid-thread — and it
+      // still speaks, because its card kept its spoken attribution.
+      brain.gates[0].complete((text: 'First answer!', reachable: true));
+      await tester.pump();
+      await tester.pump();
+      expect(speaker.spoken, ['Second answer!', 'First answer!']);
+    } finally {
+      SpeechInput.override = null;
+      SpeechOutput.override = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('voice: a spoken unknown phrase gets a spoken brain answer — '
+      'typed stays quiet', (tester) async {
+    final (store, mesh) = await boot();
+    final speaker = _FakeSpeechOutput();
+    final brain = _RecordingBrain();
+    SpeechInput.override = () => _FakeSpeechInput('blorble voice');
+    SpeechOutput.override = () => speaker;
+    try {
+      await tester.pumpWidget(harness(mesh, brain: brain));
+      await tester.pump();
+      await tester.pump();
+
+      // A spoken unknown phrase: heard → same pipeline as typing → the
+      // brain answers → the answer is read out loud.
+      await tester.tap(find.byTooltip('Speak your question'));
+      await tester.pump();
+      await tester.pump();
+      expect(brain.replyCalls, 1);
+      expect(find.textContaining('brain answer'), findsWidgets);
+      expect(speaker.spoken, ['brain answer: rough days are allowed.']);
+
+      // The same ask typed afterwards stays quiet — no new utterance.
+      final before = speaker.spoken.length;
+      await ask(tester, 'blorble typed');
+      await tester.pump();
+      await tester.pump();
+      expect(brain.replyCalls, 2);
+      expect(find.textContaining('brain answer'), findsWidgets);
+      expect(speaker.spoken.length, before);
+    } finally {
+      SpeechInput.override = null;
+      SpeechOutput.override = null;
       QueryLog.i.resetForTest();
       await mesh.stop();
     }
