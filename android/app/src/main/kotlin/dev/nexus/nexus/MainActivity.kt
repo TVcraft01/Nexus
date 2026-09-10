@@ -141,10 +141,14 @@ class MainActivity : FlutterActivity() {
     private var pendingTtsResult: MethodChannel.Result? = null
 
     override fun onDestroy() {
-        if (previewPlayer != null) {
-            previewPlayer?.release()
-            previewPlayer = null
-        }
+        // The in-app preview must die with the activity — otherwise the
+        // audio keeps playing after Nexus is closed, and reopening stacks a
+        // second player over the ghost.
+        previewPlayer?.release()
+        previewPlayer = null
+        previewReady = false
+        // Release the voice output engine so a pending reply stops the
+        // moment the activity goes away.
         if (tts != null) {
             tts?.stop()
             tts?.shutdown()
@@ -1689,16 +1693,6 @@ class MainActivity : FlutterActivity() {
             Log.e(TAG, "contact lookup failed", e)
             Triple(null, null, emptyList())
         }
-    }
-
-    override fun onDestroy() {
-        // The in-app preview must die with the activity — otherwise the
-        // audio keeps playing after Nexus is closed, and reopening stacks a
-        // second player over the ghost.
-        previewPlayer?.release()
-        previewPlayer = null
-        previewReady = false
-        super.onDestroy()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
