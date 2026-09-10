@@ -177,6 +177,13 @@ tar -xzf /tmp/nexus.tar.gz -C ~/.local/share/nexus
 
 echo "→ Starting Nexus…"
 "\$HOME/.local/share/nexus/nexus" &
+
+echo ""
+echo "Done. In Nexus on this device:"
+echo "  1. Open the Devices tab → Pair a device → Enter a code"
+echo "  2. Enter the code shown on the other device"
+echo ""
+echo "After pairing, both devices talk directly — no cloud, no account."
 ''';
   }
 

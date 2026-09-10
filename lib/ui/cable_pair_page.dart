@@ -29,7 +29,6 @@ class _CablePairPageState extends State<CablePairPage> {
   bool _tunnelOk = false;
   int? _cablePort;
   String? _provisionError;
-  String? _guide;
   Timer? _poll;
   int _pairedAtStart = 0;
   Timer? _refresh;

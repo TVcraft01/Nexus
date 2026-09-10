@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, debugPrint;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/version.dart';
@@ -13,7 +12,6 @@ import '../mesh/updater.dart';
 import 'assistant_view.dart';
 import 'devices_view.dart';
 import 'files_view.dart';
-import 'pair_sheet.dart';
 import 'settings_view.dart';
 import 'theme.dart';
 

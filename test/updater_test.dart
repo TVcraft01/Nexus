@@ -71,8 +71,7 @@ void main() {
 
     test('returns null when the archive asset is missing', () async {
       final info = await check(release('v0.2.0', assets: []), '0.1.1');
-      expect(info, isNotNull);
-      expect(info!.downloadUrl, isNull);
+      expect(info, isNull);
     });
   });
 }
