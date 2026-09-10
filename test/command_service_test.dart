@@ -712,27 +712,18 @@ void main() {
   });
 
   group('conversational ask-back: the assistant asks for what it lacks', () {
-    test('"what is my name" asks back, then remembers the answer like a conversation', () {
+    test('"what is my name" routes to the profile, never an ask-back', () {
       final service = CommandService(devices: () => const []);
       final asked = service.execute('what is my name');
-      expect(asked.status, AgentResultStatus.needsInfo);
-      final ask = asked.dispatch! as AgentClarification;
-      expect(ask.key, 'arg:memory.ask.my name');
-      expect(ask.question, contains('what is your name'));
-      // The user answers — it saves and answers the original question.
-      final answered = service.execute('John', answerTo: ask.key);
-      expect(answered.status, AgentResultStatus.succeeded);
-      expect((answered.dispatch! as AgentMessage).text, contains('John'));
-      // Next time, no question — it remembers.
-      final again = service.execute('what is my name');
-      expect(again.status, AgentResultStatus.succeeded);
-      expect(
-        (again.dispatch! as AgentMessage).text,
-        contains('Your name is John'),
-      );
+      // The name now has a first-class home: the service dispatches the
+      // profile read (the executor answers from the stored profile, or
+      // honestly points to "call me Sam") instead of a memory ask-back.
+      expect(asked.status, AgentResultStatus.succeeded);
+      final msg = asked.dispatch! as AgentMessage;
+      expect(msg.action, AgentActions.profileGet);
     });
 
-    test('a fact already told is never asked for again', () {
+    test('a name taught as a fact still answers "what is my name"', () {
       final service = CommandService(devices: () => const []);
       service.execute('remember that my name is john');
       final result = service.execute('what is my name');
@@ -744,15 +735,12 @@ void main() {
       expect(result.dispatch, isNot(isA<AgentClarification>()));
     });
 
-    test('"who am i" asks back and remembers', () {
+    test('"who am i" routes to the profile, never an ask-back', () {
       final service = CommandService(devices: () => const []);
       final asked = service.execute('who am i');
-      expect(asked.status, AgentResultStatus.needsInfo);
-      final ask = asked.dispatch! as AgentClarification;
-      final answered = service.execute('Sam', answerTo: ask.key);
-      expect((answered.dispatch! as AgentMessage).text, contains('Sam'));
-      final again = service.execute('who am i');
-      expect((again.dispatch! as AgentMessage).text, contains('Sam'));
+      expect(asked.status, AgentResultStatus.succeeded);
+      final msg = asked.dispatch! as AgentMessage;
+      expect(msg.action, AgentActions.profileGet);
     });
 
     test('an unknown personal fact asks back instead of searching the web', () {

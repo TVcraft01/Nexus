@@ -350,11 +350,11 @@ void main() {
     test("the assistant asks back for personal facts instead of searching the web", () {
       // "what is my name" / "what is my wifi password" must ask the user
       // for the answer (and remember it), never search the web for their
-      // own secret.
+      // own secret. "what is my name" moved OUT of this class: the name now
+      // has a real profile store and personalizes greetings, so it routes
+      // to profile.get (which answers honestly when unknown and points to
+      // "call me Sam") instead of a generic memory ask-back.
       for (final pair in [
-        ('what is my name', 'memory.ask.my name', 'your name'),
-        ('whats my name', 'memory.ask.my name', 'your name'),
-        ('who am i', 'memory.ask.my name', 'your name'),
         (
           'what is my wifi password',
           'memory.ask.my wifi password',
@@ -740,6 +740,173 @@ void main() {
           reason: 'song title');
       expect(band.command!.arguments['query'], 'in the band',
           reason: 'song title');
+    });
+
+    test('always use X / stop using X set and clear the app default', () {
+      for (final (phrase, verb, domain, app, name) in [
+        ('always use deezer', 'set', 'music', 'deezer', 'Deezer'),
+        ('use spotify', 'set', 'music', 'spotify', 'Spotify'),
+        ('use spotify from now on', 'set', 'music', 'spotify', 'Spotify'),
+        ('use youtube music from now on', 'set', 'music', 'youtube music',
+            'YouTube Music'),
+        ('use spotify for music', 'set', 'music', 'spotify', 'Spotify'),
+        ('utilise spotify', 'set', 'music', 'spotify', 'Spotify'),
+        ('use waze for directions', 'set', 'navigation', 'waze', 'Waze'),
+        ('use google maps from now on', 'set', 'navigation', 'google maps',
+            'Google Maps'),
+        ('always use google', 'set', 'calendar', 'google', 'Google Calendar'),
+        ('use outlook for calendar', 'set', 'calendar', 'outlook',
+            'Outlook Calendar'),
+        ('use google calendar from now on', 'set', 'calendar', 'google',
+            'Google Calendar'),
+        ('stop using deezer', 'clear', 'music', 'deezer', 'Deezer'),
+        ('dont use spotify anymore', 'clear', 'music', 'spotify', 'Spotify'),
+        ('arrete d utiliser spotify', 'clear', 'music', 'spotify', 'Spotify'),
+        ('no longer use waze', 'clear', 'navigation', 'waze', 'Waze'),
+        ('quit using google calendar', 'clear', 'calendar', 'google',
+            'Google Calendar'),
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.appDefault, reason: phrase);
+        expect(r.command!.arguments['verb'], verb, reason: phrase);
+        expect(r.command!.arguments['domain'], domain, reason: phrase);
+        expect(r.command!.arguments['app'], app, reason: phrase);
+        expect(r.command!.arguments['name'], name, reason: phrase);
+      }
+      // Unknown names never claim a domain — they fall through untouched
+      // instead of misfiring into another rule family.
+      for (final phrase in [
+        'use netflix',
+        'use the flashlight',
+        'always use notion',
+        'stop using netflix',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command?.action, isNot(AgentActions.appDefault),
+            reason: phrase);
+      }
+    });
+
+    test('everyday user phrasings route to the right action', () {
+      // "stop" family: music pauses, never a fake app-close of "the music".
+      for (final phrase in ['stop', 'stop the music', 'stop music',
+          'stop the song', 'stop it', 'arrete la musique']) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command!.action, AgentActions.mediaPause, reason: phrase);
+      }
+      // …while real close/timer phrases stay untouched.
+      expect(interpreter.interpret('close spotify').command!.action,
+          AgentActions.appClose);
+      expect(interpreter.interpret('stop the timer').command!.action,
+          AgentActions.timerCancel);
+      expect(interpreter.interpret('stop the alarm').command!.action,
+          AgentActions.alarmDismiss);
+      // Volume asymmetry: "turn volume down" works like "volume up".
+      expect(interpreter.interpret('turn volume down').command!.action,
+          AgentActions.volumeSet);
+      expect(interpreter.interpret('turn volume down').command!.arguments['mode'],
+          'down');
+      expect(interpreter.interpret('turn volume up').command!.arguments['mode'],
+          'up');
+      expect(interpreter.interpret('turn it up').command!.arguments['mode'],
+          'up');
+      expect(interpreter.interpret('unmute').command!.arguments['mode'],
+          'toggle');
+      // Weather: bare-city and tomorrow forms are real commands.
+      final w = interpreter.interpret('weather paris');
+      expect(w.command!.action, AgentActions.weatherGet);
+      expect(w.command!.arguments['place'], 'paris');
+      expect(interpreter.interpret('whats the weather tomorrow').command!.action,
+          AgentActions.weatherGet);
+      expect(interpreter.interpret('weather in london').command!.arguments['place'],
+          'london');
+      // "remind me in 10 minutes" is a delay → a real timer.
+      final t = interpreter.interpret('remind me in 10 minutes');
+      expect(t.command!.action, AgentActions.timerSet);
+      expect(t.command!.arguments['seconds'], 600);
+      expect(interpreter.interpret('remind me to call mom').command!.action,
+          AgentActions.reminderSet);
+      // "call mom on facetime" is a video call, never a polluted contact.
+      final c = interpreter.interpret('call mom on facetime');
+      expect(c.command!.action, AgentActions.callPlace);
+      expect(c.command!.arguments['contact'], 'mom');
+      expect(c.command!.arguments['mode'], 'video');
+      expect(c.command!.arguments['app'], 'facetime');
+      // Pronouns resume playback; never a Deezer search for the word "it".
+      expect(interpreter.interpret('play it again').command!.action,
+          AgentActions.mediaPlay);
+      expect(interpreter.interpret('play that song').command!.action,
+          AgentActions.mediaPlay);
+      final p = interpreter.interpret('play it on spotify');
+      expect(p.command!.action, AgentActions.musicSearch);
+      expect(p.command!.arguments['query'], '');
+      expect(p.command!.arguments['app'], 'spotify');
+      // Device suffixes never pollute the song title.
+      expect(
+          interpreter.interpret('play hotline bling on my phone')
+              .command!.arguments['query'],
+          'hotline bling');
+      // Calendar horizons understand day names and "anything" forms.
+      expect(
+          interpreter.interpret('what do i have on friday')
+              .command!.arguments['when'],
+          'week');
+      expect(
+          interpreter.interpret('do i have anything tomorrow')
+              .command!.arguments['when'],
+          'tomorrow');
+      // Bare arithmetic with word operators.
+      final m = interpreter.interpret('15 percent of 80');
+      expect(m.command!.action, AgentActions.mathCalc);
+      expect(m.command!.arguments['expr'], '15/100*80');
+      // "15 minutes" alone is a duration, not arithmetic.
+      expect(interpreter.interpret('15 minutes').command?.action,
+          isNot(AgentActions.mathCalc));
+      // Bare cancel-timer and thanks.
+      expect(interpreter.interpret('cancel timer').command!.action,
+          AgentActions.timerCancel);
+      expect(interpreter.interpret('thanks').command!.action,
+          AgentActions.greet);
+    });
+
+    test('call me X / my name is X set the profile; what is my name reads it',
+        () {
+      for (final (phrase, kind, name) in [
+        ('call me sam', 'user', 'Sam'),
+        ('call me sam smith', 'user', 'Sam Smith'),
+        ('my name is sam', 'user', 'Sam'),
+        ('my names sam', 'user', 'Sam'),
+        ('you can call me sam', 'user', 'Sam'),
+        ('je m appelle sam', 'user', 'Sam'),
+        ('call yourself sophie', 'assistant', 'Sophie'),
+        ('your name is sophie', 'assistant', 'Sophie'),
+        ('renames toi sophie', 'assistant', 'Sophie'),
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.profileSet, reason: phrase);
+        expect(r.command!.arguments['kind'], kind, reason: phrase);
+        expect(r.command!.arguments['name'], name, reason: phrase);
+      }
+      for (final phrase in [
+        'what is my name',
+        'whats my name',
+        'do you know my name',
+        'who am i',
+        'what do you call me',
+      ]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.command!.action, AgentActions.profileGet, reason: phrase);
+      }
+      // Time words are not names: "call me tomorrow" stays a call phrase
+      // and must never claim the profile.
+      final t = interpreter.interpret('call me tomorrow');
+      expect(t.command?.action, isNot(AgentActions.profileSet));
+      // Real calls are untouched.
+      final c = interpreter.interpret('call mom');
+      expect(c.command!.action, AgentActions.callPlace);
+      expect(c.command!.arguments['contact'], 'mom');
     });
 
     test('currency converts stay unitConvert; french words captured', () {

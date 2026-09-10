@@ -27,6 +27,7 @@ import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.view.KeyEvent
@@ -99,6 +100,16 @@ class MainActivity : FlutterActivity() {
     private val REQUEST_SPEECH_PERMISSIONS = 42605
     private var pendingSpeechResult: MethodChannel.Result? = null
 
+    // Voice output: the system TextToSpeech engine says the assistant's
+    // reply aloud. No runtime permission needed.
+    private val SPEECH_OUT_CHANNEL = "dev.nexus.nexus/speech_out"
+
+    // On-device tiny model: the phone's everyday brain. Real inference
+    // (llama.cpp / MediaPipe LLM) plugs in here; until then both calls
+    // answer honestly with null and the distributed brain escalates the
+    // question over the mesh to the paired PC's brain.
+    private val TINY_BRAIN_CHANNEL = "dev.nexus.nexus/tiny_brain"
+
     // "what is on my calendar": reading the next events needs READ_CALENDAR,
     // requested on first use with the MethodChannel result held across the
     // dialog, exactly like the contacts flows.
@@ -114,6 +125,33 @@ class MainActivity : FlutterActivity() {
     // silently playing a moment later.
     private var previewPlayer: MediaPlayer? = null
     private var previewReady = false
+
+    // Voice output: one system text-to-speech engine for the whole activity,
+    // initialized lazily on the first spoken reply. While the engine is
+    // being created, the latest utterance is held here and spoken the moment
+    // it is ready — a reply in the init window is never silently dropped.
+    // Each utterance QUEUE_FLUSHes, so a rapid second reply cuts the first
+    // off; the MethodChannel result resolves at queue time, and a
+    // missing/broken TTS engine answers false instead of pretending to
+    // speak. Releasing in onDestroy stops a pending reply the moment the
+    // activity goes away.
+    private var tts: TextToSpeech? = null
+    private var ttsInitPending = false
+    private var pendingTtsText: String? = null
+    private var pendingTtsResult: MethodChannel.Result? = null
+
+    override fun onDestroy() {
+        if (previewPlayer != null) {
+            previewPlayer?.release()
+            previewPlayer = null
+        }
+        if (tts != null) {
+            tts?.stop()
+            tts?.shutdown()
+            tts = null
+        }
+        super.onDestroy()
+    }
 
     private lateinit var usbSerial: UsbSerialBridge
 
@@ -181,6 +219,31 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 if (call.method == "listen") listenSpeech(result)
                 else result.notImplemented()
+            }
+
+        // Voice output: reads the assistant's reply out loud through the
+        // system text-to-speech engine — on-device, offline, no permission.
+        // A device whose TTS engine is missing or broken answers false and
+        // the assistant just stays on the written card.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SPEECH_OUT_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method == "speak") {
+                    speakText(call.argument<String>("text") ?: "", result)
+                } else {
+                    result.notImplemented()
+                }
+            }
+
+        // On-device tiny model: answers everyday questions inside the app,
+        // fully offline. Honest null until real inference is integrated —
+        // the distributed brain then escalates over the mesh.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, TINY_BRAIN_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "modelName" -> result.success(null)
+                    "ask" -> result.success(null)
+                    else -> result.notImplemented()
+                }
             }
 
         // Small device-local actions: alarms, timers, search, navigation,
@@ -1055,6 +1118,61 @@ class MainActivity : FlutterActivity() {
             return
         }
         startSpeech(result)
+    }
+
+    /// Voice output: says [text] through the system text-to-speech engine.
+    /// The engine is created once, asynchronously — the first reply may
+    /// resolve a few moments late, which is fine (the reply stays on the
+    /// card either way). While the engine is still being created, the latest
+    /// utterance is held and spoken when it is ready, so a reply in the
+    /// init window is never dropped (an older held utterance is superseded
+    /// by a newer one, exactly like QUEUE_FLUSH). The result resolves at
+    /// queue time, never waiting on an interrupted utterance; a device with
+    /// no usable TTS engine answers false honestly.
+    private fun speakText(text: String, result: MethodChannel.Result) {
+        if (text.isBlank()) {
+            result.success(true)
+            return
+        }
+        val engine = tts
+        if (engine != null && !ttsInitPending) {
+            val queued = engine.speak(
+                text,
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "nexus-${System.currentTimeMillis()}",
+            )
+            result.success(queued != TextToSpeech.ERROR)
+            return
+        }
+        // Engine missing or still initializing: hold the latest utterance.
+        // A newer reply supersedes an older one, matching QUEUE_FLUSH — the
+        // superseded result resolves as accepted-then-cut, never a hang.
+        pendingTtsText?.let { pendingTtsResult?.success(true) }
+        pendingTtsText = text
+        pendingTtsResult = result
+        if (tts != null) return // init underway — its callback speaks the latest
+        ttsInitPending = true
+        tts = TextToSpeech(this) { status ->
+            val r = pendingTtsResult
+            val t = pendingTtsText
+            pendingTtsResult = null
+            pendingTtsText = null
+            ttsInitPending = false
+            val e = tts
+            if (status != TextToSpeech.SUCCESS || e == null || r == null || t == null) {
+                r?.success(false) // no speech engine — stay on the card
+                return@TextToSpeech
+            }
+            val queued = e.speak(
+                t,
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "nexus-${System.currentTimeMillis()}",
+            )
+            if (queued == TextToSpeech.ERROR) r.success(false)
+            else r.success(true)
+        }
     }
 
     private fun startSpeech(result: MethodChannel.Result) {

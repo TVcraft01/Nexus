@@ -5,11 +5,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../core/agent_contract.dart';
+import '../core/brain.dart';
 import '../core/command_service.dart';
+import '../core/conversation.dart';
+import '../core/conversation_engine.dart';
 import '../core/dream.dart';
 import '../core/predictions.dart';
+import '../core/profile.dart';
 import '../core/query_log.dart';
 import '../core/reminders.dart';
+import '../core/skills.dart';
 import '../core/speech.dart';
 import '../mesh/mesh_service.dart';
 import 'device_executor.dart';
@@ -23,7 +28,13 @@ import 'theme.dart';
 class AssistantView extends StatefulWidget {
   final MeshService mesh;
 
-  const AssistantView({super.key, required this.mesh});
+  /// The optional local language-model brain (Ollama). When present, phrases
+  /// the command interpreter doesn't understand get a real conversational
+  /// reply instead of the teach card; when absent (or offline) the classic
+  /// teach flow stays. Null on platforms with no local model support yet.
+  final LocalBrain? brain;
+
+  const AssistantView({super.key, required this.mesh, this.brain});
 
   @override
   State<AssistantView> createState() => _AssistantViewState();
@@ -34,12 +45,11 @@ class _AssistantViewState extends State<AssistantView> {
   final _focus = FocusNode();
   String _lastInput = '';
 
-  /// The conversation: user bubbles and assistant cards, in order.
-  final List<_ThreadEntry> _thread = [];
+  /// The conversation engine: owns the thread (user bubbles and assistant
+  /// cards), the brain-exchange state machine, and the brain's health. The
+  /// view renders from it and never mutates the thread directly.
+  final ConversationEngine _conversation = ConversationEngine();
   late final CommandService _service;
-  String? _pendingKey; // a clarification is open; the next input answers it
-  // — unless that input is itself a command (then the command wins and the
-  // question is dropped, see _onSubmit).
   String? _reply; // outcome shown on whichever plan card is open
   bool _sending = false;
 
@@ -54,6 +64,11 @@ class _AssistantViewState extends State<AssistantView> {
   /// log pass. When a real routine exists (asked twice or more) the static
   /// suggestion chips make way for these — the assistant predicting.
   List<Habit>? _habits;
+
+  /// The skills this user genuinely uses (their loop), ranked from the same
+  /// log pass. Drives the one-tap chips and the brain's context: Nexus gets
+  /// visibly better at what matters to this person.
+  List<SkillUse>? _skills;
 
   /// Promises to say something back later: this device's copy, mirrored
   /// into the store (a reminder set before a restart still fires) and fed
@@ -89,9 +104,22 @@ class _AssistantViewState extends State<AssistantView> {
   /// only decides when to run them.
   final DeviceExecutor _executor = DeviceExecutor();
 
+  /// The user's profile: names and first-run state, persisted per device.
+  final ProfileStore _profile = SharedPrefsProfileStore();
+  UserProfile? _profileState;
+  bool _profileLoaded = false;
+
+  /// First-run setup form state.
+  final TextEditingController _onboardName = TextEditingController();
+  final TextEditingController _onboardAssistant = TextEditingController();
+  final Map<String, bool?> _onboardPerms = {}; // action -> granted/denied/null
+
   @override
   void initState() {
     super.initState();
+    // The conversation engine notifies on every thread/brain change; the
+    // view rebuilds from it, exactly as its own setState used to.
+    _conversation.addListener(_onConversationChanged);
     _service = CommandService(
       devices: _buildSnapshots,
       local: AgentDeviceSnapshot(
@@ -127,6 +155,11 @@ class _AssistantViewState extends State<AssistantView> {
       onFactLearned: (fact) {
         unawaited(widget.mesh.broadcastFact(fact));
       },
+      // Answer a "which …?" question here, remembered on every paired
+      // device: one pick is one pick everywhere.
+      onDefaultLearned: (key, value) {
+        unawaited(widget.mesh.broadcastDefault(key, value));
+      },
     );
     // And the other direction — adopt phrases taught on paired devices, live
     // (not only after a restart).
@@ -137,6 +170,20 @@ class _AssistantViewState extends State<AssistantView> {
     widget.mesh.onFactReceived = (fact) {
       _service.adoptFact(fact);
     };
+    // And the other direction — adopt "which …?" answers from paired
+    // devices, live (a local answer wins).
+    widget.mesh.onDefaultReceived = (key, value) {
+      _service.adoptDefault(key, value);
+    };
+    // And a rename on any device is a rename everywhere: the profile names
+    // travel the mesh like taught phrases do.
+    widget.mesh.onProfileReceived = (userName, assistantName) {
+      unawaited(_adoptRemoteProfile(userName, assistantName));
+    };
+
+    // First-run profile: names + onboarded flag, loaded after the first
+    // frame so the welcome card can become a real setup flow.
+    unawaited(_loadProfile());
 
     // Reminders: this device's copy comes back from the store (a promise
     // made before a restart still fires), and peers' reminders arrive live.
@@ -153,14 +200,12 @@ class _AssistantViewState extends State<AssistantView> {
         unawaited(widget.mesh.broadcastReminder(jsonEncode(reminder.toJson())));
       }
       ..onFired = (reminder) {
-        setState(() {
-          _appendResult(
-            AgentDispatchResult(
-              status: AgentResultStatus.succeeded,
-              dispatch: AgentMessage('Reminder: ${reminder.text}.'),
-            ),
-          );
-        });
+        _conversation.appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage('Reminder: ${reminder.text}.'),
+          ),
+        );
       }
       ..seed(widget.mesh.store.agentReminders);
     // Listen after seeding, so the engine's first notify can't setState
@@ -188,21 +233,56 @@ class _AssistantViewState extends State<AssistantView> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_refreshFromLog());
     });
+
+    // The local brain: find out once, on start, whether a model is installed
+    // — the status line tells the user how to enable real conversations.
+    final brain = widget.brain;
+    if (brain != null) {
+      unawaited(_conversation.probe(brain));
+    }
   }
 
   @override
   void dispose() {
     widget.mesh.onLearnedPhraseReceived = null;
     widget.mesh.onFactReceived = null;
+    widget.mesh.onDefaultReceived = null;
+    widget.mesh.onProfileReceived = null;
     widget.mesh.onReminderReceived = null;
     _reminderEngine.removeListener(_onRemindersChanged);
     _reminderEngine.dispose();
+    _conversation.removeListener(_onConversationChanged);
+    _conversation.dispose();
     _controller.dispose();
+    _onboardName.dispose();
+    _onboardAssistant.dispose();
     _focus.dispose();
     super.dispose();
   }
 
   void _onRemindersChanged() => setState(() {});
+
+  /// Every thread entry this listener has seen, by identity. A card that
+  /// is not in the set is genuinely new — an append, or a replacement
+  /// (Thinking → answer, action card → outcome) wherever it sits in the
+  /// thread — and gets read out loud exactly once. Probe flips and status
+  /// changes never create entries and never re-speak.
+  final Set<ConversationEntry> _seenEntries = {};
+
+  void _onConversationChanged() {
+    setState(() {});
+    // Voice mode: read genuinely new reply cards out loud, exactly once,
+    // wherever they landed — an out-of-order brain answer replaces its own
+    // mid-thread card and still speaks, because each card carries its own
+    // spoken-ask attribution. Typed exchanges stay quiet: a card speaks
+    // only when the ask that produced it came from the microphone.
+    for (final entry in _conversation.entries) {
+      if (!_seenEntries.add(entry)) continue;
+      if (!entry.spokenAsk) continue;
+      final text = ConversationEngine.speakableText(entry);
+      if (text != null) unawaited(SpeechOutput.current.speak(text));
+    }
+  }
 
   List<AgentDeviceSnapshot> _buildSnapshots() {
     final mesh = widget.mesh;
@@ -257,6 +337,8 @@ class _AssistantViewState extends State<AssistantView> {
     // Approval re-runs (Approve/Deny) update the card they belong to instead
     // of appending a new one — the exchange stays one bubble pair.
     bool replaceLast = false,
+    // The ask came from the microphone — replies to it are read out loud.
+    bool spoken = false,
   }) {
     final result = _service.execute(
       input,
@@ -269,20 +351,72 @@ class _AssistantViewState extends State<AssistantView> {
     _consume(
       result,
       asUser: input.trim(),
-      typedPhrase: input.trim().toLowerCase(),
       replaceLast: replaceLast,
+      spoken: spoken,
     );
     // Every ask refines what the assistant predicts you'll ask next.
     unawaited(_refreshFromLog());
+    // A phrase the interpreter doesn't know → hand it to the local brain for
+    // a real conversational reply. Commands, answers to open questions, and
+    // approval re-runs keep their fast path.
+    final dispatch = result.dispatch;
+    if (answerTo == null &&
+        !replaceLast &&
+        widget.brain != null &&
+        dispatch is AgentClarification &&
+        dispatch.key.startsWith('teach:')) {
+      _startConversation(input.trim(), result);
+    }
+  }
+
+  /// The memory context for a conversation, assembled at call time from the
+  /// profile, the live service's memory, and the proactive readings — the
+  /// engine asks for it fresh on every exchange.
+  ConversationContext _memoryContext() => ConversationContext(
+    userName: _profileState?.userName,
+    assistantName: _profileState?.assistantName ?? 'Nexus',
+    facts: _service.factsSnapshot,
+    learned: _service.learnedSnapshot,
+    defaults: _service.defaultsSnapshot,
+    habits: [
+      for (final habit in _habits ?? const <Habit>[]) habit.phrase,
+    ].take(5).toList(),
+    skills: [
+      for (final skill in _skills ?? const <SkillUse>[]) skill.label,
+    ].take(5).toList(),
+  );
+
+  /// Hands a phrase the interpreter doesn't know to the conversation engine
+  /// for a conversational reply. The engine owns the whole exchange — the
+  /// Thinking swap, the ticket, the teach restore — and reports back which
+  /// stale teach question (if any) it superseded.
+  void _startConversation(String input, AgentDispatchResult original) {
+    final brain = widget.brain;
+    if (brain == null) return;
+    unawaited(
+      _conversation.converse(
+        brain: brain,
+        input: input,
+        original: original,
+        context: _memoryContext,
+        onBrainAnswered: (stale) {
+          // The brain owns this phrase now — drop the service's stale teach
+          // question so it can never swallow a later input.
+          if (stale != null) _service.cancelPending(stale);
+        },
+      ),
+    );
   }
 
   /// Every ask and its outcome lands in the query log — raw material for
-  /// improving matching and catching bugs.
+  /// improving matching and catching bugs, and for the skill loop (an ask
+  /// whose dispatch names a real action counts as genuine use of that
+  /// skill; a plain answer like the time logs as "message").
   void _logAsk(String input, AgentDispatchResult result) {
     final route = switch (result.dispatch) {
       final AgentActionPlan plan => plan.request.action,
       final AgentClarification ask => ask.key,
-      final AgentMessage _ => 'message',
+      final AgentMessage message => message.action ?? 'message',
       _ => '',
     };
     QueryLog.i.ask(input.trim(), result.status.name, route, result.message);
@@ -331,37 +465,23 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.mediaRepeat,
     AgentActions.alarmSet,
     AgentActions.defineWord,
+    AgentActions.appDefault,
+    AgentActions.profileSet,
+    AgentActions.profileGet,
   };
-
-  /// Appends to (or, for re-runs, updates the end of) the thread. No
-  /// setState — callers own the rebuild.
-  void _appendResult(
-    AgentDispatchResult result, {
-    String? asUser,
-    bool replaceLast = false,
-  }) {
-    if (replaceLast && _thread.isNotEmpty) {
-      _thread[_thread.length - 1] = _ThreadEntry.result(result);
-    } else {
-      if (asUser != null && asUser.isNotEmpty)
-        _thread.add(_ThreadEntry.user(asUser));
-      _thread.add(_ThreadEntry.result(result));
-    }
-    _pendingKey = switch (result.dispatch) {
-      final AgentClarification clarification => clarification.key,
-      _ => null,
-    };
-  }
 
   /// Shows a dispatch result — and starts self-run actions right away.
   void _consume(
     AgentDispatchResult result, {
     String? asUser,
-    String? typedPhrase,
     bool replaceLast = false,
+    bool spoken = false,
   }) {
-    setState(
-      () => _appendResult(result, asUser: asUser, replaceLast: replaceLast),
+    _conversation.appendResult(
+      result,
+      asUser: asUser,
+      replaceLast: replaceLast,
+      spoken: spoken,
     );
     // Path 1: A routed action plan targeting this device — e.g. ledBlink
     // resolved to a local serial device, or clipboardWrite.
@@ -415,17 +535,17 @@ class _AssistantViewState extends State<AssistantView> {
       // away: the user already wrote what they meant.
       if (_lastInputWasVoice &&
           _voiceConfirmActions.contains(message.action)) {
-        _voiceConfirm = (request: request, question: message.text);
-        setState(
-          () => _appendResult(
-            AgentDispatchResult(
-              status: AgentResultStatus.needsInfo,
-              dispatch: AgentMessage(
-                '${message.text} Say "yes" to confirm, or "no" to cancel.',
-              ),
+        setState(() {
+          _voiceConfirm = (request: request, question: message.text);
+        });
+        _conversation.appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.needsInfo,
+            dispatch: AgentMessage(
+              '${message.text} Say "yes" to confirm, or "no" to cancel.',
             ),
-            replaceLast: true,
           ),
+          replaceLast: true,
         );
       } else {
         unawaited(_runSelfAction(request));
@@ -454,16 +574,15 @@ class _AssistantViewState extends State<AssistantView> {
   Future<void> _listen() async {
     final speech = SpeechInput.current;
     if (!speech.available) {
-      setState(
-        () => _appendResult(
-          AgentDispatchResult(
-            status: AgentResultStatus.succeeded,
-            dispatch: const AgentMessage(
-              'Voice input isn\'t set up on this device yet — type it, or '
-              'tap one of the example chips below.',
-            ),
+      _conversation.appendResult(
+        AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: const AgentMessage(
+            'Voice input isn\'t set up on this device yet — type it, or '
+            'tap one of the example chips below.',
           ),
         ),
+        spoken: true, // a spoken attempt — read the answer out loud
       );
       return;
     }
@@ -473,15 +592,14 @@ class _AssistantViewState extends State<AssistantView> {
     setState(() => _listening = false);
     final text = heard?.trim() ?? '';
     if (text.isEmpty) {
-      setState(
-        () => _appendResult(
-          const AgentDispatchResult(
-            status: AgentResultStatus.succeeded,
-            dispatch: AgentMessage(
-              'I didn\'t catch that — could you say it again?',
-            ),
+      _conversation.appendResult(
+        const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'I didn\'t catch that — could you say it again?',
           ),
         ),
+        spoken: true, // the user just spoke — the retry prompt is read aloud
       );
       return;
     }
@@ -502,28 +620,34 @@ class _AssistantViewState extends State<AssistantView> {
       // Kotlin message already names the candidates.
       if (!ok && candidates.isNotEmpty && request != null) {
         _contactConfirm = (request: request, candidates: candidates);
-        _appendResult(
-          AgentDispatchResult(
-            status: AgentResultStatus.needsInfo,
-            dispatch: AgentMessage(
-              '$message Say "yes" for the first one — or "no" to cancel.',
-            ),
-          ),
-          replaceLast: true,
-        );
-        return;
       }
-      _appendResult(
+    });
+    if (!ok && candidates.isNotEmpty && request != null) {
+      _conversation.appendResult(
         AgentDispatchResult(
-          status: ok
-              ? AgentResultStatus.succeeded
-              : AgentResultStatus.unavailable,
-          message: ok ? '' : message,
-          dispatch: ok ? AgentMessage(message) : null,
+          status: AgentResultStatus.needsInfo,
+          dispatch: AgentMessage(
+            '$message Say "yes" for the first one — or "no" to cancel.',
+          ),
         ),
         replaceLast: true,
       );
-    });
+      return;
+    }
+    _conversation.appendResult(
+      AgentDispatchResult(
+        status: ok
+            ? AgentResultStatus.succeeded
+            : AgentResultStatus.unavailable,
+        message: ok ? '' : message,
+        dispatch: ok ? AgentMessage(message) : null,
+      ),
+      replaceLast: true,
+    );
+    // "call me sam" changed the profile — greet by the new name immediately.
+    if (request?.action == AgentActions.profileSet) {
+      unawaited(_syncProfile());
+    }
   }
 
   void _onSubmit({bool voice = false}) {
@@ -547,7 +671,7 @@ class _AssistantViewState extends State<AssistantView> {
         _showSelfOutcome(false, 'Cancelled — nothing was sent.');
       } else {
         _voiceConfirm = null; // moved on: run the new request
-        _execute(text);
+        _execute(text, spoken: voice);
       }
       return;
     }
@@ -579,13 +703,12 @@ class _AssistantViewState extends State<AssistantView> {
         _showSelfOutcome(false, 'Okay — I won\'t call anyone.');
       } else {
         _contactConfirm = null; // moved on: run the new request
-        _execute(text);
+        _execute(text, spoken: voice);
       }
       return;
     }
     // An Approve/Deny bar is showing — spoken (or typed) yes/no answers it.
-    final lastResult =
-        _thread.isNotEmpty ? _thread.last.result : null;
+    final lastResult = _conversation.lastResult;
     if (lastResult != null &&
         lastResult.status == AgentResultStatus.required &&
         (yes || no)) {
@@ -595,19 +718,20 @@ class _AssistantViewState extends State<AssistantView> {
             ? AgentApproval.approved
             : AgentApproval.denied,
         replaceLast: true,
+        spoken: voice,
       );
       return;
     }
-    final pending = _pendingKey;
+    final pending = _conversation.pendingKey;
     // A clarification is open. The next input answers it — UNLESS it is
     // itself a command: the user moved on, so the new request runs and the
     // stale question is dropped instead of silently swallowing the command
     // ("call mom" must never be learned as the meaning of "open deezer").
     if (pending != null && !_service.parsesAsCommand(text)) {
-      _execute(text, answerTo: pending);
+      _execute(text, answerTo: pending, spoken: voice);
     } else {
       if (pending != null) _service.cancelPending(pending);
-      _execute(text);
+      _execute(text, spoken: voice);
     }
   }
 
@@ -761,27 +885,39 @@ class _AssistantViewState extends State<AssistantView> {
 
   /// One-tap examples — for anyone who doesn't know what to type yet.
   Widget _suggestionChips() {
-    // Personal prediction: when this user keeps asking the same phrases,
-    // the generic suggestions make way for their own habits. A real habit
-    // means asked more than once — a single ask is not a routine yet.
+    // The skill loop's visible payoff: skills the user genuinely reaches
+    // for lead the chips, shown by a canonical example that always parses —
+    // even when no single phrase repeats often enough to be a habit. A
+    // real routine (the same phrase twice or more) still comes first,
+    // because their own words beat any example.
     final habits = _habits;
     final personal = habits == null || habits.every((h) => h.count < 2)
-        ? null
-        : habits.where((h) => h.count >= 2).take(4).toList();
-    final suggestions =
-        personal?.map((h) => h.phrase).toList() ??
-        const [
-          'what can you do',
-          'what time is it',
-          'what do you know about me',
-          'what is the weather in paris',
-          'take me home',
-          'play my playlist',
-          'open youtube',
-          'call mom',
-          'email mom',
-          'flashlight on',
-        ];
+        ? const <Habit>[]
+        : habits.where((h) => h.count >= 2).take(3).toList();
+    final skillExamples = <String>[];
+    for (final skill in _skills ?? const <SkillUse>[]) {
+      if (skillExamples.length >= 4) break;
+      final example = skill.example;
+      if (skillExamples.contains(example) ||
+          personal.any((h) => h.phrase == example)) {
+        continue;
+      }
+      skillExamples.add(example);
+    }
+    final totalSkillUses = (_skills ?? const <SkillUse>[])
+        .fold<int>(0, (sum, skill) => sum + skill.uses);
+    final List<String> suggestions;
+    if (personal.isNotEmpty) {
+      suggestions = [
+        ...personal.map((h) => h.phrase),
+        ...skillExamples,
+      ].take(6).toList();
+    } else if (totalSkillUses >= 2) {
+      // A real skill pattern exists (a single stray ask is not a routine).
+      suggestions = ['what can you do', ...skillExamples].take(6).toList();
+    } else {
+      suggestions = _staticSuggestions;
+    }
     return SizedBox(
       height: 40,
       child: ListView(
@@ -806,8 +942,25 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
-  /// First-run guidance: three steps, one screen, no jargon.
+  /// True while first-run setup is open — the one place that decides. The
+  /// chat input is hidden then, so typing mid-onboarding can never submit a
+  /// command or close the setup early.
+  bool get _onboardingActive {
+    final p = _profileState;
+    return _profileLoaded && p != null && !p.onboarded;
+  }
+
+  /// First-run guidance: a real setup flow (names + permissions) the very
+  /// first time the app runs; the plain welcome card afterwards.
   Widget _welcomeView() {
+    if (_onboardingActive) {
+      return _onboardingView();
+    }
+    return _legacyWelcomeView();
+  }
+
+  /// The plain first-run card once setup is done.
+  Widget _legacyWelcomeView() {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
@@ -858,6 +1011,264 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// The first-run setup: your name, the assistant's name, and the three
+  /// permissions it works with — each granted through the REAL flow the
+  /// action uses (the system asks, exactly like Siri's setup), never a
+  /// pretend toggle. "Start" saves everything and the assistant greets
+  /// you by name.
+  Widget _onboardingView() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: NexusColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: NexusColors.accent.withValues(alpha: 0.35),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Set me up — 30 seconds.',
+                style: TextStyle(
+                  color: NexusColors.text,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Tell me your name and what to call me, then grant the '
+                'permissions I work with. You can change all of this later.',
+                style: TextStyle(color: NexusColors.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _onboardAssistant,
+                decoration: InputDecoration(
+                  labelText: 'What should I be called?',
+                  hintText: 'Nexus',
+                  labelStyle: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 12,
+                  ),
+                  hintStyle: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 13,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: NexusColors.border),
+                  ),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
+                style: const TextStyle(color: NexusColors.text, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _onboardName,
+                decoration: InputDecoration(
+                  labelText: 'Your name',
+                  hintText: 'what should I call you?',
+                  labelStyle: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 12,
+                  ),
+                  hintStyle: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 13,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: NexusColors.border),
+                  ),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
+                style: const TextStyle(color: NexusColors.text, fontSize: 13),
+              ),
+              const SizedBox(height: 14),
+              _permRow(
+                'Voice',
+                'ask me things out loud',
+                'voice',
+                Icons.mic_rounded,
+              ),
+              _permRow(
+                'Calendar',
+                'see what is on your calendar',
+                'calendar',
+                Icons.calendar_month_rounded,
+              ),
+              _permRow(
+                'Location',
+                'weather where you are',
+                'location',
+                Icons.place_rounded,
+              ),
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => unawaited(_finishOnboarding()),
+                  child: const Text('Start'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _permRow(String title, String what, String kind, IconData icon) {
+    final state = _onboardPerms[kind];
+    final status = switch (state) {
+      true => 'Ready ✓',
+      false => 'Not yet — retry, or allow it in Settings',
+      _ => 'Needs your permission',
+    };
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Icon(
+            icon,
+            size: 18,
+            color: state == true ? NexusColors.accent : NexusColors.muted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: NexusColors.text,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  '$what — $status',
+                  style: const TextStyle(
+                    color: NexusColors.muted,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: state == true
+                ? null
+                : () => unawaited(_setupPermission(kind)),
+            child: Text(state == true ? 'Done' : 'Set up'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Runs the REAL capability flow so the system permission dialog appears
+  /// (voice listen, calendar read, location) — the setup is not a fake
+  /// toggle, it is the action itself, once.
+  Future<void> _setupPermission(String kind) async {
+    bool? result;
+    switch (kind) {
+      case 'voice':
+        final speech = SpeechInput.current;
+        if (!speech.available) {
+          result = false;
+        } else {
+          final heard = await speech.listen();
+          result = heard != null && heard.trim().isNotEmpty;
+        }
+      case 'calendar':
+        final out = await _executor.run(
+          AgentRequest(
+            requestId: 'onboard-${DateTime.now().microsecondsSinceEpoch}',
+            target: widget.mesh.identity.id,
+            action: AgentActions.calendarRead,
+            arguments: const {'when': 'today'},
+          ),
+        );
+        result = out.ok;
+      case 'location':
+        final out = await _executor.run(
+          AgentRequest(
+            requestId: 'onboard-${DateTime.now().microsecondsSinceEpoch}',
+            target: widget.mesh.identity.id,
+            action: AgentActions.locationGet,
+          ),
+        );
+        result = out.ok;
+    }
+    if (!mounted) return;
+    setState(() => _onboardPerms[kind] = result);
+  }
+
+  /// Saves the names, marks setup done, and says the first real hello —
+  /// by name, with a time-of-day greeting, exactly like a person would.
+  Future<void> _finishOnboarding() async {
+    final raw = _onboardName.text.trim();
+    final assistant = _onboardAssistant.text.trim().isEmpty
+        ? 'Nexus'
+        : _proper(_onboardAssistant.text.trim());
+    final p = UserProfile(
+      userName: raw.isEmpty ? null : _proper(raw),
+      assistantName: assistant,
+      onboarded: true,
+    );
+    await _profile.save(p);
+    // The names are the memory's anchors — tell every paired device, so the
+    // first "call me sam" on one device is known on all of them.
+    unawaited(
+      widget.mesh.broadcastProfile(
+        userName: p.userName,
+        assistantName: p.assistantName,
+      ),
+    );
+    if (!mounted) return;
+    _service.setIdentity(userName: p.userName, assistantName: p.assistantName);
+    setState(() => _profileState = p);
+    final hour = DateTime.now().hour;
+    final dayPart = hour < 12
+        ? 'Good morning'
+        : (hour < 18 ? 'Good afternoon' : 'Good evening');
+    final who = p.userName == null ? '' : ', ${p.userName}';
+    _conversation.appendResult(
+      AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          '$dayPart$who! I\'m $assistant, your assistant — running right '
+          'on this device. Ask me for the weather, directions, music, '
+          'timers, or what is on your calendar. If I don\'t understand, '
+          'tell me what you meant and I\'ll learn.',
+        ),
+      ),
+    );
+  }
+
+  /// "sam smith" → "Sam Smith": names are proper when spoken back.
+  static String _proper(String s) => s
+      .split(' ')
+      .where((w) => w.isNotEmpty)
+      .map((w) => w[0].toUpperCase() + w.substring(1))
+      .join(' ');
+
   /// Opens the dream review: phrases the assistant had to give up on,
   /// straight from its own log. Teaching one closes that gap forever.
   Future<void> _showDreamReview(BuildContext context) async {
@@ -881,12 +1292,99 @@ class _AssistantViewState extends State<AssistantView> {
     await _refreshFromLog();
   }
 
-  /// Reads the ask log once and updates both proactive surfaces from it:
-  /// the phrases the assistant still fails on (the dream nudge) and the
-  /// phrases this user asks most (personal predictions). Called after the
-  /// first frame, when the dream review closes, and after every ask;
-  /// [setState] only when the picture changed, so idle starts cost one
-  /// rebuild at most.
+  /// Loads the persisted profile once after the first frame: names feed
+  /// the service's identity (personalized greetings) and the welcome card
+  /// becomes a real setup flow when first-run setup is pending.
+  Future<void> _loadProfile() async {
+    var p = await _profile.read();
+    // Renames synced over the mesh while this device was closed sit in the
+    // store — wake up knowing them, where the local profile still carries
+    // its untouched defaults. Per field: a name the user actually set
+    // locally wins over the synced fallback (renames carry no timestamps,
+    // so the established local-correction rule decides).
+    final syncedUser = widget.mesh.store.profileUserName;
+    final syncedAssistant = widget.mesh.store.profileAssistantName;
+    final merged = p.copyWith(
+      userName: p.userName ?? syncedUser,
+      assistantName: p.assistantName == 'Nexus'
+          ? syncedAssistant ?? p.assistantName
+          : p.assistantName,
+    );
+    if (merged.userName != p.userName ||
+        merged.assistantName != p.assistantName) {
+      p = merged;
+      await _profile.save(p);
+    }
+    if (!mounted) return;
+    _service.setIdentity(
+      userName: p.userName,
+      assistantName: p.assistantName,
+    );
+    setState(() {
+      _profileState = p;
+      _profileLoaded = true;
+      // Prefill the assistant name once so first-run setup starts with
+      // the default, ready to edit.
+      if (!p.onboarded && _onboardAssistant.text.isEmpty) {
+        _onboardAssistant.text = p.assistantName;
+      }
+    });
+  }
+
+  /// Re-reads the profile after a name change ("call me sam") so greetings
+  /// and the onboarded flag stay fresh without a restart — and tells every
+  /// paired device, so the rename is known everywhere.
+  Future<void> _syncProfile() async {
+    final p = await _profile.read();
+    if (!mounted) return;
+    final changed =
+        p.userName != _profileState?.userName ||
+        p.assistantName != _profileState?.assistantName;
+    _service.setIdentity(
+      userName: p.userName,
+      assistantName: p.assistantName,
+    );
+    setState(() => _profileState = p);
+    if (changed) {
+      unawaited(
+        widget.mesh.broadcastProfile(
+          userName: p.userName,
+          assistantName: p.assistantName,
+        ),
+      );
+    }
+  }
+
+  /// A paired device renamed the user or the assistant — adopt the names
+  /// into the local profile (keeping local onboarding state), so every
+  /// device answers as one person. Never re-broadcasts: the name came FROM
+  /// the mesh, sending it back would loop forever.
+  Future<void> _adoptRemoteProfile(String? userName, String? assistantName) async {
+    final current = await _profile.read();
+    if (!mounted) return;
+    final updated = current.copyWith(
+      userName: userName ?? current.userName,
+      assistantName: assistantName ?? current.assistantName,
+    );
+    if (updated.userName == current.userName &&
+        updated.assistantName == current.assistantName) {
+      return;
+    }
+    await _profile.save(updated);
+    if (!mounted) return;
+    _service.setIdentity(
+      userName: updated.userName,
+      assistantName: updated.assistantName,
+    );
+    setState(() => _profileState = updated);
+  }
+
+  /// Reads the ask log once and updates the proactive surfaces from it: the
+  /// phrases the assistant still fails on (the dream nudge), the phrases
+  /// this user asks most (personal predictions), and the skills they
+  /// genuinely use (the skill loop). Called after the first frame, when the
+  /// dream review closes, and after every ask; [setState] only when the
+  /// picture changed, so idle starts cost one rebuild at most.
   Future<void> _refreshFromLog() async {
     final lines = await QueryLog.i.readAll();
     if (!mounted) return;
@@ -901,10 +1399,17 @@ class _AssistantViewState extends State<AssistantView> {
       learned: _service.learnedSnapshot,
     );
     final habits = const Predictions().habits(lines);
+    final skills = const SkillRanking().rank(lines);
+    final oldSkills = _skills ?? const <SkillUse>[];
     final changed =
         gaps.length != (_dreamGaps?.length ?? 0) ||
         learns.length != (_dreamLearns?.length ?? 0) ||
         habits.length != (_habits?.length ?? 0) ||
+        skills.length != oldSkills.length ||
+        skills.indexed.any(
+          (e) =>
+              e.$2.id != oldSkills[e.$1].id || e.$2.uses != oldSkills[e.$1].uses,
+        ) ||
         gaps.any(
           (g) => !(_dreamGaps ?? const []).any((o) => o.phrase == g.phrase),
         ) ||
@@ -919,6 +1424,7 @@ class _AssistantViewState extends State<AssistantView> {
       _dreamGaps = gaps;
       _dreamLearns = learns;
       _habits = habits;
+      _skills = skills;
     });
   }
 
@@ -1129,10 +1635,14 @@ class _AssistantViewState extends State<AssistantView> {
         _dreamNudge(),
         // A reminder that fired, waiting for a "Done".
         _reminderBanner(),
-        const SizedBox(height: 16),
-        // Input bar
-        Container(
-          margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        if (widget.brain != null) _brainStatusLine(),
+        // While first-run setup is open, the composer and the example chips
+        // are out of the tree entirely — nothing to focus, submit, or tap.
+        if (!_onboardingActive) ...[
+          const SizedBox(height: 16),
+          // Input bar
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
           decoration: BoxDecoration(
             color: NexusColors.surface,
             borderRadius: BorderRadius.circular(14),
@@ -1146,7 +1656,7 @@ class _AssistantViewState extends State<AssistantView> {
                   focusNode: _focus,
                   onSubmitted: (_) => _onSubmit(),
                   decoration: InputDecoration(
-                    hintText: _pendingKey == null
+                    hintText: _conversation.pendingKey == null
                         ? 'Ask anything — "what is the weather", "take me home"…'
                         : 'Answer the question — or type a new command',
                     border: InputBorder.none,
@@ -1176,8 +1686,9 @@ class _AssistantViewState extends State<AssistantView> {
           ),
         ),
 
-        // One-tap examples under the input bar.
-        _suggestionChips(),
+          // One-tap examples under the input bar.
+          _suggestionChips(),
+        ],
 
         // Result area — rebuilds when an action arrives from another device.
         Expanded(
@@ -1191,7 +1702,7 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   Widget _buildResult() {
-    if (_thread.isEmpty && _incoming() == null) {
+    if (_conversation.isEmpty && _incoming() == null) {
       return widget.mesh.pairedDevices.isEmpty ? _welcomeView() : _emptyChat();
     }
 
@@ -1199,7 +1710,7 @@ class _AssistantViewState extends State<AssistantView> {
     // reverse:true is the chat pattern — the newest exchange pins to the
     // bottom automatically, and the incoming-request card (last child) stays
     // pinned at the top.
-    final entries = _thread.reversed.toList();
+    final entries = _conversation.entries.reversed.toList();
     return ListView(
       reverse: true,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -1216,9 +1727,107 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// One quiet line about the local brain: probing, offline (tap to retry
+  /// after installing Ollama or pulling a model), or the installed model.
+  /// Only shown when a brain is attached.
+  Widget _brainStatusLine() {
+    final brain = widget.brain;
+    // A mesh model ("mesh:…") means the brain lives on a paired device —
+    // say so in words the phone user understands, and never tell them to
+    // install Ollama.
+    final viaMesh = _conversation.brainModel.startsWith('mesh:');
+    final (icon, color, text) = switch (_conversation.brainHealth) {
+      BrainHealth.probing => (
+        Icons.sync_rounded,
+        NexusColors.muted,
+        'Looking for your local brain…',
+      ),
+      BrainHealth.offline => (
+        Icons.memory_rounded,
+        NexusColors.warn,
+        viaMesh
+            ? 'No brain reachable — pair your PC to share its brain (tap to retry)'
+            : 'Local brain offline — install Ollama and pull a model (tap to retry)',
+      ),
+      BrainHealth.online => (
+        Icons.auto_awesome_rounded,
+        NexusColors.ok,
+        viaMesh
+            ? 'Brain: your PC (via mesh)'
+            : 'Local brain: ${_conversation.brainModel}',
+      ),
+    };
+    return GestureDetector(
+      onTap: _conversation.brainHealth == BrainHealth.probing || brain == null
+          ? null
+          : () => unawaited(_conversation.probe(brain)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                text,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: color, fontSize: 11),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The quiet way back into the teach loop after the brain answered: one
+  /// tap opens the same learn dialog the dream review uses, so the phrase
+  /// can still become a real command (and sync to every paired device).
+  Widget _teachAffordance(ConversationEntry entry) {
+    final key = entry.teachKey!;
+    final phrase = key.startsWith('teach:')
+        ? key.substring('teach:'.length)
+        : key;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: GestureDetector(
+        onTap: () => unawaited(_teachThis(phrase, entry)),
+        child: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            'Or teach me what this means',
+            style: TextStyle(
+              color: NexusColors.accent.withValues(alpha: 0.9),
+              fontSize: 12,
+              decoration: TextDecoration.underline,
+              decorationColor: NexusColors.accent.withValues(alpha: 0.5),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Opens the teach dialog for a phrase the brain answered. On success the
+  /// reply card becomes the learning confirmation (one bubble pair stays one
+  /// pair), and the taught phrase works everywhere from the next ask.
+  Future<void> _teachThis(String phrase, ConversationEntry entry) async {
+    HapticFeedback.selectionClick();
+    final learned = await showDialog<AgentDispatchResult>(
+      context: context,
+      builder: (_) => _TeachPhraseDialog(
+        phrase: phrase,
+        service: _service,
+      ),
+    );
+    if (!mounted || learned == null) return;
+    _conversation.replaceEntry(entry, learned);
+  }
+
   /// One exchange in the thread: a user bubble, or an assistant card with its
   /// status chip (only on the newest exchange, so history stays calm).
-  Widget _entryView(_ThreadEntry entry, {required bool isLast}) {
+  Widget _entryView(ConversationEntry entry, {required bool isLast}) {
     if (entry.userText case final String user) {
       return Align(
         alignment: Alignment.centerRight,
@@ -1262,6 +1871,9 @@ class _AssistantViewState extends State<AssistantView> {
           if (result.dispatch case final AgentActionPlan plan) _planView(plan),
           if (result.dispatch case final AgentMessage message)
             isLast && message.live ? _liveClockView() : _messageView(message),
+          // The brain answered a "teach me" phrase — keep the teaching loop
+          // one quiet tap away instead of losing it to the conversation.
+          if (isLast && entry.teachKey != null) _teachAffordance(entry),
           if (result.dispatch case final AgentClarification ask)
             _questionView(ask),
           if (isLast && result.status == AgentResultStatus.required) ...[
@@ -1871,15 +2483,112 @@ class _LiveClockState extends State<_LiveClock> {
   }
 }
 
-/// One exchange in the assistant conversation: either a user bubble or an
-/// assistant card. Approval re-runs and self-run outcomes replace the last
-/// entry instead of appending, so each exchange stays one bubble pair.
-class _ThreadEntry {
-  final String? userText;
-  final AgentDispatchResult? result;
+/// The generic one-tap examples, offered until the user's own usage (habits
+/// and ranked skills) takes the wheel.
+const _staticSuggestions = [
+  'what can you do',
+  'what time is it',
+  'what do you know about me',
+  'what is the weather in paris',
+  'take me home',
+  'play my playlist',
+  'open youtube',
+  'call mom',
+  'email mom',
+  'flashlight on',
+];
 
-  _ThreadEntry.user(this.userText) : result = null;
-  _ThreadEntry.result(this.result) : userText = null;
+/// The "or teach me what this means" dialog: one field, one check — the
+/// same learning the dream review uses, so a phrase the brain answered can
+/// still become a real command. Pops with the learning result on success.
+class _TeachPhraseDialog extends StatefulWidget {
+  final String phrase;
+  final CommandService service;
+
+  const _TeachPhraseDialog({required this.phrase, required this.service});
+
+  @override
+  State<_TeachPhraseDialog> createState() => _TeachPhraseDialogState();
+}
+
+class _TeachPhraseDialogState extends State<_TeachPhraseDialog> {
+  final _controller = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _teach() {
+    final meaning = _controller.text.trim();
+    if (meaning.isEmpty) return;
+    final result = widget.service.learn(widget.phrase, meaning);
+    if (result.status == AgentResultStatus.needsInfo) {
+      final ask = result.dispatch as AgentClarification?;
+      setState(() {
+        _error = ask == null
+            ? result.message
+            : '${ask.question} ${ask.hint ?? ''}';
+      });
+      return;
+    }
+    Navigator.of(context).pop(result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: NexusColors.surface,
+      title: Text(
+        'Teach "${widget.phrase}"',
+        style: const TextStyle(
+          color: NexusColors.text,
+          fontSize: 15,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            onSubmitted: (_) => _teach(),
+            decoration: const InputDecoration(
+              isDense: true,
+              hintText: 'means… e.g. "show my devices"',
+              border: OutlineInputBorder(),
+            ),
+            style: const TextStyle(color: NexusColors.text, fontSize: 13),
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                _error!,
+                style: const TextStyle(
+                  color: NexusColors.danger,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _teach,
+          child: const Text('Teach'),
+        ),
+      ],
+    );
+  }
 }
 
 /// The dream review: phrases the assistant gave up on, mined from its own

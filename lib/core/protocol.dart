@@ -58,6 +58,14 @@ class NexusMessage {
       'agent.fact'; // device → peers: a fact the user just told the assistant
   static const agentReminder =
       'agent.reminder'; // device → peers: a reminder just set (fires everywhere)
+  static const agentDefault =
+      'agent.default'; // device → peers: a "which …?" answer just remembered
+  static const agentProfile =
+      'agent.profile'; // device → peers: the user/assistant were renamed
+  static const brainAsk =
+      'brain.ask'; // peer → device: answer a conversation question for me
+  static const brainAnswer =
+      'brain.answer'; // device → peer: the brain's reply to a brain.ask
 
   Map<String, dynamic> toJson() => {
     'type': type,

@@ -16,7 +16,9 @@ import 'package:url_launcher/url_launcher.dart'
     show canLaunchUrl, launchUrl, LaunchMode;
 
 import '../core/agent_contract.dart';
+import '../core/app_defaults.dart';
 import '../core/command_interpreter.dart';
+import '../core/profile.dart';
 import '../core/device_actions.dart';
 import '../core/live.dart';
 import '../core/phone_actions.dart';
@@ -33,13 +35,17 @@ class DeviceExecutor {
     MusicSearcher? musicSearcher,
     RateFetcher? rateFetcher,
     ZoneTimeFetcher? zoneTimeFetcher,
+    AppDefaultsStore? defaultsStore,
+    ProfileStore? profileStore,
   }) : _deviceBackend = deviceBackend ?? deviceActionBackend(),
        _phoneBackend = phoneBackend ?? RealPhoneActionBackend(),
        _weatherFetcher = weatherFetcher ?? fetchWeather,
        _areaDetector = areaDetector ?? detectArea,
        _musicSearcher = musicSearcher ?? searchMusic,
        _rateFetcher = rateFetcher ?? fetchRate,
-       _zoneTimeFetcher = zoneTimeFetcher ?? fetchZoneTime;
+       _zoneTimeFetcher = zoneTimeFetcher ?? fetchZoneTime,
+       _defaults = defaultsStore ?? SharedPrefsAppDefaultsStore(),
+       _profile = profileStore ?? SharedPrefsProfileStore();
 
   final DeviceActionBackend _deviceBackend;
   final PhoneActionBackend _phoneBackend;
@@ -48,6 +54,8 @@ class DeviceExecutor {
   final MusicSearcher _musicSearcher;
   final RateFetcher _rateFetcher;
   final ZoneTimeFetcher _zoneTimeFetcher;
+  final AppDefaultsStore _defaults;
+  final ProfileStore _profile;
 
   /// Parses follow-up answers ('time': '7am') into what the native side
   /// expects, then runs the action through the platform backend (or the
@@ -87,9 +95,12 @@ class DeviceExecutor {
       return _whereAmI();
     }
     if (request.action == AgentActions.navOpen) {
+      // An explicitly named app wins for this command; otherwise the
+      // remembered default ("always use waze") fills the gap, Siri-style.
       return _openMaps(
         prepared['query']?.toString() ?? '',
-        prepared['app']?.toString(),
+        prepared['app']?.toString() ??
+            await _defaults.read(AppDefaultDomain.navigation),
       );
     }
     if (request.action == AgentActions.emailSend) {
@@ -161,11 +172,17 @@ class DeviceExecutor {
       if (query != null && query.isNotEmpty) {
         return _musicSearch(query);
       }
+      // Bare "play music": honor the remembered default ("always use
+      // deezer") by opening that player; otherwise plain media control,
+      // which asks which app should play on first use.
+      final app = await _defaults.read(AppDefaultDomain.music);
+      if (app != null) return _musicPlayOn('', app);
       return _mediaControl('play');
     }
     if (request.action == AgentActions.musicSearch) {
       final query = prepared['query']?.toString() ?? '';
-      final app = prepared['app']?.toString();
+      final app = prepared['app']?.toString() ??
+          await _defaults.read(AppDefaultDomain.music);
       if (app != null && app.isNotEmpty) {
         return _musicPlayOn(query, app);
       }
@@ -184,8 +201,18 @@ class DeviceExecutor {
     if (request.action == AgentActions.calendarAdd) {
       return _calendarAdd(
         prepared['title']?.toString() ?? '',
-        prepared['app']?.toString(),
+        prepared['app']?.toString() ??
+            await _defaults.read(AppDefaultDomain.calendar),
       );
+    }
+    if (request.action == AgentActions.appDefault) {
+      return _setAppDefault(prepared);
+    }
+    if (request.action == AgentActions.profileSet) {
+      return _setProfile(prepared);
+    }
+    if (request.action == AgentActions.profileGet) {
+      return _getProfile();
     }
     if (request.action == AgentActions.calendarRead) {
       return _calendarRead(prepared['when']?.toString() ?? 'today');
@@ -1243,6 +1270,67 @@ class DeviceExecutor {
     }
     return ActionResult(true, replyFor(name, q));
   }
+
+  /// "always use deezer (from now on)" / "stop using deezer": persists
+  /// the Nexus-level per-domain default that bare phrases honor. Android's
+  /// chooser memory ("Always") has no voice escape hatch — this is it.
+  Future<ActionResult> _setAppDefault(Map<String, dynamic> args) async {
+    final verb = args['verb'] as String? ?? 'set';
+    final domain = args['domain'] as String?;
+    final app = args['app'] as String?;
+    final name = args['name'] as String? ?? app;
+    final key = _defaultKeyFor(domain);
+    if (key == null || app == null || app.isEmpty) {
+      return const ActionResult(false, 'I don\'t know which app you mean.');
+    }
+    if (verb == 'clear') {
+      await _defaults.clear(key);
+      return ActionResult(true, 'Stopping use of $name.');
+    }
+    await _defaults.write(key, app);
+    return ActionResult(
+      true,
+      domain == 'navigation'
+          ? 'I\'ll use $name for directions from now on.'
+          : 'Using $name from now on.',
+    );
+  }
+
+  /// "call me sam" / "call yourself sophie": persists what the assistant
+  /// calls its person (and what it should answer to), with a confirm.
+  Future<ActionResult> _setProfile(Map<String, dynamic> args) async {
+    final kind = args['kind'] as String? ?? 'user';
+    final name = (args['name'] as String? ?? '').trim();
+    if (name.isEmpty) {
+      return const ActionResult(false, 'I didn\'t catch the name — try "call me Sam".');
+    }
+    final profile = await _profile.read();
+    if (kind == 'assistant') {
+      await _profile.save(profile.copyWith(assistantName: name));
+      return ActionResult(true, 'Okay — call me $name from now on.');
+    }
+    await _profile.save(profile.copyWith(userName: name));
+    return ActionResult(true, 'Nice to meet you, $name.');
+  }
+
+  /// "what is my name" — honest, including the "I don't know you yet" case.
+  Future<ActionResult> _getProfile() async {
+    final name = (await _profile.read()).userName;
+    if (name == null || name.isEmpty) {
+      return const ActionResult(
+        true,
+        'I don\'t know your name yet — say "call me Sam" and I\'ll remember it.',
+      );
+    }
+    return ActionResult(true, 'Your name is $name.');
+  }
+
+  String? _defaultKeyFor(String? domain) => switch (domain) {
+        'music' => AppDefaultDomain.music,
+        'navigation' => AppDefaultDomain.navigation,
+        'calendar' => AppDefaultDomain.calendar,
+        _ => null,
+      };
 
   /// "play hotline bling on spotify": routes to the named player instead of
   /// searching Deezer for the literal phrase — see [_openInApp].

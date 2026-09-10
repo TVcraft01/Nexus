@@ -351,9 +351,72 @@ class CommandInterpreter {
       'hello there',
       'hey there',
       'howdy',
+      'thank you',
+      'thank you very much',
+      'thanks',
+      'thanks a lot',
+      'merci',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.greet, target: 'local'),
+      );
+    }
+
+    // --- Identity: "call me sam" / "my name is sam smith" — the
+    // assistant calls you by name from then on (greetings included). Must
+    // run before the call rule, which would otherwise dial "me sam". Time
+    // words ("call me tomorrow") are not names and fall through untouched.
+    final setName = RegExp(
+      r'^(?:call me|my name is|my names|you can call me|please call me|'
+      r'je m appelle|mon nom est) (.+)$',
+    ).firstMatch(norm);
+    if (setName != null) {
+      final name = _titleCase(setName.group(1)!.trim());
+      final isPlausible = name.isNotEmpty &&
+          name.length <= 32 &&
+          !RegExp(
+            r'^(?:tomorrow|later|tonight|back|soon|now|again|when|'
+            r'in |at |on |for |from |after )',
+          ).hasMatch(name.toLowerCase()) &&
+          !RegExp(r'\d').hasMatch(name);
+      if (isPlausible) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.profileSet,
+            target: 'local',
+            arguments: {'kind': 'user', 'name': name},
+          ),
+        );
+      }
+    }
+    // "call yourself sophie" / "your name is sophie" renames the
+    // assistant itself (set on first run, changed here anytime).
+    final rename = RegExp(
+      r'^(?:call yourself|your name is|rename yourself|renames toi) (.+)$',
+    ).firstMatch(norm);
+    if (rename != null) {
+      final name = _titleCase(rename.group(1)!.trim());
+      if (name.isNotEmpty &&
+          name.length <= 24 &&
+          !RegExp(r'\d').hasMatch(name)) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.profileSet,
+            target: 'local',
+            arguments: {'kind': 'assistant', 'name': name},
+          ),
+        );
+      }
+    }
+    if (_oneOf(norm, const [
+      'what is my name',
+      'whats my name',
+      'do you know my name',
+      'who am i',
+      'what do you call me',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.profileGet, target: 'local'),
       );
     }
 
@@ -483,11 +546,12 @@ class CommandInterpreter {
     // become a memory question about "the weather in paris").
     final weather = RegExp(
       r'^(?:'
-      r'what is the weather(?: like)?(?: today| now| right now| outside)?|'
-      r'how is the weather(?: like)?(?: today| now| right now| outside)?|'
-      r'tell me the weather(?: today| now| outside)?|'
+      r'what is the weather(?: like)?(?: today| now| right now| outside| tomorrow| demain| this week)?|'
+      r'how is the weather(?: like)?(?: today| now| right now| outside| tomorrow| demain)?|'
+      r'tell me the weather(?: today| now| outside| tomorrow| demain)?|'
       r'check the weather|'
-      r'weather(?: today| now| forecast| report)?|'
+      r'weather(?: today| now| tomorrow| demain| forecast| report)?|'
+      r'weather (.+)|'
       r'(?:is it going to|will it|is it) rain(?: today| now| later)?|'
       r'is it raining(?: today| now| outside)?|'
       r'temperature|what is the temperature(?: today| now| outside)?|'
@@ -499,8 +563,10 @@ class CommandInterpreter {
     if (weather != null) {
       // No city given? "what is the weather" is still a real command — the
       // device's location (one-time grant) or IP detection answers it. An
-      // empty place means auto, handled in the executor.
-      final place = weather.group(1)?.trim() ?? '';
+      // empty place means auto, handled in the executor. Two capture
+      // shapes: "weather paris" (bare) and "weather in paris" (connector).
+      final place =
+          weather.group(1)?.trim() ?? weather.group(2)?.trim() ?? '';
       final rainy = RegExp(
         r'rain|pleuvoir|pleut',
       ).hasMatch(norm);
@@ -509,6 +575,30 @@ class CommandInterpreter {
           action: AgentActions.weatherGet,
           target: 'local',
           arguments: {'place': place, 'kind': rainy ? 'rain' : 'now'},
+        ),
+      );
+    }
+
+    // --- App defaults: "always use deezer (from now on)" remembers a
+    // Nexus-level favorite per domain, so bare phrases ("play music",
+    // "navigate home", "add dinner to my calendar") route there directly
+    // while a phrase that names an app still wins for that one command.
+    // Android's chooser "Always" memory has no voice escape hatch buried
+    // in system settings — this is it: "stop using deezer" clears it.
+    // Unknown names fall through untouched, never misfiring.
+    final appDefault = _appDefaultTarget(norm);
+    if (appDefault != null) {
+      final (verb, domain, app, name) = appDefault;
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.appDefault,
+          target: 'local',
+          arguments: {
+            'verb': verb,
+            'domain': domain,
+            'app': app,
+            'name': name,
+          },
         ),
       );
     }
@@ -609,7 +699,7 @@ class CommandInterpreter {
     // calendar" returns the real next events (READ_CALENDAR, asked on first
     // use). The horizon is captured so the native side can bound the query.
     final calRead = RegExp(
-      r'^(what is on my calendar|what is on the calendar|what is my schedule|what is my agenda|what is on|what do i have on|show me (?:my )?calendar|mon agenda|mes rendez vous|qu est ce que j ai (?:sur mon |au |dans mon )?(?:calendrier|agenda))(.*)$',
+      r'^(what is on my calendar|what is on the calendar|what is my schedule|what is my agenda|what is on|what do i have on|do i have anything|do i have any plans|have i got anything|show me (?:my )?calendar|mon agenda|mes rendez vous|qu est ce que j ai (?:sur mon |au |dans mon )?(?:calendrier|agenda))(.*)$',
     ).firstMatch(norm);
     if (calRead != null) {
       final prefix = calRead.group(1)!;
@@ -625,7 +715,11 @@ class CommandInterpreter {
       if (prefix != 'what is on' || isCalendarRest) {
         final when = rest.contains('tomorrow') || rest.contains('demain')
             ? 'tomorrow'
-            : (rest.contains('week') || rest.contains('semaine'))
+            : (rest.contains('week') ||
+                    rest.contains('semaine') ||
+                    RegExp(
+                      r'(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)',
+                    ).hasMatch(rest))
                 ? 'week'
                 : 'today';
         return InterpretResult.matched(
@@ -834,12 +928,16 @@ class CommandInterpreter {
         ),
       );
     }
-    // Bare arithmetic: "2 + 2" (also "15% of 80", via _toSymbols). Spaced
-    // expressions stay untouched so the echo shows what was typed.
+    // Bare arithmetic: "2 + 2", "15 percent of 80" (via _toSymbols), and
+    // "15% of 80". Spaced expressions stay untouched so the echo shows
+    // what was typed.
     final bare = norm.trim();
     if (RegExp(r'^\d').hasMatch(bare) &&
         RegExp(r'^[0-9+\-*/().%a-z ]+$').hasMatch(bare) &&
-        RegExp(r'[+\-*/%]').hasMatch(bare)) {
+        (RegExp(r'[+\-*/%]').hasMatch(bare) ||
+            RegExp(
+              r'(?:percent|plus|minus|times|divided by|over|multiplied by)',
+            ).hasMatch(bare))) {
       final expr = RegExp(r'[a-z]').hasMatch(bare) ? _toSymbols(bare) : bare;
       if (RegExp(r'^[0-9+\-*/().% ]+$').hasMatch(expr) &&
           RegExp(r'\d').hasMatch(expr)) {
@@ -918,8 +1016,12 @@ class CommandInterpreter {
     }
     if (_oneOf(norm, const [
       'cancel the timer',
+      'cancel timer',
       'stop the timer',
+      'stop timer',
       'end the timer',
+      'end timer',
+      'abort timer',
       'delete the timer',
       'arrete le minuteur',
       'stop le minuteur',
@@ -992,6 +1094,46 @@ class CommandInterpreter {
           target: 'local',
           arguments: {'query': target},
         ),
+      );
+    }
+
+    // --- Stop everything: media and alarms. MUST run before the
+    // close/kill rule — its `stop (.+)` pattern would otherwise try to
+    // close an app named "the music". A bare "stop" pauses playback,
+    // like Siri.
+    if (_oneOf(norm, const [
+      'stop',
+      'stop the music',
+      'stop music',
+      'stop the song',
+      'stop the track',
+      'stop playing',
+      'stop it',
+      'arrete la musique',
+      'arretez la musique',
+      'stop la musique',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.mediaPause, target: 'local'),
+      );
+    }
+    if (_oneOf(norm, const [
+      'stop the alarm',
+      'stop my alarm',
+      'cancel the alarm',
+      'cancel my alarm',
+      'dismiss the alarm',
+      'dismiss my alarm',
+      'turn off the alarm',
+      'turn off my alarm',
+      'arrete le reveil',
+      'arrete mon reveil',
+      'stop le reveil',
+      'eteins le reveil',
+      'annule le reveil',
+    ])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.alarmDismiss, target: 'local'),
       );
     }
 
@@ -1322,7 +1464,7 @@ class CommandInterpreter {
     // "volume up and down" and "toggle volume" each map to the mode they
     // mean — never silently all the way to mute.
     final volume = RegExp(
-      r'^(?:volume (up|down|up and down|toggle)|(toggle volume)|turn (?:the volume |it )(up|down)|(?:make it )?(louder|quieter|quiet)|(mute|unmute))$',
+      r'^(?:volume (up|down|up and down|toggle)|(toggle volume)|turn (?:the )?volume (up|down)|turn it (up|down)|(?:make it )?(louder|quieter|quiet)|(mute|unmute))$',
     ).firstMatch(norm);
     if (volume != null) {
       final word =
@@ -1331,6 +1473,7 @@ class CommandInterpreter {
                   volume.group(3) ??
                   volume.group(4) ??
                   volume.group(5) ??
+                  volume.group(6) ??
                   'mute')
               .toLowerCase();
       final mode = switch (word) {
@@ -1559,7 +1702,25 @@ class CommandInterpreter {
     final call = RegExp(r'^(?:call|dial|phone|ring|appelle|appeler) (.+)$')
         .firstMatch(norm);
     if (call != null) {
-      final who = call.group(1)!.trim();
+      var who = call.group(1)!.trim();
+      // "call mom on facetime" is a video call in that app — the suffix
+      // must never become part of the contact name.
+      final appCall = RegExp(
+        r'^(.*?)\s+(?:on|via|using|through)\s+(facetime|face time|whatsapp|telegram|skype|signal|zoom|teams)$',
+      ).firstMatch(who);
+      if (appCall != null) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.callPlace,
+            target: 'local',
+            arguments: {
+              'contact': appCall.group(1)!.trim(),
+              'mode': 'video',
+              'app': appCall.group(2)!.toLowerCase(),
+            },
+          ),
+        );
+      }
       // Strip trailing "on my phone" etc.
       final cleaned = who.replaceAll(
         RegExp(r'\s+(?:on|from)\s+(?:my\s+)?(?:phone|device|cell)$'),
@@ -1872,11 +2033,18 @@ class CommandInterpreter {
                 allowEmptyTitle: true);
     if (appTarget != null) {
       final (song, app) = appTarget;
-      // A generic "some music"-style song part opens the player itself;
-      // a named song deep-links into its search.
+      // A generic "some music"-style song part — or a pronoun with no
+      // resolvable context ("play it on spotify") — opens the player
+      // itself; a named song deep-links into its search. Searching for the
+      // literal word "it" would be nonsense.
       final generic = song.isEmpty ||
           song == 'my playlist' ||
           song == 'playlist' ||
+          song == 'it' ||
+          song == 'that' ||
+          song == 'this' ||
+          song == 'that song' ||
+          song == 'this song' ||
           _genericPlayPhrases.contains(song);
       return InterpretResult.matched(
         ParsedCommand(
@@ -1893,7 +2061,15 @@ class CommandInterpreter {
     final playQuery = RegExp(r'^play (.+)$').firstMatch(norm) ??
         RegExp(r'^joue (?:moi )?(?:ma |la |de la )?(.+)$').firstMatch(norm);
     if (playQuery != null) {
-      final target = playQuery.group(1)!.trim();
+      var target = playQuery.group(1)!.trim();
+      // "play hotline bling on my phone" — the device marker is not part
+      // of the song title (never strips anything else).
+      target = target
+          .replaceAll(
+            RegExp(r'\s+(?:on|from|in)\s+(?:my\s+)?(?:phone|device|cell)$'),
+            '',
+          )
+          .trim();
       // "play some music" isn't a song title — it's a generic play, which
       // asks which app should play (or resumes what's playing). Searching
       // Deezer for "some music" would be nonsense.
@@ -1904,32 +2080,29 @@ class CommandInterpreter {
           const ParsedCommand(action: AgentActions.mediaPlay, target: 'local'),
         );
       }
+      // Pronouns without a resolvable context resume what was playing,
+      // like Siri — never a Deezer search for the word "it".
+      if (_oneOf(target, const [
+        'it',
+        'that',
+        'this',
+        'it again',
+        'that again',
+        'this again',
+        'that song',
+        'this song',
+        'the song',
+      ])) {
+        return InterpretResult.matched(
+          const ParsedCommand(action: AgentActions.mediaPlay, target: 'local'),
+        );
+      }
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.musicSearch,
           target: 'local',
           arguments: {'query': target},
         ),
-      );
-    }
-
-    // --- Alarm dismiss: "turn off the alarm" — the honest answer opens
-    // the Clock app (apps cannot dismiss system alarms).
-    if (_oneOf(norm, const [
-      'turn off the alarm',
-      'turn off my alarm',
-      'stop the alarm',
-      'cancel the alarm',
-      'dismiss the alarm',
-      'cancel my alarm',
-      'arrete le reveil',
-      'arrete mon reveil',
-      'stop le reveil',
-      'eteins le reveil',
-      'annule le reveil',
-    ])) {
-      return InterpretResult.matched(
-        const ParsedCommand(action: AgentActions.alarmDismiss, target: 'local'),
       );
     }
 
@@ -1986,14 +2159,30 @@ class CommandInterpreter {
 
     // --- Reminder
     final remind = RegExp(
-      r'^(?:remind me|set a reminder|remember to|reminder)(?: to| at| for)? (.+)$',
+      r'^(?:remind me|set a reminder|remember to|reminder)(?: (to|at|for|in|dans))? (.+)$',
     ).firstMatch(norm);
     if (remind != null) {
+      final connector = remind.group(1);
+      final rest = remind.group(2)!.trim();
+      // "remind me in 10 minutes" is a delay, not a reminder text — it
+      // becomes a real timer so it actually fires in 10 minutes.
+      if (connector == 'in' || connector == 'dans') {
+        final seconds = CommandInterpreter.parseDurationSeconds(rest);
+        if (seconds != null) {
+          return InterpretResult.matched(
+            ParsedCommand(
+              action: AgentActions.timerSet,
+              target: 'local',
+              arguments: {'seconds': seconds},
+            ),
+          );
+        }
+      }
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.reminderSet,
           target: 'local',
-          arguments: {'text': remind.group(1)!.trim()},
+          arguments: {'text': rest},
         ),
       );
     }
@@ -2272,6 +2461,75 @@ class CommandInterpreter {
     final app = _appFor(m.group(2)!, apps);
     return app == null ? null : (m.group(1)!.trim(), app);
   }
+
+  /// "always use deezer", "use spotify from now on", "use waze for
+  /// directions", "stop using google calendar": SET/CLEAR a remembered
+  /// per-domain default app. Returns (verb, domain, appId, displayName) or
+  /// null so the phrase falls through to the existing rules untouched.
+  (String, String, String, String)? _appDefaultTarget(String norm) {
+    // SET: use X | always use X | use X from now on | use X for <domain>.
+    final set = RegExp(
+      r'^(?:always |please )?(?:use|utilise|utilises|utilisez) (?:the )?'
+      r'(.+?)(?: from now on| desormais)?'
+      r'(?: for (music|musique|navigation|directions|nav|calendar|calendrier))?$',
+    ).firstMatch(norm);
+    if (set != null) {
+      final target =
+          _resolveDefaultApp(set.group(1)!.trim(), set.group(2));
+      if (target == null) return null;
+      final (domain, app, name) = target;
+      return ('set', domain, app, name);
+    }
+    // CLEAR: stop using X | dont use X (anymore) | no longer use X.
+    final clear = RegExp(
+      r'^(?:stop using|quit using|dont use|do not use|no longer use|'
+      r'arrete d utiliser|arretez d utiliser|ne plus utiliser) (?:the )?'
+      r'(.+?)(?: anymore)?'
+      r'(?: for (music|musique|navigation|directions|nav|calendar|calendrier))?$',
+    ).firstMatch(norm);
+    if (clear != null) {
+      final target =
+          _resolveDefaultApp(clear.group(1)!.trim(), clear.group(2));
+      if (target == null) return null;
+      final (domain, app, name) = target;
+      return ('clear', domain, app, name);
+    }
+    return null;
+  }
+
+  /// Registry lookup for default phrases: full key first ("youtube music"),
+  /// then first word ("google calendar" → "google"); the first registry to
+  /// hit owns the domain, so "use spotify" can never claim navigation.
+  /// [domainHint] ("music"/"navigation"/"calendar") restricts the search
+  /// when the phrase names the domain explicitly.
+  (String, String, String)? _resolveDefaultApp(String raw, String? domainHint) {
+    for (final (domain, apps) in const [
+      ('music', musicApps),
+      ('navigation', navApps),
+      ('calendar', calendarApps),
+    ]) {
+      if (domainHint != null && !_domainMatches(domainHint, domain)) continue;
+      for (final key in {raw, raw.split(' ').first}) {
+        final entry = apps[key];
+        if (entry != null) return (domain, key, entry.$1);
+      }
+    }
+    return null;
+  }
+
+  /// "sam smith" → "Sam Smith": stored and spoken names are proper.
+  String _titleCase(String s) => s
+      .split(' ')
+      .where((w) => w.isNotEmpty)
+      .map((w) => w[0].toUpperCase() + w.substring(1))
+      .join(' ');
+
+  bool _domainMatches(String hint, String domain) => switch (hint) {
+        'music' || 'musique' => domain == 'music',
+        'navigation' || 'directions' || 'nav' => domain == 'navigation',
+        'calendar' || 'calendrier' => domain == 'calendar',
+        _ => true,
+      };
 
   /// Removes a trailing device marker ("on my phone") so it never becomes
   /// part of a contact name or a message draft.

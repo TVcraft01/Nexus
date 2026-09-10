@@ -50,6 +50,12 @@ class CommandService {
   /// from a peer (that would re-broadcast and loop the mesh).
   final void Function(String fact)? onFactLearned;
 
+  /// Fired when the user answers a "which …?" question on THIS device, so
+  /// the view can broadcast the remembered default to paired devices. Never
+  /// fired for defaults adopted from a peer (that would re-broadcast and
+  /// loop the mesh).
+  final void Function(String key, dynamic value)? onDefaultLearned;
+
   /// The last input behind each open clarification, keyed by the
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
@@ -116,6 +122,7 @@ class CommandService {
     this.onMemoryChanged,
     this.onPhraseLearned,
     this.onFactLearned,
+    this.onDefaultLearned,
     this.local,
     this.locallyExecutable = const {},
     this._interpreter = const CommandInterpreter(),
@@ -131,6 +138,17 @@ class CommandService {
 
   /// Snapshot of the facts the user told us, for persisting.
   List<String> get factsSnapshot => List.unmodifiable(_facts);
+
+  /// Adopts a remembered default told to a paired device and synced over the
+  /// mesh. A local answer wins over an incoming one; never fires
+  /// [onDefaultLearned] — the default came FROM the mesh, broadcasting it
+  /// back would loop forever.
+  void adoptDefault(String key, dynamic value) {
+    if (key.isEmpty || value == null) return;
+    if (_defaults.containsKey(key)) return;
+    _defaults[key] = value;
+    onMemoryChanged?.call();
+  }
 
   /// Adopts a fact told to a paired device and synced over the mesh.
   /// Persists like a local remember, but never fires [onFactLearned] — the
@@ -317,6 +335,7 @@ class CommandService {
       }
       _defaults[argKey] = answer;
       onMemoryChanged?.call();
+      onDefaultLearned?.call(argKey, answer);
       return original != null
           ? execute(original, approval: approval, requestId: requestId)
           : null;
@@ -481,6 +500,9 @@ class CommandService {
         action == AgentActions.timezoneGet ||
         action == AgentActions.calendarAdd ||
         action == AgentActions.calendarRead ||
+        action == AgentActions.appDefault ||
+        action == AgentActions.profileSet ||
+        action == AgentActions.profileGet ||
         action == AgentActions.shoppingListAdd ||
         action == AgentActions.shoppingListGet ||
         action == AgentActions.systemInfo ||
@@ -804,6 +826,9 @@ class CommandService {
       case AgentActions.timezoneGet:
       case AgentActions.calendarAdd:
       case AgentActions.calendarRead:
+      case AgentActions.appDefault:
+      case AgentActions.profileSet:
+      case AgentActions.profileGet:
       case AgentActions.shoppingListAdd:
       case AgentActions.shoppingListGet:
       case AgentActions.emailSend:
@@ -865,12 +890,29 @@ class CommandService {
   /// The catalog's window onto this service — built once, sees the live
   /// [_facts] list and the persistence/broadcast callbacks memory writes fire.
   AnswerContext? _answerCtx;
+  /// What the assistant calls this user, and what the user calls it — set
+  /// by first-run setup and by "call me sam" / "call yourself sophie".
+  String? _userName;
+  String _assistantName = 'Nexus';
+
+  /// Updates identity and invalidates the cached answer context so
+  /// greetings pick up the new name immediately.
+  void setIdentity({String? userName, String? assistantName}) {
+    if (userName != null) _userName = userName;
+    if (assistantName != null && assistantName.isNotEmpty) {
+      _assistantName = assistantName;
+    }
+    _answerCtx = null;
+  }
+
   AnswerContext get _answerContext => _answerCtx ??= AnswerContext(
     facts: _facts,
     devices: devices,
     local: local,
     onMemoryChanged: onMemoryChanged,
     onFactLearned: onFactLearned,
+    userName: _userName,
+    assistantName: _assistantName,
   );
 
   ParsedCommand _withArgument(
