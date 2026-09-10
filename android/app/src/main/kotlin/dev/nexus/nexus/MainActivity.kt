@@ -53,6 +53,7 @@ class MainActivity : FlutterActivity() {
     private val STORAGE_CHANNEL = "dev.nexus.nexus/storage"
     private val PHONE_CHANNEL = "dev.nexus.nexus/phone"
     private val DEVICE_CHANNEL = "dev.nexus.nexus/device"
+    private val PROVISION_CHANNEL = "dev.nexus.nexus/provisioning"
 
     // "call mom" from the assistant: resolving a contact needs READ_CONTACTS
     // and placing the call needs CALL_PHONE — both requested at runtime on
@@ -115,6 +116,11 @@ class MainActivity : FlutterActivity() {
     private var previewReady = false
 
     private lateinit var usbSerial: UsbSerialBridge
+
+    // Forwards one-time nexus://pair provisioning intents to Dart while the
+    // app is already running, so automatic cable pairing completes on warm
+    // starts too. Dart validates the payload strictly before pairing.
+    private lateinit var provisionChannel: MethodChannel
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -217,6 +223,13 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // Cable provisioning: Dart listens on this channel for warm-start
+        // nexus://pair intents (cold starts arrive as the launch route).
+        provisionChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            PROVISION_CHANNEL,
+        )
+
         // USB-OTG serial: microcontrollers (ESP32, …) plugged into the phone.
         usbSerial = UsbSerialBridge(this)
         usbSerial.registerChannels(
@@ -229,6 +242,26 @@ class MainActivity : FlutterActivity() {
                 "dev.nexus.nexus/usb_serial_events",
             ),
         )
+    }
+
+    /// Warm-start cable provisioning: the PC opens Nexus with a one-time
+    /// nexus://pair link while the app is already running. singleTop delivers
+    /// it here instead of recreating the activity; the raw URI is forwarded
+    /// to Dart, which validates it strictly before pairing. Cold starts still
+    /// arrive through the launch route (defaultRouteName) and need no code.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val uri = intent.data?.toString()
+        if (uri != null &&
+            uri.startsWith("nexus://pair") &&
+            ::provisionChannel.isInitialized
+        ) {
+            try {
+                provisionChannel.invokeMethod("pairPayload", uri)
+            } catch (e: Exception) {
+                Log.w(TAG, "provisioning channel not ready: ${e.message}")
+            }
+        }
     }
 
     /// Whether the app may read the whole shared storage. On Android 11+ that

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
 
 /// Cable provisioning: pairing a device that is physically connected to this PC.
@@ -100,6 +101,59 @@ class CablePairing {
 
   static List<int> tunnelCandidates(int pcPort) =>
       [pcPort, pcPort + 1, pcPort + 2, pcPort + 3];
+
+  /// Strict parser for the one-time `nexus://pair` provisioning URI the PC
+  /// hands to the phone over the cable tunnel. Returns the validated payload
+  /// (address, port, code) or `null` when anything is missing, malformed,
+  /// wrong-schemed, or expired — an invalid payload must never trigger a
+  /// pairing handshake. Used by both the cold-start path (the link was the
+  /// launch route) and the warm-start path (the link arrived while running).
+  static Map<String, String>? parseProvisioningUri(String? route) {
+    if (route == null || !route.startsWith('nexus://pair')) return null;
+    try {
+      final uri = Uri.parse(route);
+      if (uri.scheme != 'nexus' || uri.host != 'pair' || uri.path.isNotEmpty) {
+        return null;
+      }
+      final address = uri.queryParameters['address'];
+      final port = uri.queryParameters['port'];
+      final code = uri.queryParameters['code'];
+      final expires = int.tryParse(uri.queryParameters['expires'] ?? '');
+      if (address == null || port == null || code == null || expires == null) {
+        return null;
+      }
+      if (DateTime.now().millisecondsSinceEpoch > expires) return null;
+      final portNumber = int.tryParse(port);
+      if (portNumber == null || portNumber < 1 || portNumber > 65535) {
+        return null;
+      }
+      if (code.length < 4) return null;
+      return {'address': address, 'port': port, 'code': code};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Runs the automatic pairing handshake against the PC that provisioned
+  /// this device. Only ever called with a payload returned by
+  /// [parseProvisioningUri], which guarantees the code is present and the
+  /// link was unexpired when parsed.
+  static Future<PairResult> attemptAutoPair(
+    MeshService mesh,
+    Map<String, String> payload,
+  ) async {
+    final result = await mesh.pairWith(
+      address: payload['address']!,
+      port: int.parse(payload['port']!),
+      code: payload['code']!,
+    );
+    debugPrint(
+      result.ok
+          ? 'NEXUS cable: automatic pairing succeeded'
+          : 'NEXUS cable: automatic pairing failed: ${result.error}',
+    );
+    return result;
+  }
 
   /// Opens a reverse tunnel from phone localhost to the PC mesh server.
   static Future<int?> openTunnel(String serial, int pcPort) async {

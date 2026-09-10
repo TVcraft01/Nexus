@@ -4,10 +4,15 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
-    show DeviceOrientation, SystemChrome, SystemUiOverlayStyle;
+    show
+        DeviceOrientation,
+        MethodChannel,
+        SystemChrome,
+        SystemUiOverlayStyle;
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'core/cable_pairing.dart';
 import 'core/identity.dart';
 import 'core/store.dart';
 import 'mesh/gateway.dart';
@@ -32,30 +37,11 @@ String _platformName(TargetPlatform platform) {
   }
 }
 
-/// Android cable provisioning arrives as a `nexus://pair?...` initial route.
-/// Keep this parser small and strict: it is only a transport for the existing
-/// pairing code, never a long-lived credential.
-Map<String, String>? _initialPairingPayload() {
-  if (defaultTargetPlatform != TargetPlatform.android) return null;
-  final route = WidgetsBinding.instance.platformDispatcher.defaultRouteName;
-  if (!route.startsWith('nexus://pair')) return null;
-  try {
-    final uri = Uri.parse(route);
-    if (uri.host != 'pair') return null;
-    final address = uri.queryParameters['address'];
-    final port = uri.queryParameters['port'];
-    final code = uri.queryParameters['code'];
-    final expires = int.tryParse(uri.queryParameters['expires'] ?? '');
-    if (address == null || port == null || code == null || expires == null) {
-      return null;
-    }
-    if (DateTime.now().millisecondsSinceEpoch > expires) return null;
-    if (int.tryParse(port) == null || code.length < 4) return null;
-    return {'address': address, 'port': port, 'code': code};
-  } catch (_) {
-    return null;
-  }
-}
+/// Warm-start cable provisioning: MainActivity forwards every incoming
+/// `nexus://pair` intent here (see onNewIntent), so an already-running Nexus
+/// completes the automatic pairing handshake exactly like a cold start.
+/// The payload is validated strictly by CablePairing before anything fires.
+const _provisionChannel = MethodChannel('dev.nexus.nexus/provisioning');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -98,20 +84,27 @@ Future<void> main() async {
 
   // A PC that has just provisioned this Android device launches Nexus with a
   // one-time pairing URI. Pair immediately so the user never has to copy a
-  // code or type 127.0.0.1/port by hand.
-  final pairing = _initialPairingPayload();
+  // code or type 127.0.0.1/port by hand. On a cold start the link arrives as
+  // the launch route; while the app is already running it arrives through
+  // MainActivity.onNewIntent below. Both paths share the same strict parser
+  // and handshake, so provisioning completes however the app was started.
+  final pairing = CablePairing.parseProvisioningUri(
+    WidgetsBinding.instance.platformDispatcher.defaultRouteName,
+  );
   if (pairing != null) {
-    final result = await mesh.pairWith(
-      address: pairing['address']!,
-      port: int.parse(pairing['port']!),
-      code: pairing['code']!,
-    );
-    debugPrint(
-      result.ok
-          ? 'NEXUS cable: automatic pairing succeeded'
-          : 'NEXUS cable: automatic pairing failed: ${result.error}',
-    );
+    await CablePairing.attemptAutoPair(mesh, pairing);
   }
+
+  _provisionChannel.setMethodCallHandler((call) async {
+    if (call.method == 'pairPayload' && call.arguments is String) {
+      final payload =
+          CablePairing.parseProvisioningUri(call.arguments as String);
+      if (payload != null) {
+        await CablePairing.attemptAutoPair(mesh, payload);
+      }
+    }
+    return null;
+  });
 
   if (defaultTargetPlatform == TargetPlatform.linux) {
     final token = store.gatewayToken ?? MeshGateway.newToken();
