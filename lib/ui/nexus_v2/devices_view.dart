@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../mesh/discovery.dart';
 import '../../mesh/mesh_service.dart';
-import '../pair_sheet.dart';
 import 'design_system.dart';
+import 'pair_sheet.dart';
 
 class NexusV2DevicesView extends StatelessWidget {
   final MeshService mesh;
@@ -33,7 +33,7 @@ class NexusV2DevicesView extends StatelessWidget {
                   child: IconButton.filled(
                     tooltip: 'Add device',
                     icon: const Icon(Icons.add_rounded),
-                    onPressed: () => showPairSheet(context, mesh: mesh),
+                    onPressed: () => showNexusV2PairSheet(context, mesh: mesh),
                   ),
                 ),
               ),
@@ -115,7 +115,7 @@ class _EmptyDevices extends StatelessWidget {
               FilledButton.icon(
                 icon: const Icon(Icons.add_rounded),
                 label: const Text('Add a device'),
-                onPressed: () => showPairSheet(context, mesh: mesh),
+                onPressed: () => showNexusV2PairSheet(context, mesh: mesh),
               ),
             ],
           ),
@@ -249,7 +249,7 @@ class _NearbyRow extends StatelessWidget {
         title: device.name,
         subtitle: 'Found on your network',
         trailing: FilledButton.tonal(
-          onPressed: () => showPairSheet(context, mesh: mesh, nearby: device),
+          onPressed: () => showNexusV2PairSheet(context, mesh: mesh, nearby: device),
           child: const Text('Connect'),
         ),
       ),
