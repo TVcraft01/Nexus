@@ -122,6 +122,74 @@ void main() {
     expect(meshB.isPaired('device-a'), isFalse);
   });
 
+  test('a QR carries every address, and a stale first one is skipped', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    // A stale address first — exactly why a QR advertises several.
+    final result = await meshB.pairWithCandidates(
+      addresses: const ['192.0.2.1', '127.0.0.1'],
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue, reason: result.error);
+    expect(meshA.isPaired('device-b'), isTrue);
+    expect(meshB.isPaired('device-a'), isTrue);
+  });
+
+  test('a rejected code stops after the device was reached', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final wrong = session.code == 'AAAA-AAAA' ? 'BBBB-BBBB' : 'AAAA-AAAA';
+    // The device answers first, so no other address could have fixed this.
+    final result = await meshB.pairWithCandidates(
+      addresses: const ['127.0.0.1', '192.0.2.1'],
+      port: meshA.port,
+      code: wrong,
+    );
+    expect(result.ok, isFalse);
+    expect(result.reached, isTrue);
+    // The second address was never dialled: had it been, the dead one would
+    // have turned this into the "could not reach" aggregate below.
+    expect(
+      result.error,
+      isNot(contains('Could not reach the device on any of its addresses')),
+    );
+  });
+
+  test('a QR with no reachable address names every one it tried', () async {
+    await meshB.start();
+
+    final result = await meshB.pairWithCandidates(
+      addresses: const ['192.0.2.1', ' 192.0.2.1 '],
+      port: 53219,
+      code: 'ABCD-EFGH',
+    );
+    expect(result.ok, isFalse);
+    expect(result.reached, isFalse);
+    // Deduplicated, and honest about where it looked.
+    expect(result.error, contains('53219'));
+    // Deduplicated: a padded duplicate of one address is one attempt, so it
+    // is named exactly once.
+    expect(
+      RegExp(RegExp.escape('192.0.2.1')).allMatches(result.error!).length,
+      1,
+    );
+  });
+
+  test('a QR with no address at all says so instead of dialling nothing', () async {
+    final result = await meshB.pairWithCandidates(
+      addresses: const [],
+      port: 53219,
+      code: 'ABCD-EFGH',
+    );
+    expect(result.ok, isFalse);
+    expect(result.error, contains('no address'));
+  });
+
   test('encrypted clipboard travels from phone to PC after pairing', () async {
     await meshA.start();
     await meshB.start();

@@ -135,7 +135,10 @@ class _PairSheetState extends State<_PairSheet> {
       _addressController.text = candidates.isNotEmpty ? candidates.first : '';
       _error = null;
     });
-    await _pair();
+    // Try every address the QR advertised, not just the first: a QR carries
+    // them all precisely because any single one can be stale (the device
+    // changed networks, a VPN is down, a Docker bridge looks like a LAN).
+    await _pair(addresses: candidates);
   }
 
   @override
@@ -146,7 +149,10 @@ class _PairSheetState extends State<_PairSheet> {
     super.dispose();
   }
 
-  Future<void> _pair() async {
+  /// Pairs with the code in the fields. When [addresses] is given (a scanned
+  /// QR), every advertised address is tried before giving up; otherwise the
+  /// single address the user typed is used.
+  Future<void> _pair({List<String>? addresses}) async {
     final code = _codeController.text.trim();
     final address = _addressController.text.trim();
     final port = int.tryParse(_portController.text.trim());
@@ -167,11 +173,17 @@ class _PairSheetState extends State<_PairSheet> {
       _pairing = true;
       _error = null;
     });
-    final result = await widget.mesh.pairWith(
-      address: address,
-      port: port,
-      code: code,
-    );
+    final result = addresses == null
+        ? await widget.mesh.pairWith(
+            address: address,
+            port: port,
+            code: code,
+          )
+        : await widget.mesh.pairWithCandidates(
+            addresses: addresses,
+            port: port,
+            code: code,
+          );
     if (!mounted) return;
     setState(() => _pairing = false);
     if (result.ok) {
