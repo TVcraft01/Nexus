@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-/// Shared section heading for Nexus. The heading establishes hierarchy; the
-/// content below carries the visual weight.
+/// Minimal page heading shared by Nexus surfaces.
+/// The hierarchy comes from typography and spacing, not decorative chrome.
 class NexusHeader extends StatelessWidget {
   final IconData icon;
   final String title;
@@ -17,38 +17,38 @@ class NexusHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: theme.textTheme.displaySmall,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colors.onSurfaceVariant,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: theme.textTheme.headlineMedium?.copyWith(
+                    fontSize: 28,
+                    letterSpacing: -0.75,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
+                const SizedBox(height: 5),
+                Text(
+                  subtitle,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: 13.5,
+                    height: 1.35,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(width: 16),
-        Semantics(
-          excludeSemantics: true,
-          child: Icon(icon, color: colors.onSurfaceVariant, size: 22),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
