@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'theme.dart';
-
 /// Shared page heading used across the main Nexus sections.
 /// Keep it compact so content starts quickly and the hierarchy stays clear.
 class NexusHeader extends StatelessWidget {
