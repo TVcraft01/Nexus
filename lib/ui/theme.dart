@@ -1,61 +1,144 @@
 import 'package:flutter/material.dart';
 
-/// Nexus design language — calm and powerful.
+/// Nexus visual system — calm, direct and platform-aware.
 ///
-/// Deep slate background, one quiet teal accent, generous spacing, no
-/// decorative noise. Everything visible means something real.
+/// The goal is not to decorate the app like an AI dashboard. Surfaces separate
+/// content only where useful; hierarchy, spacing and system-like controls do
+/// most of the visual work.
 class NexusColors {
-  static const bg = Color(0xFF0B0F14);
-  static const surface = Color(0xFF121821);
-  static const surfaceHi = Color(0xFF1A2230);
-  static const border = Color(0xFF232D3D);
-  static const text = Color(0xFFE8ECF2);
-  static const muted = Color(0xFF8A94A6);
-  static const accent = Color(0xFF5EEAD4);
-  static const accentStrong = Color(0xFF2DD4BF);
-  static const ok = Color(0xFF34D399);
-  static const warn = Color(0xFFFBBF24);
-  static const danger = Color(0xFFF87171);
+  static const bg = Color(0xFF0A0D12);
+  static const surface = Color(0xFF12161D);
+  static const surfaceHi = Color(0xFF191F28);
+  static const surfaceElevated = Color(0xFF222934);
+  static const border = Color(0xFF27303B);
+  static const borderStrong = Color(0xFF364150);
+  static const text = Color(0xFFF5F6F8);
+  static const muted = Color(0xFFA5ADBA);
+  static const faint = Color(0xFF778190);
+  static const accent = Color(0xFF7C8CFF);
+  static const accentStrong = Color(0xFF6879F2);
+  static const ok = Color(0xFF49D5A0);
+  static const warn = Color(0xFFF0C45B);
+  static const danger = Color(0xFFFF7373);
 }
 
 ThemeData buildNexusTheme() {
-  final scheme = ColorScheme.dark(
+  const scheme = ColorScheme.dark(
     surface: NexusColors.surface,
     primary: NexusColors.accent,
-    onPrimary: const Color(0xFF06251F),
+    onPrimary: Colors.white,
     secondary: NexusColors.accentStrong,
+    onSecondary: Colors.white,
     onSurface: NexusColors.text,
     onSurfaceVariant: NexusColors.muted,
     error: NexusColors.danger,
+    onError: Colors.white,
     outline: NexusColors.border,
     surfaceContainerHighest: NexusColors.surfaceHi,
   );
+
+  final base = Typography.material2021().white;
 
   return ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
     scaffoldBackgroundColor: NexusColors.bg,
-    fontFamily: 'Roboto',
-    textTheme: const TextTheme(
-      headlineMedium: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, letterSpacing: -0.4, color: NexusColors.text),
-      titleLarge: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: NexusColors.text),
-      titleMedium: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: NexusColors.text),
-      bodyMedium: TextStyle(fontSize: 14, height: 1.45, color: NexusColors.text),
-      bodySmall: TextStyle(fontSize: 12.5, height: 1.4, color: NexusColors.muted),
-      labelLarge: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, letterSpacing: 0.2),
+    visualDensity: VisualDensity.standard,
+    textTheme: base.copyWith(
+      displaySmall: const TextStyle(
+        fontSize: 30,
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.8,
+        color: NexusColors.text,
+      ),
+      headlineMedium: const TextStyle(
+        fontSize: 25,
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.55,
+        color: NexusColors.text,
+      ),
+      titleLarge: const TextStyle(
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+        letterSpacing: -0.2,
+        color: NexusColors.text,
+      ),
+      titleMedium: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+        color: NexusColors.text,
+      ),
+      bodyLarge: const TextStyle(
+        fontSize: 15,
+        height: 1.48,
+        color: NexusColors.text,
+      ),
+      bodyMedium: const TextStyle(
+        fontSize: 14,
+        height: 1.45,
+        color: NexusColors.text,
+      ),
+      bodySmall: const TextStyle(
+        fontSize: 13,
+        height: 1.42,
+        color: NexusColors.muted,
+      ),
+      labelLarge: const TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+      ),
+      labelMedium: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+    appBarTheme: const AppBarTheme(
+      backgroundColor: NexusColors.bg,
+      foregroundColor: NexusColors.text,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      surfaceTintColor: Colors.transparent,
+      centerTitle: false,
+      toolbarHeight: 56,
+    ),
+    navigationRailTheme: NavigationRailThemeData(
+      backgroundColor: NexusColors.surface,
+      indicatorColor: NexusColors.accent.withValues(alpha: 0.14),
+      minWidth: 76,
+      minExtendedWidth: 220,
+      groupAlignment: -0.88,
+      selectedIconTheme: const IconThemeData(color: NexusColors.accent, size: 22),
+      unselectedIconTheme: const IconThemeData(color: NexusColors.faint, size: 22),
+      selectedLabelTextStyle: const TextStyle(
+        color: NexusColors.text,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
+      unselectedLabelTextStyle: const TextStyle(
+        color: NexusColors.muted,
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+      ),
     ),
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: NexusColors.surface,
-      indicatorColor: NexusColors.accent.withValues(alpha: 0.16),
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      height: 72,
+      indicatorColor: NexusColors.accent.withValues(alpha: 0.13),
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
       iconTheme: WidgetStateProperty.resolveWith((states) {
         final selected = states.contains(WidgetState.selected);
-        return IconThemeData(color: selected ? NexusColors.accent : NexusColors.muted);
+        return IconThemeData(
+          size: 21,
+          color: selected ? NexusColors.accent : NexusColors.faint,
+        );
       }),
       labelTextStyle: WidgetStateProperty.resolveWith((states) {
         final selected = states.contains(WidgetState.selected);
         return TextStyle(
-          fontSize: 12,
-          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+          fontSize: 11.5,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           color: selected ? NexusColors.text : NexusColors.muted,
         );
       }),
@@ -63,59 +146,101 @@ ThemeData buildNexusTheme() {
     cardTheme: CardThemeData(
       color: NexusColors.surface,
       elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: NexusColors.border)),
       margin: EdgeInsets.zero,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: NexusColors.border.withValues(alpha: 0.75)),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: NexusColors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      elevation: 18,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: NexusColors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      elevation: 12,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      textStyle: const TextStyle(color: NexusColors.text, fontSize: 14),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
         backgroundColor: NexusColors.accent,
-        foregroundColor: const Color(0xFF06251F),
-        minimumSize: const Size(0, 46),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        textStyle: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700),
+        foregroundColor: Colors.white,
+        minimumSize: const Size(44, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
+        textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         foregroundColor: NexusColors.text,
-        side: const BorderSide(color: NexusColors.border),
-        minimumSize: const Size(0, 46),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        textStyle: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
+        side: const BorderSide(color: NexusColors.borderStrong),
+        minimumSize: const Size(44, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
+        textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
-      style: TextButton.styleFrom(foregroundColor: NexusColors.accent),
+      style: TextButton.styleFrom(
+        foregroundColor: NexusColors.accent,
+        minimumSize: const Size(44, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        textStyle: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+      ),
     ),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: NexusColors.surfaceHi,
-      contentTextStyle: const TextStyle(color: NexusColors.text, fontSize: 14),
+      backgroundColor: NexusColors.surfaceElevated,
+      elevation: 10,
+      contentTextStyle: const TextStyle(color: NexusColors.text, fontSize: 13.5),
       behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: const BorderSide(color: NexusColors.border)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: NexusColors.surface,
-      hintStyle: const TextStyle(color: NexusColors.muted),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+      hintStyle: const TextStyle(color: NexusColors.faint),
+      labelStyle: const TextStyle(color: NexusColors.muted),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(11),
         borderSide: const BorderSide(color: NexusColors.border),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(11),
         borderSide: const BorderSide(color: NexusColors.border),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: NexusColors.accent, width: 1.5),
+        borderRadius: BorderRadius.circular(11),
+        borderSide: const BorderSide(color: NexusColors.accent, width: 1.4),
       ),
     ),
-    dividerTheme: const DividerThemeData(color: NexusColors.border, thickness: 1),
+    dividerTheme: const DividerThemeData(
+      color: NexusColors.border,
+      thickness: 1,
+      space: 1,
+    ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith((states) =>
-          states.contains(WidgetState.selected) ? NexusColors.accentStrong : NexusColors.muted),
+          states.contains(WidgetState.selected) ? Colors.white : NexusColors.muted),
       trackColor: WidgetStateProperty.resolveWith((states) =>
-          states.contains(WidgetState.selected) ? NexusColors.accent.withValues(alpha: 0.35) : NexusColors.surfaceHi),
+          states.contains(WidgetState.selected)
+              ? NexusColors.accent.withValues(alpha: 0.6)
+              : NexusColors.surfaceHi),
+      trackOutlineColor: WidgetStateProperty.all(NexusColors.borderStrong),
+    ),
+    tooltipTheme: TooltipThemeData(
+      decoration: BoxDecoration(
+        color: NexusColors.surfaceElevated,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      textStyle: const TextStyle(color: NexusColors.text, fontSize: 12),
+      waitDuration: const Duration(milliseconds: 500),
     ),
   );
 }

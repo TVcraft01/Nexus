@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'theme.dart';
-
-/// One header for every tab: an icon tile, a title, and a one-line subtitle.
-/// Before this, each view rolled its own header — Devices had a hero, Settings
-/// a bare label, Assistant none at all. Same shape everywhere now, so the app
-/// reads as one product.
+/// Minimal page heading shared by Nexus surfaces.
+/// The hierarchy comes from typography and spacing, not decorative chrome.
 class NexusHeader extends StatelessWidget {
   final IconData icon;
   final String title;
@@ -20,29 +16,39 @@ class NexusHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: NexusColors.accent.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(12),
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: theme.textTheme.headlineMedium?.copyWith(
+                    fontSize: 28,
+                    letterSpacing: -0.75,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  subtitle,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: 13.5,
+                    height: 1.35,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
           ),
-          child: Icon(icon, color: NexusColors.accent, size: 24),
-        ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.headlineMedium),
-              const SizedBox(height: 2),
-              Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

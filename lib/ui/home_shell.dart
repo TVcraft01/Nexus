@@ -12,339 +12,123 @@ import '../core/tiny_brain.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
-import 'assistant_view.dart';
-import 'devices_view.dart';
-import 'files_view.dart';
-import 'settings_view.dart';
+import 'nexus_ui.dart';
 import 'theme.dart';
 
 class HomeShell extends StatefulWidget {
   final MeshService mesh;
   const HomeShell({super.key, required this.mesh});
-
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
 
 class _HomeShellState extends State<HomeShell> {
-  int _index = 0;
-  ClipEntry? _lastShown;
-
-  /// The conversational brain, one per platform: desktops run a strong
-  /// local model (Ollama) and answer brain asks from paired phones; the
-  /// phone runs a tiny on-device model for everyday questions and escalates
-  /// the rest over the mesh to the PC — one assistant living everywhere,
-  /// fully offline.
   late final LocalBrain? _brain;
-
   UpdateInfo? _update;
   bool _applying = false;
   String? _updateError;
-  String? _lastPeerUpdateVersion;
-  bool _peerUpdateChecking = false;
-  bool _updateChecked = false;
+  bool _checked = false;
 
   @override
   void initState() {
     super.initState();
     _brain = switch (defaultTargetPlatform) {
-      TargetPlatform.linux ||
-      TargetPlatform.windows ||
-      TargetPlatform.macOS => LocalBrain(),
-      TargetPlatform.android => DistributedBrain(
-        mesh: widget.mesh,
-        tiny: TinyBrain(),
-      ),
+      TargetPlatform.linux || TargetPlatform.windows || TargetPlatform.macOS => LocalBrain(),
+      TargetPlatform.android => DistributedBrain(mesh: widget.mesh, tiny: TinyBrain()),
       _ => null,
     };
-    // Only a device with its own strong model answers delegated brain
-    // questions — the phone's distributed brain ASKS, it never serves (a
-    // served question must not escalate back, or the mesh would bounce it
-    // forever).
     if (_brain case final LocalBrain strong when strong is! DistributedBrain) {
       widget.mesh.brain = strong;
     }
-    // Check for updates on startup when auto-update is enabled. Updater decides
-    // whether this platform has a safe, matching release asset.
-    if (widget.mesh.store.autoUpdate) {
-      unawaited(_checkForUpdates());
-    }
+    if (widget.mesh.store.autoUpdate) unawaited(_checkForUpdates());
   }
 
   Future<UpdateInfo?> _checkForUpdates({bool force = false}) async {
-    if (_updateChecked && !force) return null;
-    _updateChecked = true;
-    final info = await Updater.checkForUpdate(currentVersion: appVersion);
-    if (info != null && mounted) {
-      setState(() => _update = info);
+    if (_checked && !force) return null;
+    _checked = true;
+    try {
+      final info = await Updater.checkForUpdate(currentVersion: appVersion);
+      if (mounted && info != null) setState(() => _update = info);
+      return info;
+    } catch (e) {
+      debugPrint('NEXUS updater: $e');
+      return null;
     }
-    return info;
-  }
-
-  void _checkPeerUpdate() {
-    if (!widget.mesh.store.autoUpdate) return;
-    final version = widget.mesh.latestPeerUpdateVersion;
-    if (version == null ||
-        Updater.compareVersions(version, appVersion) <= 0 ||
-        version == _lastPeerUpdateVersion) {
-      return;
-    }
-    if (_peerUpdateChecking) return;
-    _peerUpdateChecking = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        _peerUpdateChecking = false;
-        return;
-      }
-      unawaited(
-        _checkForUpdates(force: true)
-            .then((info) {
-              if (info != null) _lastPeerUpdateVersion = version;
-            })
-            .whenComplete(() => _peerUpdateChecking = false),
-      );
-    });
   }
 
   Future<void> _updateNow() async {
     final info = _update;
     if (info == null || _applying) return;
-
-    // Windows currently uses the normal release package rather than trying to
-    // replace a running executable in-place. Open the exact release page.
     if (defaultTargetPlatform == TargetPlatform.windows) {
       final url = info.releaseUrl;
       if (url == null || !await launchUrl(Uri.parse(url))) {
-        setState(() => _updateError = 'Could not open the GitHub release page.');
+        if (mounted) setState(() => _updateError = 'Could not open the release page.');
       }
       return;
     }
-
-    if (info.downloadUrl == null) return;
-    setState(() {
-      _applying = true;
-      _updateError = null;
-    });
+    final url = info.downloadUrl;
+    if (url == null) return;
+    if (mounted) setState(() { _applying = true; _updateError = null; });
     try {
-      final path = await Updater.download(info.downloadUrl!);
+      final path = await Updater.download(url);
       if (path == null) {
-        setState(() {
-          _applying = false;
-          _updateError = 'Could not download the update. Check your connection and try again.';
-        });
-        return;
-      }
-
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        // Hand the APK to the system installer; the user confirms there.
-        final applied = await Updater.applyUpdate(path);
-        setState(() {
-          _applying = false;
-          if (!applied) {
-            _updateError = 'Could not open the installer. Try downloading from GitHub manually.';
-          }
-        });
+        if (mounted) setState(() => _updateError = 'Could not download the update.');
+      } else if (defaultTargetPlatform == TargetPlatform.android) {
+        final ok = await Updater.applyUpdate(path);
+        if (mounted && !ok) setState(() => _updateError = 'Could not open the installer.');
       } else if (defaultTargetPlatform == TargetPlatform.linux) {
-        // Linux: extract, swap, and relaunch.
-        final installDir = File(Platform.resolvedExecutable).parent.path;
-        final applied = await Updater.applyUpdate(path, installDir: installDir);
-        if (applied) {
-          exit(0);
-        }
-        setState(() {
-          _applying = false;
-          _updateError = 'The update could not be applied. Run update.sh to update manually.';
-        });
-      } else {
-        setState(() {
-          _applying = false;
-          _updateError = 'Automatic updates are not available on this platform yet.';
-        });
+        final ok = await Updater.applyUpdate(path, installDir: File(Platform.resolvedExecutable).parent.path);
+        if (ok) exit(0);
+        if (mounted) setState(() => _updateError = 'The update could not be applied.');
       }
     } catch (e) {
-      debugPrint('NEXUS updater: ${e.runtimeType}: $e');
-      setState(() {
-        _applying = false;
-        _updateError = 'The update failed. Check your connection and try again.';
-      });
+      debugPrint('NEXUS updater: $e');
+      if (mounted) setState(() => _updateError = 'The update failed. Check your connection and try again.');
+    } finally {
+      if (mounted) setState(() => _applying = false);
     }
   }
 
-  bool get _isDesktop =>
-      defaultTargetPlatform == TargetPlatform.linux ||
-      defaultTargetPlatform == TargetPlatform.windows ||
-      defaultTargetPlatform == TargetPlatform.macOS;
-
-  static const _destinations = [
-    NavigationRailDestination(
-      icon: Icon(Icons.devices_rounded),
-      selectedIcon: Icon(Icons.devices_rounded),
-      label: Text('Devices'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.folder_rounded),
-      selectedIcon: Icon(Icons.folder_rounded),
-      label: Text('Files'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.forum_rounded),
-      selectedIcon: Icon(Icons.forum_rounded),
-      label: Text('Assistant'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.tune_rounded),
-      selectedIcon: Icon(Icons.tune_rounded),
-      label: Text('Settings'),
-    ),
-  ];
-
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: widget.mesh,
-      builder: (context, _) {
-        _checkPeerUpdate();
-        final incoming = widget.mesh.lastIncomingClip;
-        if (incoming != null && incoming != _lastShown) {
-          _lastShown = incoming;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Copied on ${incoming.fromName ?? 'another device'}: '
-                  '"${incoming.text.length > 60 ? '${incoming.text.substring(0, 60)}…' : incoming.text}"',
-                ),
-              ),
-            );
-          });
-        }
-
-        final views = [
-          DevicesView(mesh: widget.mesh),
-          FilesView(mesh: widget.mesh),
-          AssistantView(mesh: widget.mesh, brain: _brain),
-          SettingsView(
-            mesh: widget.mesh,
-            onCheckForUpdate: () => _checkForUpdates(force: true),
-          ),
-        ];
-
-        final content = Column(
-          children: [
-            if (_update != null)
-              _UpdateBanner(
-                info: _update!,
-                applying: _applying,
-                error: _updateError,
-                onUpdate: _updateNow,
-                onDismiss: () => setState(() => _update = null),
-              ),
-            Expanded(
-              child: IndexedStack(index: _index, children: views),
-            ),
-          ],
-        );
-
-        return Scaffold(
-          body: _isDesktop
-              ? Row(
+    return Stack(
+      children: [
+        NexusExperience(
+          mesh: widget.mesh,
+          brain: _brain,
+          onCheckForUpdate: () => _checkForUpdates(force: true),
+        ),
+        if (_update != null)
+          Positioned(
+            left: 16,
+            right: 16,
+            top: MediaQuery.paddingOf(context).top + 8,
+            child: Material(
+              color: NexusColors.surfaceElevated,
+              elevation: 8,
+              borderRadius: BorderRadius.circular(14),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+                child: Row(
                   children: [
-                    NavigationRail(
-                      selectedIndex: _index,
-                      onDestinationSelected: (i) => setState(() => _index = i),
-                      labelType: NavigationRailLabelType.all,
-                      groupAlignment: -0.8,
-                      backgroundColor: NexusColors.surface,
-                      destinations: _destinations,
+                    Icon(
+                      _updateError == null ? Icons.system_update_outlined : Icons.error_outline,
+                      color: _updateError == null ? NexusColors.accent : NexusColors.danger,
                     ),
-                    const VerticalDivider(width: 1),
+                    const SizedBox(width: 10),
                     Expanded(
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 980),
-                          child: content,
-                        ),
+                      child: Text(
+                        _updateError ?? (_applying ? 'Updating to v${_update!.version}…' : 'Nexus v${_update!.version} is available'),
+                        style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ),
-                  ],
-                )
-              : SafeArea(bottom: false, child: content),
-          bottomNavigationBar: _isDesktop
-              ? null
-              : NavigationBar(
-                  selectedIndex: _index,
-                  onDestinationSelected: (i) => setState(() => _index = i),
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.devices_rounded),
-                      label: 'Devices',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.folder_rounded),
-                      label: 'Files',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.forum_rounded),
-                      label: 'Assistant',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.tune_rounded),
-                      label: 'Settings',
-                    ),
+                    TextButton(onPressed: _applying ? null : () => setState(() => _update = null), child: const Text('Later')),
+                    FilledButton(onPressed: _applying ? null : _updateNow, child: const Text('Update')),
                   ],
                 ),
-        );
-      },
-    );
-  }
-}
-
-class _UpdateBanner extends StatelessWidget {
-  final UpdateInfo info;
-  final bool applying;
-  final String? error;
-  final VoidCallback onUpdate;
-  final VoidCallback onDismiss;
-
-  const _UpdateBanner({
-    required this.info,
-    required this.applying,
-    required this.error,
-    required this.onUpdate,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final windows = defaultTargetPlatform == TargetPlatform.windows;
-    return MaterialBanner(
-      leading: Icon(
-        error == null ? Icons.system_update_rounded : Icons.error_outline_rounded,
-      ),
-      content: Text(
-        error ??
-            (applying
-                ? 'Updating to v${info.version}…'
-                : windows
-                    ? 'Nexus v${info.version} is available'
-                    : 'Nexus v${info.version} is available'),
-      ),
-      actions: [
-        TextButton(
-          onPressed: applying ? null : onDismiss,
-          child: const Text('Later'),
-        ),
-        FilledButton(
-          onPressed: applying ? null : onUpdate,
-          child: Text(
-            windows
-                ? 'View update'
-                : defaultTargetPlatform == TargetPlatform.android
-                    ? 'Update & install'
-                    : 'Update & restart',
+              ),
+            ),
           ),
-        ),
       ],
     );
   }
