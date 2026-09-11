@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
+import 'package:nexus/core/capability.dart';
 import 'package:nexus/core/command_service.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/phone_actions.dart';

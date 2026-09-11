@@ -245,79 +245,10 @@ class AgentMessage extends AgentDispatch {
   });
 }
 
-/// The capabilities a device of [platform] advertises by default — a phone
-/// can make calls and send texts, a desktop usually cannot. Devices that
-/// announce richer capabilities later simply replace this default; the ids
-/// are the same [AgentActions] strings so one check serves both.
-List<DeviceCapability> defaultCapabilitiesFor(String platform) {
-  if (platform == 'android') {
-    return const [
-      // Core
-      DeviceCapability(AgentActions.webSearch),
-      DeviceCapability(AgentActions.noteCreate),
-      DeviceCapability(AgentActions.timerSet),
-      DeviceCapability(AgentActions.openUrl),
-      DeviceCapability(AgentActions.systemInfo),
-      DeviceCapability(AgentActions.volumeSet),
-      DeviceCapability(AgentActions.ledBlink),
-      // System
-      DeviceCapability(AgentActions.appOpen),
-      DeviceCapability(AgentActions.appClose),
-      DeviceCapability(AgentActions.screenshot),
-      DeviceCapability(AgentActions.batteryGet),
-      DeviceCapability(AgentActions.brightnessSet),
-      DeviceCapability(AgentActions.flashlightToggle),
-      DeviceCapability(AgentActions.wifiToggle),
-      DeviceCapability(AgentActions.bluetoothToggle),
-      DeviceCapability(AgentActions.lockScreen),
-      // Communication
-      DeviceCapability(AgentActions.callPlace),
-      DeviceCapability(AgentActions.messageSend),
-      DeviceCapability(AgentActions.emailSend),
-      // Media
-      DeviceCapability(AgentActions.mediaPlay),
-      DeviceCapability(AgentActions.mediaPause),
-      DeviceCapability(AgentActions.mediaNext),
-      DeviceCapability(AgentActions.mediaPrev),
-      DeviceCapability(AgentActions.mediaShuffle),
-      DeviceCapability(AgentActions.mediaRepeat),
-      // Productivity
-      DeviceCapability(AgentActions.alarmSet),
-      DeviceCapability(AgentActions.alarmDismiss),
-      DeviceCapability(AgentActions.timerStatus),
-      DeviceCapability(AgentActions.timerCancel),
-      DeviceCapability(AgentActions.reminderSet),
-      DeviceCapability(AgentActions.weatherGet),
-      DeviceCapability(AgentActions.navOpen),
-      DeviceCapability(AgentActions.calendarAdd),
-      DeviceCapability(AgentActions.calendarRead),
-      DeviceCapability(AgentActions.darkModeSet),
-    ];
-  }
-  // Desktop (Linux, macOS, Windows) — no phone hardware.
-  return const [
-    DeviceCapability(AgentActions.webSearch),
-    DeviceCapability(AgentActions.noteCreate),
-    DeviceCapability(AgentActions.timerSet),
-    DeviceCapability(AgentActions.timerStatus),
-    DeviceCapability(AgentActions.timerCancel),
-    DeviceCapability(AgentActions.openUrl),
-    DeviceCapability(AgentActions.systemInfo),
-    DeviceCapability(AgentActions.volumeSet),
-    DeviceCapability(AgentActions.ledBlink),
-    DeviceCapability(AgentActions.appOpen),
-    DeviceCapability(AgentActions.screenshot),
-    DeviceCapability(AgentActions.batteryGet),
-    DeviceCapability(AgentActions.weatherGet),
-    DeviceCapability(AgentActions.navOpen),
-    DeviceCapability(AgentActions.darkModeSet),
-    DeviceCapability(AgentActions.mediaPlay),
-    DeviceCapability(AgentActions.mediaPause),
-    DeviceCapability(AgentActions.mediaNext),
-    DeviceCapability(AgentActions.mediaPrev),
-    DeviceCapability(AgentActions.emailSend),
-  ];
-}
+// Platform gating is not here: this file is the vocabulary (action ids and
+// message shapes) and nothing else. What a device of a given platform
+// advertises is derived from the capability registry — see
+// `core/capability.dart`'s `defaultCapabilitiesFor`.
 
 /// The assistant needs one more piece of information before it can act —
 /// either a missing argument ("which playlist?") or a phrase it has never
