@@ -59,13 +59,13 @@ ThemeData buildNexusTheme() {
       ),
       titleLarge: const TextStyle(
         fontSize: 18,
-        fontWeight: FontWeight.w650,
+        fontWeight: FontWeight.w600,
         letterSpacing: -0.15,
         color: NexusColors.text,
       ),
       titleMedium: const TextStyle(
         fontSize: 15,
-        fontWeight: FontWeight.w650,
+        fontWeight: FontWeight.w600,
         color: NexusColors.text,
       ),
       bodyLarge: const TextStyle(
@@ -85,7 +85,7 @@ ThemeData buildNexusTheme() {
       ),
       labelLarge: const TextStyle(
         fontSize: 13.5,
-        fontWeight: FontWeight.w650,
+        fontWeight: FontWeight.w600,
         letterSpacing: 0.1,
       ),
       labelMedium: const TextStyle(
@@ -110,7 +110,7 @@ ThemeData buildNexusTheme() {
       selectedLabelTextStyle: const TextStyle(
         color: NexusColors.text,
         fontSize: 12,
-        fontWeight: FontWeight.w650,
+        fontWeight: FontWeight.w600,
       ),
       unselectedLabelTextStyle: const TextStyle(
         color: NexusColors.muted,
@@ -135,7 +135,7 @@ ThemeData buildNexusTheme() {
         final selected = states.contains(WidgetState.selected);
         return TextStyle(
           fontSize: 11.5,
-          fontWeight: selected ? FontWeight.w650 : FontWeight.w500,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           color: selected ? NexusColors.text : NexusColors.muted,
         );
       }),
@@ -175,7 +175,7 @@ ThemeData buildNexusTheme() {
         minimumSize: const Size(0, 44),
         padding: const EdgeInsets.symmetric(horizontal: 18),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w650),
+        textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
