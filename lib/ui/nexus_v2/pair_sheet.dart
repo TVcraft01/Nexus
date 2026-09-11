@@ -8,6 +8,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/network_info.dart';
 import '../../core/pair_payload.dart';
+import '../../core/pairing_routes.dart';
 import '../../mesh/discovery.dart';
 import '../../mesh/mesh_service.dart';
 import '../cable_pair_page.dart';
@@ -159,25 +160,21 @@ class _PairSheetState extends State<_PairSheet> {
       _error = null;
     });
 
-    String? lastError;
-    for (final address in candidates) {
-      final result = await widget.mesh.pairWith(
-        address: address,
-        port: port,
-        code: code,
-      );
-      if (result.ok) {
-        if (!mounted) return;
-        Navigator.pop(context);
-        return;
-      }
-      lastError = result.error;
-    }
+    final result = await pairThroughRoutes(
+      mesh: widget.mesh,
+      addresses: candidates,
+      port: port,
+      code: code,
+    );
 
     if (!mounted) return;
+    if (result.ok) {
+      Navigator.pop(context);
+      return;
+    }
     setState(() {
       _pairing = false;
-      _error = lastError ?? 'Nexus could not connect to that device.';
+      _error = result.error ?? 'Nexus could not connect to that device.';
     });
   }
 
