@@ -290,6 +290,12 @@ class MeshService extends ChangeNotifier {
 
   List<String>? _ipsCache;
   DateTime? _ipsCacheAt;
+
+  /// The most recently spent pairing code, kept only until the code's own
+  /// expiry so a second device that scans the same (now used) code is told
+  /// that instead of waiting for a 12-second silence.
+  String? _spentCodeValue;
+  DateTime? _spentCodeUntil;
   TailscaleInfo? _tailscale;
   // Relay integration is staged (see relay/); the client is wired once the
   // server is deployed. Kept as a field so wiring it up has one owner.
@@ -1194,9 +1200,15 @@ class MeshService extends ChangeNotifier {
   /// A frame we could not decrypt with any paired device's key might be a
   /// pairing request encrypted with the code we are currently showing. If it
   /// decrypts and is a pair-request, accept it.
+  ///
+  /// A code that was already spent is still understood, but only so the
+  /// duplicate can be refused with a reason instead of silence — see
+  /// [_rejectPairing].
   Future<void> _tryPairingFrame(Socket socket, String enc) async {
-    if (!pendingCodeActive) return;
-    final key = await derivePairingKey(pendingCode!);
+    final active = pendingCodeActive;
+    final code = active ? pendingCode : _spentCode;
+    if (code == null) return;
+    final key = await derivePairingKey(code);
     Uint8List clear;
     try {
       clear = await decryptFromB64(enc, key);
@@ -1212,6 +1224,17 @@ class MeshService extends ChangeNotifier {
       return;
     }
     if (msg.type == NexusMessage.pairRequest) {
+      if (!active) {
+        debugPrint('NEXUS mesh: pair-request <- ${msg.from} (code spent)');
+        await _rejectPairing(
+          socket,
+          key,
+          msg.from,
+          'That code has already been used. Show a fresh code on the other '
+          'device and try again.',
+        );
+        return;
+      }
       debugPrint('NEXUS mesh: pair-request <- ${msg.from} (code matched)');
       await _handlePairRequest(msg, socket);
     }
@@ -3095,6 +3118,42 @@ class MeshService extends ChangeNotifier {
   /// call [_myIps] within seconds of start, so the QR usually has them already.
   List<String> get knownIps => List.unmodifiable(_ipsCache ?? const <String>[]);
 
+  /// The spent code, while still inside its original validity window. It can
+  /// never pair a device — [pendingCodeActive] guards the accept path — it
+  /// only exists so a duplicate attempt gets an honest refusal.
+  String? get _spentCode {
+    final code = _spentCodeValue;
+    final until = _spentCodeUntil;
+    if (code == null || until == null) return null;
+    if (DateTime.now().isAfter(until)) return null;
+    return code;
+  }
+
+  /// Tells a device that its (already used) code will not pair, over a frame
+  /// encrypted with that same code — the only key the caller can read.
+  Future<void> _rejectPairing(
+    Socket socket,
+    Uint8List key,
+    String to,
+    String reason,
+  ) async {
+    final reply = NexusMessage(
+      type: NexusMessage.pairReject,
+      from: identity.id,
+      to: to,
+      payload: {'reason': reason},
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    );
+    try {
+      final enc = await encryptToB64(encodeJson(reply.toJson()), key);
+      socket.add(FrameDecoder.encodeFrame(encodeJson({'enc': enc})));
+      await socket.flush();
+    } catch (_) {
+      _dropSocket(socket);
+    }
+  }
+
   bool get pendingCodeActive {
     final expiry = pendingCodeExpiry;
     return pendingCode != null &&
@@ -3128,6 +3187,10 @@ class MeshService extends ChangeNotifier {
     _paired[peer.id] = peer;
     store.upsertPaired(peer.toJson());
     await store.save();
+    // Remember that this code is spent (until its own expiry) so the next
+    // device to scan the same code is refused with a reason, not silence.
+    _spentCodeValue = code;
+    _spentCodeUntil = pendingCodeExpiry;
     pendingCode = null;
     pendingCodeExpiry = null;
     _noteSeen(peer.id, verified: true);

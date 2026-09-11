@@ -67,6 +67,9 @@ class _PairSheetState extends State<_PairSheet> {
   @override
   void initState() {
     super.initState();
+    // The code is spent by the first device that pairs with it. Rebuild when
+    // that happens so the sheet stops offering a code that no longer works.
+    widget.mesh.addListener(_onMeshChanged);
     _session = widget.mesh.beginPairing();
     _codeController = TextEditingController();
     _addressController = TextEditingController(
@@ -141,8 +144,22 @@ class _PairSheetState extends State<_PairSheet> {
     await _pair(addresses: candidates);
   }
 
+  void _onMeshChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Issues a new code so the next device has something that works.
+  void _newCode() {
+    setState(() {
+      _session = widget.mesh.beginPairing();
+      _error = null;
+    });
+    HapticFeedback.selectionClick();
+  }
+
   @override
   void dispose() {
+    widget.mesh.removeListener(_onMeshChanged);
     _codeController.dispose();
     _addressController.dispose();
     _portController.dispose();
@@ -294,38 +311,57 @@ class _PairSheetState extends State<_PairSheet> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Center(
-              child: QrImageView(
-                data: _session.qrPayload,
-                size: 200,
-                backgroundColor: Colors.white,
-                eyeStyle: const QrEyeStyle(
-                  eyeShape: QrEyeShape.square,
-                  color: Color(0xFF0B0F14),
+          // A spent code's QR is dead — scanning it would fail. Only draw a
+          // code that can still pair, so the picture never lies.
+          if (valid)
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Center(
+                child: QrImageView(
+                  data: _session.qrPayload,
+                  size: 200,
+                  backgroundColor: Colors.white,
+                  eyeStyle: const QrEyeStyle(
+                    eyeShape: QrEyeShape.square,
+                    color: Color(0xFF0B0F14),
+                  ),
+                  dataModuleStyle: const QrDataModuleStyle(
+                    dataModuleShape: QrDataModuleShape.square,
+                    color: Color(0xFF0B0F14),
+                  ),
                 ),
-                dataModuleStyle: const QrDataModuleStyle(
-                  dataModuleShape: QrDataModuleShape.square,
-                  color: Color(0xFF0B0F14),
+              ),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: NexusColors.surface,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: NexusColors.border),
+              ),
+              child: const Center(
+                child: Icon(
+                  Icons.check_circle_outline_rounded,
+                  size: 48,
+                  color: NexusColors.ok,
                 ),
               ),
             ),
-          ),
           const SizedBox(height: 16),
           Center(
             child: Text(
-              valid ? _session.code : 'Expired — reopen to get a fresh code.',
-              style: const TextStyle(
-                fontSize: 34,
+              valid ? _session.code : 'Code no longer usable',
+              style: TextStyle(
+                fontSize: valid ? 34 : 20,
                 fontWeight: FontWeight.w800,
-                letterSpacing: 6,
-                color: NexusColors.text,
-                fontFeatures: [FontFeature.tabularFigures()],
+                letterSpacing: valid ? 6 : 0,
+                color: valid ? NexusColors.text : NexusColors.muted,
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           ),
@@ -338,8 +374,10 @@ class _PairSheetState extends State<_PairSheet> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Code expires in 5 minutes. It is the only secret needed to pair — '
-            'don’t share it with strangers.',
+            valid
+                ? 'Code expires in 5 minutes. It is the only secret needed to '
+                    'pair — don’t share it with strangers.'
+                : 'Each code pairs one device. Show a new code for the next one.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodySmall
                 ?.copyWith(color: NexusColors.muted),
@@ -347,12 +385,19 @@ class _PairSheetState extends State<_PairSheet> {
           const SizedBox(height: 10),
           _TailscaleBanner(),
           const SizedBox(height: 14),
-          OutlinedButton.icon(
-            onPressed: () =>
-                Clipboard.setData(ClipboardData(text: _session.code)),
-            icon: const Icon(Icons.copy_rounded, size: 16),
-            label: const Text('Copy code'),
-          ),
+          if (valid)
+            OutlinedButton.icon(
+              onPressed: () =>
+                  Clipboard.setData(ClipboardData(text: _session.code)),
+              icon: const Icon(Icons.copy_rounded, size: 16),
+              label: const Text('Copy code'),
+            )
+          else
+            FilledButton.icon(
+              onPressed: _newCode,
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('Show a new code'),
+            ),
         ],
       ),
     );

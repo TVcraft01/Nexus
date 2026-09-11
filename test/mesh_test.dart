@@ -122,6 +122,60 @@ void main() {
     expect(meshB.isPaired('device-a'), isFalse);
   });
 
+  test('a second device reusing a spent code is refused, not ignored', () async {
+    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212;
+    await storeC.save();
+    final meshC = MeshService(
+      identity: DeviceInfo(id: 'device-c', name: 'Phone C', platform: 'android'),
+      store: storeC,
+      clipboard: FakeClipboard(),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
+    await meshC.start();
+    try {
+      // One code, shown once. The first device spends it.
+      final session = meshA.beginPairing();
+      final first = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(first.ok, isTrue, reason: first.error);
+
+      // The second device scans the same still-visible code. It must be told
+      // the code is spent — silence here reads to a user as "Nexus can only
+      // pair one device", after a 12-second stall.
+      final second = await meshC.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(second.ok, isFalse);
+      expect(second.reached, isTrue);
+      expect(second.error, contains('already been used'), reason: second.error);
+
+      // Nothing was paired by the refused attempt, and the first device is
+      // still paired.
+      expect(meshA.isPaired('device-c'), isFalse);
+      expect(meshA.isPaired('device-b'), isTrue);
+      expect(meshA.pairedDevices, hasLength(1));
+
+      // And a fresh code pairs the second device normally.
+      final fresh = meshA.beginPairing();
+      final third = await meshC.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: fresh.code,
+      );
+      expect(third.ok, isTrue, reason: third.error);
+      expect(meshA.pairedDevices, hasLength(2));
+    } finally {
+      await meshC.stop();
+    }
+  });
+
   test('a third device joins without displacing the first two', () async {
     final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212;
     final storeD = NexusStore(explicitPath: '${tmp.path}/d.json')..port = 53213;
