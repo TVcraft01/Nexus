@@ -122,6 +122,68 @@ void main() {
     expect(meshB.isPaired('device-a'), isFalse);
   });
 
+  test('a third device joins without displacing the first two', () async {
+    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212;
+    final storeD = NexusStore(explicitPath: '${tmp.path}/d.json')..port = 53213;
+    await storeC.save();
+    await storeD.save();
+    final meshC = MeshService(
+      identity: DeviceInfo(id: 'device-c', name: 'Phone C', platform: 'android'),
+      store: storeC,
+      clipboard: FakeClipboard(),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    final meshD = MeshService(
+      identity: DeviceInfo(id: 'device-d', name: 'PC D', platform: 'linux'),
+      store: storeD,
+      clipboard: FakeClipboard(),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
+    await meshC.start();
+    await meshD.start();
+    try {
+      // Each device pairs with the host using its own code, in turn.
+      for (final pair in [
+        (meshB, 'device-b'),
+        (meshC, 'device-c'),
+        (meshD, 'device-d'),
+      ]) {
+        final session = meshA.beginPairing();
+        final result = await pair.$1.pairWith(
+          address: '127.0.0.1',
+          port: meshA.port,
+          code: session.code,
+        );
+        expect(result.ok, isTrue, reason: result.error);
+      }
+
+      // All three survive on the host, each with its own secret and identity.
+      expect(meshA.pairedDevices, hasLength(3));
+      expect(
+        meshA.pairedDevices.map((d) => d.id).toSet(),
+        {'device-b', 'device-c', 'device-d'},
+      );
+      final secrets = meshA.pairedDevices
+          .map((d) => d.pairingSecret)
+          .where((s) => s.isNotEmpty)
+          .toSet();
+      expect(secrets, hasLength(3));
+
+      // Reconnecting one device leaves the others paired.
+      await meshB.stop();
+      await meshB.start();
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(meshA.pairedDevices, hasLength(3));
+      expect(meshA.isPaired('device-c'), isTrue);
+      expect(meshA.isPaired('device-d'), isTrue);
+    } finally {
+      await meshC.stop();
+      await meshD.stop();
+    }
+  });
+
   test('a QR carries every address, and a stale first one is skipped', () async {
     await meshA.start();
     await meshB.start();
