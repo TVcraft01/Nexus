@@ -29,12 +29,6 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   ClipEntry? _lastShown;
-
-  /// The conversational brain, one per platform: desktops run a strong
-  /// local model (Ollama) and answer brain asks from paired phones; the
-  /// phone runs a tiny on-device model for everyday questions and escalates
-  /// the rest over the mesh to the PC — one assistant living everywhere,
-  /// fully offline.
   late final LocalBrain? _brain;
 
   UpdateInfo? _update;
@@ -44,28 +38,28 @@ class _HomeShellState extends State<HomeShell> {
   bool _peerUpdateChecking = false;
   bool _updateChecked = false;
 
+  static const _items = <_NavItem>[
+    _NavItem(Icons.devices_rounded, 'Devices'),
+    _NavItem(Icons.folder_rounded, 'Files'),
+    _NavItem(Icons.chat_bubble_outline_rounded, 'Assistant'),
+    _NavItem(Icons.settings_outlined, 'Settings'),
+  ];
+
   @override
   void initState() {
     super.initState();
     _brain = switch (defaultTargetPlatform) {
-      TargetPlatform.linux ||
-      TargetPlatform.windows ||
-      TargetPlatform.macOS => LocalBrain(),
+      TargetPlatform.linux || TargetPlatform.windows || TargetPlatform.macOS =>
+        LocalBrain(),
       TargetPlatform.android => DistributedBrain(
         mesh: widget.mesh,
         tiny: TinyBrain(),
       ),
       _ => null,
     };
-    // Only a device with its own strong model answers delegated brain
-    // questions — the phone's distributed brain ASKS, it never serves (a
-    // served question must not escalate back, or the mesh would bounce it
-    // forever).
     if (_brain case final LocalBrain strong when strong is! DistributedBrain) {
       widget.mesh.brain = strong;
     }
-    // Check for updates on startup when auto-update is enabled. Updater decides
-    // whether this platform has a safe, matching release asset.
     if (widget.mesh.store.autoUpdate) {
       unawaited(_checkForUpdates());
     }
@@ -75,9 +69,8 @@ class _HomeShellState extends State<HomeShell> {
     if (_updateChecked && !force) return null;
     _updateChecked = true;
     final info = await Updater.checkForUpdate(currentVersion: appVersion);
-    if (info != null && mounted) {
-      setState(() => _update = info);
-    }
+    if (!mounted) return info;
+    if (info != null) setState(() => _update = info);
     return info;
   }
 
@@ -86,10 +79,10 @@ class _HomeShellState extends State<HomeShell> {
     final version = widget.mesh.latestPeerUpdateVersion;
     if (version == null ||
         Updater.compareVersions(version, appVersion) <= 0 ||
-        version == _lastPeerUpdateVersion) {
+        version == _lastPeerUpdateVersion ||
+        _peerUpdateChecking) {
       return;
     }
-    if (_peerUpdateChecking) return;
     _peerUpdateChecking = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
@@ -110,93 +103,82 @@ class _HomeShellState extends State<HomeShell> {
     final info = _update;
     if (info == null || _applying) return;
 
-    // Windows currently uses the normal release package rather than trying to
-    // replace a running executable in-place. Open the exact release page.
     if (defaultTargetPlatform == TargetPlatform.windows) {
       final url = info.releaseUrl;
       if (url == null || !await launchUrl(Uri.parse(url))) {
-        setState(() => _updateError = 'Could not open the GitHub release page.');
+        if (mounted) {
+          setState(() => _updateError = 'Could not open the release page.');
+        }
       }
       return;
     }
 
-    if (info.downloadUrl == null) return;
+    final url = info.downloadUrl;
+    if (url == null) return;
     setState(() {
       _applying = true;
       _updateError = null;
     });
     try {
-      final path = await Updater.download(info.downloadUrl!);
+      final path = await Updater.download(url);
       if (path == null) {
-        setState(() {
-          _applying = false;
-          _updateError = 'Could not download the update. Check your connection and try again.';
-        });
+        if (mounted) {
+          setState(() {
+            _applying = false;
+            _updateError = 'Could not download the update.';
+          });
+        }
         return;
       }
 
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // Hand the APK to the system installer; the user confirms there.
         final applied = await Updater.applyUpdate(path);
+        if (!mounted) return;
         setState(() {
           _applying = false;
           if (!applied) {
-            _updateError = 'Could not open the installer. Try downloading from GitHub manually.';
+            _updateError = 'Could not open the installer. Try GitHub instead.';
           }
         });
-      } else if (defaultTargetPlatform == TargetPlatform.linux) {
-        // Linux: extract, swap, and relaunch.
-        final installDir = File(Platform.resolvedExecutable).parent.path;
-        final applied = await Updater.applyUpdate(path, installDir: installDir);
+        return;
+      }
+
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        final dir = File(Platform.resolvedExecutable).parent.path;
+        final applied = await Updater.applyUpdate(path, installDir: dir);
         if (applied) {
           exit(0);
         }
+        if (mounted) {
+          setState(() {
+            _applying = false;
+            _updateError = 'The update could not be applied.';
+          });
+        }
+        return;
+      }
+
+      if (mounted) {
         setState(() {
           _applying = false;
-          _updateError = 'The update could not be applied. Run update.sh to update manually.';
-        });
-      } else {
-        setState(() {
-          _applying = false;
-          _updateError = 'Automatic updates are not available on this platform yet.';
+          _updateError = 'Automatic updates are not available here yet.';
         });
       }
     } catch (e) {
-      debugPrint('NEXUS updater: ${e.runtimeType}: $e');
-      setState(() {
-        _applying = false;
-        _updateError = 'The update failed. Check your connection and try again.';
-      });
+      debugPrint('NEXUS updater: $e');
+      if (mounted) {
+        setState(() {
+          _applying = false;
+          _updateError = 'The update failed. Check your connection and try again.';
+        });
+      }
     }
   }
 
-  bool get _isDesktop =>
+  bool get _desktop =>
       defaultTargetPlatform == TargetPlatform.linux ||
       defaultTargetPlatform == TargetPlatform.windows ||
       defaultTargetPlatform == TargetPlatform.macOS;
-
-  static const _destinations = [
-    NavigationRailDestination(
-      icon: Icon(Icons.devices_rounded),
-      selectedIcon: Icon(Icons.devices_rounded),
-      label: Text('Devices'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.folder_rounded),
-      selectedIcon: Icon(Icons.folder_rounded),
-      label: Text('Files'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.forum_rounded),
-      selectedIcon: Icon(Icons.forum_rounded),
-      label: Text('Assistant'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.tune_rounded),
-      selectedIcon: Icon(Icons.tune_rounded),
-      label: Text('Settings'),
-    ),
-  ];
 
   @override
   Widget build(BuildContext context) {
@@ -220,82 +202,224 @@ class _HomeShellState extends State<HomeShell> {
           });
         }
 
-        final views = [
-          DevicesView(mesh: widget.mesh),
-          FilesView(mesh: widget.mesh),
-          AssistantView(mesh: widget.mesh, brain: _brain),
-          SettingsView(
-            mesh: widget.mesh,
-            onCheckForUpdate: () => _checkForUpdates(force: true),
-          ),
-        ];
-
-        final content = Column(
+        final page = IndexedStack(
+          index: _index,
           children: [
-            if (_update != null)
-              _UpdateBanner(
-                info: _update!,
-                applying: _applying,
-                error: _updateError,
-                onUpdate: _updateNow,
-                onDismiss: () => setState(() => _update = null),
-              ),
-            Expanded(
-              child: IndexedStack(index: _index, children: views),
+            DevicesView(mesh: widget.mesh),
+            FilesView(mesh: widget.mesh),
+            AssistantView(mesh: widget.mesh, brain: _brain),
+            SettingsView(
+              mesh: widget.mesh,
+              onCheckForUpdate: () => _checkForUpdates(force: true),
             ),
           ],
         );
 
         return Scaffold(
-          body: _isDesktop
-              ? Row(
-                  children: [
-                    NavigationRail(
-                      selectedIndex: _index,
-                      onDestinationSelected: (i) => setState(() => _index = i),
-                      labelType: NavigationRailLabelType.all,
-                      groupAlignment: -0.8,
-                      backgroundColor: NexusColors.surface,
-                      destinations: _destinations,
-                    ),
-                    const VerticalDivider(width: 1),
-                    Expanded(
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 980),
-                          child: content,
+          backgroundColor: NexusColors.bg,
+          body: SafeArea(
+            bottom: false,
+            child: _desktop
+                ? Row(
+                    children: [
+                      _DesktopSidebar(
+                        index: _index,
+                        items: _items,
+                        onSelected: (value) => setState(() => _index = value),
+                      ),
+                      Expanded(
+                        child: Column(
+                          children: [
+                            if (_update != null)
+                              _UpdateBanner(
+                                info: _update!,
+                                applying: _applying,
+                                error: _updateError,
+                                onUpdate: _updateNow,
+                                onDismiss: () => setState(() => _update = null),
+                              ),
+                            Expanded(child: page),
+                          ],
                         ),
                       ),
-                    ),
-                  ],
-                )
-              : SafeArea(bottom: false, child: content),
-          bottomNavigationBar: _isDesktop
+                    ],
+                  )
+                : Column(
+                    children: [
+                      if (_update != null)
+                        _UpdateBanner(
+                          info: _update!,
+                          applying: _applying,
+                          error: _updateError,
+                          onUpdate: _updateNow,
+                          onDismiss: () => setState(() => _update = null),
+                        ),
+                      Expanded(child: page),
+                    ],
+                  ),
+          ),
+          bottomNavigationBar: _desktop
               ? null
-              : NavigationBar(
-                  selectedIndex: _index,
-                  onDestinationSelected: (i) => setState(() => _index = i),
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.devices_rounded),
-                      label: 'Devices',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.folder_rounded),
-                      label: 'Files',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.forum_rounded),
-                      label: 'Assistant',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.tune_rounded),
-                      label: 'Settings',
-                    ),
-                  ],
+              : _MobileNavigation(
+                  index: _index,
+                  items: _items,
+                  onSelected: (value) => setState(() => _index = value),
                 ),
         );
       },
+    );
+  }
+}
+
+class _NavItem {
+  final IconData icon;
+  final String label;
+  const _NavItem(this.icon, this.label);
+}
+
+class _DesktopSidebar extends StatelessWidget {
+  final int index;
+  final List<_NavItem> items;
+  final ValueChanged<int> onSelected;
+
+  const _DesktopSidebar({
+    required this.index,
+    required this.items,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 216,
+      decoration: const BoxDecoration(
+        color: NexusColors.surface,
+        border: Border(right: BorderSide(color: NexusColors.border)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 4, 8, 28),
+              child: Row(
+                children: [
+                  Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: NexusColors.accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: const Icon(
+                      Icons.hub_outlined,
+                      color: NexusColors.accent,
+                      size: 18,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Nexus',
+                    style: TextStyle(
+                      color: NexusColors.text,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.25,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            for (var i = 0; i < items.length; i++) ...[
+              _SidebarItem(
+                item: items[i],
+                selected: i == index,
+                onTap: () => onSelected(i),
+              ),
+              const SizedBox(height: 4),
+            ],
+            const Spacer(),
+            Text(
+              'Your devices, one system',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarItem extends StatelessWidget {
+  final _NavItem item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SidebarItem({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? NexusColors.accent.withValues(alpha: 0.11) : Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: SizedBox(
+          height: 44,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              children: [
+                Icon(
+                  item.icon,
+                  size: 20,
+                  color: selected ? NexusColors.accent : NexusColors.muted,
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  item.label,
+                  style: TextStyle(
+                    color: selected ? NexusColors.text : NexusColors.muted,
+                    fontSize: 14,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MobileNavigation extends StatelessWidget {
+  final int index;
+  final List<_NavItem> items;
+  final ValueChanged<int> onSelected;
+
+  const _MobileNavigation({
+    required this.index,
+    required this.items,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return NavigationBar(
+      selectedIndex: index,
+      onDestinationSelected: onSelected,
+      destinations: [
+        for (final item in items)
+          NavigationDestination(icon: Icon(item.icon), label: item.label),
+      ],
     );
   }
 }
@@ -318,34 +442,43 @@ class _UpdateBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final windows = defaultTargetPlatform == TargetPlatform.windows;
-    return MaterialBanner(
-      leading: Icon(
-        error == null ? Icons.system_update_rounded : Icons.error_outline_rounded,
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+      decoration: BoxDecoration(
+        color: error == null
+            ? NexusColors.surfaceHi
+            : NexusColors.danger.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: NexusColors.border),
       ),
-      content: Text(
-        error ??
-            (applying
-                ? 'Updating to v${info.version}…'
-                : windows
-                    ? 'Nexus v${info.version} is available'
-                    : 'Nexus v${info.version} is available'),
-      ),
-      actions: [
-        TextButton(
-          onPressed: applying ? null : onDismiss,
-          child: const Text('Later'),
-        ),
-        FilledButton(
-          onPressed: applying ? null : onUpdate,
-          child: Text(
-            windows
-                ? 'View update'
-                : defaultTargetPlatform == TargetPlatform.android
-                    ? 'Update & install'
-                    : 'Update & restart',
+      child: Row(
+        children: [
+          Icon(
+            error == null ? Icons.system_update_outlined : Icons.error_outline,
+            size: 18,
+            color: error == null ? NexusColors.accent : NexusColors.danger,
           ),
-        ),
-      ],
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              error ?? (applying ? 'Updating to v${info.version}…' : 'Nexus v${info.version} is available'),
+              style: const TextStyle(color: NexusColors.text, fontSize: 13),
+            ),
+          ),
+          TextButton(onPressed: applying ? null : onDismiss, child: const Text('Later')),
+          FilledButton(
+            onPressed: applying ? null : onUpdate,
+            child: Text(
+              windows
+                  ? 'View update'
+                  : defaultTargetPlatform == TargetPlatform.android
+                      ? 'Install'
+                      : 'Update',
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
