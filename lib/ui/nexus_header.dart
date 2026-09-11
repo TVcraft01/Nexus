@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-/// Shared page heading used across the main Nexus sections.
-/// Keep it compact so content starts quickly and the hierarchy stays clear.
+/// Shared section heading for Nexus. The heading establishes hierarchy; the
+/// content below carries the visual weight.
 class NexusHeader extends StatelessWidget {
   final IconData icon;
   final String title;
@@ -16,40 +16,37 @@ class NexusHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        Container(
-          width: 34,
-          height: 34,
-          decoration: BoxDecoration(
-            color: colors.primary.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: colors.primary.withValues(alpha: 0.18)),
-          ),
-          child: Icon(icon, color: colors.primary, size: 19),
-        ),
-        const SizedBox(width: 11),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 title,
-                style: Theme.of(context).textTheme.headlineMedium,
+                style: theme.textTheme.displaySmall,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 1),
+              const SizedBox(height: 4),
               Text(
                 subtitle,
-                style: Theme.of(context).textTheme.bodySmall,
-                maxLines: 1,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
             ],
           ),
+        ),
+        const SizedBox(width: 16),
+        Semantics(
+          excludeSemantics: true,
+          child: Icon(icon, color: colors.onSurfaceVariant, size: 22),
         ),
       ],
     );
