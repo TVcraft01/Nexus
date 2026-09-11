@@ -17,8 +17,8 @@ import 'package:qr_flutter/qr_flutter.dart';
 /// they guard against were all invisible to the rest of the suite:
 ///
 /// * discovery that falls back to another port is deaf for its whole lifetime
-///   unless it takes the canonical port back on its own, and it must say so
-///   rather than look healthy in the UI;
+///   unless it takes its port back on its own, and it must say so rather than
+///   look healthy in the UI;
 /// * a code that was already used must be refused in milliseconds instead of
 ///   stalling the full "no answer" wait, and the pairing that already exists
 ///   must keep working afterwards;
@@ -81,29 +81,29 @@ void main() {
 
   test('a busy discovery port is reported, then self-heals to receive again',
       () async {
-    RawDatagramSocket blocker;
-    try {
-      // The way a dying sibling instance holds it: without SO_REUSEADDR.
-      blocker = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        DiscoveryService.discoveryPort,
-        reuseAddress: false,
-      );
-    } catch (e) {
-      markTestSkipped('51822 is held by another socket ($e) — another Nexus '
-          'instance is running on this machine');
-      return;
-    }
+    // A port of its own: the canonical one is shared with every other Nexus on
+    // this machine and with the suites running in parallel, so a test that had
+    // to hold it would sometimes have to skip — and a skipped test proves
+    // nothing. The fallback and the recovery are the same machinery either way.
+    const probePort = 51999;
+
+    // The way a dying sibling instance holds it: without SO_REUSEADDR.
+    final blocker = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      probePort,
+      reuseAddress: false,
+    );
 
     final heard = <DiscoveredDevice>[];
     final svc = DiscoveryService(
       identity: DeviceInfo(id: 'recovery-probe', name: 'Probe', platform: 'linux'),
       onDiscovered: heard.add,
+      port: probePort,
     );
     try {
       await svc.start();
-      expect(svc.status.boundPort, isNot(DiscoveryService.discoveryPort),
-          reason: 'a busy port must fall back, not claim the canonical one');
+      expect(svc.status.boundPort, isNot(probePort),
+          reason: 'a busy port must fall back, not claim it anyway');
       expect(svc.status.canReceive, isFalse);
       expect(svc.status.describe(), contains('cannot hear other devices'),
           reason: svc.status.describe());
@@ -125,27 +125,27 @@ void main() {
             InternetAddress.loopbackIPv4,
             port,
           );
-      hail(DiscoveryService.discoveryPort);
+      hail(probePort);
       await Future<void>.delayed(const Duration(milliseconds: 300));
       // Scoped to the payload under test: other suites running in parallel are
       // real Nexus instances on this machine, and their replies to our own
       // announces are not this assertion's business.
       expect(heard.where((d) => d.id == 'recovery-peer'), isEmpty,
-          reason: 'a datagram sent to 51822 cannot reach a socket that fell '
-              'back to another port');
+          reason: 'a datagram sent to $probePort cannot reach a socket that '
+              'fell back to another port');
 
       // Free the port: the service must take it back on its own, without the
       // user restarting the app for the rest of the process's life.
       blocker.close();
       await _waitFor(
-        () => svc.status.boundPort == DiscoveryService.discoveryPort,
+        () => svc.status.boundPort == probePort,
         timeout: const Duration(seconds: 40),
       );
       expect(svc.status.canReceive, isTrue);
       expect(svc.status.describe(), isNot(contains('cannot hear')));
 
       // And the receive path really came back — not just the port number.
-      hail(DiscoveryService.discoveryPort);
+      hail(probePort);
       await _waitFor(() => heard.any((d) => d.id == 'recovery-peer'));
       final mine =
           heard.where((d) => d.id == 'recovery-peer').toList(growable: false);

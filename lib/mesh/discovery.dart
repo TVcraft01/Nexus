@@ -68,18 +68,22 @@ class DiscoveryStatus {
   /// The last send error, verbatim, so a failure can be diagnosed from a log.
   final String? lastSendError;
 
+  /// The port this service should have been on — [DiscoveryService.discoveryPort]
+  /// unless a caller deliberately runs somewhere else.
+  final int expectedPort;
+
   const DiscoveryStatus({
     required this.boundPort,
     required this.announced,
     required this.failedSends,
     required this.received,
     this.lastSendError,
+    this.expectedPort = DiscoveryService.discoveryPort,
   });
 
-  /// A socket on the canonical port that has not failed to send: the only
+  /// A socket on the expected port that has not failed to send: the only
   /// state in which another device's announcement can actually reach us.
-  bool get canReceive =>
-      boundPort == DiscoveryService.discoveryPort && failedSends == 0;
+  bool get canReceive => boundPort == expectedPort && failedSends == 0;
 
   /// Whether this device is at least announcing (true even while degraded).
   bool get announcing => announced > 0;
@@ -89,9 +93,9 @@ class DiscoveryStatus {
     if (boundPort == null) {
       return 'Discovery is off — no network socket could be opened.';
     }
-    if (boundPort != DiscoveryService.discoveryPort) {
+    if (boundPort != expectedPort) {
       return 'Discovery is running on port $boundPort instead of '
-          '${DiscoveryService.discoveryPort}, so it cannot hear other devices. '
+          '$expectedPort, so it cannot hear other devices. '
           'Close the other Nexus instance using that port and restart.';
     }
     if (failedSends > 0) {
@@ -112,13 +116,18 @@ class DiscoveryService {
   static final InternetAddress group = InternetAddress('239.255.0.250');
   static final InternetAddress broadcast = InternetAddress('255.255.255.255');
 
-  /// How long to wait before trying the canonical port again after a fallback.
+  /// How long to wait before trying the expected port again after a fallback.
   /// A port held by a dying sibling instance is a transient condition; without
   /// this retry the process stays deaf for its whole lifetime.
   static const Duration reboundInterval = Duration(seconds: 20);
 
   final DeviceInfo identity;
   final FutureOr<void> Function(DiscoveredDevice device) onDiscovered;
+
+  /// The port this instance announces on and expects to hear on. Defaults to
+  /// [discoveryPort]; a caller that runs on another one (a test) can own it
+  /// without fighting every other Nexus on the machine for the canonical one.
+  final int port;
 
   /// Devices we have seen before. Every announce cycle we also send a hello
   /// directly to each one (unicast), so the mesh heals itself when the router
@@ -147,7 +156,8 @@ class DiscoveryService {
     required this.identity,
     required this.onDiscovered,
     this.canBroadcast = false,
-  });
+    int? port,
+  }) : port = port ?? discoveryPort;
 
   Future<void> start() async {
     if (_started) return;
@@ -171,14 +181,14 @@ class DiscoveryService {
     try {
       _socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
-        discoveryPort,
+        port,
       );
     } catch (e) {
       // Port busy (usually a second Nexus instance on this machine, e.g. an
       // update restarting over the old process). Announce from an ephemeral
       // port and keep trying to get the real one back.
       _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-      debugPrint('NEXUS discovery: port $discoveryPort was busy ($e) — '
+      debugPrint('NEXUS discovery: port $port was busy ($e) — '
           'announcing from ${_socket!.port}, but this device cannot hear '
           'other devices until the port is free.');
       _reboundTimer ??= Timer.periodic(reboundInterval, (_) => unawaited(_rebind()));
@@ -193,14 +203,14 @@ class DiscoveryService {
 
   /// Replaces a fallback socket with the canonical one once the port frees up.
   Future<void> _rebind() async {
-    if (_socket?.port == discoveryPort) {
+    if (_socket?.port == port) {
       _reboundTimer?.cancel();
       _reboundTimer = null;
       return;
     }
     final previous = _socket;
     try {
-      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, discoveryPort);
+      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
     } catch (_) {
       return; // still busy — try again next tick
     }
@@ -253,7 +263,7 @@ class DiscoveryService {
     String? failure;
     for (final target in targets) {
       try {
-        socket.send(payload, target, discoveryPort);
+        socket.send(payload, target, port);
         sent++;
       } catch (e) {
         // A filtered network or a dead interface — try the next target.
@@ -288,6 +298,7 @@ class DiscoveryService {
         failedSends: _failedSends,
         received: _received,
         lastSendError: _lastSendError,
+        expectedPort: port,
       );
 
   Future<void> _onDatagram(RawSocketEvent event) async {
