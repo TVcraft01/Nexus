@@ -45,6 +45,7 @@ class _PairSheetState extends State<_PairSheet> {
   bool _showMyCode = true;
   bool _pairing = false;
   String? _error;
+  List<String> _candidates = const [];
 
   bool get _canCable =>
       defaultTargetPlatform == TargetPlatform.linux ||
@@ -66,6 +67,7 @@ class _PairSheetState extends State<_PairSheet> {
     _code = TextEditingController();
     _manual = widget.nearby != null;
     _showMyCode = widget.nearby == null;
+    if (widget.nearby != null) _candidates = [widget.nearby!.address];
     unawaited(_refreshQr());
   }
 
@@ -106,16 +108,26 @@ class _PairSheetState extends State<_PairSheet> {
       setState(() => _error = 'That is this device. Scan the other device.');
       return;
     }
+
     final addresses = <String>[];
     void add(String value) {
-      if (value.isNotEmpty && !addresses.contains(value)) addresses.add(value);
+      final trimmed = value.trim();
+      if (trimmed.isNotEmpty && !addresses.contains(trimmed)) {
+        addresses.add(trimmed);
+      }
     }
 
     add(payload.ip ?? '');
     for (final value in payload.ips) add(value);
+    for (final device in widget.mesh.pairedDevices.where((d) => d.id == payload.id)) {
+      add(device.address);
+      for (final address in device.addresses) add(address);
+    }
+
     setState(() {
       _manual = true;
       _showMyCode = false;
+      _candidates = addresses;
       _address.text = addresses.isEmpty ? '' : addresses.first;
       _port.text = '${payload.port}';
       _code.text = payload.code;
@@ -125,36 +137,48 @@ class _PairSheetState extends State<_PairSheet> {
   }
 
   Future<void> _pair() async {
-    final address = _address.text.trim();
     final port = int.tryParse(_port.text.trim());
     final code = _code.text.trim();
-    if (address.isEmpty ||
-        port == null ||
-        port <= 0 ||
-        port > 65535 ||
-        code.isEmpty) {
-      setState(() => _error =
-          'Enter the address, port and code shown on the other device.');
+    final typedAddress = _address.text.trim();
+    final candidates = <String>[];
+    void add(String value) {
+      if (value.isNotEmpty && !candidates.contains(value)) candidates.add(value);
+    }
+    add(typedAddress);
+    for (final candidate in _candidates) add(candidate);
+
+    if (port == null || port <= 0 || port > 65535 || code.isEmpty || candidates.isEmpty) {
+      setState(() => _error = candidates.isEmpty
+          ? 'Nexus could not find an address for that device.'
+          : 'Enter the pairing code shown on the other device.');
       return;
     }
+
     setState(() {
       _pairing = true;
       _error = null;
     });
-    final result = await widget.mesh.pairWith(
-      address: address,
-      port: port,
-      code: code,
-    );
-    if (!mounted) return;
-    if (result.ok) {
-      Navigator.pop(context);
-    } else {
-      setState(() {
-        _pairing = false;
-        _error = result.error ?? 'Nexus could not connect to that device.';
-      });
+
+    String? lastError;
+    for (final address in candidates) {
+      final result = await widget.mesh.pairWith(
+        address: address,
+        port: port,
+        code: code,
+      );
+      if (result.ok) {
+        if (!mounted) return;
+        Navigator.pop(context);
+        return;
+      }
+      lastError = result.error;
     }
+
+    if (!mounted) return;
+    setState(() {
+      _pairing = false;
+      _error = lastError ?? 'Nexus could not connect to that device.';
+    });
   }
 
   Widget _unavailableMethod({
@@ -223,6 +247,7 @@ class _PairSheetState extends State<_PairSheet> {
                   onTap: () => setState(() {
                     _manual = true;
                     _showMyCode = false;
+                    _candidates = const [];
                   }),
                 ),
               ],
