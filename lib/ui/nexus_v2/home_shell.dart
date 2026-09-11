@@ -13,7 +13,6 @@ import '../../core/version.dart';
 import '../../mesh/mesh_service.dart';
 import '../../mesh/updater.dart';
 import 'assistant_view.dart';
-import 'design_system.dart';
 import 'devices_view.dart';
 import 'files_view.dart';
 import 'nexus_orb.dart';
@@ -48,11 +47,15 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
     if (widget.mesh.store.autoUpdate) unawaited(_checkForUpdate());
   }
 
-  Future<void> _checkForUpdate({bool force = false}) async {
-    if (_checking && !force) return;
+  /// Checks for an update and hands the result back so callers (Settings'
+  /// own "Check" button) can report it themselves; the banner state is set
+  /// here as well, so both entry points share one code path.
+  Future<UpdateInfo?> _checkForUpdate({bool force = false}) async {
+    if (_checking && !force) return _update;
     setState(() => _checking = true);
+    UpdateInfo? info;
     try {
-      final info = await Updater.checkForUpdate(currentVersion: appVersion);
+      info = await Updater.checkForUpdate(currentVersion: appVersion);
       if (mounted) {
         setState(() {
           _update = info;
@@ -64,6 +67,7 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
     } finally {
       if (mounted) setState(() => _checking = false);
     }
+    return info;
   }
 
   bool get _desktop => switch (defaultTargetPlatform) {

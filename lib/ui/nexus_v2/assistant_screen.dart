@@ -12,7 +12,6 @@ import '../../core/profile.dart';
 import '../../core/speech.dart';
 import '../../mesh/mesh_service.dart';
 import '../device_executor.dart';
-import 'design_system.dart';
 
 /// Human-facing assistant surface. The command/brain/device layers remain
 /// separate; this class owns only presentation and the user conversation.
@@ -246,7 +245,10 @@ class _NexusV2AssistantScreenState extends State<NexusV2AssistantScreen> {
     if (_listening || _sending) return;
     final speech = SpeechInput.current;
     if (!speech.available) {
-      _conversation.appendResult(const AgentDispatchResult(dispatch: AgentMessage('Voice input isn’t available on this device yet.')));
+      _conversation.appendResult(const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage('Voice input isn’t available on this device yet.'),
+      ));
       return;
     }
     setState(() => _listening = true);
@@ -254,7 +256,10 @@ class _NexusV2AssistantScreenState extends State<NexusV2AssistantScreen> {
     if (!mounted) return;
     setState(() => _listening = false);
     if (heard == null || heard.trim().isEmpty) {
-      _conversation.appendResult(const AgentDispatchResult(dispatch: AgentMessage('I didn’t catch that.')));
+      _conversation.appendResult(const AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage('I didn’t catch that.'),
+      ));
       return;
     }
     await _submitText(heard);
@@ -282,7 +287,9 @@ class _NexusV2AssistantScreenState extends State<NexusV2AssistantScreen> {
               ),
               IconButton(
                 tooltip: 'New conversation',
-                onPressed: entries.isEmpty ? null : () => setState(() => _conversation.clear()),
+                onPressed: entries.isEmpty
+                    ? null
+                    : () => setState(() => _conversation.clear()),
                 icon: const Icon(Icons.edit_outlined),
               ),
             ],
@@ -349,7 +356,9 @@ class _NexusV2AssistantScreenState extends State<NexusV2AssistantScreen> {
         ),
       );
     }
-    final text = ConversationEngine.speakableText(entry) ?? entry.message ?? 'Done.';
+    final text = ConversationEngine.speakableText(entry) ??
+        (entry.result?.message.isNotEmpty ?? false ? entry.result!.message : null) ??
+        'Done.';
     return Align(
       alignment: Alignment.centerLeft,
       child: Padding(

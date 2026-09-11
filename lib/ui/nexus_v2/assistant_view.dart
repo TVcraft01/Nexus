@@ -297,6 +297,16 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
     );
   }
 
+  /// The text a card shows: the spoken-friendly form first, then the result's
+  /// own message, then a neutral fallback so a card is never blank.
+  String _textFor(ConversationEntry entry) {
+    final spoken = ConversationEngine.speakableText(entry);
+    if (spoken != null && spoken.isNotEmpty) return spoken;
+    final message = entry.result?.message;
+    if (message != null && message.isNotEmpty) return message;
+    return 'I’m ready.';
+  }
+
   String _describe(AgentDispatchResult result) {
     if (result.dispatch case final AgentMessage message) {
       return message.text;
@@ -317,6 +327,7 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
     if (!speech.available) {
       _conversation.appendResult(
         const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
           dispatch: AgentMessage('Voice input is not available on this device yet.'),
         ),
       );
@@ -329,6 +340,7 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
     if (heard == null || heard.trim().isEmpty) {
       _conversation.appendResult(
         const AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
           dispatch: AgentMessage('I didn’t catch that.'),
         ),
       );
@@ -362,7 +374,10 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
                 : IconButton(
                     tooltip: 'New conversation',
                     icon: const Icon(Icons.edit_outlined),
-                    onPressed: () => setState(() => _conversation.clear()),
+                    onPressed: () => setState(() {
+                      _conversation.clear();
+                      _pendingApproval = null;
+                    }),
                   ),
           ),
           Expanded(
@@ -447,9 +462,8 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
       );
     }
 
-    final text = ConversationEngine.speakableText(entry) ??
-        entry.message ??
-        'I’m ready.';
+    final text = _textFor(entry);
+    final status = entry.result?.status;
     return Align(
       alignment: Alignment.centerLeft,
       child: Padding(
@@ -458,11 +472,10 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(text, style: theme.textTheme.bodyLarge),
-            if (entry.status != null &&
-                entry.status != AgentResultStatus.succeeded) ...[
+            if (status != null && status != AgentResultStatus.succeeded) ...[
               const SizedBox(height: 5),
               Text(
-                entry.status!.name,
+                status.name,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),

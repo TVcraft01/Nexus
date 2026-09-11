@@ -2,8 +2,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import 'design_system.dart';
-
 /// A restrained, system-like Nexus presence indicator.
 ///
 /// This is intentionally not a neon "AI orb". It is a thin, dimensional

@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../../core/cable_pairing.dart';
 import '../../mesh/mesh_service.dart';
-import 'design_system.dart';
 
 class NexusV2CablePairPage extends StatefulWidget {
   final MeshService mesh;

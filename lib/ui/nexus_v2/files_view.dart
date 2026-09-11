@@ -151,7 +151,10 @@ class _NexusV2FilesViewState extends State<NexusV2FilesView> {
       picked = await openFile();
     } catch (_) {}
     if (picked == null || !mounted) return;
-    final file = File(picked.path);
+    // Captured once: the transfers below run inside callbacks, where the
+    // nullable local isn't promoted, so a plain String keeps every use honest.
+    final filePath = picked.path;
+    final file = File(filePath);
     if (!await file.exists()) {
       _notice('That file is no longer available.');
       return;
@@ -159,21 +162,21 @@ class _NexusV2FilesViewState extends State<NexusV2FilesView> {
     final target = await _chooseDevice(title: 'Send to…', devices: targets);
     if (target == null || !mounted) return;
     setState(() {
-      _busy.add(picked!.path);
-      _progress[picked.path] = 0;
+      _busy.add(filePath);
+      _progress[filePath] = 0;
     });
     final saved = await widget.mesh.pushLocalFile(
       target,
-      picked.path,
+      filePath,
       onProgress: (done, total) {
         if (!mounted) return;
-        setState(() => _progress[picked!.path] = total > 0 ? done / total : 0);
+        setState(() => _progress[filePath] = total > 0 ? done / total : 0);
       },
     );
     if (!mounted) return;
     setState(() {
-      _busy.remove(picked!.path);
-      _progress.remove(picked!.path);
+      _busy.remove(filePath);
+      _progress.remove(filePath);
     });
     _notice(saved != null ? 'Sent to ${target.name}' : 'Could not send the file');
   }
@@ -442,7 +445,20 @@ class _FileRow extends StatelessWidget {
             ])),
             PopupMenuButton<String>(
               tooltip: 'More',
-              onSelected: switch (_) {},
+              onSelected: (value) {
+                switch (value) {
+                  case 'open':
+                    onTap();
+                  case 'rename':
+                    onRename();
+                  case 'copy':
+                    onCopy();
+                  case 'move':
+                    onMove();
+                  case _:
+                    onDelete();
+                }
+              },
               itemBuilder: (_) => [
                 if (!entry.isDir) const PopupMenuItem(value: 'open', child: Text('Open')),
                 const PopupMenuItem(value: 'rename', child: Text('Rename')),
