@@ -127,12 +127,14 @@ void main() {
       }));
       sender.send(payload, InternetAddress.loopbackIPv4, port);
 
-      await _waitFor(() => heard.isNotEmpty);
-      expect(heard, hasLength(1));
-      expect(heard.single.id, 'peer-device');
-      expect(heard.single.name, 'Peer');
-      expect(heard.single.port, 51820);
-      expect(service.status.received, 1);
+      // Assert about the payload under test, not the device count: another
+      // test suite's Nexus may be announcing on this machine in parallel.
+      await _waitFor(() => heard.any((d) => d.id == 'peer-device'));
+      final ours = heard.where((d) => d.id == 'peer-device').toList();
+      expect(ours, hasLength(1));
+      expect(ours.single.name, 'Peer');
+      expect(ours.single.port, 51820);
+      expect(service.status.received, greaterThanOrEqualTo(1));
     });
 
     // Note: a real Nexus instance may be announcing on this machine while the
