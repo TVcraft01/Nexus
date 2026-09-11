@@ -20,8 +20,14 @@ void main() {
     await tester.pump();
 
     expect(find.text('Nexus'), findsOneWidget);
-    expect(find.text('Your devices, one system'), findsOneWidget);
-    expect(find.text('Nothing paired yet'), findsOneWidget);
+
+    // The shell opens on the assistant; devices is one destination over.
+    await tester.tap(find.byIcon(Icons.devices_other_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Everything connected to Nexus.'), findsOneWidget);
+    expect(find.text('No devices yet'), findsOneWidget);
 
     await mesh.stop();
   });
