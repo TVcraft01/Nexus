@@ -2,10 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'theme.dart';
 
-/// One header for every tab: an icon tile, a title, and a one-line subtitle.
-/// Before this, each view rolled its own header — Devices had a hero, Settings
-/// a bare label, Assistant none at all. Same shape everywhere now, so the app
-/// reads as one product.
+/// Shared page heading used across the main Nexus sections.
+/// Keep it compact so content starts quickly and the hierarchy stays clear.
 class NexusHeader extends StatelessWidget {
   final IconData icon;
   final String title;
@@ -20,25 +18,38 @@ class NexusHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Container(
-          width: 40,
-          height: 40,
+          width: 34,
+          height: 34,
           decoration: BoxDecoration(
-            color: NexusColors.accent.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(12),
+            color: colors.primary.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: colors.primary.withValues(alpha: 0.18)),
           ),
-          child: Icon(icon, color: NexusColors.accent, size: 24),
+          child: Icon(icon, color: colors.primary, size: 19),
         ),
-        const SizedBox(width: 14),
+        const SizedBox(width: 11),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: Theme.of(context).textTheme.headlineMedium),
-              const SizedBox(height: 2),
-              Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.headlineMedium,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 1),
+              Text(
+                subtitle,
+                style: Theme.of(context).textTheme.bodySmall,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ],
           ),
         ),
