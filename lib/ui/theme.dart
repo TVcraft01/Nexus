@@ -43,7 +43,6 @@ ThemeData buildNexusTheme() {
     useMaterial3: true,
     colorScheme: scheme,
     scaffoldBackgroundColor: NexusColors.bg,
-    fontFamily: 'Roboto',
     visualDensity: VisualDensity.standard,
     textTheme: base.copyWith(
       displaySmall: const TextStyle(
