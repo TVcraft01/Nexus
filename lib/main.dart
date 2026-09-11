@@ -17,8 +17,8 @@ import 'core/identity.dart';
 import 'core/store.dart';
 import 'mesh/gateway.dart';
 import 'mesh/mesh_service.dart';
-import 'ui/home_shell.dart';
-import 'ui/theme.dart';
+import 'ui/nexus_v2/design_system.dart';
+import 'ui/nexus_v2/home_shell.dart';
 
 String _platformName(TargetPlatform platform) {
   switch (platform) {
@@ -82,12 +82,6 @@ Future<void> main() async {
   final mesh = MeshService(identity: identity, store: store);
   await mesh.start();
 
-  // A PC that has just provisioned this Android device launches Nexus with a
-  // one-time pairing URI. Pair immediately so the user never has to copy a
-  // code or type 127.0.0.1/port by hand. On a cold start the link arrives as
-  // the launch route; while the app is already running it arrives through
-  // MainActivity.onNewIntent below. Both paths share the same strict parser
-  // and handshake, so provisioning completes however the app was started.
   final pairing = CablePairing.parseProvisioningUri(
     WidgetsBinding.instance.platformDispatcher.defaultRouteName,
   );
@@ -97,8 +91,7 @@ Future<void> main() async {
 
   _provisionChannel.setMethodCallHandler((call) async {
     if (call.method == 'pairPayload' && call.arguments is String) {
-      final payload =
-          CablePairing.parseProvisioningUri(call.arguments as String);
+      final payload = CablePairing.parseProvisioningUri(call.arguments as String);
       if (payload != null) {
         await CablePairing.attemptAutoPair(mesh, payload);
       }
@@ -126,9 +119,9 @@ Future<void> main() async {
 
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
-      statusBarColor: NexusColors.bg,
-      systemNavigationBarColor: NexusColors.surface,
-      systemNavigationBarDividerColor: NexusColors.surface,
+      statusBarColor: NexusV2Colors.background,
+      systemNavigationBarColor: NexusV2Colors.background,
+      systemNavigationBarDividerColor: NexusV2Colors.background,
       statusBarIconBrightness: Brightness.light,
       systemNavigationBarIconBrightness: Brightness.light,
       systemNavigationBarContrastEnforced: false,
@@ -269,8 +262,10 @@ class _NexusAppState extends State<NexusApp> with WindowListener {
     return MaterialApp(
       title: 'Nexus',
       debugShowCheckedModeBanner: false,
-      theme: buildNexusTheme(),
-      home: HomeShell(mesh: widget.mesh),
+      theme: buildNexusV2Theme(brightness: Brightness.light),
+      darkTheme: buildNexusV2Theme(brightness: Brightness.dark),
+      themeMode: ThemeMode.system,
+      home: NexusV2HomeShell(mesh: widget.mesh),
     );
   }
 }

@@ -97,6 +97,17 @@ class ConversationEngine extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  /// Empties the thread so the next ask starts a fresh exchange. The view
+  /// renders only from this engine, so clearing here is the whole reset: the
+  /// pending clarification and the spoken attribution go with the entries.
+  void clear() {
+    if (_entries.isEmpty && _pendingKey == null && !_lastAskSpoken) return;
+    _entries.clear();
+    _pendingKey = null;
+    _lastAskSpoken = false;
+    _notify();
+  }
+
   /// Appends to (or, for re-runs, updates the end of) the thread. [teachKey]
   /// marks a card that answered a "teach me" question conversationally, so
   /// it can offer the way back into the teach loop. [spoken] marks an
