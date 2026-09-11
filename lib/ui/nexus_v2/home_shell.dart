@@ -6,6 +6,9 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/brain.dart';
+import '../../core/distributed_brain.dart';
+import '../../core/tiny_brain.dart';
 import '../../core/version.dart';
 import '../../mesh/mesh_service.dart';
 import '../../mesh/updater.dart';
@@ -29,10 +32,19 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
   UpdateInfo? _update;
   bool _checking = false;
   String? _updateError;
+  late final LocalBrain? _brain;
 
   @override
   void initState() {
     super.initState();
+    _brain = switch (defaultTargetPlatform) {
+      TargetPlatform.linux || TargetPlatform.windows || TargetPlatform.macOS => LocalBrain(),
+      TargetPlatform.android => DistributedBrain(mesh: widget.mesh, tiny: TinyBrain()),
+      _ => null,
+    };
+    if (_brain case final LocalBrain strong when strong is! DistributedBrain) {
+      widget.mesh.brain = strong;
+    }
     if (widget.mesh.store.autoUpdate) unawaited(_checkForUpdate());
   }
 
@@ -60,7 +72,8 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
       };
 
   Widget _assistant() => NexusAssistantPresence(
-        child: NexusV2AssistantView(mesh: widget.mesh),
+        brain: _brain,
+        child: NexusV2AssistantView(mesh: widget.mesh, brain: _brain),
       );
 
   @override
@@ -120,26 +133,10 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
                               : const NexusOrb(size: 34),
                         ),
                         destinations: const [
-                          NavigationRailDestination(
-                            icon: Icon(Icons.devices_outlined),
-                            selectedIcon: Icon(Icons.devices_rounded),
-                            label: Text('Devices'),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.folder_outlined),
-                            selectedIcon: Icon(Icons.folder_rounded),
-                            label: Text('Files'),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.auto_awesome_outlined),
-                            selectedIcon: Icon(Icons.auto_awesome_rounded),
-                            label: Text('Assistant'),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.settings_outlined),
-                            selectedIcon: Icon(Icons.settings_rounded),
-                            label: Text('Settings'),
-                          ),
+                          NavigationRailDestination(icon: Icon(Icons.devices_outlined), selectedIcon: Icon(Icons.devices_rounded), label: Text('Devices')),
+                          NavigationRailDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder_rounded), label: Text('Files')),
+                          NavigationRailDestination(icon: Icon(Icons.auto_awesome_outlined), selectedIcon: Icon(Icons.auto_awesome_rounded), label: Text('Assistant')),
+                          NavigationRailDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings_rounded), label: Text('Settings')),
                         ],
                       ),
                     if (rail) const VerticalDivider(width: 1),
@@ -162,26 +159,10 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
                   selectedIndex: _index,
                   onDestinationSelected: (value) => setState(() => _index = value),
                   destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.devices_outlined),
-                      selectedIcon: Icon(Icons.devices_rounded),
-                      label: 'Devices',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.folder_outlined),
-                      selectedIcon: Icon(Icons.folder_rounded),
-                      label: 'Files',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.auto_awesome_outlined),
-                      selectedIcon: Icon(Icons.auto_awesome_rounded),
-                      label: 'Assistant',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.settings_outlined),
-                      selectedIcon: Icon(Icons.settings_rounded),
-                      label: 'Settings',
-                    ),
+                    NavigationDestination(icon: Icon(Icons.devices_outlined), selectedIcon: Icon(Icons.devices_rounded), label: 'Devices'),
+                    NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder_rounded), label: 'Files'),
+                    NavigationDestination(icon: Icon(Icons.auto_awesome_outlined), selectedIcon: Icon(Icons.auto_awesome_rounded), label: 'Assistant'),
+                    NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings_rounded), label: 'Settings'),
                   ],
                 ),
         );
@@ -214,17 +195,31 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
 }
 
 class NexusAssistantPresence extends StatelessWidget {
+  final LocalBrain? brain;
   final Widget child;
-  const NexusAssistantPresence({super.key, required this.child});
+
+  const NexusAssistantPresence({super.key, required this.brain, required this.child});
 
   @override
   Widget build(BuildContext context) {
     final compact = MediaQuery.sizeOf(context).width < 560;
+    final available = brain != null;
     return Column(
       children: [
         Padding(
           padding: EdgeInsets.only(top: compact ? 2 : 6),
-          child: NexusOrb(size: compact ? 64 : 78),
+          child: Column(
+            children: [
+              NexusOrb(size: compact ? 64 : 78),
+              const SizedBox(height: 4),
+              Text(
+                available ? 'Ready' : 'Assistant',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ),
         ),
         Expanded(child: child),
       ],
@@ -239,13 +234,7 @@ class _UpdateNotice extends StatelessWidget {
   final VoidCallback onUpdate;
   final VoidCallback onDismiss;
 
-  const _UpdateNotice({
-    required this.update,
-    required this.error,
-    required this.checking,
-    required this.onUpdate,
-    required this.onDismiss,
-  });
+  const _UpdateNotice({required this.update, required this.error, required this.checking, required this.onUpdate, required this.onDismiss});
 
   @override
   Widget build(BuildContext context) {
@@ -258,21 +247,10 @@ class _UpdateNotice extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
           child: Row(
             children: [
-              Icon(
-                error == null ? Icons.system_update_outlined : Icons.error_outline,
-                size: 20,
-              ),
+              Icon(error == null ? Icons.system_update_outlined : Icons.error_outline, size: 20),
               const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  error ??
-                      (checking
-                          ? 'Checking for updates…'
-                          : 'Nexus v${update!.version} is ready.'),
-                ),
-              ),
-              if (!checking && hasUpdate)
-                TextButton(onPressed: onUpdate, child: const Text('Update')),
+              Expanded(child: Text(error ?? (checking ? 'Checking for updates…' : 'Nexus v${update!.version} is ready.'))),
+              if (!checking && hasUpdate) TextButton(onPressed: onUpdate, child: const Text('Update')),
               TextButton(onPressed: onDismiss, child: const Text('Later')),
             ],
           ),
