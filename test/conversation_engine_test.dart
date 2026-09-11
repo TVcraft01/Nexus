@@ -140,6 +140,36 @@ void main() {
       engine.replaceEntry(ghost, _message('nope'));
       expect(engine.entries, hasLength(1));
     });
+
+    test('clear empties the thread and the state that hangs off it', () {
+      final engine = ConversationEngine();
+      engine.appendResult(_teachResult, asUser: 'x', spoken: true);
+      expect(engine.isEmpty, isFalse);
+
+      engine.clear();
+
+      expect(engine.isEmpty, isTrue);
+      expect(engine.entries, isEmpty);
+      expect(engine.last, isNull);
+      expect(engine.lastResult, isNull);
+      expect(engine.pendingKey, isNull);
+      expect(engine.lastAskSpoken, isFalse);
+    });
+
+    test('clear leaves a cleared thread alone and keeps notifying listeners',
+        () {
+      final engine = ConversationEngine();
+      var notified = 0;
+      engine.addListener(() => notified++);
+
+      engine.clear();
+      expect(notified, 0, reason: 'nothing to empty, nothing to announce');
+
+      engine.appendResult(_message('hi'));
+      engine.clear();
+      expect(notified, 2, reason: 'append plus clear');
+      expect(engine.isEmpty, isTrue);
+    });
   });
 
   group('brain health', () {
