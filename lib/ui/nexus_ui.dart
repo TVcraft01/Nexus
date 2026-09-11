@@ -1,7 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
@@ -11,14 +11,12 @@ import '../core/brain.dart';
 import '../core/command_service.dart';
 import '../core/conversation.dart';
 import '../core/conversation_engine.dart';
-import '../core/distributed_brain.dart';
 import '../core/profile.dart';
 import '../core/reminders.dart';
 import '../core/speech.dart';
-import '../core/store.dart';
-import '../core/tiny_brain.dart';
 import '../mesh/mesh_service.dart';
 import 'cable_pair_page.dart';
+import 'device_executor.dart';
 import 'pair_sheet.dart';
 import 'theme.dart';
 
@@ -335,7 +333,6 @@ class _NexusAssistantPageState extends State<NexusAssistantPage> {
   UserProfile? _profileState;
   bool _listening = false;
   bool _sending = false;
-  bool _loaded = false;
   final Set<ConversationEntry> _spoken = {};
   ReminderEngine? _reminders;
 
@@ -417,14 +414,17 @@ class _NexusAssistantPageState extends State<NexusAssistantPage> {
         ];
         unawaited(widget.mesh.store.save());
       }
-      ..onBroadcast = (r) =>
-          unawaited(widget.mesh.broadcastReminder(jsonEncode(r.toJson())))
-      ..onFired = (r) => _conversation.appendResult(
-            AgentDispatchResult(
-              status: AgentResultStatus.succeeded,
-              dispatch: AgentMessage('Reminder: ${r.text}'),
-            ),
-          )
+      ..onBroadcast = (r) {
+        unawaited(widget.mesh.broadcastReminder(jsonEncode(r.toJson())));
+      }
+      ..onFired = (r) {
+        _conversation.appendResult(
+          AgentDispatchResult(
+            status: AgentResultStatus.succeeded,
+            dispatch: AgentMessage('Reminder: ${r.text}'),
+          ),
+        );
+      }
       ..seed(widget.mesh.store.agentReminders)
       ..start();
     if (widget.mesh.onReminderReceived == null) {
@@ -439,7 +439,6 @@ class _NexusAssistantPageState extends State<NexusAssistantPage> {
     _service.setIdentity(userName: p.userName, assistantName: p.assistantName);
     setState(() {
       _profileState = p;
-      _loaded = true;
     });
   }
 
@@ -687,11 +686,6 @@ class _NexusAssistantPageState extends State<NexusAssistantPage> {
       case null:
         content = Text(
           result.message.isEmpty ? 'I could not do that.' : result.message,
-          style: Theme.of(context).textTheme.bodyLarge,
-        );
-      default:
-        content = Text(
-          result.message.isEmpty ? 'Done.' : result.message,
           style: Theme.of(context).textTheme.bodyLarge,
         );
     }
@@ -1590,7 +1584,5 @@ class _EmptyPanel extends StatelessWidget {
     );
   }
 }
-
-class _BrainHealthHolder {}
 
 String get appVersionLabel => 'v0.1.52';

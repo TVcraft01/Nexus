@@ -118,7 +118,7 @@ class _HomeShellState extends State<HomeShell> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        _updateError ?? (_applying ? 'Updating to v${info.version}…' : 'Nexus v${info.version} is available'),
+                        _updateError ?? (_applying ? 'Updating to v${_update!.version}…' : 'Nexus v${_update!.version} is available'),
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ),
