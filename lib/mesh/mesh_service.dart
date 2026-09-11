@@ -1038,7 +1038,25 @@ class MeshService extends ChangeNotifier {
     )..tcpPort = store.port;
     discovery.knownAddresses.addAll(known);
     _discovery = discovery;
-    unawaited(discovery.start());
+    // Discovery is best-effort, but a failure here is exactly what an empty
+    // Nearby list looks like — say so out loud instead of leaving the user to
+    // guess, and re-check once the socket has settled.
+    unawaited(discovery.start().then((_) {
+      final notice = discoveryNotice;
+      if (notice != null) debugPrint('NEXUS mesh: $notice');
+    }).catchError((Object e) {
+      debugPrint('NEXUS mesh: discovery could not start ($e)');
+    }));
+  }
+
+  /// A human-readable warning when discovery cannot do its job, or null when
+  /// it is healthy. An empty Nearby list should never be unexplained: a
+  /// socket on a fallback port, or one that cannot send at all, is invisible
+  /// to every other device while looking perfectly fine in the UI.
+  String? get discoveryNotice {
+    final status = _discovery?.status;
+    if (status == null || status.canReceive) return null;
+    return status.describe();
   }
 
   // ---------------------------------------------------------------------

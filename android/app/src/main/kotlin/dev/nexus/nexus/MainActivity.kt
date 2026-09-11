@@ -15,6 +15,7 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -55,6 +56,15 @@ class MainActivity : FlutterActivity() {
     private val PHONE_CHANNEL = "dev.nexus.nexus/phone"
     private val DEVICE_CHANNEL = "dev.nexus.nexus/device"
     private val PROVISION_CHANNEL = "dev.nexus.nexus/provisioning"
+    private val NETWORK_CHANNEL = "dev.nexus.nexus/network"
+
+    // Android's Wi-Fi firmware filters multicast and broadcast frames before
+    // they ever reach the app, so Nexus can only *hear* a nearby device while
+    // it holds a WifiManager.MulticastLock (CHANGE_WIFI_MULTICAST_STATE in
+    // the manifest is the permission to take it). The mesh is meant to be
+    // always-on, so the lock is held for the activity's life and released in
+    // onDestroy. Answering false when the platform refuses lets Dart report
+    // the failure instead of showing an empty Nearby list.
 
     // "call mom" from the assistant: resolving a contact needs READ_CONTACTS
     // and placing the call needs CALL_PHONE — both requested at runtime on
@@ -140,7 +150,36 @@ class MainActivity : FlutterActivity() {
     private var pendingTtsText: String? = null
     private var pendingTtsResult: MethodChannel.Result? = null
 
+    /// Takes the Wi-Fi multicast lock once. Returns whether it is held, so
+    /// Dart can tell "listening for nearby devices" apart from "cannot hear
+    /// anyone on this device" instead of showing an empty list either way.
+    private fun acquireMulticastLock(): Boolean {
+        if (multicastLock?.isHeld == true) return true
+        return try {
+            val wifi = applicationContext.getSystemService(WifiManager::class.java)
+            val lock = wifi.createMulticastLock("nexus-discovery")
+            lock.setReferenceCounted(true)
+            lock.acquire()
+            multicastLock = lock
+            Log.i(TAG, "multicast lock acquired — nearby discovery can receive")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "multicast lock refused", e)
+            false
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        try {
+            if (multicastLock?.isHeld == true) multicastLock?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "multicast lock release failed: ${e.message}")
+        }
+        multicastLock = null
+    }
+
     override fun onDestroy() {
+        releaseMulticastLock()
         // The in-app preview must die with the activity — otherwise the
         // audio keeps playing after Nexus is closed, and reopening stacks a
         // second player over the ghost.
@@ -158,6 +197,8 @@ class MainActivity : FlutterActivity() {
     }
 
     private lateinit var usbSerial: UsbSerialBridge
+
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     // Forwards one-time nexus://pair provisioning intents to Dart while the
     // app is already running, so automatic cable pairing completes on warm
@@ -235,6 +276,21 @@ class MainActivity : FlutterActivity() {
                     speakText(call.argument<String>("text") ?: "", result)
                 } else {
                     result.notImplemented()
+                }
+            }
+
+        // Nearby discovery: the Wi-Fi multicast lock. Without it Android
+        // silently drops the announcements other Nexus devices broadcast, so
+        // the app looks connected and hears nothing.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NETWORK_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "acquireMulticast" -> result.success(acquireMulticastLock())
+                    "releaseMulticast" -> {
+                        releaseMulticastLock()
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
                 }
             }
 
