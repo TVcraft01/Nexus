@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../core/identity.dart';
 
-/// A device seen on the local network via [DiscoveryService].
 class DiscoveredDevice {
   final String id;
   final String name;
@@ -72,7 +71,6 @@ class DiscoveryService {
       _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     }
 
-    // Android can reject 255.255.255.255 until broadcast sends are enabled.
     if (canBroadcast) {
       try {
         _socket!.broadcastEnabled = true;
@@ -152,7 +150,7 @@ class DiscoveryService {
       final id = decoded['id'];
       if (id is! String || id == identity.id) return;
       final port = (decoded['port'] as num?)?.toInt();
-      if (port == null || port <= 0) return;
+      if (port == null || port <= 0 || port > 65535) return;
       final device = DiscoveredDevice(
         id: id,
         name: (decoded['name'] as String?) ?? 'Unknown device',
@@ -166,7 +164,6 @@ class DiscoveryService {
         'NEXUS discovery: heard ${device.name} (${device.id}) '
         'at ${device.address}:${device.port}',
       );
-
       final reply = utf8.encode(
         jsonEncode({
           'v': 1,
@@ -183,7 +180,6 @@ class DiscoveryService {
   }
 
   int _tcpPort = 51820;
-
   set tcpPort(int value) => _tcpPort = value;
 
   Future<void> stop() async {
