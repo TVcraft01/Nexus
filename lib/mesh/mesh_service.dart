@@ -99,8 +99,16 @@ class PairResult {
   final bool ok;
   final String? error;
   final String? peerName;
-  const PairResult.ok(this.peerName) : ok = true, error = null;
-  const PairResult.failure(this.error) : ok = false, peerName = null;
+
+  /// True once the device answered the TCP connection — the address was
+  /// right even if the handshake then failed (a wrong or expired code, say).
+  /// No other advertised address can fix that, so callers stop trying them.
+  final bool reached;
+
+  const PairResult.ok(this.peerName) : ok = true, error = null, reached = true;
+  const PairResult.failure(this.error, {this.reached = false})
+      : ok = false,
+        peerName = null;
 }
 
 /// A pairing session started by "Show my code".
@@ -282,6 +290,12 @@ class MeshService extends ChangeNotifier {
 
   List<String>? _ipsCache;
   DateTime? _ipsCacheAt;
+
+  /// The most recently spent pairing code, kept only until the code's own
+  /// expiry so a second device that scans the same (now used) code is told
+  /// that instead of waiting for a 12-second silence.
+  String? _spentCodeValue;
+  DateTime? _spentCodeUntil;
   TailscaleInfo? _tailscale;
   // Relay integration is staged (see relay/); the client is wired once the
   // server is deployed. Kept as a field so wiring it up has one owner.
@@ -1038,7 +1052,25 @@ class MeshService extends ChangeNotifier {
     )..tcpPort = store.port;
     discovery.knownAddresses.addAll(known);
     _discovery = discovery;
-    unawaited(discovery.start());
+    // Discovery is best-effort, but a failure here is exactly what an empty
+    // Nearby list looks like — say so out loud instead of leaving the user to
+    // guess, and re-check once the socket has settled.
+    unawaited(discovery.start().then((_) {
+      final notice = discoveryNotice;
+      if (notice != null) debugPrint('NEXUS mesh: $notice');
+    }).catchError((Object e) {
+      debugPrint('NEXUS mesh: discovery could not start ($e)');
+    }));
+  }
+
+  /// A human-readable warning when discovery cannot do its job, or null when
+  /// it is healthy. An empty Nearby list should never be unexplained: a
+  /// socket on a fallback port, or one that cannot send at all, is invisible
+  /// to every other device while looking perfectly fine in the UI.
+  String? get discoveryNotice {
+    final status = _discovery?.status;
+    if (status == null || status.canReceive) return null;
+    return status.describe();
   }
 
   // ---------------------------------------------------------------------
@@ -1168,9 +1200,15 @@ class MeshService extends ChangeNotifier {
   /// A frame we could not decrypt with any paired device's key might be a
   /// pairing request encrypted with the code we are currently showing. If it
   /// decrypts and is a pair-request, accept it.
+  ///
+  /// A code that was already spent is still understood, but only so the
+  /// duplicate can be refused with a reason instead of silence — see
+  /// [_rejectPairing].
   Future<void> _tryPairingFrame(Socket socket, String enc) async {
-    if (!pendingCodeActive) return;
-    final key = await derivePairingKey(pendingCode!);
+    final active = pendingCodeActive;
+    final code = active ? pendingCode : _spentCode;
+    if (code == null) return;
+    final key = await derivePairingKey(code);
     Uint8List clear;
     try {
       clear = await decryptFromB64(enc, key);
@@ -1186,6 +1224,17 @@ class MeshService extends ChangeNotifier {
       return;
     }
     if (msg.type == NexusMessage.pairRequest) {
+      if (!active) {
+        debugPrint('NEXUS mesh: pair-request <- ${msg.from} (code spent)');
+        await _rejectPairing(
+          socket,
+          key,
+          msg.from,
+          'That code has already been used. Show a fresh code on the other '
+          'device and try again.',
+        );
+        return;
+      }
       debugPrint('NEXUS mesh: pair-request <- ${msg.from} (code matched)');
       await _handlePairRequest(msg, socket);
     }
@@ -3042,12 +3091,14 @@ class MeshService extends ChangeNotifier {
   // ---------------------------------------------------------------------
 
   /// Start "show my code": returns a code + QR payload valid for 5 minutes.
-  /// The QR includes the LAN IP when known, so a scanning device can connect
-  /// straight away without typing an address.
+  /// The QR includes our addresses when they are already known, so a scanning
+  /// device can connect straight away without typing an address. The caller
+  /// refreshes it once a first interface scan completes (see `knownIps`).
   PairingSession beginPairing() {
     final code = generatePairingCode();
     pendingCode = code;
     pendingCodeExpiry = DateTime.now().add(const Duration(minutes: 5));
+    final ips = knownIps;
     return PairingSession(
       code: code,
       qrPayload: PairPayload.build(
@@ -3055,9 +3106,52 @@ class MeshService extends ChangeNotifier {
         name: identity.name,
         port: store.port,
         code: code,
+        ip: ips.isNotEmpty ? ips.first : null,
+        ips: ips,
       ),
       expiresAt: pendingCodeExpiry!,
     );
+  }
+
+  /// Our own non-loopback IPv4 addresses as last resolved by [_myIps], without
+  /// touching the interfaces. Empty until the first scan finishes — heartbeats
+  /// call [_myIps] within seconds of start, so the QR usually has them already.
+  List<String> get knownIps => List.unmodifiable(_ipsCache ?? const <String>[]);
+
+  /// The spent code, while still inside its original validity window. It can
+  /// never pair a device — [pendingCodeActive] guards the accept path — it
+  /// only exists so a duplicate attempt gets an honest refusal.
+  String? get _spentCode {
+    final code = _spentCodeValue;
+    final until = _spentCodeUntil;
+    if (code == null || until == null) return null;
+    if (DateTime.now().isAfter(until)) return null;
+    return code;
+  }
+
+  /// Tells a device that its (already used) code will not pair, over a frame
+  /// encrypted with that same code — the only key the caller can read.
+  Future<void> _rejectPairing(
+    Socket socket,
+    Uint8List key,
+    String to,
+    String reason,
+  ) async {
+    final reply = NexusMessage(
+      type: NexusMessage.pairReject,
+      from: identity.id,
+      to: to,
+      payload: {'reason': reason},
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    );
+    try {
+      final enc = await encryptToB64(encodeJson(reply.toJson()), key);
+      socket.add(FrameDecoder.encodeFrame(encodeJson({'enc': enc})));
+      await socket.flush();
+    } catch (_) {
+      _dropSocket(socket);
+    }
   }
 
   bool get pendingCodeActive {
@@ -3093,6 +3187,10 @@ class MeshService extends ChangeNotifier {
     _paired[peer.id] = peer;
     store.upsertPaired(peer.toJson());
     await store.save();
+    // Remember that this code is spent (until its own expiry) so the next
+    // device to scan the same code is refused with a reason, not silence.
+    _spentCodeValue = code;
+    _spentCodeUntil = pendingCodeExpiry;
     pendingCode = null;
     pendingCodeExpiry = null;
     _noteSeen(peer.id, verified: true);
@@ -3122,6 +3220,43 @@ class MeshService extends ChangeNotifier {
 
   /// This side: connect to a device showing a code, prove we know the code
   /// by encrypting our request with it, and store the pair on acceptance.
+  /// Pairs through the first address that answers, trying every address the
+  /// other device advertised.
+  ///
+  /// A QR carries every address its device knows (LAN, VPN, Tailscale)
+  /// *because* any single one can be stale — a laptop that changed networks,
+  /// a VPN that is down, a Docker bridge that looks like a LAN. Trying only
+  /// the first one turns any of those into "I scanned the QR and it never
+  /// connected". A failure that already reached the device (a wrong code) is
+  /// returned at once: another address cannot fix that.
+  Future<PairResult> pairWithCandidates({
+    required List<String> addresses,
+    required int port,
+    required String code,
+  }) async {
+    final tried = <String>[];
+    PairResult? last;
+    for (final raw in addresses) {
+      final address = raw.trim();
+      if (address.isEmpty || tried.contains(address)) continue;
+      tried.add(address);
+      final result = await pairWith(address: address, port: port, code: code);
+      if (result.ok || result.reached) return result;
+      last = result;
+    }
+    if (tried.isEmpty) {
+      return PairResult.failure(
+        'That code has no address to connect to — ask the other device to show a fresh code.',
+      );
+    }
+    if (tried.length == 1) return last!;
+    return PairResult.failure(
+      'Could not reach the device on any of its addresses '
+      '(${tried.join(', ')}) port $port. Check that both devices are on the '
+      'same network and that its firewall allows Nexus.',
+    );
+  }
+
   Future<PairResult> pairWith({
     required String address,
     required int port,
@@ -3135,7 +3270,10 @@ class MeshService extends ChangeNotifier {
       socket = await Socket.connect(
         address,
         port,
-        timeout: const Duration(seconds: 6),
+        // The injectable timeout, like every other connection this service
+        // makes — a hard-coded one cannot be shortened in a test, so the
+        // "tries the next address" path could never be covered.
+        timeout: connectTimeout,
       );
     } catch (_) {
       return PairResult.failure(
@@ -3163,6 +3301,7 @@ class MeshService extends ChangeNotifier {
       socket.destroy();
       return PairResult.failure(
         'Something went wrong preparing the pairing request.',
+        reached: true,
       );
     }
 
@@ -3172,6 +3311,7 @@ class MeshService extends ChangeNotifier {
         completer.complete(
           PairResult.failure(
             'No answer from the device. Double-check the code and that it is still showing.',
+            reached: true,
           ),
         );
         socket.destroy();
@@ -3218,6 +3358,7 @@ class MeshService extends ChangeNotifier {
                 PairResult.failure(
                   (msg.payload['reason'] as String?) ??
                       'The device rejected the pairing.',
+                  reached: true,
                 ),
               );
             }
@@ -3235,14 +3376,16 @@ class MeshService extends ChangeNotifier {
       onError: (_) {
         if (!completer.isCompleted) {
           completer.complete(
-            PairResult.failure('Connection was lost during pairing.'),
+            PairResult.failure('Connection was lost during pairing.',
+              reached: true),
           );
         }
       },
       onDone: () {
         if (!completer.isCompleted) {
           completer.complete(
-            PairResult.failure('Connection closed before pairing finished.'),
+            PairResult.failure('Connection closed before pairing finished.',
+              reached: true),
           );
         }
       },
@@ -3254,7 +3397,8 @@ class MeshService extends ChangeNotifier {
     } catch (_) {
       timeout.cancel();
       socket.destroy();
-      return PairResult.failure('Could not send the pairing request.');
+      return PairResult.failure('Could not send the pairing request.',
+          reached: true);
     }
 
     final result = await completer.future;

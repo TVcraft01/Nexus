@@ -122,6 +122,190 @@ void main() {
     expect(meshB.isPaired('device-a'), isFalse);
   });
 
+  test('a second device reusing a spent code is refused, not ignored', () async {
+    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212;
+    await storeC.save();
+    final meshC = MeshService(
+      identity: DeviceInfo(id: 'device-c', name: 'Phone C', platform: 'android'),
+      store: storeC,
+      clipboard: FakeClipboard(),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
+    await meshC.start();
+    try {
+      // One code, shown once. The first device spends it.
+      final session = meshA.beginPairing();
+      final first = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(first.ok, isTrue, reason: first.error);
+
+      // The second device scans the same still-visible code. It must be told
+      // the code is spent — silence here reads to a user as "Nexus can only
+      // pair one device", after a 12-second stall.
+      final second = await meshC.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(second.ok, isFalse);
+      expect(second.reached, isTrue);
+      expect(second.error, contains('already been used'), reason: second.error);
+
+      // Nothing was paired by the refused attempt, and the first device is
+      // still paired.
+      expect(meshA.isPaired('device-c'), isFalse);
+      expect(meshA.isPaired('device-b'), isTrue);
+      expect(meshA.pairedDevices, hasLength(1));
+
+      // And a fresh code pairs the second device normally.
+      final fresh = meshA.beginPairing();
+      final third = await meshC.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: fresh.code,
+      );
+      expect(third.ok, isTrue, reason: third.error);
+      expect(meshA.pairedDevices, hasLength(2));
+    } finally {
+      await meshC.stop();
+    }
+  });
+
+  test('a third device joins without displacing the first two', () async {
+    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212;
+    final storeD = NexusStore(explicitPath: '${tmp.path}/d.json')..port = 53213;
+    await storeC.save();
+    await storeD.save();
+    final meshC = MeshService(
+      identity: DeviceInfo(id: 'device-c', name: 'Phone C', platform: 'android'),
+      store: storeC,
+      clipboard: FakeClipboard(),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    final meshD = MeshService(
+      identity: DeviceInfo(id: 'device-d', name: 'PC D', platform: 'linux'),
+      store: storeD,
+      clipboard: FakeClipboard(),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
+    await meshC.start();
+    await meshD.start();
+    try {
+      // Each device pairs with the host using its own code, in turn.
+      for (final pair in [
+        (meshB, 'device-b'),
+        (meshC, 'device-c'),
+        (meshD, 'device-d'),
+      ]) {
+        final session = meshA.beginPairing();
+        final result = await pair.$1.pairWith(
+          address: '127.0.0.1',
+          port: meshA.port,
+          code: session.code,
+        );
+        expect(result.ok, isTrue, reason: result.error);
+      }
+
+      // All three survive on the host, each with its own secret and identity.
+      expect(meshA.pairedDevices, hasLength(3));
+      expect(
+        meshA.pairedDevices.map((d) => d.id).toSet(),
+        {'device-b', 'device-c', 'device-d'},
+      );
+      final secrets = meshA.pairedDevices
+          .map((d) => d.pairingSecret)
+          .where((s) => s.isNotEmpty)
+          .toSet();
+      expect(secrets, hasLength(3));
+
+      // Reconnecting one device leaves the others paired.
+      await meshB.stop();
+      await meshB.start();
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(meshA.pairedDevices, hasLength(3));
+      expect(meshA.isPaired('device-c'), isTrue);
+      expect(meshA.isPaired('device-d'), isTrue);
+    } finally {
+      await meshC.stop();
+      await meshD.stop();
+    }
+  });
+
+  test('a QR carries every address, and a stale first one is skipped', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    // A stale address first — exactly why a QR advertises several.
+    final result = await meshB.pairWithCandidates(
+      addresses: const ['192.0.2.1', '127.0.0.1'],
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue, reason: result.error);
+    expect(meshA.isPaired('device-b'), isTrue);
+    expect(meshB.isPaired('device-a'), isTrue);
+  });
+
+  test('a rejected code stops after the device was reached', () async {
+    await meshA.start();
+    await meshB.start();
+
+    final session = meshA.beginPairing();
+    final wrong = session.code == 'AAAA-AAAA' ? 'BBBB-BBBB' : 'AAAA-AAAA';
+    // The device answers first, so no other address could have fixed this.
+    final result = await meshB.pairWithCandidates(
+      addresses: const ['127.0.0.1', '192.0.2.1'],
+      port: meshA.port,
+      code: wrong,
+    );
+    expect(result.ok, isFalse);
+    expect(result.reached, isTrue);
+    // The second address was never dialled: had it been, the dead one would
+    // have turned this into the "could not reach" aggregate below.
+    expect(
+      result.error,
+      isNot(contains('Could not reach the device on any of its addresses')),
+    );
+  });
+
+  test('a QR with no reachable address names every one it tried', () async {
+    await meshB.start();
+
+    final result = await meshB.pairWithCandidates(
+      addresses: const ['192.0.2.1', ' 192.0.2.1 '],
+      port: 53219,
+      code: 'ABCD-EFGH',
+    );
+    expect(result.ok, isFalse);
+    expect(result.reached, isFalse);
+    // Deduplicated, and honest about where it looked.
+    expect(result.error, contains('53219'));
+    // Deduplicated: a padded duplicate of one address is one attempt, so it
+    // is named exactly once.
+    expect(
+      RegExp(RegExp.escape('192.0.2.1')).allMatches(result.error!).length,
+      1,
+    );
+  });
+
+  test('a QR with no address at all says so instead of dialling nothing', () async {
+    final result = await meshB.pairWithCandidates(
+      addresses: const [],
+      port: 53219,
+      code: 'ABCD-EFGH',
+    );
+    expect(result.ok, isFalse);
+    expect(result.error, contains('no address'));
+  });
+
   test('encrypted clipboard travels from phone to PC after pairing', () async {
     await meshA.start();
     await meshB.start();
