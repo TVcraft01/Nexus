@@ -6,9 +6,6 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../core/brain.dart';
-import '../../core/distributed_brain.dart';
-import '../../core/tiny_brain.dart';
 import '../../core/version.dart';
 import '../../mesh/mesh_service.dart';
 import '../../mesh/updater.dart';
@@ -216,25 +213,20 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
   }
 }
 
-class NexusAssistantPresence extends StatefulWidget {
+class NexusAssistantPresence extends StatelessWidget {
   final Widget child;
   const NexusAssistantPresence({super.key, required this.child});
 
-  @override
-  State<NexusAssistantPresence> createState() => _NexusAssistantPresenceState();
-}
-
-class _NexusAssistantPresenceState extends State<NexusAssistantPresence> {
   @override
   Widget build(BuildContext context) {
     final compact = MediaQuery.sizeOf(context).width < 560;
     return Column(
       children: [
-        const Padding(
-          padding: EdgeInsets.only(top: 4),
-          child: NexusOrb(size: 78),
+        Padding(
+          padding: EdgeInsets.only(top: compact ? 2 : 6),
+          child: NexusOrb(size: compact ? 64 : 78),
         ),
-        Expanded(child: widget.child),
+        Expanded(child: child),
       ],
     );
   }
