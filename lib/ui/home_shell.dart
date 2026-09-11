@@ -18,7 +18,6 @@ import 'theme.dart';
 class HomeShell extends StatefulWidget {
   final MeshService mesh;
   const HomeShell({super.key, required this.mesh});
-
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
@@ -112,11 +111,19 @@ class _HomeShellState extends State<HomeShell> {
                 padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
                 child: Row(
                   children: [
-                    Icon(error == null ? Icons.system_update_outlined : Icons.error_outline, color: error == null ? NexusColors.accent : NexusColors.danger),
+                    Icon(
+                      _updateError == null ? Icons.system_update_outlined : Icons.error_outline,
+                      color: _updateError == null ? NexusColors.accent : NexusColors.danger,
+                    ),
                     const SizedBox(width: 10),
-                    Expanded(child: Text(error ?? (applying ? 'Updating to v${info.version}…' : 'Nexus v${info.version} is available'), style: Theme.of(context).textTheme.bodyMedium)),
-                    TextButton(onPressed: applying ? null : () => setState(() => _update = null), child: const Text('Later')),
-                    FilledButton(onPressed: applying ? null : _updateNow, child: const Text('Update')),
+                    Expanded(
+                      child: Text(
+                        _updateError ?? (_applying ? 'Updating to v${info.version}…' : 'Nexus v${info.version} is available'),
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ),
+                    TextButton(onPressed: _applying ? null : () => setState(() => _update = null), child: const Text('Later')),
+                    FilledButton(onPressed: _applying ? null : _updateNow, child: const Text('Update')),
                   ],
                 ),
               ),
