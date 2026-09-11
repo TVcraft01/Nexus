@@ -63,7 +63,6 @@ class Capability {
 }
 
 const Set<String> _phone = {'android'};
-const Set<String> _desktop = {'linux', 'windows', 'macos'};
 const Set<String> _anyDevice = {'android', 'linux', 'windows', 'macos'};
 
 /// Every action Nexus knows, with its label, verified example and reach.
@@ -238,6 +237,8 @@ List<String> suggestionExamples() => [
 /// Any platform that is not Android is treated as a desktop, which is how
 /// this behaved when the two lists were hand-written.
 List<DeviceCapability> defaultCapabilitiesFor(String platform) {
+  // 'linux' stands in for every desktop: each desktop capability above
+  // declares the whole desktop set, so any member of it answers for all.
   final here = platform == 'android' ? 'android' : 'linux';
   return [
     for (final capability in kCapabilities)
