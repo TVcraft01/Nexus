@@ -170,6 +170,23 @@ class ConversationEngine extends ChangeNotifier {
     _notify();
   }
 
+  /// Starts a new conversation: the thread goes, and the open question with
+  /// it, so the next thing typed is a fresh ask rather than an answer to a
+  /// question from a conversation the user has abandoned.
+  ///
+  /// The brain keeps its health — a new conversation is a fresh thread, not a
+  /// fresh Nexus — but any exchange already in flight is made stale by
+  /// bumping the ticket. Its reply then lands on a card that no longer exists
+  /// ([replaceEntry] no-ops on a missing entry) and cannot flip the brain's
+  /// health either, so nothing from the old conversation leaks into the new.
+  void reset() {
+    _entries.clear();
+    _pendingKey = null;
+    _lastAskSpoken = false;
+    _converseSeq++;
+    _notify();
+  }
+
   /// The plain text a card would say out loud, or null when the card is UI —
   /// an action card (its real outcome replaces it a moment later), a plan, a
   /// clarification question, a device list, or the transient "Thinking…"

@@ -10,6 +10,7 @@ import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/core/query_log.dart';
 import 'package:nexus/ui/assistant_view.dart';
+import 'package:nexus/ui/nexus_core.dart';
 import 'package:nexus/ui/theme.dart';
 
 void main() {
@@ -548,6 +549,160 @@ void brainWidgetTests() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
       QueryLog.readAllOverride = null;
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('the core follows the real pipeline, not a mood', (tester) async {
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('core1').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'test-device', name: 'Test PC', platform: 'linux'),
+      store: store,
+    );
+
+    NexusCoreState coreState() =>
+        tester.widget<NexusCore>(find.byType(NexusCore)).state;
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      // Nothing asked, no paired devices: Nexus is here and idle. It is not
+      // "offline", because with nothing paired there is nothing to be
+      // offline from.
+      expect(coreState(), NexusCoreState.idle);
+
+      // A real ask that Nexus genuinely cannot carry out on this device — the
+      // pipeline returns `unavailable`, and that is the one failure the core
+      // reports.
+      await tester.enterText(find.byType(TextField), 'blink the esp32');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('Unavailable'), findsOneWidget);
+      expect(coreState(), NexusCoreState.error);
+
+      // Nexus answering for itself clears it: a successful ask is not a
+      // failure, so the core rests again.
+      await tester.enterText(find.byType(TextField), 'what time is it');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(coreState(), NexusCoreState.idle);
+
+      // A denied approval is the user's own choice, not an error.
+      await tester.enterText(find.byType(TextField), 'copy hello to my phone');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('Approval needed'), findsOneWidget);
+      expect(coreState(), NexusCoreState.idle);
+    } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('New conversation starts a fresh thread instead of returning '
+      'to the greeting', (tester) async {
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('core2').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'test-device', name: 'Test PC', platform: 'linux'),
+      store: store,
+    );
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      // First run, nothing paired and no thread yet: the greeting card is
+      // what a device that has never talked to Nexus would show.
+      expect(find.text('Hello! I am Nexus.'), findsOneWidget);
+
+      // Have a conversation.
+      await tester.enterText(find.byType(TextField), 'what time is it');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.textContaining("It's "), findsOneWidget);
+      expect(find.text('Hello! I am Nexus.'), findsNothing);
+
+      await tester.tap(find.byTooltip('New conversation'));
+      await tester.pump();
+
+      // The thread is gone, the composer is empty and ready...
+      expect(find.textContaining("It's "), findsNothing);
+      expect(tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          isEmpty);
+      final focus = tester.widget<TextField>(find.byType(TextField)).focusNode;
+      expect(focus?.hasFocus, isTrue,
+          reason: 'a new conversation should land in the composer');
+
+      // ...and it is a new conversation, not a device reset: the greeting the
+      // user has already read must not come back.
+      expect(find.text('Hello! I am Nexus.'), findsNothing);
+      expect(find.text('Ask me anything — I listen and do.'), findsOneWidget);
+
+      // And it still works: the next ask runs against the same Nexus.
+      await tester.enterText(find.byType(TextField), 'what time is it');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.textContaining("It's "), findsOneWidget);
+    } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('a new conversation drops the question it left open',
+      (tester) async {
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('core3').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'test-device', name: 'Test PC', platform: 'linux'),
+      store: store,
+    );
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      // An unknown phrase opens a teach question.
+      await tester.enterText(find.byType(TextField), 'teleport me to mars');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('Question'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('New conversation'));
+      await tester.pump();
+      expect(find.text('Question'), findsNothing);
+
+      // A command typed after the reset must run as itself. The abandoned
+      // question is gone, so "what time is it" can never be learned as the
+      // meaning of "teleport me to mars".
+      await tester.enterText(find.byType(TextField), 'what time is it');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.textContaining("It's "), findsOneWidget);
+      expect(find.text('Question'), findsNothing);
+    } finally {
       QueryLog.i.resetForTest();
       await mesh.stop();
     }

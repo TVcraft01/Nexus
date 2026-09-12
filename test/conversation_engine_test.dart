@@ -472,4 +472,61 @@ void main() {
       expect(entries[3].spokenAsk, isFalse); // the typed ask's answer
     });
   });
+
+  group('a new conversation', () {
+    test('clears the thread and the question it left open', () {
+      final engine = ConversationEngine();
+      engine.appendResult(_teachResult, asUser: 'x');
+      expect(engine.pendingKey, 'teach:x');
+      engine.reset();
+      expect(engine.entries, isEmpty);
+      // The open question goes with the thread: the next thing typed is a
+      // fresh ask, not an answer to a conversation the user abandoned.
+      expect(engine.pendingKey, isNull);
+    });
+
+    test('keeps the brain: a new conversation, not a new Nexus', () async {
+      final engine = ConversationEngine();
+      await engine.probe(_FakeBrain());
+      expect(engine.brainHealth, BrainHealth.online);
+      final model = engine.brainModel;
+      engine.appendResult(_message('hello'), asUser: 'hi');
+      engine.reset();
+      expect(engine.brainHealth, BrainHealth.online);
+      expect(engine.brainModel, model);
+    });
+
+    test('clears the spoken attribution with the thread', () {
+      final engine = ConversationEngine();
+      engine.appendResult(_message('A?'), asUser: 'a', spoken: true);
+      expect(engine.lastAskSpoken, isTrue);
+      engine.reset();
+      // Nothing of the old exchange survives to be read aloud again: the next
+      // typed ask stays quiet.
+      expect(engine.lastAskSpoken, isFalse);
+    });
+
+    test('an exchange in flight when the thread is cleared lands nowhere',
+        () async {
+      final engine = ConversationEngine();
+      final brain = _GatedBrain();
+      engine.appendResult(_teachResult, asUser: 'x');
+      final pending = engine.converse(
+        brain: brain,
+        input: 'x',
+        original: _teachResult,
+        context: () => const ConversationContext(),
+      );
+      engine.reset();
+      expect(engine.entries, isEmpty);
+
+      // The abandoned reply arrives after the reset, and it is the worst
+      // case: unreachable. It must not reappear in the new thread, and it
+      // must not mark the brain offline for an exchange nobody is waiting on.
+      brain.gates.single.complete((text: null, reachable: false));
+      await pending;
+      expect(engine.entries, isEmpty);
+      expect(engine.brainHealth, BrainHealth.probing);
+    });
+  });
 }

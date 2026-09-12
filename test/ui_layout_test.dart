@@ -22,6 +22,7 @@ import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/ui/assistant_view.dart';
 import 'package:nexus/ui/home_shell.dart';
+import 'package:nexus/ui/nexus_core.dart';
 import 'package:nexus/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -177,6 +178,22 @@ void main() {
             greaterThanOrEqualTo(geometry.inset.top),
             reason: '$tab paints under the inset at ${geometry.size}',
           );
+          // The header is tightest where the window is narrowest, and the core
+          // is the newest thing competing for that row.
+          if (tab == 'Assistant') {
+            final core = tester.getRect(find.byType(NexusCore));
+            final screen = Offset.zero & geometry.size;
+            expect(
+              screen.contains(core.topLeft) && screen.contains(core.bottomRight),
+              isTrue,
+              reason: 'the Nexus core ($core) must fit in $screen',
+            );
+            expect(
+              core.top,
+              greaterThanOrEqualTo(geometry.inset.top),
+              reason: 'the Nexus core must clear the inset',
+            );
+          }
         }
       });
     }
@@ -208,10 +225,18 @@ void main() {
         reason: 'suggestions must be present',
       );
 
+      // The Nexus core lives in the header, which is the tightest spot in the
+      // app: a title, a subtitle, two actions and a sphere on one row. It must
+      // clear the status bar and stay fully on screen like everything else —
+      // a clipped core is the one bug the user cannot work around.
+      final core = find.byType(NexusCore);
+      expect(core, findsOneWidget, reason: 'the assistant shows the core');
+
       final screen = Offset.zero & _phone.size;
       for (final (name, rect) in [
         ('composer', tester.getRect(composer)),
         ('suggestion chips', tester.getRect(chips.first)),
+        ('Nexus core', tester.getRect(core)),
       ]) {
         expect(
           screen.contains(rect.topLeft) && screen.contains(rect.bottomRight),

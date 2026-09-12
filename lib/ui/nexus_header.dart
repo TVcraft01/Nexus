@@ -11,26 +11,34 @@ class NexusHeader extends StatelessWidget {
   final String title;
   final String subtitle;
 
+  /// Replaces the icon tile outright. The Assistant passes the live Nexus
+  /// core here, so the one tab that *is* Nexus shows what Nexus is doing
+  /// while the rest keep the flat tile — same header everywhere, one shared
+  /// identity, without forcing every screen into the same contents.
+  final Widget? leading;
+
   const NexusHeader({
     super.key,
     required this.icon,
     required this.title,
     required this.subtitle,
+    this.leading,
   });
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: NexusColors.accent.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Icon(icon, color: NexusColors.accent, size: 24),
-        ),
+        leading ??
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: NexusColors.accent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: NexusColors.accent, size: 24),
+            ),
         const SizedBox(width: 14),
         Expanded(
           child: Column(
