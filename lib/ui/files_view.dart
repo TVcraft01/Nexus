@@ -574,8 +574,11 @@ class _FilesViewState extends State<FilesView> {
                 child: FilledButton.tonalIcon(
                   onPressed: _sending.isNotEmpty ? null : _pickAndSend,
                   style: FilledButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
+                    // Compact density pulled this under the 44dp touch
+                    // minimum; tight padding keeps the dense toolbar look
+                    // without shrinking the target.
                     padding: const EdgeInsets.symmetric(horizontal: 12),
+                    minimumSize: const Size(0, 44),
                   ),
                   icon: const Icon(Icons.upload_file_rounded, size: 18),
                   label: const Text('Send file…'),

@@ -476,8 +476,9 @@ class _SerialDeviceTile extends StatelessWidget {
                 }
               },
               style: FilledButton.styleFrom(
-                visualDensity: VisualDensity.compact,
+                // Compact density pulled this under the 44dp touch minimum.
                 padding: const EdgeInsets.symmetric(horizontal: 14),
+                minimumSize: const Size(0, 44),
               ),
               child: const Text('Pair', style: TextStyle(fontSize: 12)),
             ),
