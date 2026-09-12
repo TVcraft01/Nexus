@@ -974,10 +974,10 @@ class _AssistantViewState extends State<AssistantView> {
               color: NexusColors.accent.withValues(alpha: 0.35),
             ),
           ),
-          child: const Column(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              const Text(
                 'Hello! I am Nexus.',
                 style: TextStyle(
                   color: NexusColors.text,
@@ -985,30 +985,87 @@ class _AssistantViewState extends State<AssistantView> {
                   fontSize: 16,
                 ),
               ),
-              SizedBox(height: 10),
-              Text(
-                'Just type what you want, like you would say it:\n'
-                '1. Try a blue word below — tap one and watch.\n'
-                '2. "call …" dials right away; if I am not sure who,\n'
-                '    I ask once and remember forever.\n'
-                '3. "remember that …" saves a fact I keep for you:\n'
-                '    ask "what do you know about me" anytime.\n'
-                '4. Pair your other devices from the Devices tab — then\n'
-                '    I can also do things on them for you.\n',
+              const SizedBox(height: 6),
+              const Text(
+                'Type what you want, the way you would say it.',
                 style: TextStyle(
                   color: NexusColors.muted,
                   fontSize: 13,
-                  height: 1.45,
+                  height: 1.4,
                 ),
               ),
-              Text(
-                'If I ever misunderstand, tell me what you meant — I learn.',
-                style: TextStyle(color: NexusColors.muted, fontSize: 13),
+              const SizedBox(height: 12),
+              _firstStep(
+                Icons.touch_app_rounded,
+                'Tap a suggestion',
+                'the chips above run real things I can do',
+              ),
+              _firstStep(
+                Icons.call_rounded,
+                '"call mom"',
+                'I dial, or ask once who you mean — then remember',
+              ),
+              _firstStep(
+                Icons.memory_rounded,
+                '"remember that …"',
+                'a fact I keep; ask "what do you know about me"',
+              ),
+              _firstStep(
+                Icons.devices_rounded,
+                'Pair your devices',
+                'in Devices — then I can act on them too',
+              ),
+              const Text(
+                'If I misunderstand, tell me what you meant — I learn.',
+                style: TextStyle(
+                  color: NexusColors.muted,
+                  fontSize: 13,
+                  height: 1.4,
+                ),
               ),
             ],
           ),
         ),
       ],
+    );
+  }
+
+  /// One line of the welcome card: a real capability, in the words a person
+  /// would actually say it. Deliberately not hand-wrapped — the card has to
+  /// reflow at any width, and hard-coded line breaks only look right on the
+  /// one screen they were typed on.
+  Widget _firstStep(IconData icon, String label, String detail) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 16, color: NexusColors.accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text.rich(
+              TextSpan(
+                style: const TextStyle(
+                  fontSize: 13,
+                  height: 1.4,
+                  color: NexusColors.muted,
+                ),
+                children: [
+                  TextSpan(
+                    text: label,
+                    style: const TextStyle(
+                      color: NexusColors.text,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const TextSpan(text: ' — '),
+                  TextSpan(text: detail),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -2053,6 +2110,11 @@ class _AssistantViewState extends State<AssistantView> {
         color = NexusColors.warn;
         label = 'Question';
     }
+    // The chip is the app's own words about what happened, so it may never be
+    // a bare verdict: when a reason is missing (a few paths return none, and
+    // a paired device can send a result with an empty message) say the honest
+    // generic thing rather than leaving "Unavailable" unexplained.
+    final explanation = explainStatus(status, message);
     return Row(
       children: [
         Container(
@@ -2070,11 +2132,11 @@ class _AssistantViewState extends State<AssistantView> {
             ),
           ),
         ),
-        if (message.isNotEmpty) ...[
+        if (explanation.isNotEmpty) ...[
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              message,
+              explanation,
               style: const TextStyle(color: NexusColors.muted, fontSize: 12),
             ),
           ),

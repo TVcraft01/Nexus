@@ -417,6 +417,38 @@ void main() {
     });
   });
 
+  group('device questions ask Nexus, never the web', () {
+    // The bug this guards: the generic "find …" web-search matcher claimed
+    // "find my other devices" and opened a search for "my other devices" —
+    // a wrong answer that also claimed the assistant cannot do something it
+    // does perfectly well. Anything about devices is a device question,
+    // whatever verb it is asked with.
+    test('listing devices routes to the Nexus registry', () {
+      for (final phrase in const [
+        'find my other devices',
+        'find my devices',
+        'find devices',
+        'locate my devices',
+        'see my devices',
+        'my other devices',
+        'other devices',
+        'show my devices',
+        'list my devices',
+        'what devices do i have',
+      ]) {
+        expectAction(phrase, AgentActions.deviceList, target: 'local');
+      }
+    });
+
+    test('a real search still searches', () {
+      // Only the device noun moved: "find" on anything else is still a
+      // search, and must not start answering as a device listing.
+      expectAction('find my keys', AgentActions.webSearch);
+      expectAction('search for cats', AgentActions.webSearch);
+      expectAction('google the weather in paris', AgentActions.webSearch);
+    });
+  });
+
   group('natural language variants friends actually type', () {
     test('conversational prefixes are stripped — once and repeatedly', () {
       expectAction(

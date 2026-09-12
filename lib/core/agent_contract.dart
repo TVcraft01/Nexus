@@ -337,6 +337,29 @@ enum AgentApproval { required, approved, denied }
 
 enum AgentResultStatus { succeeded, required, denied, unavailable, needsInfo }
 
+/// What to say about a result that arrived without a reason of its own.
+///
+/// Every status must be able to explain itself in words: a bare verdict like
+/// "Unavailable" tells the user nothing about what is missing or what would
+/// change it, and reads as the app pretending it tried. Results normally
+/// carry a [AgentDispatchResult.message] with the specific reason, but a
+/// result can arrive with an empty one — a few dispatch paths return none,
+/// and a paired device can send one over the mesh — so the honest generic
+/// explanation lives here, in one place, next to the vocabulary it describes.
+String explainStatus(AgentResultStatus status, [String message = '']) {
+  final said = message.trim();
+  if (said.isNotEmpty) return said;
+  return switch (status) {
+    AgentResultStatus.succeeded => '',
+    AgentResultStatus.required => 'Waiting for your go-ahead.',
+    AgentResultStatus.denied => 'You said no, so nothing ran.',
+    AgentResultStatus.needsInfo => 'I need one more detail first.',
+    AgentResultStatus.unavailable =>
+      'I can\'t do that on this device — it needs an app or a capability '
+          'that isn\'t here. A paired device that has it can, from Devices.',
+  };
+}
+
 class AgentRequest {
   final int version;
   final String requestId;
