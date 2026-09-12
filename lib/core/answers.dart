@@ -57,6 +57,103 @@ bool _somewhereRuns(AnswerContext ctx, String action) {
   return ctx.devices().any((d) => d.capabilities.any((c) => c.id == action));
 }
 
+/// The devices whose real name (or id) matches the noun the user said.
+///
+/// The interpreter keeps the *kind* the user said — "phone", "laptop",
+/// "device" — because a kind is all most phrases carry, and it is a good key
+/// into the registry: "find my laptop" should reach the device called "work
+/// laptop". But a kind is not a name, so it is only ever spoken as one once
+/// it has actually matched here. That is the whole rule: a noun that names no
+/// device must never be quoted back as if it named one.
+List<AgentDeviceSnapshot> _devicesMatching(AnswerContext ctx, String noun) {
+  final key = noun.trim().toLowerCase();
+  if (key.isEmpty) return const [];
+  return ctx
+      .devices()
+      .where(
+        (d) =>
+            d.name.toLowerCase().contains(key) ||
+            d.id.toLowerCase() == key,
+      )
+      .toList();
+}
+
+/// Whether the find/ring noun describes the device being spoken to.
+///
+/// "my device" is the generic noun and always means "mine, the one I am on"
+/// — that is what a phone-first user is asking about. A more specific kind
+/// ("my pc") means this device when this device is that kind of thing.
+bool _nounIsThisDevice(String noun, AgentDeviceSnapshot local) {
+  final key = noun.trim().toLowerCase();
+  return key == 'device' || local.name.toLowerCase().contains(key);
+}
+
+/// The honest answer to `find/ring my <noun>`.
+///
+/// One rule for the whole class of phrasings, because they all fail the same
+/// way: the noun is a kind, and the old answer rendered it inside quotes as
+/// though it were a name — `I don't see "device" online right now` invents a
+/// device called "device" and answers about it. Which real device the noun
+/// names decides the answer instead: a paired one (named, with its state), no
+/// clean match (ask which, listing the real registry), or this device (the
+/// one being spoken to).
+///
+/// Neither find nor ring has an executor in this release, so every branch
+/// says that rather than implying a search ran or a phone rang.
+AgentDispatchResult _findOrRingAnswer(
+  ParsedCommand command,
+  AnswerContext ctx,
+) {
+  final noun = command.target.trim();
+  final verb = command.action == AgentActions.ringDevice
+      ? 'make it ring'
+      : 'find it';
+  final matches = _devicesMatching(ctx, noun);
+  final local = ctx.local;
+
+  if (matches.length == 1) {
+    final device = matches.single;
+    return _answerWith(
+      device.online
+          ? '${device.name} is online on your mesh, but I can\'t $verb from '
+              'the assistant in this release yet.'
+          : 'I don\'t see ${device.name} online right now. $verb needs the '
+              'other device connected to your mesh — open the Devices tab to '
+              'check.',
+    );
+  }
+
+  if (matches.length > 1) {
+    return _answerWith(
+      'More than one paired device matches "$noun" — '
+      '${matches.map((d) => d.name).join(', ')}. Open the Devices tab to pick '
+      'the one you mean.',
+    );
+  }
+
+  if (local != null && _nounIsThisDevice(noun, local)) {
+    return _answerWith(
+      'You\'re on ${local.name} — that\'s the device you\'re asking from. '
+      'I can\'t $verb from the assistant in this release yet.',
+    );
+  }
+
+  final paired = ctx.devices().map((d) => d.name).toList();
+  return _answerWith(
+    paired.isEmpty
+        ? 'I don\'t have a device matching "$noun", and none are paired yet — '
+            'open the Devices tab to pair one.'
+        : 'I don\'t have a device matching "$noun". Paired right now: '
+            '${paired.join(', ')} — open the Devices tab to check.',
+  );
+}
+
+/// A plain spoken answer from the catalog: honest prose, nothing to execute.
+AgentDispatchResult _answerWith(String text) => AgentDispatchResult(
+  status: AgentResultStatus.succeeded,
+  dispatch: AgentMessage(text),
+);
+
 /// The honest answer when a contact action has no taught number and nothing
 /// in the assistant's world can execute it: teach the number instead of
 /// echoing an action that can only fail here. (A paired phone would have its
@@ -980,28 +1077,12 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         dispatch: AgentMessage(joke),
       );
     // --- Find/ring a paired device. There is no ring/find executor in
-    // this release, so the honest answer depends on whether the target
-    // is actually on the mesh right now — never a silent dead-end.
+    // this release, so the honest answer depends on which real device the
+    // noun names — never a silent dead-end, and never a kind quoted back as
+    // if it were a name.
     case AgentActions.findDevice:
     case AgentActions.ringDevice:
-      final who = command.target;
-      final reachable = ctx.devices().any(
-        (d) =>
-            d.online &&
-            (d.name.toLowerCase().contains(who.toLowerCase()) ||
-                d.id.toLowerCase() == who.toLowerCase()),
-      );
-      final verb = command.action == AgentActions.ringDevice
-          ? 'make it ring'
-          : 'find it';
-      return AgentDispatchResult(
-        status: AgentResultStatus.succeeded,
-        dispatch: AgentMessage(
-          reachable
-              ? '"$who" is online on your mesh, but I can\'t $verb from the assistant in this release yet.'
-              : 'I don\'t see "$who" online right now. $verb needs the other device connected to your mesh — open the Devices tab to check.',
-        ),
-      );
+      return _findOrRingAnswer(command, ctx);
     // --- Airplane mode: needs a system permission, or doesn't exist on a
     // PC. Say which instead of pretending to toggle radios.
     case AgentActions.airplaneModeSet:

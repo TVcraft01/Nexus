@@ -462,6 +462,202 @@ void main() {
       expectAction('search for cats', AgentActions.webSearch);
       expectAction('google the weather in paris', AgentActions.webSearch);
     });
+
+    test('the noun alone is still about that device', () {
+      // "my device" with the verb left out is the same question, and it used
+      // to dead-end in the teach flow's "I don't understand \"my device\"".
+      // The possessive is what makes it a question about *your* device, so a
+      // bare "phone" must keep whatever home it already had.
+      expectAction('my device', AgentActions.findDevice, target: 'device');
+      expectAction('my phone', AgentActions.findDevice, target: 'phone');
+      expectAction('my laptop', AgentActions.findDevice, target: 'laptop');
+      expect(parse('phone').command?.action, isNot(AgentActions.findDevice));
+    });
+  });
+
+  group('a device noun is a kind, never a name', () {
+    // The defect these guard: "find my device" answered `I don't see "device"
+    // online right now` — a placeholder noun quoted back as if it were a
+    // device, so the assistant invented one and reported on it. The class is
+    // every singular phrasing, because they all fail the same way; the fix is
+    // one rule in the catalog, and these tests hold it in place.
+    const localPhone = AgentDeviceSnapshot(
+      id: 'self-phone',
+      name: "TVcraft's phone",
+      online: true,
+      capabilities: [DeviceCapability(AgentActions.callPlace)],
+    );
+    const localPc = AgentDeviceSnapshot(
+      id: 'self-pc',
+      name: "TVcraft's PC",
+      online: true,
+      capabilities: [DeviceCapability(AgentActions.mediaPlay)],
+    );
+    const pairedPhone = AgentDeviceSnapshot(
+      id: 'p1',
+      name: "TVcraft01's phone",
+      online: true,
+      capabilities: [DeviceCapability(AgentActions.callPlace)],
+    );
+    const sparePhone = AgentDeviceSnapshot(
+      id: 'p2',
+      name: 'spare phone',
+      online: false,
+      capabilities: [DeviceCapability(AgentActions.callPlace)],
+    );
+
+    /// The spoken answer, asserted to be a plain honest message rather than a
+    /// plan: a find can never be planned, because no device can execute one.
+    String answer(
+      String phrase, {
+      required AgentDeviceSnapshot local,
+      List<AgentDeviceSnapshot> devices = const [],
+    }) {
+      final service = CommandService(devices: () => devices, local: local);
+      final result = service.execute(phrase);
+      expect(result.status, AgentResultStatus.succeeded, reason: phrase);
+      return (result.dispatch! as AgentMessage).text;
+    }
+
+    test('the generic noun means the device being spoken to', () {
+      // A phone-first user asking for "my device" means the one they hold,
+      // so the answer is about this device — and explains that find/ring has
+      // no executor yet rather than implying a search ran.
+      for (final phrase in const [
+        'find my device',
+        'locate my device',
+        'ring my device',
+        'make my device ring',
+        'my device',
+        'find my phone',
+        'where is my phone',
+        'ring my phone',
+      ]) {
+        final said = answer(phrase, local: localPhone);
+        expect(said, contains("TVcraft's phone"), reason: phrase);
+        expect(said, contains('asking from'), reason: phrase);
+        expect(said, contains('release yet'), reason: phrase);
+      }
+    });
+
+    test('a kind is spoken as the real device it matched', () {
+      // "find my phone" from the PC is about the *paired* phone, so it says
+      // that device's name — never the kind the user happened to type.
+      for (final phrase in const [
+        'find my phone',
+        'where is my phone',
+        'ring my phone',
+        'beep my phone',
+        'make noise on my phone',
+      ]) {
+        final said = answer(phrase, local: localPc, devices: const [
+          pairedPhone,
+        ]);
+        expect(said, contains("TVcraft01's phone"), reason: phrase);
+        expect(said, contains('online on your mesh'), reason: phrase);
+      }
+    });
+
+    test('a paired device that is offline is still named, not quoted as a '
+        'kind', () {
+      final offline = AgentDeviceSnapshot(
+        id: pairedPhone.id,
+        name: pairedPhone.name,
+        online: false,
+        capabilities: pairedPhone.capabilities,
+      );
+      final said = answer('find my phone', local: localPc, devices: [offline]);
+      // The same sentence as before, about the same device — which is now
+      // the real one rather than the kind the user typed.
+      expect(said, contains("I don't see TVcraft01's phone online right now"));
+    });
+
+    test('several candidates are asked about with the real list', () {
+      final said = answer(
+        'find my phone',
+        local: localPc,
+        devices: const [pairedPhone, sparePhone],
+      );
+      expect(said, contains('More than one'));
+      expect(said, contains("TVcraft01's phone"));
+      expect(said, contains('spare phone'));
+      expect(said, contains('Devices tab'));
+    });
+
+    test('a noun that names nothing uses the real list', () {
+      final withPairs = answer(
+        'find my watch',
+        local: localPc,
+        devices: const [pairedPhone],
+      );
+      expect(withPairs, contains("TVcraft01's phone"));
+      expect(withPairs, contains('Devices tab'));
+
+      final alone = answer('find my laptop', local: localPc);
+      expect(alone, contains('none are paired yet'));
+      expect(alone, contains('Devices tab'));
+    });
+
+    test('nothing in the class reports on the noun as a device', () {
+      // The class-level invariant, so a future phrasing cannot regress it:
+      // no answer may quote the kind and then claim something about it, and
+      // none may describe it as missing from the mesh.
+      final claimed = RegExp(
+        r'"(?:device|phone|laptop|watch|tablet|pc)"\s*(?:is|are|online)',
+      );
+      for (final local in const [localPhone, localPc]) {
+        for (final devices in const <List<AgentDeviceSnapshot>>[
+          [],
+          [pairedPhone],
+          [pairedPhone, sparePhone],
+        ]) {
+          for (final phrase in const [
+            'find my device',
+            'where is my device',
+            'ring my device',
+            'my device',
+            'find my phone',
+            'where is my phone',
+            'ring my phone',
+            'beep my phone',
+            'make my phone ring',
+            'play a sound on my phone',
+            'find my laptop',
+            'where is my laptop',
+            'find my watch',
+            'ring my watch',
+            'find my tablet',
+          ]) {
+            final said = answer(phrase, local: local, devices: devices);
+            final where = '$phrase on ${local.name} '
+                'with ${devices.length} paired';
+            expect(claimed.hasMatch(said), isFalse, reason: where);
+            expect(said, isNot(contains('I don\'t see "')), reason: where);
+          }
+        }
+      }
+    });
+
+    test('the plural still answers from the registry', () {
+      // The counterweight to the singular fix: listing the devices Nexus is
+      // paired with is a different question, and it must stay with the
+      // registry rather than being swallowed by the find/ring rule.
+      for (final phrase in const [
+        'find my other devices',
+        'find my devices',
+        'show my devices',
+        'list my devices',
+        'where are my devices',
+        'my other devices',
+      ]) {
+        final service =
+            CommandService(devices: () => const [pairedPhone], local: localPc);
+        final dispatch = service.execute(phrase).dispatch;
+        expect(dispatch, isA<AgentDeviceList>(), reason: phrase);
+        expect((dispatch! as AgentDeviceList).devices, hasLength(1),
+            reason: phrase);
+      }
+    });
   });
 
   group('natural language variants friends actually type', () {
