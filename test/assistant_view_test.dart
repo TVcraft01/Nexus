@@ -4,14 +4,31 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/brain.dart';
+import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/core/query_log.dart';
 import 'package:nexus/ui/assistant_view.dart';
+import 'package:nexus/ui/device_executor.dart';
 import 'package:nexus/ui/nexus_core.dart';
 import 'package:nexus/ui/theme.dart';
+
+/// An executor whose only behaviour is to fail the way real platform code can:
+/// by throwing out of the awaited call. This is the one path a widget test
+/// cannot otherwise reach, and it is exactly the path that used to strand the
+/// core's "working" state.
+class _ThrowingExecutor extends DeviceExecutor {
+  int runs = 0;
+
+  @override
+  Future<ActionResult> run(AgentRequest request) async {
+    runs++;
+    throw StateError('the platform call exploded');
+  }
+}
 
 void main() {
   brainWidgetTests();
@@ -659,6 +676,73 @@ void brainWidgetTests() {
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pump();
       expect(find.textContaining("It's "), findsOneWidget);
+    } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('an action that throws cannot strand the core on Working',
+      (tester) async {
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('throw').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'test-device', name: 'Test PC', platform: 'linux'),
+      store: store,
+    );
+    final executor = _ThrowingExecutor();
+
+    NexusCoreState coreState() =>
+        tester.widget<NexusCore>(find.byType(NexusCore)).state;
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(
+            body: AssistantView(mesh: mesh, executor: executor),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // A command this device runs itself, so it goes through the executor.
+      await tester.enterText(find.byType(TextField), 'take me home');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      // Let the action start, throw, and unwind: the future is unawaited, so
+      // its error is delivered on a later turn of the loop, not inline.
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      await tester.idle();
+
+      expect(
+        executor.runs,
+        greaterThan(0),
+        reason: 'the command must reach the executor for this to prove anything',
+      );
+
+      // Nothing escapes: no unhandled async error, which is what used to
+      // happen and what made the failure invisible to the user.
+      expect(tester.takeException(), isNull);
+
+      // The user is told, in the thread, with the reason attached.
+      expect(
+        find.textContaining("didn't run"),
+        findsOneWidget,
+        reason: 'a failed action must say so',
+      );
+
+      // And it leaves no claim behind: nothing is running now, so the core
+      // must not say that it is. Before the `finally`, `_sending` stayed true
+      // here and the core reported "Working" indefinitely — a state outliving
+      // the work it describes.
+      expect(
+        coreState(),
+        isNot(NexusCoreState.working),
+        reason: 'the action threw; nothing is in flight',
+      );
     } finally {
       QueryLog.i.resetForTest();
       await mesh.stop();

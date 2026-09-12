@@ -102,7 +102,11 @@ void main() {
     test('every status can name itself and describe a device\'s outcome', () {
       for (final status in AgentResultStatus.values) {
         expect(status.label, isNotEmpty, reason: status.name);
-        expect(status.clause, isNotEmpty, reason: status.name);
+        // The remote report is a full sentence that names the device, never a
+        // fragment waiting to be glued onto one.
+        final report = status.reportFrom('TVcraft\'s phone');
+        expect(report, contains('TVcraft\'s phone'), reason: status.name);
+        expect(report.trim(), endsWith('.'), reason: status.name);
         // The chip label is a verdict, not a sentence: the explanation and the
         // chip must not be the same words, or the chip has stopped explaining.
         expect(status.label, isNot(equals(status.explain())), reason: status.name);
@@ -125,6 +129,67 @@ void main() {
       expect(
         AgentResultStatus.unavailable.explain('   '),
         isNot(equals('   ')),
+      );
+    });
+  });
+
+  group('reporting what a paired device did', () {
+    const device = "TVcraft's phone";
+
+    test('a failure with no reason is attributed to the device, not glued '
+        'onto a delivery claim', () {
+      final said = AgentResultStatus.unavailable.reportFrom(device);
+      // The defect this replaces: the caller prefixed a bare fragment with
+      // "Sent to ", producing "Sent to TVcraft's phone — it could not do it."
+      // — a sentence that contradicts itself and explains nothing.
+      expect(said, isNot(contains('Sent to')));
+      expect(said, contains(device));
+      expect(said, isNot(contains('I ')), reason: 'not this device\'s voice');
+      expect(said, isNot(contains('this device')));
+    });
+
+    test('the device\'s own words come first, then its own reason', () {
+      expect(
+        AgentResultStatus.unavailable.reportFrom(
+          device,
+          message: 'no mail app',
+          words: "I can't open email here.",
+        ),
+        "$device — I can't open email here.",
+      );
+      expect(
+        AgentResultStatus.unavailable.reportFrom(device, message: 'no mail app'),
+        '$device — no mail app',
+      );
+    });
+
+    test('success keeps the delivery claim it earned', () {
+      expect(
+        AgentResultStatus.succeeded.reportFrom(device, words: 'Opened.'),
+        'Sent to $device — Opened.',
+      );
+      expect(
+        AgentResultStatus.succeeded.reportFrom(device),
+        'Sent to $device — done.',
+      );
+    });
+
+    test('nothing is invented when there is no reason', () {
+      for (final status in AgentResultStatus.values) {
+        final said = status.reportFrom(device);
+        expect(said, contains(device), reason: status.name);
+        expect(said.trim(), endsWith('.'), reason: status.name);
+      }
+      // Whitespace is not a reason either.
+      expect(
+        AgentResultStatus.unavailable.reportFrom(device, message: '   '),
+        AgentResultStatus.unavailable.reportFrom(device),
+      );
+      // The local explanation is deliberately NOT reused here: it says what
+      // *this* device can do, which would be a false claim about the peer.
+      expect(
+        AgentResultStatus.unavailable.reportFrom(device),
+        isNot(AgentResultStatus.unavailable.explain()),
       );
     });
   });

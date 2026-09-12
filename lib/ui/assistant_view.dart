@@ -36,7 +36,18 @@ class AssistantView extends StatefulWidget {
   /// teach flow stays. Null on platforms with no local model support yet.
   final LocalBrain? brain;
 
-  const AssistantView({super.key, required this.mesh, this.brain});
+  /// The real device executor by default. Injectable for the same reason
+  /// [brain] is: the one path a widget test cannot otherwise drive is an
+  /// action that fails by throwing, and that path decides whether the core's
+  /// "working" state can be stranded.
+  final DeviceExecutor? executor;
+
+  const AssistantView({
+    super.key,
+    required this.mesh,
+    this.brain,
+    this.executor,
+  });
 
   @override
   State<AssistantView> createState() => _AssistantViewState();
@@ -116,7 +127,7 @@ class _AssistantViewState extends State<AssistantView> {
 
   /// Runs actions on this platform (apps, calls, texts, media…); the view
   /// only decides when to run them.
-  final DeviceExecutor _executor = DeviceExecutor();
+  late final DeviceExecutor _executor = widget.executor ?? DeviceExecutor();
 
   /// The user's profile: names and first-run state, persisted per device.
   final ProfileStore _profile = SharedPrefsProfileStore();
@@ -581,14 +592,33 @@ class _AssistantViewState extends State<AssistantView> {
       _sending = true;
       _reply = null;
     });
-    final outcome = await _executor.run(request);
-    if (!mounted) return;
-    _showSelfOutcome(
-      outcome.ok,
-      outcome.message,
-      request: request,
-      candidates: outcome.candidates,
-    );
+    try {
+      final outcome = await _executor.run(request);
+      if (!mounted) return;
+      _showSelfOutcome(
+        outcome.ok,
+        outcome.message,
+        request: request,
+        candidates: outcome.candidates,
+      );
+    } catch (error) {
+      // A platform call that throws is still something the user has to be
+      // told about. Before this, the throw escaped an unawaited future: the
+      // core kept claiming the device was working, no card appeared, and the
+      // only trace was a console the user never sees.
+      if (mounted) {
+        _showSelfOutcome(
+          false,
+          'That didn\'t run — the device action failed: $error',
+          request: request,
+        );
+      }
+    } finally {
+      // In `finally` on purpose: the core reads `_sending` as "an action is
+      // being carried out", so when the await ends — however it ends — the
+      // claim ends with it.
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   /// One utterance, then the recognized words run through the same pipeline
@@ -809,18 +839,38 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// What to say about a result this device produced, in this device's own
+  /// voice: the action's own words first, then its reason, then the status's
+  /// honest explanation. The remote equivalent is [AgentResultStatus.reportFrom],
+  /// which speaks in the peer's name instead — the two must not be swapped,
+  /// because each one's wording is only true of the device it describes.
+  String _describeOutcome(AgentDispatchResult reply) {
+    if (reply.dispatch case final AgentMessage message) {
+      return message.text;
+    }
+    if (reply.message.isNotEmpty) return reply.message;
+    return reply.status.explain();
+  }
+
   /// Runs an action and shows its outcome on whichever plan card is open.
   Future<void> _runAction(Future<String> Function() action) async {
     setState(() {
       _sending = true;
       _reply = null;
     });
-    final outcome = await action();
-    if (!mounted) return;
-    setState(() {
-      _sending = false;
-      _reply = outcome;
-    });
+    try {
+      final outcome = await action();
+      if (mounted) setState(() => _reply = outcome);
+    } catch (error) {
+      // Same rule as [_runSelfAction]: a failure is reported, never silent.
+      if (mounted) {
+        setState(() => _reply = 'Something went wrong: $error');
+      }
+    } finally {
+      // "working" may only outlive the await if the await never ended, which
+      // cannot happen.
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   /// Sends an approved action to the routed device and shows its answer.
@@ -833,18 +883,19 @@ class _AssistantViewState extends State<AssistantView> {
         request.target;
     await _runAction(() async {
       final reply = await widget.mesh.sendAgentRequest(request.target, request);
-      return reply == null
-          ? 'Could not reach $deviceName.'
-          : 'Sent to $deviceName — ${_describeOutcome(reply)}';
+      if (reply == null) return 'Could not reach $deviceName.';
+      // One voice for the outcome: the status's own vocabulary says what
+      // happened in the device's name, preferring whatever the device said
+      // and never falling back to a fragment with no reason behind it.
+      return reply.status.reportFrom(
+        deviceName,
+        message: reply.message,
+        words: switch (reply.dispatch) {
+          final AgentMessage message => message.text,
+          _ => null,
+        },
+      );
     });
-  }
-
-  String _describeOutcome(AgentDispatchResult reply) {
-    if (reply.dispatch case final AgentMessage message) {
-      return message.text;
-    }
-    if (reply.message.isNotEmpty) return reply.message;
-    return reply.status.clause;
   }
 
   /// The remote device asked us to run an action — approve or deny locally,
@@ -1541,7 +1592,6 @@ class _AssistantViewState extends State<AssistantView> {
             ),
             IconButton(
               tooltip: 'Done',
-              visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.check_rounded, size: 18),
               color: NexusColors.ok,
               onPressed: _reminderEngine.acknowledge,
@@ -1600,15 +1650,11 @@ class _AssistantViewState extends State<AssistantView> {
               ),
               TextButton(
                 key: const ValueKey('dream-learn-button'),
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                ),
                 onPressed: () => _dreamLearn(learn),
                 child: const Text('Learn it'),
               ),
               IconButton(
                 tooltip: 'Not now',
-                visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.close_rounded, size: 16),
                 color: NexusColors.muted,
                 onPressed: () => setState(() => _dreamDismissed = true),
@@ -1667,7 +1713,6 @@ class _AssistantViewState extends State<AssistantView> {
                 ),
                 IconButton(
                   tooltip: 'Not now',
-                  visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.close_rounded, size: 16),
                   color: NexusColors.muted,
                   onPressed: () => setState(() => _dreamDismissed = true),
@@ -1764,6 +1809,9 @@ class _AssistantViewState extends State<AssistantView> {
                 onPressed: _listening ? null : () => unawaited(_listen()),
               ),
               IconButton(
+                // The app's primary action, and an icon with no text — without
+                // this it reaches a screen reader as an unlabelled button.
+                tooltip: 'Send',
                 icon: const Icon(Icons.send_rounded, size: 20),
                 color: NexusColors.accent,
                 onPressed: _onSubmit,

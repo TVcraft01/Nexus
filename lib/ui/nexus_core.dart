@@ -149,10 +149,16 @@ class _NexusCoreState extends State<NexusCore>
       NexusCoreState.error => scheme.error,
       _ => scheme.primary,
     };
-    return Semantics(
-      label: 'Nexus — ${widget.state.label}',
-      container: true,
-      child: ExcludeSemantics(
+    // A tooltip so a pointer user can read the state the colour encodes —
+    // the core says what it is in words on hover, not only in hue. It is
+    // excluded from semantics because the Semantics node below already
+    // announces the same thing, precisely and once.
+    return Tooltip(
+      message: widget.state.label,
+      excludeFromSemantics: true,
+      child: Semantics(
+        label: 'Nexus — ${widget.state.label}',
+        container: true,
         child: AnimatedBuilder(
           animation: _spin,
           builder: (context, _) => CustomPaint(

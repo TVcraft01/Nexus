@@ -252,6 +252,7 @@ class _PairSheetState extends State<_PairSheet> {
                   const Spacer(),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
+                    tooltip: 'Close',
                     icon: const Icon(
                       Icons.close_rounded,
                       color: NexusColors.muted,

@@ -354,15 +354,39 @@ extension AgentResultStatusWording on AgentResultStatus {
     AgentResultStatus.needsInfo => 'Question',
   };
 
-  /// The clause for a sentence about what a *device* did, as in
-  /// "Sent to TVcraft's phone — done."
-  String get clause => switch (this) {
-    AgentResultStatus.succeeded => 'done.',
-    AgentResultStatus.required => 'it needs approval.',
-    AgentResultStatus.denied => 'it was denied.',
-    AgentResultStatus.unavailable => 'it could not do it.',
-    AgentResultStatus.needsInfo => 'it needs more information.',
-  };
+  /// The full honest sentence for a result that came back from a *paired
+  /// device*, which is the same obligation as [explain] in a different voice.
+  ///
+  /// [words] is what the device answered when it answered in words, and
+  /// [message] is the reason it gave; the most specific thing it said always
+  /// wins, because a result is never worth reporting without its reason.
+  ///
+  /// With neither, this refuses to invent one. It used to return a bare
+  /// fragment — "it could not do it." — that the caller glued onto a delivery
+  /// claim, producing "Sent to TVcraft's phone — it could not do it.": a
+  /// sentence that contradicts itself and explains nothing. So a failure is
+  /// now attributed to the device that actually tried, and "Sent to" is only
+  /// used where the work really was accepted.
+  ///
+  /// Wording that describes what *this* device can do belongs to [explain]
+  /// and is not reused here: the peer may well have capabilities this device
+  /// lacks, so those sentences would be false about it.
+  String reportFrom(String device, {String message = '', String? words}) {
+    final said = words?.trim() ?? '';
+    final reason = said.isNotEmpty ? said : message.trim();
+    if (reason.isNotEmpty) {
+      return this == AgentResultStatus.succeeded
+          ? 'Sent to $device — $reason'
+          : '$device — $reason';
+    }
+    return switch (this) {
+      AgentResultStatus.succeeded => 'Sent to $device — done.',
+      AgentResultStatus.required => '$device is waiting for approval.',
+      AgentResultStatus.denied => '$device was told no, so nothing ran.',
+      AgentResultStatus.unavailable => '$device couldn\'t do that.',
+      AgentResultStatus.needsInfo => '$device needs one more detail.',
+    };
+  }
 
   /// The full honest explanation, preferring the result's own [message].
   ///
