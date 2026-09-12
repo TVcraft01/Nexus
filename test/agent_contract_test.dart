@@ -118,6 +118,37 @@ void main() {
       expect(AgentResultStatus.unavailable.label, 'Unavailable');
     });
 
+    test('only a genuine could-not-do is a failure', () {
+      // The core's error state reads exactly this predicate, so the whole
+      // "what is an error" decision is one line here and one call site
+      // there. Only `unavailable` means Nexus tried and could not.
+      expect(AgentResultStatus.unavailable.isFailure, isTrue);
+      for (final status in const [
+        AgentResultStatus.succeeded,
+        AgentResultStatus.needsInfo,
+        // The two that look most like failures and are not: a no the user
+        // gave, and a gate they have not answered yet.
+        AgentResultStatus.denied,
+        AgentResultStatus.required,
+      ]) {
+        expect(status.isFailure, isFalse, reason: status.name);
+      }
+    });
+
+    test('exactly one status is Nexus asking rather than reporting', () {
+      // `needsInfo` is the clarification the brief names: the request needs
+      // something from the user. Reading its chip as a verdict is what made
+      // "Who should I call?" arrive under the label "Unavailable".
+      expect(AgentResultStatus.needsInfo.isQuestion, isTrue);
+      for (final status in AgentResultStatus.values) {
+        if (status == AgentResultStatus.needsInfo) continue;
+        expect(status.isQuestion, isFalse, reason: status.name);
+      }
+      // A question is not a failure, and it carries the words of the chip.
+      expect(AgentResultStatus.needsInfo.isFailure, isFalse);
+      expect(AgentResultStatus.needsInfo.label, 'Question');
+    });
+
     test('a real reason is passed through untouched', () {
       const reason =
           'I can\'t open email on this device — try on a device with a mail app.';

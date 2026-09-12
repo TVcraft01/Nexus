@@ -72,6 +72,7 @@ class DeviceExecutor {
         return const ActionResult(
           false,
           'How long should it run? Try "5 minutes".',
+          needsDetail: true,
         );
       }
       prepared['seconds'] = seconds;
@@ -246,7 +247,11 @@ class DeviceExecutor {
   // --- App management ---
   Future<ActionResult> _openApp(String query) async {
     if (query.isEmpty)
-      return const ActionResult(false, 'What app should I open?');
+      return const ActionResult(
+        false,
+        'What app should I open?',
+        needsDetail: true,
+      );
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Launching an app needs a real Intent — an app process cannot run
@@ -639,7 +644,11 @@ class DeviceExecutor {
 
   Future<ActionResult> _closeApp(String query) async {
     if (query.isEmpty)
-      return const ActionResult(false, 'What app should I close?');
+      return const ActionResult(
+        false,
+        'What app should I close?',
+        needsDetail: true,
+      );
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         return await _deviceBackend.run(AgentActions.appClose, {
@@ -945,7 +954,9 @@ class DeviceExecutor {
   }
 
   Future<ActionResult> _placeCall(String contact, String? number) async {
-    if (contact.isEmpty) return const ActionResult(false, 'Who should I call?');
+    if (contact.isEmpty) {
+      return const ActionResult(false, 'Who should I call?', needsDetail: true);
+    }
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // A taught number ("remember that mom is 06…") skips contact lookup
@@ -977,7 +988,11 @@ class DeviceExecutor {
   /// call or a made-up default app.
   Future<ActionResult> _videoCall(String contact, String? app) async {
     if (contact.isEmpty) {
-      return const ActionResult(false, 'Who should I video call?');
+      return const ActionResult(
+        false,
+        'Who should I video call?',
+        needsDetail: true,
+      );
     }
     if (app == null || app.trim().isEmpty) {
       return ActionResult(
@@ -1009,7 +1024,9 @@ class DeviceExecutor {
     String? number,
     String? body,
   ) async {
-    if (contact.isEmpty) return const ActionResult(false, 'Who should I text?');
+    if (contact.isEmpty) {
+      return const ActionResult(false, 'Who should I text?', needsDetail: true);
+    }
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         return await _deviceBackend.run(AgentActions.messageSend, {
@@ -1170,7 +1187,11 @@ class DeviceExecutor {
   /// Opens a web search in the default browser.
   Future<ActionResult> _openWebSearch(String query) async {
     if (query.isEmpty)
-      return const ActionResult(false, 'What should I search for?');
+      return const ActionResult(
+        false,
+        'What should I search for?',
+        needsDetail: true,
+      );
     try {
       final url = Uri.encodeFull('https://www.google.com/search?q=$query');
       if (await canLaunchUrl(Uri.parse(url))) {
@@ -1343,7 +1364,11 @@ class DeviceExecutor {
 
   Future<ActionResult> _musicSearch(String query) async {
     if (query.isEmpty) {
-      return const ActionResult(false, 'What should I play?');
+      return const ActionResult(
+        false,
+        'What should I play?',
+        needsDetail: true,
+      );
     }
     final hit = await _musicSearcher(query);
     if (hit == null) {
@@ -1439,7 +1464,11 @@ class DeviceExecutor {
   /// new-event form instead, through the chooser so the pick is remembered.
   Future<ActionResult> _calendarAdd(String title, [String? app]) async {
     if (title.isEmpty) {
-      return const ActionResult(false, 'What should I add to your calendar?');
+      return const ActionResult(
+        false,
+        'What should I add to your calendar?',
+        needsDetail: true,
+      );
     }
     if (app != null && app.isNotEmpty) {
       return _openInApp(
@@ -1507,6 +1536,7 @@ class DeviceExecutor {
       return const ActionResult(
         false,
         'What should I add to the shopping list?',
+        needsDetail: true,
       );
     }
     try {
@@ -1549,7 +1579,9 @@ class DeviceExecutor {
   /// home with waze") it deep-links into that app's directions instead,
   /// through the chooser so the pick is remembered, like Siri.
   Future<ActionResult> _openMaps(String query, [String? app]) async {
-    if (query.isEmpty) return const ActionResult(false, 'Where to?');
+    if (query.isEmpty) {
+      return const ActionResult(false, 'Where to?', needsDetail: true);
+    }
     if (app != null && app.isNotEmpty) {
       return _openInApp(
         query,
@@ -1581,7 +1613,9 @@ class DeviceExecutor {
 
   /// Opens a URL in the default browser.
   Future<ActionResult> _openUrl(String url) async {
-    if (url.isEmpty) return const ActionResult(false, 'What should I open?');
+    if (url.isEmpty) {
+      return const ActionResult(false, 'What should I open?', needsDetail: true);
+    }
     try {
       final uri = url.startsWith('http')
           ? Uri.parse(url)
@@ -1620,7 +1654,11 @@ class DeviceExecutor {
   /// Starts a countdown timer.
   Future<ActionResult> _startTimer(int seconds) async {
     if (seconds <= 0)
-      return const ActionResult(false, 'How long should the timer run?');
+      return const ActionResult(
+        false,
+        'How long should the timer run?',
+        needsDetail: true,
+      );
     final minutes = seconds ~/ 60;
     final secs = seconds % 60;
     final label = minutes > 0 ? '${minutes}m ${secs}s' : '${secs}s';
@@ -1633,7 +1671,11 @@ class DeviceExecutor {
   /// mailto: link the OS handles.
   Future<ActionResult> _sendEmail(String contact, String? body) async {
     if (contact.isEmpty) {
-      return const ActionResult(false, 'Who should I email?');
+      return const ActionResult(
+        false,
+        'Who should I email?',
+        needsDetail: true,
+      );
     }
     if (defaultTargetPlatform == TargetPlatform.android) {
       return await _deviceBackend.run(AgentActions.emailSend, {

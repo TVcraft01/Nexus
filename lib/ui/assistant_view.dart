@@ -10,6 +10,7 @@ import '../core/capability.dart';
 import '../core/command_service.dart';
 import '../core/conversation.dart';
 import '../core/conversation_engine.dart';
+import '../core/device_actions.dart';
 import '../core/dream.dart';
 import '../core/predictions.dart';
 import '../core/profile.dart';
@@ -596,7 +597,7 @@ class _AssistantViewState extends State<AssistantView> {
       final outcome = await _executor.run(request);
       if (!mounted) return;
       _showSelfOutcome(
-        outcome.ok,
+        _statusFor(outcome),
         outcome.message,
         request: request,
         candidates: outcome.candidates,
@@ -608,7 +609,7 @@ class _AssistantViewState extends State<AssistantView> {
       // only trace was a console the user never sees.
       if (mounted) {
         _showSelfOutcome(
-          false,
+          AgentResultStatus.unavailable,
           'That didn\'t run — the device action failed: $error',
           request: request,
         );
@@ -660,12 +661,32 @@ class _AssistantViewState extends State<AssistantView> {
     _onSubmit(voice: true);
   }
 
+  /// The status a device action's own outcome deserves.
+  ///
+  /// A failed action is not always a failure. When the reason is that the
+  /// action needed something from the user — a contact, a query, a duration —
+  /// Nexus is asking a question, and calling that "Unavailable" would report
+  /// the feature as broken instead of the sentence as incomplete.
+  AgentResultStatus _statusFor(ActionResult outcome) {
+    if (outcome.ok) return AgentResultStatus.succeeded;
+    return outcome.needsDetail
+        ? AgentResultStatus.needsInfo
+        : AgentResultStatus.unavailable;
+  }
+
+  /// Shows the outcome of an action this device ran itself.
+  ///
+  /// [status] is the caller's judgement about what happened, and the three
+  /// callers know different things: the executor knows whether it was asking
+  /// a question ([_statusFor]), a refusal is the user's own choice
+  /// ([AgentResultStatus.denied]), and an exception is a real failure.
   void _showSelfOutcome(
-    bool ok,
+    AgentResultStatus status,
     String message, {
     AgentRequest? request,
     List<String> candidates = const [],
   }) {
+    final ok = status == AgentResultStatus.succeeded;
     setState(() {
       _sending = false;
       // The contact lookup found close names but nothing exact — offer them
@@ -689,9 +710,7 @@ class _AssistantViewState extends State<AssistantView> {
     }
     _conversation.appendResult(
       AgentDispatchResult(
-        status: ok
-            ? AgentResultStatus.succeeded
-            : AgentResultStatus.unavailable,
+        status: status,
         message: ok ? '' : message,
         dispatch: ok ? AgentMessage(message) : null,
       ),
@@ -724,7 +743,9 @@ class _AssistantViewState extends State<AssistantView> {
         unawaited(_runSelfAction(vc.request));
       } else if (no) {
         _voiceConfirm = null;
-        _showSelfOutcome(false, 'Cancelled — nothing was sent.');
+        // The user's own no. A choice, not a failure — the core must not
+        // colour itself red for something they decided.
+        _showSelfOutcome(AgentResultStatus.denied, 'Cancelled — nothing was sent.');
       } else {
         _voiceConfirm = null; // moved on: run the new request
         _execute(text, spoken: voice);
@@ -756,7 +777,10 @@ class _AssistantViewState extends State<AssistantView> {
         );
       } else if (no) {
         _contactConfirm = null;
-        _showSelfOutcome(false, 'Okay — I won\'t call anyone.');
+        _showSelfOutcome(
+          AgentResultStatus.denied,
+          'Okay — I won\'t call anyone.',
+        );
       } else {
         _contactConfirm = null; // moved on: run the new request
         _execute(text, spoken: voice);
@@ -921,11 +945,12 @@ class _AssistantViewState extends State<AssistantView> {
       // Actions this device can genuinely run get executed here; everything
       // else answers honestly via the service's catalog.
       final outcome = await _executor.run(request);
+      // The peer gets the same honest status we would show locally: a request
+      // missing a detail comes back as a question, not as a broken feature.
+      final status = _statusFor(outcome);
       result = AgentDispatchResult(
-        status: outcome.ok
-            ? AgentResultStatus.succeeded
-            : AgentResultStatus.unavailable,
-        message: outcome.message,
+        status: status,
+        message: outcome.ok ? '' : outcome.message,
         dispatch: outcome.ok ? AgentMessage(outcome.message) : null,
       );
     } else {
@@ -1852,10 +1877,11 @@ class _AssistantViewState extends State<AssistantView> {
       // it around a local device action and around a request handed to a
       // paired device, and nowhere else.
       working: _sending,
-      // A result Nexus could not carry out on this device is the one failure
-      // worth showing. "denied" is the user's own choice and "approval
-      // needed" is not an outcome — neither is an error.
-      failed: last != null && last.status == AgentResultStatus.unavailable,
+      // The vocabulary decides what counts as a failure (see
+      // [AgentResultStatusWording.isFailure]): only a thing Nexus genuinely
+      // could not do. A question, a no the user gave, and a gate they have
+      // not answered are all something other than an error.
+      failed: last != null && last.status.isFailure,
       // Offline only means something when there is something to be offline
       // from. With no paired devices Nexus is whole on its own, and saying
       // "offline" would invent a problem.

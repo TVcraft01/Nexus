@@ -30,6 +30,33 @@ class _ThrowingExecutor extends DeviceExecutor {
   }
 }
 
+/// An executor that refuses the way the real one does when the request is
+/// missing something the user has to supply: it says what it needs.
+class _AskingExecutor extends DeviceExecutor {
+  int runs = 0;
+
+  @override
+  Future<ActionResult> run(AgentRequest request) async {
+    runs++;
+    return const ActionResult(
+      false,
+      'Where should I take you?',
+      needsDetail: true,
+    );
+  }
+}
+
+/// An executor whose action genuinely cannot run on this device.
+class _FailingExecutor extends DeviceExecutor {
+  int runs = 0;
+
+  @override
+  Future<ActionResult> run(AgentRequest request) async {
+    runs++;
+    return const ActionResult(false, 'This device has no maps app.');
+  }
+}
+
 void main() {
   brainWidgetTests();
 
@@ -743,6 +770,150 @@ void brainWidgetTests() {
         isNot(NexusCoreState.working),
         reason: 'the action threw; nothing is in flight',
       );
+    } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('a device action missing a detail is a question, not a failure',
+      (tester) async {
+    // The defect this guards: "Who should I call?" arrived as
+    // `unavailable`, so the chip read "Unavailable" over a question and the
+    // core reported an error for a request it had merely asked about.
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('asking').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'ask-device', name: 'Ask PC', platform: 'linux'),
+      store: store,
+    );
+    final executor = _AskingExecutor();
+
+    NexusCoreState coreState() =>
+        tester.widget<NexusCore>(find.byType(NexusCore)).state;
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh, executor: executor)),
+        ),
+      );
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'take me home');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      await tester.idle();
+
+      expect(
+        executor.runs,
+        greaterThan(0),
+        reason: 'the command must reach the executor for this to prove anything',
+      );
+
+      // The chip names the kind of card and shows the question itself.
+      expect(find.text('Question'), findsOneWidget);
+      expect(find.text('Where should I take you?'), findsOneWidget);
+      expect(find.text('Unavailable'), findsNothing);
+
+      // And the core is not blamed: nothing failed, a detail is missing.
+      expect(
+        coreState(),
+        isNot(NexusCoreState.error),
+        reason: 'a question is not an error',
+      );
+    } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('a genuine failure still reads as Unavailable and errors',
+      (tester) async {
+    // The counterweight to the test above: the taxonomy must not have hidden
+    // real failures behind the word "Question".
+    final store = NexusStore(
+      explicitPath:
+          '${Directory.systemTemp.createTempSync('failing').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'fail-device', name: 'Fail PC', platform: 'linux'),
+      store: store,
+    );
+    final executor = _FailingExecutor();
+
+    NexusCoreState coreState() =>
+        tester.widget<NexusCore>(find.byType(NexusCore)).state;
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh, executor: executor)),
+        ),
+      );
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'take me home');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      await tester.idle();
+
+      expect(find.text('Unavailable'), findsOneWidget);
+      expect(find.text('This device has no maps app.'), findsOneWidget);
+      expect(find.text('Question'), findsNothing);
+      expect(coreState(), NexusCoreState.error);
+    } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('a pending approval and the user\'s own no are not errors',
+      (tester) async {
+    // Both are the user in control: one is a gate they have not answered,
+    // the other a no they gave. Neither may put the core into its error state.
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('deny').path}/s.json',
+    )..clipboardSync = true;
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'deny-device', name: 'Deny PC', platform: 'linux'),
+      store: store,
+    );
+
+    NexusCoreState coreState() =>
+        tester.widget<NexusCore>(find.byType(NexusCore)).state;
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'copy hello to my phone');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+
+      // Waiting for the user: a question only they can answer.
+      expect(find.text('Approval needed'), findsOneWidget);
+      expect(coreState(), isNot(NexusCoreState.error));
+
+      await tester.tap(find.text('Deny'));
+      await tester.pump();
+
+      // Answered "no": their choice, reported as one.
+      expect(find.text('Denied'), findsOneWidget);
+      expect(find.text('Unavailable'), findsNothing);
+      expect(coreState(), isNot(NexusCoreState.error));
     } finally {
       QueryLog.i.resetForTest();
       await mesh.stop();

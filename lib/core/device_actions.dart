@@ -12,6 +12,12 @@ class ActionResult {
   final bool ok;
   final String message;
 
+  /// Whether the action failed because something the *user* has to supply was
+  /// missing — a contact, a query, a duration. "Who should I call?" is a
+  /// question about the request, not a verdict on it, so it must be reported
+  /// as one; everything else that fails here really could not run.
+  final bool needsDetail;
+
   /// Closest contact names when a call couldn't be placed — the assistant
   /// offers them as "who did you mean?" and learns from the answer.
   final List<String> candidates;
@@ -23,6 +29,7 @@ class ActionResult {
   const ActionResult(
     this.ok,
     this.message, {
+    this.needsDetail = false,
     this.candidates = const [],
     this.data,
   });
@@ -195,7 +202,11 @@ class DesktopDeviceActionBackend implements DeviceActionBackend {
   Future<ActionResult> _webSearch(Map<String, dynamic> args) async {
     final query = args['query']?.toString() ?? '';
     if (query.isEmpty) {
-      return const ActionResult(false, 'What should I search for?');
+      return const ActionResult(
+        false,
+        'What should I search for?',
+        needsDetail: true,
+      );
     }
     final url =
         'https://www.google.com/search?q=${Uri.encodeQueryComponent(query)}';

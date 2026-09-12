@@ -345,7 +345,7 @@ enum AgentResultStatus { succeeded, required, denied, unavailable, needsInfo }
 /// Colour is deliberately not here: which tint a status wears is a theme
 /// decision and belongs to the UI, while what it *says* is core vocabulary.
 extension AgentResultStatusWording on AgentResultStatus {
-  /// The chip's short verdict.
+  /// The chip's short name for this status.
   String get label => switch (this) {
     AgentResultStatus.succeeded => 'Done',
     AgentResultStatus.required => 'Approval needed',
@@ -353,6 +353,25 @@ extension AgentResultStatusWording on AgentResultStatus {
     AgentResultStatus.unavailable => 'Unavailable',
     AgentResultStatus.needsInfo => 'Question',
   };
+
+  /// Whether Nexus is *asking* rather than reporting an outcome.
+  ///
+  /// A question is answered by the user, so it is never a verdict on the
+  /// request. "Who should I call?" means the sentence was incomplete, not
+  /// that calling is broken, and reading it under the label `Unavailable`
+  /// said the opposite of what the app had actually done.
+  bool get isQuestion => this == AgentResultStatus.needsInfo;
+
+  /// Whether this status is something Nexus genuinely could not do.
+  ///
+  /// This is the whole vocabulary of the core's error state, and the reason
+  /// it is spelled out here rather than compared inline: the two statuses
+  /// that look most like failures are not. [AgentResultStatus.denied] is a no
+  /// the user gave and [AgentResultStatus.required] is a gate they have not
+  /// answered yet — both are the user exercising control, and colouring the
+  /// core red for either would blame them for it. Only
+  /// [AgentResultStatus.unavailable] means "Nexus tried and could not".
+  bool get isFailure => this == AgentResultStatus.unavailable;
 
   /// The full honest sentence for a result that came back from a *paired
   /// device*, which is the same obligation as [explain] in a different voice.
@@ -477,8 +496,10 @@ AgentDispatchResult dispatchCommand({
       command.target == 'local') {
     final text = (command.arguments['text'] as String?)?.trim() ?? '';
     if (text.isEmpty) {
+      // Nothing to copy is a missing detail, not a broken feature: the user
+      // said "copy to my phone" without saying what.
       return const AgentDispatchResult(
-        status: AgentResultStatus.unavailable,
+        status: AgentResultStatus.needsInfo,
         message: 'Nothing to copy. Try "copy hello to my phone".',
       );
     }
