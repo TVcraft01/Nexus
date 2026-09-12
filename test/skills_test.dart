@@ -2,6 +2,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/core/capability.dart';
 import 'package:nexus/core/skills.dart';
 
 /// One ask-log line in the exact shape QueryLog.i.ask writes.
@@ -74,8 +75,9 @@ void main() {
   });
 
   test('the catalog is non-empty and every skill has a label and example', () {
-    expect(kSkillCatalog, isNotEmpty);
-    for (final entry in kSkillCatalog.entries) {
+    final catalog = skillCatalog();
+    expect(catalog, isNotEmpty);
+    for (final entry in catalog.entries) {
       expect(entry.value.label, isNotEmpty);
       expect(entry.value.example, isNotEmpty);
     }

@@ -38,17 +38,18 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
 
 | File | Lines | Owns |
 |---|---|---|
-| `core/agent_contract.dart` | ~466 | The vocabulary: `ParsedCommand`, `AgentMessage`, `AgentDispatch`, actions, device snapshots. No behavior. |
-| `core/command_interpreter.dart` | ~1,430 | Text → `ParsedCommand`: patterns for every action, normalization, phrase similarity. Pure. |
-| `core/command_service.dart` | ~770 | **Routing + assistant state**: execute pipeline, taught phrases/learned defaults (`_learned`/`_defaults`), clarification state machines, approval + device plans, remote requests. The service is deliberately store-agnostic — constructed with an `AgentMemory` value, mutations surfaced through callbacks. |
-| `core/answers.dart` | ~870 | **The local answer catalog**: `localAnswer(command, ctx)` — a flat switch over actions deciding the assistant's words, plus its pure helpers (fact matching `factsAbout`/`contactNumber`, phone extraction with the E.164 cap, time/number formatting, `evaluateMath`). Routing stays in the service; only answers live here. |
+| `core/agent_contract.dart` | 471 | The vocabulary: `ParsedCommand`, `AgentMessage`, `AgentDispatch`, action ids, device snapshots. No behavior, and no platform policy — that moved to `capability.dart`. |
+| `core/capability.dart` | 246 | **The capability registry**: one entry per action with its label, its verified example and the platforms whose executor can run it, plus the derived views other layers read — `skillCatalog()` (ranking), `suggestionExamples()` (chips), `defaultCapabilitiesFor(platform)` (what this device offers peers). |
+| `core/command_interpreter.dart` | 2557 | Text → `ParsedCommand`: patterns for every action, normalization, phrase similarity. Pure. |
+| `core/command_service.dart` | 969 | **Routing + assistant state**: execute pipeline, taught phrases/learned defaults (`_learned`/`_defaults`), clarification state machines, approval + device plans, remote requests. The service is deliberately store-agnostic — constructed with an `AgentMemory` value, mutations surfaced through callbacks. |
+| `core/answers.dart` | 1382 | **The local answer catalog**: `localAnswer(command, ctx)` — a flat switch over actions deciding the assistant's words, plus its pure helpers (fact matching `factsAbout`/`contactNumber`, phone extraction with the E.164 cap, time/number formatting, `evaluateMath`). Routing stays in the service; only answers live here. |
 | `core/dream.dart` | ~150 | The dream pass: mines the ask log for phrases the assistant missed, and (since the self-improvement pass) proposes fixes for persistently re-asked phrases that match one the user already taught (`learnable`) — the meaning always comes from the user's own teaching, applied through the service's normal `learn` funnel. Pure. |
 | `core/reminders.dart` | ~215 | **The reminder engine** (since the architecture pass): the model (`Reminder`), the decisions (`splitTime`, `dueNow`) and the lifecycle (`ReminderEngine` — the live list, the ticking due-check, the one-shot fire). The engine is store/mesh-free: persistence, broadcast and thread messages are edge callbacks the view wires. |
 | `core/query_log.dart` | ~170 | Append-only ask log + read-back, with `@visibleForTesting` seams for fake-async tests. |
 | `core/store.dart` | ~270 | JSON persistence (`NexusStore`). The store is a *mirror* — setter + `save()`, no logic — plus identity/devices/files metadata. |
-| `mesh/mesh_service.dart` | ~3,200 | Mesh transport, pairing, sync handlers, remote file access, clipboard. Its size is next on the chopping block. |
-| `ui/device_executor.dart` | ~1,180 | **The device executor**: every platform action this device can run (apps, screenshots, calls, texts, media, timers…) and the switch routing an `AgentRequest` to the right one. Injectable backends — unit-tested without widgets (`test/device_executor_test.dart`). |
-| `ui/assistant_view.dart` | ~1,915 | The assistant screen: thread UI, service wiring, mesh/approval flows. It decides *what* the assistant says and when to run; `DeviceExecutor` decides *how* an action runs. The reminder engine was extracted into `core/reminders.dart` (the view only renders its banner and wires its edges); the dream review sheet and the clock widget are still extractable here. |
+| `mesh/mesh_service.dart` | 3558 | Mesh transport, pairing, sync handlers, remote file access, clipboard. Its size is next on the chopping block. |
+| `ui/device_executor.dart` | 1728 | **The device executor**: every platform action this device can run (apps, screenshots, calls, texts, media, timers…) and the switch routing an `AgentRequest` to the right one. Injectable backends — unit-tested without widgets (`test/device_executor_test.dart`). |
+| `ui/assistant_view.dart` | 2773 | The assistant screen: thread UI, service wiring, mesh/approval flows. It decides *what* the assistant says and when to run; `DeviceExecutor` decides *how* an action runs. The reminder engine was extracted into `core/reminders.dart` (the view only renders its banner and wires its edges); the dream review sheet and the clock widget are still extractable here. |
 
 ## State ownership
 
@@ -71,8 +72,35 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
   the store itself so knowledge survives for the next boot. One writer per
   event — never both.
 
+## The capability registry (one owner)
+
+One fact about an action used to live in five places: the id in
+`agent_contract.dart`, its label and example in `skills.dart`, the phrasing
+in `command_interpreter.dart`, the per-platform default lists in
+`agent_contract.dart`, and the wording in `answers.dart`. Five partial owners
+let a suggestion chip name an action no device could run, and let a platform
+list drift from the executor backing it.
+
+`core/capability.dart` now owns the metadata and the derived views.
+`AgentActions` stays the vocabulary, `command_interpreter.dart` stays the
+parser, and `answers.dart` stays the wording. Two invariants are enforced by
+`test/capability_test.dart` rather than merely documented:
+
+- every `AgentActions` id has exactly one registry entry, and no entry names
+  something that is not an action, and
+- every non-null `Capability.example` parses back to its own action — so a
+  chip or a ranked skill can never point at nothing.
+
+Adding an action is therefore one checked edit in one file, not a five-file
+sync. `capabilityFor(id)` is how any other layer asks what an action is.
+
 ## Where a change lands
 
+- A new *capability* (anything the assistant can do) → declare it once in
+  `core/capability.dart`: the id (an `AgentActions` constant), a label, and a
+  verified example plus the platforms whose executor runs it. The ranking,
+  the suggestion chips and what this device advertises to peers all follow
+  from that entry; the tests fail if an example does not really parse.
 - A new thing the assistant can *say* → add a case in `answers.dart`
   (`localAnswer`) and a pattern in `command_interpreter.dart` if a new
   phrasing is needed. Only touch `command_service.dart` when routing,
@@ -120,3 +148,10 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
 - `handleRemoteRequest` in `command_service.dart` keeps its own small
   answer switch rather than delegating to the catalog — shared wording
   between the two is duplicated, not yet collapsed.
+- `test/command_surface_test.dart` still restates advertised phrases. That is
+  deliberate for *natural variants* (typos, fillers, "hey siri …"), but the
+  canonical chip phrases belong to the registry and should be read from it.
+- Most registry entries have no `example` yet. That is honest — a null
+  example is a capability with no verified phrase, and it is skipped by the
+  chips rather than guessed at. Filling them in is per-action work that the
+  tests make safe.

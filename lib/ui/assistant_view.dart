@@ -6,6 +6,7 @@ import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../core/agent_contract.dart';
 import '../core/brain.dart';
+import '../core/capability.dart';
 import '../core/command_service.dart';
 import '../core/conversation.dart';
 import '../core/conversation_engine.dart';
@@ -916,7 +917,7 @@ class _AssistantViewState extends State<AssistantView> {
       // A real skill pattern exists (a single stray ask is not a routine).
       suggestions = ['what can you do', ...skillExamples].take(6).toList();
     } else {
-      suggestions = _staticSuggestions;
+      suggestions = suggestionExamples();
     }
     return SizedBox(
       height: 40,
@@ -2482,21 +2483,6 @@ class _LiveClockState extends State<_LiveClock> {
     );
   }
 }
-
-/// The generic one-tap examples, offered until the user's own usage (habits
-/// and ranked skills) takes the wheel.
-const _staticSuggestions = [
-  'what can you do',
-  'what time is it',
-  'what do you know about me',
-  'what is the weather in paris',
-  'take me home',
-  'play my playlist',
-  'open youtube',
-  'call mom',
-  'email mom',
-  'flashlight on',
-];
 
 /// The "or teach me what this means" dialog: one field, one check — the
 /// same learning the dream review uses, so a phrase the brain answered can
