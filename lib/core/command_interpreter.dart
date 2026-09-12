@@ -474,22 +474,30 @@ class CommandInterpreter {
     }
 
     // --- Device list
-    // "find my other devices" belongs here, not in the web search further
-    // down that claims the verb "find": the question is about the devices
-    // Nexus is paired with, and answering it with a Google search is both
-    // the wrong answer and a false claim about what the assistant can do.
-    // Anything mentioning "device(s)" is a device question, whatever verb
-    // it is asked with.
-    if (_oneOf(norm, const [
+    // A question about the devices Nexus is paired with must be answered by
+    // Nexus, never by the web search further down that claims the verb
+    // "find": that search is both the wrong answer and a false claim that
+    // the assistant can't do something it does well.
+    //
+    // The discriminator is the noun's number, not the verb. "devices"
+    // (plural) with any listing or locating verb is a question about the
+    // Nexus registry; the singular "my device" is the generic noun that the
+    // find/ring block below owns ("find my device", "where is my laptop").
+    // Matching "devices?" here, or letting this block slide below find/ring,
+    // silently steals those — the verb can't be the test, because "find"
+    // and "where" meaningfully begin both kinds of question.
+    final aboutDevices = RegExp(
+      r'^(?:show|list|find|locate|see|where|what|which)\b.*\bdevices\b',
+    ).hasMatch(norm);
+    if (aboutDevices ||
+        _oneOf(norm, const [
           'devices',
           'my devices',
           'my other devices',
           'other devices',
           'nexus devices',
           'my nexus devices',
-        ]) ||
-        RegExp(r'^(show|list|what|which|find|locate|see).*devices?\b')
-            .hasMatch(norm)) {
+        ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.deviceList, target: 'local'),
       );

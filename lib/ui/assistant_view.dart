@@ -819,13 +819,7 @@ class _AssistantViewState extends State<AssistantView> {
       return message.text;
     }
     if (reply.message.isNotEmpty) return reply.message;
-    return switch (reply.status) {
-      AgentResultStatus.succeeded => 'done.',
-      AgentResultStatus.denied => 'it was denied.',
-      AgentResultStatus.unavailable => 'it could not do it.',
-      AgentResultStatus.required => 'it needs approval.',
-      AgentResultStatus.needsInfo => 'it needs more information.',
-    };
+    return reply.status.clause;
   }
 
   /// The remote device asked us to run an action — approve or deny locally,
@@ -2091,30 +2085,18 @@ class _AssistantViewState extends State<AssistantView> {
   }
 
   Widget _statusChip(AgentResultStatus status, String message) {
-    final Color color;
-    final String label;
-    switch (status) {
-      case AgentResultStatus.succeeded:
-        color = NexusColors.ok;
-        label = 'Done';
-      case AgentResultStatus.required:
-        color = NexusColors.warn;
-        label = 'Approval needed';
-      case AgentResultStatus.denied:
-        color = NexusColors.danger;
-        label = 'Denied';
-      case AgentResultStatus.unavailable:
-        color = NexusColors.muted;
-        label = 'Unavailable';
-      case AgentResultStatus.needsInfo:
-        color = NexusColors.warn;
-        label = 'Question';
-    }
-    // The chip is the app's own words about what happened, so it may never be
-    // a bare verdict: when a reason is missing (a few paths return none, and
-    // a paired device can send a result with an empty message) say the honest
-    // generic thing rather than leaving "Unavailable" unexplained.
-    final explanation = explainStatus(status, message);
+    // Which tint a status wears is ours to choose; what it says is the
+    // status's own business (see `AgentResultStatusWording`). The chip may
+    // never be a bare verdict, so it shows the status's explanation whenever
+    // the result arrived without a reason of its own.
+    final color = switch (status) {
+      AgentResultStatus.succeeded => NexusColors.ok,
+      AgentResultStatus.required => NexusColors.warn,
+      AgentResultStatus.denied => NexusColors.danger,
+      AgentResultStatus.unavailable => NexusColors.muted,
+      AgentResultStatus.needsInfo => NexusColors.warn,
+    };
+    final explanation = status.explain(message);
     return Row(
       children: [
         Container(
@@ -2124,7 +2106,7 @@ class _AssistantViewState extends State<AssistantView> {
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(
-            label,
+            status.label,
             style: TextStyle(
               color: color,
               fontSize: 12,
