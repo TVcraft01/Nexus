@@ -1236,7 +1236,7 @@ class MeshService extends ChangeNotifier {
         return;
       }
       debugPrint('NEXUS mesh: pair-request <- ${msg.from} (code matched)');
-      await _handlePairRequest(msg, socket);
+      await _handlePairRequest(msg, socket, provenByCode: true);
     }
   }
 
@@ -1341,13 +1341,23 @@ class MeshService extends ChangeNotifier {
     Socket socket, {
     required bool encrypted,
   }) async {
-    _remember(msg.id);
+    // Every frame is processed exactly once. A replay is the same bytes with
+    // the same id, so this is where a captured presence claim, clipboard push
+    // or agent instruction stops being a second event.
+    if (!_remember(msg.id)) {
+      debugPrint('NEXUS mesh: dropped replayed ${msg.type} from ${msg.from}');
+      return;
+    }
 
     switch (msg.type) {
       case NexusMessage.ping:
-        // A ping proves reachability and tells us who is talking; attribute
-        // the socket so later encrypted frames on it are recognized.
-        if (_paired.containsKey(msg.from)) {
+        // A ping tells us who is talking, but being *told* is not knowing.
+        // Presence and routes are state we act on, so they only move for a
+        // peer that proves it holds the session key. An unproven claim is
+        // still heard — that is how a new device becomes discoverable — it
+        // just cannot reach trusted state.
+        final proven = await _presenceProven(msg, encrypted: encrypted);
+        if (proven && _paired.containsKey(msg.from)) {
           _inboundPeer[socket] = msg.from;
         }
         final payload = msg.payload;
@@ -1359,9 +1369,10 @@ class MeshService extends ChangeNotifier {
         final name = payload['name'] as String? ?? 'Unknown device';
         final port = (payload['port'] as num?)?.toInt();
         final ips = (payload['ips'] as List?)?.whereType<String>().toList();
-        _noteSeen(msg.from, verified: true);
+        _noteSeen(msg.from, verified: proven);
         debugPrint(
-          'NEXUS mesh: ping <- ${msg.from} from ${socket.remoteAddress.address}',
+          'NEXUS mesh: ping <- ${msg.from} from ${socket.remoteAddress.address}'
+          '${proven ? '' : ' (unproven)'}',
         );
         if (port != null) {
           await _learnAddress(
@@ -1371,10 +1382,10 @@ class MeshService extends ChangeNotifier {
             name,
             payload['platform'] as String? ?? 'other',
             ips: ips,
+            trusted: proven,
           );
         }
-        _sendPlain(
-          socket,
+        final pong = await _signedPresence(
           NexusMessage(
             type: NexusMessage.pong,
             from: identity.id,
@@ -1397,10 +1408,16 @@ class MeshService extends ChangeNotifier {
             ts: DateTime.now().millisecondsSinceEpoch,
           ),
         );
+        _sendPlain(socket, pong);
 
       case NexusMessage.pong:
-        _noteSeen(msg.from, verified: true);
-        debugPrint('NEXUS mesh: pong <- ${msg.from}');
+        // Same rule as the ping: a proven pong is what makes a peer online,
+        // and only a proven pong may move where we reach it.
+        final proven = await _presenceProven(msg, encrypted: encrypted);
+        _noteSeen(msg.from, verified: proven);
+        debugPrint(
+          'NEXUS mesh: pong <- ${msg.from}${proven ? '' : ' (unproven)'}',
+        );
         final payload = msg.payload;
         if (_paired.containsKey(msg.from)) {
           _notePeerVersion(msg.from, payload['appVersion']);
@@ -1418,11 +1435,18 @@ class MeshService extends ChangeNotifier {
             name,
             payload['platform'] as String? ?? 'other',
             ips: ips,
+            trusted: proven,
           );
         }
 
       case NexusMessage.pairRequest:
-        await _handlePairRequest(msg, socket);
+        // Deliberately not handled here. A pairing request is legitimate only
+        // when it decrypts under the code the user is showing — that is the
+        // proof, and it is what [_tryPairingFrame] establishes before calling
+        // [_handlePairRequest]. Handling the plaintext form would let a
+        // stranger add itself to the paired list and spend the code the user
+        // is looking at, so this door stays shut.
+        break;
 
       case NexusMessage.pairAccept:
         // Handled inside pairWith's own flow; reaching here means an
@@ -2891,6 +2915,61 @@ class MeshService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Adds this device's proof to a presence frame bound for a paired peer.
+  ///
+  /// Presence is not encrypted — a device has to be able to announce itself to
+  /// a network of devices it shares no secret with — but it must not be
+  /// *believed* without proof, because who is online and where a peer is
+  /// reached are state we act on. An unpaired peer has nothing shared to prove
+  /// anything with and no trusted state to update here, so its frame travels
+  /// as it always did and is heard, not trusted.
+  Future<NexusMessage> _signedPresence(NexusMessage msg) async {
+    final peerId = msg.to;
+    final peer = peerId == null ? null : _paired[peerId];
+    if (peer == null) return msg;
+    final tag = await presenceTag(
+      key: await _sessionKeyFor(peer),
+      kind: msg.type,
+      from: msg.from,
+      id: msg.id,
+      ts: msg.ts,
+    );
+    return NexusMessage(
+      type: msg.type,
+      from: msg.from,
+      to: msg.to,
+      payload: {...msg.payload, 'auth': tag},
+      id: msg.id,
+      ts: msg.ts,
+    );
+  }
+
+  /// Whether a presence frame may be believed.
+  ///
+  /// An encrypted frame was decrypted with the peer's session key, so it is
+  /// proof by construction. A plaintext one has to carry a [presenceTag],
+  /// which only a device holding that key could have produced — and which is
+  /// bound to this exact frame, so it cannot be lifted onto another claim,
+  /// another sender, or a retimed one.
+  Future<bool> _presenceProven(
+    NexusMessage msg, {
+    required bool encrypted,
+  }) async {
+    if (encrypted) return true;
+    final peer = _paired[msg.from];
+    if (peer == null) return false; // nothing shared, nothing to trust
+    final claimed = msg.payload['auth']?.toString() ?? '';
+    if (claimed.isEmpty) return false;
+    final expected = await presenceTag(
+      key: await _sessionKeyFor(peer),
+      kind: msg.type,
+      from: msg.from,
+      id: msg.id,
+      ts: msg.ts,
+    );
+    return constantTimeEquals(expected, claimed);
+  }
+
   void _noteSeen(String id, {required bool verified}) {
     final now = DateTime.now();
     _lastSeen[id] = now;
@@ -2904,8 +2983,15 @@ class MeshService extends ChangeNotifier {
     String name,
     String platform, {
     List<String>? ips,
+    required bool trusted,
   }) async {
     final peer = _paired[id];
+    // Where we reach a paired device is trusted state. Only a proven claim may
+    // move it: otherwise anyone on the network can announce itself as that
+    // device and quietly take over every later connection to it. An unknown
+    // device still lands in the Nearby list below — hearing strangers is what
+    // that list is for, and it grants nothing.
+    if (peer != null && !trusted) return;
     if (peer != null) {
       var changed = false;
       if (peer.address != address) {
@@ -3076,7 +3162,7 @@ class MeshService extends ChangeNotifier {
         );
         final socket = await _outboundSocket(peer);
         if (socket != null) {
-          _sendPlain(socket, msg);
+          _sendPlain(socket, await _signedPresence(msg));
           _noteSeen(peer.id, verified: false);
         }
       }
@@ -3162,7 +3248,18 @@ class MeshService extends ChangeNotifier {
   }
 
   /// The other side: verify the pairing request and accept it.
-  Future<void> _handlePairRequest(NexusMessage msg, Socket socket) async {
+  Future<void> _handlePairRequest(
+    NexusMessage msg,
+    Socket socket, {
+    required bool provenByCode,
+  }) async {
+    // Pairing mints a shared secret, so it is the most trusted state there is.
+    // The only acceptable proof is that the request decrypted under the code
+    // currently on screen; only [_tryPairingFrame] can establish that.
+    if (!provenByCode) {
+      debugPrint('NEXUS mesh: refused unproven pair-request <- ${msg.from}');
+      return;
+    }
     if (!pendingCodeActive) {
       // We should not even be able to decrypt without a pending code, but
       // guard anyway.
