@@ -882,5 +882,69 @@ void main() {
       reason: 'bare play without a default goes back to the media key',
     );
   });
+
+  group('a missing detail is a question, not a failure', () {
+    // Every place the executor stops to ask for something the user has to
+    // supply must say so, because the assistant reports the flag it returns:
+    // without it, "Who should I call?" reached the chip under the verdict
+    // "Unavailable" and turned the Nexus core's error state on.
+    const asking = <String, Map<String, dynamic>>{
+      AgentActions.webSearch: {},
+      AgentActions.openUrl: {},
+      AgentActions.appOpen: {},
+      AgentActions.appClose: {},
+      AgentActions.calendarAdd: {},
+      AgentActions.shoppingListAdd: {},
+      AgentActions.navOpen: {},
+      AgentActions.callPlace: {},
+      AgentActions.messageSend: {},
+      AgentActions.emailSend: {},
+      AgentActions.timerSet: {'seconds': 0},
+      AgentActions.musicSearch: {},
+    };
+
+    for (final entry in asking.entries) {
+      test('${entry.key} asks for what it lacks', () async {
+        final out = await executor.run(req(entry.key, entry.value));
+        expect(out.ok, isFalse, reason: entry.key);
+        expect(out.needsDetail, isTrue, reason: entry.key);
+        expect(out.message, contains('?'), reason: entry.key);
+      });
+    }
+
+    test('an unparseable duration is a question too', () async {
+      // "set a timer for soon" cannot be parsed: the user has to say how
+      // long, in the wording the executor asks in.
+      final out = await executor.run(
+        req(AgentActions.timerSet, {'seconds': 'soon'}),
+      );
+      expect(out.needsDetail, isTrue);
+      expect(out.message.toLowerCase(), contains('how long'));
+    });
+
+    test('a video call with nobody named is a question', () async {
+      final out = await executor.run(
+        req(AgentActions.callPlace, {'mode': 'video'}),
+      );
+      expect(out.needsDetail, isTrue);
+      expect(out.message, 'Who should I video call?');
+    });
+
+    test('a genuine failure does not claim to be a question', () async {
+      // The counterweight: the flag must not have spread to real failures,
+      // or the word "Question" would start covering for broken features.
+      executor = DeviceExecutor(
+        deviceBackend: device,
+        phoneBackend: phone,
+        musicSearcher: (_FakeMusicSearcher()..reply = null).call,
+      );
+      final out = await executor.run(
+        req(AgentActions.musicSearch, {'query': 'qqqqqq'}),
+      );
+      expect(out.ok, isFalse);
+      expect(out.needsDetail, isFalse);
+      expect(out.message, isNot(contains('?')));
+    });
+  });
 }
 

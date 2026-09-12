@@ -5,6 +5,21 @@ import 'package:nexus/core/command_interpreter.dart';
 import 'package:nexus/core/command_service.dart';
 import 'package:nexus/core/reminders.dart';
 
+/// A command as the interpreter would hand it over, with an argument left
+/// out — the shape that makes the catalog ask a question.
+ParsedCommand _asked(
+  String action, {
+  Map<String, dynamic> arguments = const {},
+}) => ParsedCommand(action: action, target: 'local', arguments: arguments);
+
+/// An answer context with nothing paired and nothing remembered: the ask-backs
+/// are the catalog's own rows, and they do not depend on a device.
+AnswerContext _noDeviceContext() => AnswerContext(
+  facts: const [],
+  devices: () => const [],
+  local: null,
+);
+
 void main() {
   const devices = [
     AgentDeviceSnapshot(
@@ -148,11 +163,15 @@ void main() {
       expect(denied.status, AgentResultStatus.denied);
       expect(denied.dispatch, isNull);
 
+      // "copy to my phone" with nothing to copy is a missing detail, not a
+      // broken feature: the answer is a question, so it must not be reported
+      // as unavailable. What it must never do is plan.
       final empty = service.execute(
         'copy to my phone',
         approval: AgentApproval.approved,
       );
-      expect(empty.status, AgentResultStatus.unavailable);
+      expect(empty.status, AgentResultStatus.needsInfo);
+      expect(empty.status.isFailure, isFalse);
       expect(empty.dispatch, isNull);
     });
   });
@@ -405,13 +424,15 @@ void main() {
       final facts = CommandService(devices: () => const []);
       for (final phrase in ['remember that', 'remember this', 'forget that']) {
         final result = facts.execute(phrase);
-        expect(result.status, AgentResultStatus.unavailable, reason: phrase);
+        // Refused with a question, because what is missing is the *content*
+        // the user meant to give — the same shape as "who should I call?".
+        expect(result.status, AgentResultStatus.needsInfo, reason: phrase);
       }
       expect(facts.factsSnapshot, isEmpty);
 
       facts.execute('remember that my bike code is 4321');
       final forgetThat = facts.execute('forget that');
-      expect(forgetThat.status, AgentResultStatus.unavailable);
+      expect(forgetThat.status, AgentResultStatus.needsInfo);
       expect(facts.factsSnapshot, ['my bike code is 4321']);
     });
 
@@ -762,6 +783,70 @@ void main() {
       expect(result.status, AgentResultStatus.succeeded);
       final msg = result.dispatch! as AgentMessage;
       expect(msg.action, AgentActions.webSearch);
+    });
+
+    test('every ask-back in the catalog is a question, never a failure', () {
+      // Called directly, because these are the rows of the catalog that ask
+      // for a missing argument — the shape "Who should I call?" arrives in.
+      // Each one used to be reported as `unavailable`, which put the words
+      // "Unavailable" over the question and turned the core's error state on.
+      final ctx = _noDeviceContext();
+      const asked = [
+        AgentActions.webSearch,
+        AgentActions.calendarAdd,
+        AgentActions.shoppingListAdd,
+        AgentActions.navOpen,
+        AgentActions.noteCreate,
+        AgentActions.timerSet,
+        AgentActions.openUrl,
+        AgentActions.appOpen,
+        AgentActions.callPlace,
+        AgentActions.messageSend,
+        AgentActions.emailSend,
+        AgentActions.memoryRemember,
+        AgentActions.memoryQuestion,
+        AgentActions.memoryForget,
+      ];
+
+      expect(asked, hasLength(14));
+      for (final where in asked) {
+        final result = localAnswer(_asked(where), ctx);
+        expect(result.status, AgentResultStatus.needsInfo, reason: where);
+        expect(result.status.isQuestion, isTrue, reason: where);
+        expect(result.status.isFailure, isFalse, reason: where);
+        // What the chip will show: the question itself, so the row reads as
+        // something to answer rather than a verdict on a broken feature.
+        expect(result.message, contains('?'), reason: where);
+        expect(result.status.label, isNot('Unavailable'), reason: where);
+      }
+    });
+
+    test('the framing-word refusal is the same kind of answer', () {
+      // "remember that" with the content left out: the catalog asks for it,
+      // exactly as it asks who to call.
+      final result = localAnswer(
+        _asked(AgentActions.memoryRemember, arguments: const {'text': 'that'}),
+        _noDeviceContext(),
+      );
+      expect(result.status.isQuestion, isTrue);
+      expect(result.status.isFailure, isFalse);
+    });
+
+    test('a genuine could-not-do still reports as a failure', () {
+      // The counterweight: the taxonomy must not have turned real failures
+      // into questions. Broken math is the catalog's own honest failure.
+      final broken = localAnswer(
+        _asked(AgentActions.mathCalc, arguments: const {'expr': '1 / 0'}),
+        _noDeviceContext(),
+      );
+      expect(broken.status, AgentResultStatus.unavailable);
+      expect(broken.status.isFailure, isTrue);
+      // And a recognized command with no home is a failure, not a question.
+      final unwired = CommandService(devices: () => const []).execute(
+        'blink the esp32',
+        approval: AgentApproval.approved,
+      );
+      expect(unwired.status.isFailure, isTrue);
     });
   });
 

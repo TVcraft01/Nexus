@@ -411,7 +411,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final query = command.arguments['query'] as String? ?? '';
       if (query.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What should I search for?',
         );
       }
@@ -493,7 +493,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final title = command.arguments['title'] as String? ?? '';
       if (title.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What should I add to your calendar?',
         );
       }
@@ -544,7 +544,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final item = command.arguments['item'] as String? ?? '';
       if (item.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What should I add to the shopping list?',
         );
       }
@@ -568,7 +568,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final query = command.arguments['query'] as String? ?? '';
       if (query.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'Where should I take you?',
         );
       }
@@ -588,7 +588,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final text = command.arguments['text'] as String? ?? '';
       if (text.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What should I note down?',
         );
       }
@@ -609,7 +609,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           : CommandInterpreter.parseDurationSeconds(raw?.toString() ?? '');
       if (seconds == null || seconds <= 0) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'How long should the timer run?',
         );
       }
@@ -628,7 +628,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final url = command.arguments['url'] as String? ?? '';
       if (url.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What should I open?',
         );
       }
@@ -663,7 +663,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final query = command.arguments['query'] as String? ?? '';
       if (query.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What app should I open?',
         );
       }
@@ -756,7 +756,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final contact = command.arguments['contact'] as String? ?? '';
       if (contact.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'Who should I call?',
         );
       }
@@ -797,7 +797,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final contact = command.arguments['contact'] as String? ?? '';
       if (contact.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'Who should I text?',
         );
       }
@@ -819,7 +819,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final contact = command.arguments['contact'] as String? ?? '';
       if (contact.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'Who should I email?',
         );
       }
@@ -1114,7 +1114,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           text.toLowerCase() == 'that' ||
           text.toLowerCase() == 'this') {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What should I remember? Try "remember that my wifi password is nexus".',
         );
       }
@@ -1167,7 +1167,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       final qTopic = (command.arguments['topic'] as String? ?? '').trim();
       if (qTopic.isEmpty) {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What do you want to know? Try "what is my wifi password".',
         );
       }
@@ -1212,7 +1212,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       // forget, never delete every fact containing the word "that".
       if (query.isEmpty || query.toLowerCase() == 'that') {
         return const AgentDispatchResult(
-          status: AgentResultStatus.unavailable,
+          status: AgentResultStatus.needsInfo,
           message: 'What should I forget? Try "forget my wifi password".',
         );
       }
