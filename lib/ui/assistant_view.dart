@@ -19,6 +19,7 @@ import '../core/skills.dart';
 import '../core/speech.dart';
 import '../mesh/mesh_service.dart';
 import 'device_executor.dart';
+import 'nexus_core.dart';
 import 'nexus_header.dart';
 import 'theme.dart';
 
@@ -79,6 +80,18 @@ class _AssistantViewState extends State<AssistantView> {
 
   /// Whether the mic is listening right now (button becomes the live mic).
   bool _listening = false;
+
+  /// Whether we are waiting on the brain's reply for a phrase the interpreter
+  /// did not know. Set by the view around the exchange it started, so the core
+  /// reports thinking from the only place that knows an exchange is in flight.
+  bool _brainThinking = false;
+
+  /// Whether this device has already held a conversation. The welcome card is
+  /// first-run content, so an emptied thread means "ready for your next
+  /// question" once a thread has existed — which is what makes the header's
+  /// New-conversation control return to the neutral empty chat instead of the
+  /// greeting the user has already read.
+  bool _everConversed = false;
 
   /// Whether the input currently being processed came from the mic. Voice
   /// contact actions (call/text/email) are confirmed by a spoken yes/no;
@@ -394,19 +407,28 @@ class _AssistantViewState extends State<AssistantView> {
   void _startConversation(String input, AgentDispatchResult original) {
     final brain = widget.brain;
     if (brain == null) return;
-    unawaited(
-      _conversation.converse(
-        brain: brain,
-        input: input,
-        original: original,
-        context: _memoryContext,
-        onBrainAnswered: (stale) {
-          // The brain owns this phrase now — drop the service's stale teach
-          // question so it can never swallow a later input.
-          if (stale != null) _service.cancelPending(stale);
-        },
-      ),
-    );
+    // The engine stays classic when the last probe proved the brain offline —
+    // it returns without the Thinking card, so the core must not flash
+    // "thinking" for an exchange that will never be made.
+    final willAsk = _conversation.brainHealth != BrainHealth.offline;
+    if (willAsk) setState(() => _brainThinking = true);
+    unawaited(() async {
+      try {
+        await _conversation.converse(
+          brain: brain,
+          input: input,
+          original: original,
+          context: _memoryContext,
+          onBrainAnswered: (stale) {
+            // The brain owns this phrase now — drop the service's stale teach
+            // question so it can never swallow a later input.
+            if (stale != null) _service.cancelPending(stale);
+          },
+        );
+      } finally {
+        if (mounted && willAsk) setState(() => _brainThinking = false);
+      }
+    }());
   }
 
   /// Every ask and its outcome lands in the query log — raw material for
@@ -655,6 +677,9 @@ class _AssistantViewState extends State<AssistantView> {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
     HapticFeedback.selectionClick();
+    // From here on a thread exists, so the first-run greeting has been read.
+    // No setState: the ask about to run notifies and rebuilds anyway.
+    _everConversed = true;
     _lastInput = text;
     _lastInputWasVoice = voice;
     _controller.clear();
@@ -1665,8 +1690,11 @@ class _AssistantViewState extends State<AssistantView> {
           padding: const EdgeInsets.fromLTRB(20, 24, 12, 0),
           child: Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: NexusHeader(
+                  // The app's identity is the one place that shows what Nexus
+                  // is doing, so the assistant's icon tile is the live core.
+                  leading: NexusCore(state: _coreState, size: 40),
                   icon: Icons.forum_rounded,
                   title: 'Assistant',
                   subtitle:
@@ -1678,6 +1706,12 @@ class _AssistantViewState extends State<AssistantView> {
                 icon: const Icon(Icons.psychology_alt_outlined),
                 color: NexusColors.muted,
                 onPressed: () => unawaited(_showDreamReview(context)),
+              ),
+              IconButton(
+                tooltip: 'New conversation',
+                icon: const Icon(Icons.add_comment_outlined),
+                color: NexusColors.muted,
+                onPressed: _startNewConversation,
               ),
             ],
           ),
@@ -1753,9 +1787,65 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// What the core is allowed to say right now.
+  ///
+  /// Every signal here is one the view genuinely has — the microphone, the
+  /// brain exchange it started, an action in flight, the last result, the
+  /// mesh — and none of them is inferred from a timer or a mood. The mapping
+  /// itself lives in [coreStateFor], with the states this build cannot
+  /// evidence left out of the vocabulary entirely.
+  NexusCoreState get _coreState {
+    final mesh = widget.mesh;
+    final last = _conversation.lastResult;
+    return coreStateFor(
+      listening: _listening,
+      thinking: _brainThinking,
+      // `_sending` is exactly "an action is being carried out": the view sets
+      // it around a local device action and around a request handed to a
+      // paired device, and nowhere else.
+      working: _sending,
+      // A result Nexus could not carry out on this device is the one failure
+      // worth showing. "denied" is the user's own choice and "approval
+      // needed" is not an outcome — neither is an error.
+      failed: last != null && last.status == AgentResultStatus.unavailable,
+      // Offline only means something when there is something to be offline
+      // from. With no paired devices Nexus is whole on its own, and saying
+      // "offline" would invent a problem.
+      offline: mesh.pairedDevices.isNotEmpty && mesh.onlineCount == 0,
+    );
+  }
+
+  /// Clears the thread and gets out of the way, so the next thing the user
+  /// types starts a conversation rather than continuing the one they just
+  /// ended — a pending question is dropped from the service too, so it can
+  /// never swallow that new input.
+  ///
+  /// Work already running is deliberately not cancelled or hidden: a phone
+  /// call in progress finishes and still reports its outcome. A conversation
+  /// ending is not a reason to leave the user uninformed about what Nexus did.
+  void _startNewConversation() {
+    final pending = _conversation.pendingKey;
+    if (pending != null) _service.cancelPending(pending);
+    _conversation.reset();
+    setState(() {
+      _everConversed = true; // a thread existed; this is not a first run
+      _reply = null;
+      _voiceConfirm = null;
+      _contactConfirm = null;
+      _controller.clear();
+    });
+    _focus.requestFocus();
+  }
+
   Widget _buildResult() {
     if (_conversation.isEmpty && _incoming() == null) {
-      return widget.mesh.pairedDevices.isEmpty ? _welcomeView() : _emptyChat();
+      // The greeting belongs to a device that has never talked to Nexus.
+      // Once a thread has existed, an empty thread is an invitation, not a
+      // hello — and clearing a conversation must never feel like being reset
+      // to the first day.
+      return widget.mesh.pairedDevices.isEmpty && !_everConversed
+          ? _welcomeView()
+          : _emptyChat();
     }
 
     final incoming = _incoming();
