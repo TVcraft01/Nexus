@@ -988,6 +988,19 @@ class CommandInterpreter {
         ),
       );
     }
+    // The same question with the verb left out: "my phone" is still about
+    // that device, and answering it beats the teach flow's "I don't
+    // understand". One rule covers the whole noun list, and the possessive is
+    // required so a bare "phone" stays available to whatever else may want it.
+    final bareDev = RegExp(r'^my ' + devicesNoun + r'$').firstMatch(norm);
+    if (bareDev != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.findDevice,
+          target: bareDev.group(1)!,
+        ),
+      );
+    }
     final ringDev =
         RegExp(r'^(?:ring|beep) (?:my |the )?' + devicesNoun + r'$')
             .firstMatch(norm) ??
