@@ -22,6 +22,21 @@ class FakeClipboard implements ClipboardBackend {
   Future<void> writeText(String text) async => value = text;
 }
 
+/// A loopback port the system has just handed back.
+///
+/// The gateway test hardcoded 51990 — a value inside Linux's ephemeral range
+/// (32768-60999), which the kernel and the test tooling both draw from. On CI
+/// something else in the job already held it, and the gateway's bind failed
+/// with `Failed to create server socket … port = 51990`, taking a passing
+/// feature down with a port lottery. Asking for port 0 and using what we are
+/// given removes the collision without weakening what the test proves.
+Future<int> loopbackPort() async {
+  final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final port = probe.port;
+  await probe.close();
+  return port;
+}
+
 void main() {
   late Directory tmp;
   late NexusStore storeA;
@@ -1170,15 +1185,16 @@ void main() {
       );
       expect(result.ok, isTrue);
 
+      final gatewayPort = await loopbackPort();
       final gateway = MeshGateway(
         mesh: meshA,
         token: 'test-token',
-        port: 51990,
+        port: gatewayPort,
       );
       await gateway.start();
       addTearDown(gateway.stop);
 
-      final conn = await Socket.connect('127.0.0.1', 51990);
+      final conn = await Socket.connect('127.0.0.1', gatewayPort);
       addTearDown(conn.destroy);
       // The socket stream is single-subscription, so queue incoming chunks and
       // hand them out one at a time.
@@ -1281,7 +1297,7 @@ void main() {
       expect(File(delPath).existsSync(), isFalse);
 
       // Wrong token: refused and the connection is dropped.
-      final bad = await Socket.connect('127.0.0.1', 51990);
+      final bad = await Socket.connect('127.0.0.1', gatewayPort);
       addTearDown(bad.destroy);
       bad.add(utf8.encode('{"token":"nope","cmd":"devices"}\n'));
       await bad.flush();

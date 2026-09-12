@@ -26,16 +26,28 @@ const thinkingPlaceholder = 'Thinking…';
 /// the card then offers the way back into the teach loop. [spokenAsk] is
 /// true when the ask this card answers came from the microphone — a card
 /// keeps its own attribution even when it replaces a mid-thread entry, so a
-/// spoken ask is answered out loud wherever its reply lands.
+/// spoken ask is answered out loud wherever its reply lands. [pending] is
+/// true while the card's own action is still running: the card then states
+/// work in flight rather than an outcome, and the run's result replaces it —
+/// success, question or failure, with whatever reason came back.
 class ConversationEntry {
   final String? userText;
   final AgentDispatchResult? result;
   final String? teachKey;
   final bool spokenAsk;
+  final bool pending;
 
-  ConversationEntry.user(this.userText) : result = null, teachKey = null, spokenAsk = false;
-  ConversationEntry.result(this.result, {this.teachKey, this.spokenAsk = false})
-    : userText = null;
+  ConversationEntry.user(this.userText)
+    : result = null,
+      teachKey = null,
+      spokenAsk = false,
+      pending = false;
+  ConversationEntry.result(
+    this.result, {
+    this.teachKey,
+    this.spokenAsk = false,
+    this.pending = false,
+  }) : userText = null;
 }
 
 /// Owns the conversation thread and the brain exchange state machine.
@@ -109,6 +121,7 @@ class ConversationEngine extends ChangeNotifier {
     bool spoken = false,
     bool replaceLast = false,
     String? teachKey,
+    bool pending = false,
   }) {
     if (replaceLast && _entries.isNotEmpty) {
       // A spoken re-run (an aloud "yes" to an Approve/Deny bar) keeps the
@@ -118,6 +131,7 @@ class ConversationEngine extends ChangeNotifier {
         result,
         teachKey: teachKey,
         spokenAsk: _lastAskSpoken,
+        pending: pending,
       );
     } else {
       if (asUser != null && asUser.isNotEmpty) {
@@ -133,6 +147,7 @@ class ConversationEngine extends ChangeNotifier {
         result,
         teachKey: teachKey,
         spokenAsk: _lastAskSpoken,
+        pending: pending,
       ));
     }
     _pendingKey = switch (result.dispatch) {

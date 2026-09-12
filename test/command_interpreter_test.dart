@@ -369,6 +369,40 @@ void main() {
       }
     });
 
+    test('normalization drops a trailing run of sentence punctuation', () {
+      expect(
+        CommandInterpreter.normalizePhrase('what can you do?'),
+        'what can you do',
+      );
+      expect(
+        CommandInterpreter.normalizePhrase('  what time is it?!  '),
+        'what time is it',
+      );
+      expect(CommandInterpreter.normalizePhrase('help!!'), 'help');
+      expect(CommandInterpreter.normalizePhrase('open youtube.'), 'open youtube');
+      // Siri-style dictation can append the ellipsis character instead of dots.
+      expect(CommandInterpreter.normalizePhrase('remember this…'), 'remember this');
+      expect(
+        CommandInterpreter.normalizePhrase('call mom please?'),
+        'call mom',
+        reason: 'filler before the mark is still filler',
+      );
+      // Punctuation inside the phrase is the phrase: a decimal point, a file
+      // name, a host. Only a trailing run goes.
+      expect(
+        CommandInterpreter.normalizePhrase('what is 2.5 plus 3'),
+        'what is 2.5 plus 3',
+      );
+      expect(
+        CommandInterpreter.normalizePhrase('open notes.txt'),
+        'open notes.txt',
+      );
+      expect(
+        CommandInterpreter.normalizePhrase('open github.com'),
+        'open github.com',
+      );
+    });
+
     test('normalization folds accents and contractions', () {
       expect(
         CommandInterpreter.normalizePhrase('  Café  Maman '),
