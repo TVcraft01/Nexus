@@ -1032,6 +1032,62 @@ void main() {
         expect(result.outcome, InterpretOutcome.matched, reason: phrase);
       }
     });
+
+    test('a sentence mark is punctuation, not part of the command', () {
+      // The bug this guards: the exact-match catalogue read "what can you do?"
+      // — the phrase the brief names explicitly — as a phrase it had never
+      // seen, and "what time is it?" failed while "what time is it" worked.
+      // Everything advertised must survive the mark a person types anyway.
+      const phrases = [
+        'what can you do',
+        'help',
+        'what time is it',
+        'what is the date',
+        'who are you',
+        'what do you know about me',
+        'roll a dice',
+        'flip a coin',
+        'tell me a joke',
+        'hello',
+        'battery',
+        'screenshot',
+        'lock screen',
+        'flashlight on',
+        'volume up',
+      ];
+      for (final phrase in phrases) {
+        final plain = parse(phrase);
+        expect(plain.outcome, InterpretOutcome.matched, reason: phrase);
+        for (final marked in ['$phrase?', '$phrase!', '$phrase.', '$phrase?!']) {
+          final result = parse(marked);
+          expect(result.outcome, plain.outcome, reason: marked);
+          expect(result.command?.action, plain.command?.action, reason: marked);
+        }
+      }
+
+      // The mark must not reach a captured argument either: "paris?" would
+      // search for the wrong thing, and "mom?" would teach Nexus a contact
+      // whose name ends in a question mark.
+      const captured = [
+        ('what is the weather in paris', 'what is the weather in paris?'),
+        ('call mom', 'call mom?'),
+        ('search for flutter', 'search for flutter!'),
+        ('define serendipity', 'define serendipity.'),
+        ('note that buy milk', 'note that buy milk.'),
+        ('remind me to buy milk', 'remind me to buy milk!'),
+      ];
+      for (final (plain, marked) in captured) {
+        final a = parse(plain).command!;
+        final b = parse(marked).command!;
+        expect(a.arguments, isNotEmpty, reason: plain);
+        expect(b.action, a.action, reason: marked);
+        expect(
+          b.arguments,
+          a.arguments,
+          reason: '$marked must capture exactly what "$plain" captures',
+        );
+      }
+    });
   });
 
   group(
@@ -1132,6 +1188,29 @@ void main() {
           expect((msg! as AgentMessage).action, isNull, reason: phrase);
           expect((msg as AgentMessage).text, isNotEmpty, reason: phrase);
         }
+      });
+
+      test('a question mark does not turn an answer into "I don\'t know"', () {
+        final svc = service();
+        for (final phrase in [
+          'what can you do?',
+          'what time is it?',
+          'who are you?',
+          'help?',
+        ]) {
+          final result = svc.execute(phrase);
+          expect(result.status, AgentResultStatus.succeeded, reason: phrase);
+          final msg = result.dispatch;
+          expect(msg, isA<AgentMessage>(), reason: phrase);
+          expect((msg! as AgentMessage).text, isNotEmpty, reason: phrase);
+        }
+        // The brief's exact example: the help answer, not a teach request.
+        final help = svc.execute('what can you do?');
+        expect(help.status.isQuestion, isFalse);
+        expect(
+          (help.dispatch! as AgentMessage).text,
+          (svc.execute('what can you do').dispatch! as AgentMessage).text,
+        );
       });
 
       test('find/ring/airplane/restart answer honestly, never dead-end', () {

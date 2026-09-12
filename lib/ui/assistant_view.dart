@@ -506,48 +506,74 @@ class _AssistantViewState extends State<AssistantView> {
   };
 
   /// Shows a dispatch result — and starts self-run actions right away.
+  ///
+  /// The decision to act is taken *before* the card goes up: a card that is
+  /// about to run something is [pending], which is what stops it wearing a
+  /// finished status while the work is still out. A plan is a promise to act;
+  /// the executor's own result is what replaces it.
   void _consume(
     AgentDispatchResult result, {
     String? asUser,
     bool replaceLast = false,
     bool spoken = false,
   }) {
-    _conversation.appendResult(
-      result,
-      asUser: asUser,
-      replaceLast: replaceLast,
-      spoken: spoken,
-    );
+    final plan = switch (result.dispatch) {
+      final AgentActionPlan p => p,
+      _ => null,
+    };
+    final message = switch (result.dispatch) {
+      final AgentMessage m => m,
+      _ => null,
+    };
     // Path 1: A routed action plan targeting this device — e.g. ledBlink
     // resolved to a local serial device, or clipboardWrite.
-    if (result.dispatch case final AgentActionPlan plan
-        when plan.request.target == widget.mesh.identity.id &&
-            _selfRunActions.contains(plan.request.action)) {
-      unawaited(_runSelfAction(plan.request));
-    }
+    final runsHere =
+        plan != null &&
+        plan.request.target == widget.mesh.identity.id &&
+        _selfRunActions.contains(plan.request.action);
     // Path 3: An approved plan aimed at a PAIRED device (a call or text
     // this device can't run, offered to the phone that can). The device
     // question already got the user's consent, so it sends itself and shows
     // the remote's outcome in the plan card; the paired device re-gates the
     // request on its own side. Blink and clipboard keep their dedicated
     // paths (they target serial nodes, not mesh devices).
-    if (result.dispatch case final AgentActionPlan plan
-        when plan.request.target.isNotEmpty &&
-            plan.request.target != widget.mesh.identity.id &&
-            plan.request.approval == AgentApproval.approved &&
-            plan.request.action != AgentActions.ledBlink &&
-            plan.request.action != AgentActions.clipboardWrite) {
-      unawaited(_sendAgentRequest(plan.request));
-    }
+    final runsThere =
+        plan != null &&
+        plan.request.target.isNotEmpty &&
+        plan.request.target != widget.mesh.identity.id &&
+        plan.request.approval == AgentApproval.approved &&
+        plan.request.action != AgentActions.ledBlink &&
+        plan.request.action != AgentActions.clipboardWrite;
     // Path 2: A message with an attached action — these come from
     // _localAnswer() for webSearch, noteCreate, timerSet, openUrl,
     // systemInfo, volumeSet. The message is shown immediately and the
     // side-effect (open browser, save note, etc.) runs in the background.
     // A reminder card is different: it registers the promise with this
     // device's reminder engine (which fires later, on its own) instead of
-    // running an executor stub.
-    if (result.dispatch case final AgentMessage message
-        when message.action == AgentActions.reminderSet) {
+    // running an executor stub — nothing is in flight, so it is never
+    // pending. A spoken call/text/email is the third case: it asks for the
+    // yes first, and a question is not work in flight either.
+    final action = message?.action;
+    final hasSideEffect =
+        action != null &&
+        action != AgentActions.reminderSet &&
+        _selfRunActions.contains(action);
+    final confirmsFirst =
+        hasSideEffect &&
+        _lastInputWasVoice &&
+        _voiceConfirmActions.contains(action);
+
+    _conversation.appendResult(
+      result,
+      asUser: asUser,
+      replaceLast: replaceLast,
+      spoken: spoken,
+      pending: runsHere || (hasSideEffect && !confirmsFirst),
+    );
+    if (runsHere) unawaited(_runSelfAction(plan.request));
+    if (runsThere) unawaited(_sendAgentRequest(plan.request));
+    if (message == null) return;
+    if (action == AgentActions.reminderSet) {
       final dueAt = DateTime.tryParse(
         message.arguments?['dueAt']?.toString() ?? '',
       );
@@ -556,36 +582,32 @@ class _AssistantViewState extends State<AssistantView> {
         _reminderEngine.register(text, dueAt);
       }
     }
-    if (result.dispatch case final AgentMessage message
-        when message.action != null &&
-            _selfRunActions.contains(message.action)) {
-      final request = AgentRequest(
-        requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
-        target: widget.mesh.identity.id,
-        action: message.action!,
-        arguments: message.arguments ?? const {},
-      );
-      // Spoken contact actions are confirmed by voice first — "call mom"
-      // heard, not typed, asks before dialing. Typed ones run straight
-      // away: the user already wrote what they meant.
-      if (_lastInputWasVoice &&
-          _voiceConfirmActions.contains(message.action)) {
-        setState(() {
-          _voiceConfirm = (request: request, question: message.text);
-        });
-        _conversation.appendResult(
-          AgentDispatchResult(
-            status: AgentResultStatus.needsInfo,
-            dispatch: AgentMessage(
-              '${message.text} Say "yes" to confirm, or "no" to cancel.',
-            ),
-          ),
-          replaceLast: true,
-        );
-      } else {
-        unawaited(_runSelfAction(request));
-      }
+    if (!hasSideEffect) return;
+    final request = AgentRequest(
+      requestId: 'ui-${DateTime.now().microsecondsSinceEpoch}',
+      target: widget.mesh.identity.id,
+      action: action,
+      arguments: message.arguments ?? const {},
+    );
+    if (!confirmsFirst) {
+      unawaited(_runSelfAction(request));
+      return;
     }
+    // Spoken contact actions are confirmed by voice first — "call mom"
+    // heard, not typed, asks before dialing. Typed ones run straight away:
+    // the user already wrote what they meant.
+    setState(() {
+      _voiceConfirm = (request: request, question: message.text);
+    });
+    _conversation.appendResult(
+      AgentDispatchResult(
+        status: AgentResultStatus.needsInfo,
+        dispatch: AgentMessage(
+          '${message.text} Say "yes" to confirm, or "no" to cancel.',
+        ),
+      ),
+      replaceLast: true,
+    );
   }
 
   Future<void> _runSelfAction(AgentRequest request) async {
@@ -2079,7 +2101,9 @@ class _AssistantViewState extends State<AssistantView> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (isLast) ...[
-            _statusChip(result.status, result.message),
+            entry.pending
+                ? _workingChip()
+                : _statusChip(result.status, result.message),
             const SizedBox(height: 12),
           ],
           if (result.dispatch case final AgentDeviceList list)
@@ -2245,6 +2269,34 @@ class _AssistantViewState extends State<AssistantView> {
           ...children,
         ],
       ),
+    );
+  }
+
+  /// The chip a card wears while its own action is still running.
+  ///
+  /// A plan is not an outcome, so until the executor returns there is no
+  /// result to report — only the fact that work is in flight. The word comes
+  /// from [NexusCoreState.working] so the card and the core say the same thing
+  /// at the same moment, and no chip can claim a result before one exists.
+  Widget _workingChip() {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: NexusColors.accent.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            NexusCoreState.working.label,
+            style: const TextStyle(
+              color: NexusColors.accent,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
     );
   }
 

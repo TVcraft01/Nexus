@@ -290,6 +290,17 @@ class CommandInterpreter {
           '',
         )
         .replaceAll(RegExp(r'^(?:can you|could you|would you)\s+'), '');
+    // Sentence punctuation is not part of the command. People type
+    // "what can you do?" and "what time is it?" at least as often as the bare
+    // phrase, and dictation adds the mark for them; the exact-match catalogue
+    // reads the phrase as unknown when a mark is left on. Worse, the mark
+    // survives into captured arguments, so "what is the weather in paris?"
+    // would search for "paris?" and "call mom?" would offer to remember a
+    // contact called "mom?". A trailing run is dropped here, before the
+    // filler strips below and before matching, so everything downstream sees
+    // the phrase the person said; punctuation *inside* it is untouched
+    // ("what is 2.5 plus 3", "open notes.txt").
+    t = t.replaceAll(RegExp(r'[?!.\u2026]+$'), '');
     // Strip trailing filler
     t = t
         .replaceAll(RegExp(r'\s+(?:please|thanks|thank you|pls|thx|ty)$'), '')

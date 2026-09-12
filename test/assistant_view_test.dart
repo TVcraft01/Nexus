@@ -57,6 +57,24 @@ class _FailingExecutor extends DeviceExecutor {
   }
 }
 
+/// An executor that finishes when the test says so — the one window a widget
+/// test cannot otherwise hold open: the moment after the card is up and before
+/// the action has returned. A real action spends that window doing something
+/// the user cannot see (a call being placed, an app being launched), and the
+/// card must not claim an outcome during it.
+class _SlowExecutor extends DeviceExecutor {
+  final _outcome = Completer<ActionResult>();
+  int runs = 0;
+
+  @override
+  Future<ActionResult> run(AgentRequest request) {
+    runs++;
+    return _outcome.future;
+  }
+
+  void finish(ActionResult result) => _outcome.complete(result);
+}
+
 void main() {
   brainWidgetTests();
 
@@ -769,6 +787,131 @@ void brainWidgetTests() {
         coreState(),
         isNot(NexusCoreState.working),
         reason: 'the action threw; nothing is in flight',
+      );
+    } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('a card in flight says Working, not Done', (tester) async {
+    // The defect this guards: the plan card was appended as `succeeded`
+    // before the executor was awaited, so "take me home" showed
+    // "Done :: Opening maps for "home"…" while the core — which reads the
+    // same in-flight action — said Working. Two widgets, one moment, two
+    // different claims, one of them false.
+    final store = NexusStore(
+      explicitPath:
+          '${Directory.systemTemp.createTempSync('inflight').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'slow-device', name: 'Slow PC', platform: 'linux'),
+      store: store,
+    );
+    final executor = _SlowExecutor();
+
+    NexusCoreState coreState() =>
+        tester.widget<NexusCore>(find.byType(NexusCore)).state;
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh, executor: executor)),
+        ),
+      );
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'take me home');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+
+      expect(
+        executor.runs,
+        greaterThan(0),
+        reason: 'the command must reach the executor for this to prove anything',
+      );
+
+      // The action is out and has not returned: the card carries work in
+      // flight, and no chip claims an outcome yet.
+      expect(find.text('Working'), findsOneWidget);
+      expect(
+        find.text('Done'),
+        findsNothing,
+        reason: 'nothing has been done yet',
+      );
+      expect(
+        find.text('Opening maps for "home"…'),
+        findsOneWidget,
+        reason: 'the plan itself is still shown — it is what is happening',
+      );
+      expect(
+        coreState(),
+        NexusCoreState.working,
+        reason: 'card and core must agree while it runs',
+      );
+
+      // The executor answers: now, and only now, is there a result to report.
+      executor.finish(const ActionResult(true, 'Maps is open.'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      await tester.idle();
+
+      expect(find.text('Done'), findsOneWidget);
+      expect(find.text('Maps is open.'), findsOneWidget);
+      expect(find.text('Working'), findsNothing);
+      expect(coreState(), isNot(NexusCoreState.working));
+    } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('a card in flight reports the failure, not the plan',
+      (tester) async {
+    // The same window, ending the other way: the plan said "Opening maps…",
+    // the device said it could not, and the card must wear the device's
+    // answer with its reason — never the plan's optimism.
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('inflight2').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'slow-device', name: 'Slow PC', platform: 'linux'),
+      store: store,
+    );
+    final executor = _SlowExecutor();
+
+    NexusCoreState coreState() =>
+        tester.widget<NexusCore>(find.byType(NexusCore)).state;
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh, executor: executor)),
+        ),
+      );
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'take me home');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('Working'), findsOneWidget);
+
+      executor.finish(const ActionResult(false, 'This device has no maps app.'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      await tester.idle();
+
+      expect(find.text('Unavailable'), findsOneWidget);
+      expect(find.text('This device has no maps app.'), findsOneWidget);
+      expect(find.text('Working'), findsNothing);
+      expect(
+        coreState(),
+        NexusCoreState.error,
+        reason: 'a real failure is the one thing that turns the core red',
       );
     } finally {
       QueryLog.i.resetForTest();
