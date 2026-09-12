@@ -63,6 +63,45 @@ Future<Uint8List> deriveSessionKey({
   return Uint8List.fromList(await key.extractBytes());
 }
 
+/// Proof that a presence frame really came from the device that holds the
+/// session key.
+///
+/// Presence travels unencrypted on purpose: any device on the network must be
+/// able to announce itself, and a device we have never paired with has no
+/// shared secret to encrypt or prove anything with. The trade that is NOT
+/// acceptable is letting an announcement be *believed* without proof — who is
+/// online, and where a paired device is reached, are state we act on. So a
+/// peer we share a key with attaches this tag, and only a tag that verifies
+/// may move that state.
+///
+/// The tag is an HMAC over the frame's own identity (kind|from|id|ts), so it
+/// is bound to one specific frame: it cannot be lifted onto another claim,
+/// another sender, or a retimed frame, and it reveals nothing about the key.
+Future<String> presenceTag({
+  required List<int> key,
+  required String kind,
+  required String from,
+  required String id,
+  required int ts,
+}) async {
+  final mac = await Hmac.sha256().calculateMac(
+    _bytes('nexus/present/v1|$kind|$from|$id|$ts'),
+    secretKey: SecretKey(key),
+  );
+  return base64Encode(mac.bytes);
+}
+
+/// Compares two proofs without revealing where they first differ — returning
+/// early would let a caller learn a valid tag one byte at a time.
+bool constantTimeEquals(String a, String b) {
+  if (a.length != b.length) return false;
+  var difference = 0;
+  for (var i = 0; i < a.length; i++) {
+    difference |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
+  }
+  return difference == 0;
+}
+
 /// Encrypt [plaintext] with AES-GCM and return
 /// base64(iv || ciphertext || mac) — one self-contained blob.
 Future<String> encryptToB64(List<int> plaintext, List<int> key) async {
