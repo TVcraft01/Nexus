@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart' show MethodChannel;
 
 import 'agent_contract.dart';
+import 'device_actions.dart' show gapAnswer;
 
 /// Outcome of asking the device to call a contact.
 class PhoneCallOutcome {
@@ -49,9 +50,12 @@ abstract class PhoneActionBackend {
 class RealPhoneActionBackend implements PhoneActionBackend {
   static const _channel = MethodChannel('dev.nexus.nexus/phone');
 
-  static const _unavailable = PhoneCallOutcome(
+  /// Answered on a system with no phone integration at all. It names what
+  /// could not happen and where it can — "not available on this device" left
+  /// the user with nothing to try.
+  static PhoneCallOutcome get _unavailable => PhoneCallOutcome(
     placed: false,
-    message: 'Phone actions are not available on this device.',
+    message: gapAnswer('place calls', 'your phone'),
   );
 
   @override
@@ -108,9 +112,11 @@ Future<AgentDispatchResult> executePhoneCall(
 ) async {
   final contact = request.arguments['contact']?.toString().trim() ?? '';
   if (contact.isEmpty) {
+    // A call with nobody to call: the request itself is incomplete, and saying
+    // "the call request" is developer wording for a person on the other end.
     return const AgentDispatchResult(
-      status: AgentResultStatus.unavailable,
-      message: 'No contact was named in the call request.',
+      status: AgentResultStatus.needsInfo,
+      message: 'No name came with the call — who should I ring?',
     );
   }
   final PhoneCallOutcome outcome;
@@ -119,7 +125,9 @@ Future<AgentDispatchResult> executePhoneCall(
   } catch (_) {
     return const AgentDispatchResult(
       status: AgentResultStatus.unavailable,
-      message: 'The call could not be placed on this device.',
+      message:
+          "The call didn't go through — the phone side didn't answer. "
+          'Try again, and check that Nexus has the phone permission.',
     );
   }
   final ok = outcome.placed || outcome.launched;

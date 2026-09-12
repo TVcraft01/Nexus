@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/brain.dart';
+import '../core/device_actions.dart' show gapAnswer;
 import '../core/distributed_brain.dart';
 import '../core/tiny_brain.dart';
 import '../core/version.dart';
@@ -156,9 +157,14 @@ class _HomeShellState extends State<HomeShell> {
           _updateError = 'The update could not be applied. Run update.sh to update manually.';
         });
       } else {
+        // Windows and macOS have no in-app installer wired up. Name what the
+        // user cannot do and where it does work, like every other gap answer.
         setState(() {
           _applying = false;
-          _updateError = 'Automatic updates are not available on this platform yet.';
+          _updateError = gapAnswer(
+            'install updates from inside the app',
+            'Linux and your phone',
+          );
         });
       }
     } catch (e) {

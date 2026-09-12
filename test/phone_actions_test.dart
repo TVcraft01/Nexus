@@ -205,7 +205,12 @@ void main() {
     expect(result.message, isNotEmpty);
   });
 
-  test('a missing contact argument is unavailable', () async {
+  test('a missing contact argument is a question, not a failure', () async {
+    // The call request arrived with nobody to ring. That is an incomplete
+    // request, not a broken feature: reporting it as `unavailable` put the
+    // verdict "Unavailable" over a question and turned the Nexus core's error
+    // state on. It is also not "the call request" — the wording a person sees
+    // has to be about the call, not about a payload.
     final backend = FakePhoneBackend({});
     final result = await executePhoneCall(
       backend,
@@ -217,7 +222,9 @@ void main() {
       ),
     );
 
-    expect(result.status, AgentResultStatus.unavailable);
-    expect(result.message, contains('No contact'));
+    expect(result.status, AgentResultStatus.needsInfo);
+    expect(result.status.isFailure, isFalse);
+    expect(result.message, contains('who should I ring'));
+    expect(result.dispatch, isNull, reason: 'nothing may be planned or run');
   });
 }

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/device_actions.dart';
@@ -51,12 +52,22 @@ void main() {
       },
     );
 
-    test('unsupported actions answer honestly', () async {
-      // airplaneModeSet is not routed by the device backend — it must
-      // answer honestly, never pretend.
-      final result = await backend.run(AgentActions.airplaneModeSet, const {});
-      expect(result.ok, isFalse);
-      expect(result.message, contains('not available'));
+    test('unsupported actions answer honestly, and say where it works', () async {
+      // Screenshots are the executor's job on Linux, not the backend's — so
+      // the backend must answer honestly, never pretend, and never leave the
+      // user with a verdict they cannot act on. "Not available on this device"
+      // named neither the thing nor a system that has it. Pinned to Linux
+      // because this is the Linux backend's answer, and the message names the
+      // system it was produced on.
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      try {
+        final result = await backend.run(AgentActions.screenshot, const {});
+        expect(result.ok, isFalse);
+        expect(result.message, contains('Linux'));
+        expect(result.message, contains('Nexus does that on'));
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
     });
 
     test('web search reports the query or a browser failure', () async {
