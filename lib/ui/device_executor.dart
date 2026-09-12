@@ -296,10 +296,7 @@ class DeviceExecutor {
           'I couldn\'t find an app called "$query" on this PC — try "open $query.com" to open its website, or give me the exact app name.',
         );
       }
-      return const ActionResult(
-        false,
-        'Opening apps is not supported on this platform.',
-      );
+      return ActionResult(false, notOnThisSystem(AgentActions.appOpen));
     } catch (_) {
       return ActionResult(false, 'Could not open $query.');
     }
@@ -636,9 +633,11 @@ class DeviceExecutor {
         'I could not open the $noun settings here — no GNOME/KDE control panel was found.',
       );
     }
-    return const ActionResult(
+    // No settings app to hand the user off to: say which systems Nexus can do
+    // this on, rather than blaming "this platform".
+    return ActionResult(
       false,
-      'Settings panels are not available on this platform.',
+      gapAnswer('open your system settings', 'Windows and Linux'),
     );
   }
 
@@ -665,10 +664,7 @@ class DeviceExecutor {
           'Closing apps works on Android (Nexus stops background apps there). From this PC I can only launch things — close it the usual way.',
         );
       }
-      return const ActionResult(
-        false,
-        'Closing apps is not supported on this platform.',
-      );
+      return ActionResult(false, notOnThisSystem(AgentActions.appClose));
     } catch (_) {
       return ActionResult(false, 'Could not close $query.');
     }
@@ -732,10 +728,7 @@ class DeviceExecutor {
           "The screen capture failed — screenshots need an unlocked, interactive desktop (locked screens and some remote sessions can't be captured).",
         );
       }
-      return const ActionResult(
-        false,
-        'Screenshots are not supported on this platform.',
-      );
+      return ActionResult(false, notOnThisSystem(AgentActions.screenshot));
     } catch (_) {
       return const ActionResult(false, 'Could not take screenshot.');
     }
@@ -782,7 +775,7 @@ class DeviceExecutor {
           );
         }
       }
-      return const ActionResult(false, 'Battery info not available here.');
+      return ActionResult(false, notOnThisSystem(AgentActions.batteryGet));
     } catch (_) {
       return const ActionResult(false, 'Could not read battery.');
     }
@@ -806,10 +799,7 @@ class DeviceExecutor {
       if (defaultTargetPlatform == TargetPlatform.windows) {
         return await _windowsBrightness(mode, level);
       }
-      return const ActionResult(
-        false,
-        'Brightness control is not available on this platform.',
-      );
+      return ActionResult(false, notOnThisSystem(AgentActions.brightnessSet));
     } catch (_) {
       return const ActionResult(false, 'Could not change brightness.');
     }
@@ -831,10 +821,7 @@ class DeviceExecutor {
           'Flashlight needs a camera flash, which is phone hardware — this PC has none. Android phones in Nexus can do it.',
         );
       }
-      return const ActionResult(
-        false,
-        'Flashlight control is not available on this platform.',
-      );
+      return ActionResult(false, notOnThisSystem(AgentActions.flashlightToggle));
     } catch (_) {
       return const ActionResult(false, 'Could not control flashlight.');
     }
@@ -876,7 +863,7 @@ class DeviceExecutor {
           why: "Apps can't switch Wi-Fi for you on a desktop",
         );
       }
-      return const ActionResult(false, 'Wi-Fi control is not available here.');
+      return ActionResult(false, notOnThisSystem(AgentActions.wifiToggle));
     } catch (_) {
       return const ActionResult(false, 'Could not toggle Wi-Fi.');
     }
@@ -902,10 +889,7 @@ class DeviceExecutor {
           why: "Apps can't switch Bluetooth for you on a desktop",
         );
       }
-      return const ActionResult(
-        false,
-        'Bluetooth control is not available here.',
-      );
+      return ActionResult(false, notOnThisSystem(AgentActions.bluetoothToggle));
     } catch (_) {
       return const ActionResult(false, 'Could not toggle Bluetooth.');
     }
@@ -947,7 +931,7 @@ class DeviceExecutor {
           "Could not lock the screen from here — use your desktop's lock shortcut (Super+L, Ctrl+Alt+L).",
         );
       }
-      return const ActionResult(false, 'Lock screen not available here.');
+      return ActionResult(false, notOnThisSystem(AgentActions.lockScreen));
     } catch (_) {
       return const ActionResult(false, 'Could not lock screen.');
     }
@@ -1105,7 +1089,7 @@ class DeviceExecutor {
         };
         return await _windowsKeyEvent(key, text);
       }
-      return const ActionResult(false, 'Media control not available here.');
+      return ActionResult(false, notOnThisSystem(AgentActions.mediaPlay));
     } catch (_) {
       return const ActionResult(false, 'Could not control media.');
     }
@@ -1158,10 +1142,7 @@ class DeviceExecutor {
           "Alarms are for the device you carry — Nexus sets real alarms from your Android phone. This PC has no alarm clock I can reach.",
         );
       }
-      return const ActionResult(
-        false,
-        'Alarms are not available on this device.',
-      );
+      return ActionResult(false, notOnThisSystem(AgentActions.alarmSet));
     } catch (_) {
       return const ActionResult(false, 'Could not set alarm.');
     }
@@ -1490,7 +1471,19 @@ class DeviceExecutor {
   /// "what is on my calendar": reads the next real events (READ_CALENDAR,
   /// asked on first use) and formats them into a spoken answer — never a
   /// guess. Horizons: today / tomorrow / this week.
+  ///
+  /// Reading needs Android's calendar provider. A desktop has no calendar
+  /// Nexus can read, and it must not answer "nothing today" for a calendar it
+  /// never looked at — that would be a fake, and a harmful one: the user would
+  /// believe a meeting-free day. So the gap is answered in the open, in the
+  /// same words as every other gap.
   Future<ActionResult> _calendarRead(String when) async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return ActionResult(
+        false,
+        notOnThisSystem(AgentActions.calendarRead),
+      );
+    }
     final out = await _deviceBackend.run(AgentActions.calendarRead, {
       'when': when,
     });
@@ -1645,9 +1638,18 @@ class DeviceExecutor {
           'Hostname: ${hostname.stdout.toString().trim()}',
         );
       }
-      return const ActionResult(true, 'System info not available.');
+      // Neither probe answered. Say which ones failed rather than leaving the
+      // user with "not available" and no idea what Nexus tried.
+      return const ActionResult(
+        true,
+        "I couldn't read this PC's details — neither uname nor hostname "
+            'answered.',
+      );
     } catch (_) {
-      return const ActionResult(true, 'System info not available.');
+      return const ActionResult(
+        true,
+        "I couldn't read this PC's details just now.",
+      );
     }
   }
 
@@ -1762,9 +1764,9 @@ class DeviceExecutor {
         };
         return await _windowsKeyEvent(key, text);
       }
-      return const ActionResult(false, 'Could not change volume here.');
+      return ActionResult(false, notOnThisSystem(AgentActions.volumeSet));
     } catch (_) {
-      return const ActionResult(false, 'Could not change volume here.');
+      return const ActionResult(false, 'Could not change the volume.');
     }
   }
 }

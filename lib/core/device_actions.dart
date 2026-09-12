@@ -35,6 +35,103 @@ class ActionResult {
   });
 }
 
+/// The system the user is actually on, in the words they would use for it.
+///
+/// "Platform" is developer wording, and a dead end that blames "this platform"
+/// leaves the user nothing to act on. The user is on Windows, or on their
+/// phone, and the answer should say so.
+String platformName([TargetPlatform? platform]) {
+  return switch (platform ?? defaultTargetPlatform) {
+    TargetPlatform.android => 'your phone',
+    TargetPlatform.iOS => 'your iPhone',
+    TargetPlatform.windows => 'Windows',
+    TargetPlatform.macOS => 'macOS',
+    TargetPlatform.linux => 'Linux',
+    TargetPlatform.fuchsia => 'this device',
+  };
+}
+
+/// What each action does, in the user's words, and the systems that have it.
+///
+/// The single owner of the wording for "Nexus can't do this here": the entry
+/// says *what* was asked for and *where* it does work, both checked against the
+/// backends below and the executor's own branches rather than guessed. Keeping
+/// it in one table is what stops the answers drifting into a bare verdict —
+/// "not available on this device" says neither what was missing nor what to do
+/// about it.
+///
+/// Only actions that can actually hit a gap need an entry. An action without
+/// one still gets no bare verdict, but it also gets no invented claim about
+/// which systems can do it — see [notOnThisSystem].
+const _gapWords = <String, (String what, String where)>{
+  AgentActions.appOpen: ('open apps by name', 'Windows, Linux and your phone'),
+  AgentActions.appClose: ('close apps for you', 'your phone'),
+  AgentActions.screenshot: (
+    'take a screenshot',
+    'Windows, Linux and your phone',
+  ),
+  AgentActions.batteryGet: (
+    'read the battery',
+    'Windows, Linux and your phone',
+  ),
+  AgentActions.brightnessSet: (
+    'change the brightness',
+    'Windows, Linux and your phone',
+  ),
+  AgentActions.flashlightToggle: ('use the flashlight', 'your phone'),
+  AgentActions.wifiToggle: (
+    'open your Wi-Fi settings',
+    'Windows, Linux and your phone',
+  ),
+  AgentActions.bluetoothToggle: (
+    'open your Bluetooth settings',
+    'Windows, Linux and your phone',
+  ),
+  AgentActions.lockScreen: (
+    'lock the screen for you',
+    'Windows, Linux and your phone',
+  ),
+  AgentActions.mediaPlay: (
+    'control your music',
+    'Windows, Linux and your phone',
+  ),
+  AgentActions.alarmSet: ('set an alarm', 'Windows and your phone'),
+  AgentActions.volumeSet: (
+    'change the volume',
+    'Windows, Linux and your phone',
+  ),
+  AgentActions.calendarRead: ('read your calendar', 'your phone'),
+};
+
+/// What the user asked for, in their words — never empty, so an answer that
+/// says Nexus could not do something always names the something.
+String capabilityWord(String action) =>
+    _gapWords[action]?.$1 ?? 'do that';
+
+/// The sentence itself: what Nexus could not do, which system the user is on,
+/// and the systems that *do* have it. One shape for every gap answer, so none
+/// of them can drift back into a verdict with nothing behind it.
+///
+/// It promises no more than that. Routing the work to a paired device is not
+/// something Nexus can do for these actions today, so the sentence never
+/// offers it.
+String gapAnswer(String what, String where) =>
+    "I can't $what on ${platformName()} — Nexus does that on $where.";
+
+/// The same answer, for an action Nexus knows by name.
+///
+/// An action with no entry still gets no bare verdict — but it also gets no
+/// invented claim about which systems can do it, because that would be a
+/// guess dressed up as an answer.
+String notOnThisSystem(String action) {
+  final words = _gapWords[action];
+  if (words == null) {
+    return "I can't do that on ${platformName()} — Nexus hasn't got that one "
+        'here.';
+  }
+  return gapAnswer(words.$1, words.$2);
+}
+
 /// Runs the small device-local actions the assistant can execute natively.
 abstract class DeviceActionBackend {
   Future<ActionResult> run(String action, Map<String, dynamic> args);
@@ -127,7 +224,16 @@ class RealDeviceActionBackend implements DeviceActionBackend {
         },
         args,
       );
-      if (raw == null) return const ActionResult(false, 'Not available here.');
+      if (raw == null) {
+        // The Android side is there but said nothing back. That is a failure
+        // of this action, not a system that lacks the feature, so it says so
+        // instead of blaming "this device".
+        return const ActionResult(
+          false,
+          "Your phone didn't answer that one — it needs Android to reply, "
+              "and it didn't. Try again, and check Nexus's permissions.",
+        );
+      }
       return ActionResult(
         raw['ok'] == true,
         raw['message']?.toString() ?? 'Done.',
@@ -139,20 +245,25 @@ class RealDeviceActionBackend implements DeviceActionBackend {
             : null,
       );
     } catch (_) {
-      return const ActionResult(
+      // The channel itself threw: a missing permission or an unwired method on
+      // the phone. Same honesty rule — name the action, then what to try.
+      return ActionResult(
         false,
-        'That action is not available on this device.',
+        "Your phone couldn't ${capabilityWord(action)} just now — check "
+            "Nexus's permissions in Android settings and try again.",
       );
     }
   }
 }
 
+/// The backend for systems Nexus has no device integration on at all (Windows
+/// and macOS ship no native channel; the executor answers for them).
 class UnavailableDeviceActionBackend implements DeviceActionBackend {
   const UnavailableDeviceActionBackend();
 
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async =>
-      const ActionResult(false, 'That action is not available on this device.');
+      ActionResult(false, notOnThisSystem(action));
 
   @override
   Future<(double, double)?> currentLocation() async => null;
@@ -177,10 +288,7 @@ class DesktopDeviceActionBackend implements DeviceActionBackend {
       case AgentActions.webSearch:
         return _webSearch(args);
       default:
-        return const ActionResult(
-          false,
-          'That action is not available on this device.',
-        );
+        return ActionResult(false, notOnThisSystem(action));
     }
   }
 

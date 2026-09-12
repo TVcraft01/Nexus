@@ -561,6 +561,71 @@ void main() {
     expect(unknown.message, contains('time zone'));
   });
 
+  group('a platform gap is explained, never dismissed', () {
+    // macOS has no native Nexus integration at all, which makes it the honest
+    // probe for the class: every action Nexus cannot do there has to name the
+    // action and the systems that can, rather than blame "this platform".
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    });
+
+    const phoneOrDesktop = <String, Map<String, dynamic>>{
+      AgentActions.appOpen: {'query': 'safari'},
+      AgentActions.appClose: {'query': 'safari'},
+      AgentActions.screenshot: {},
+      AgentActions.batteryGet: {},
+      AgentActions.brightnessSet: {'mode': 'up'},
+      AgentActions.flashlightToggle: {},
+      AgentActions.wifiToggle: {},
+      AgentActions.bluetoothToggle: {},
+      AgentActions.lockScreen: {},
+      AgentActions.mediaPlay: {},
+      AgentActions.volumeSet: {'mode': 'up'},
+      AgentActions.alarmSet: {'hour': 7, 'minute': 0},
+      AgentActions.calendarRead: {'when': 'today'},
+    };
+
+    for (final entry in phoneOrDesktop.entries) {
+      test('${entry.key} says what and where', () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+        final out = await executor.run(req(entry.key, entry.value));
+        expect(out.ok, isFalse, reason: entry.key);
+        expect(out.message, contains('macOS'), reason: entry.key);
+        expect(
+          out.message,
+          contains('Nexus does that on'),
+          reason: '${entry.key} does not say where it does work',
+        );
+        // Nothing here is a missing detail — the request was complete, the
+        // system simply cannot run it, so it must not be reported as a
+        // question waiting on the user either.
+        expect(out.needsDetail, isFalse, reason: entry.key);
+      });
+    }
+  });
+
+  test('a desktop calendar read explains itself and fakes nothing', () async {
+    // The defect this guards: "what's on my calendar?" fell through to the
+    // backend's default branch and answered "That action is not available on
+    // this device." — a dead end that named neither the calendar nor a system
+    // that has one. It must also never answer "nothing today" for a calendar
+    // it never read: that would tell the user their day is clear when it isn't.
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+
+    final out = await executor.run(req(
+      AgentActions.calendarRead,
+      {'when': 'today'},
+    ));
+
+    expect(out.ok, isFalse);
+    expect(out.message, "I can't read your calendar on Linux — "
+        'Nexus does that on your phone.');
+    expect(out.message, isNot(contains('Nothing on your calendar')));
+    expect(out.needsDetail, isFalse, reason: 'nothing is missing from the ask');
+    // And the read never happened: no backend call, no empty result to report.
+    expect(device.calls, isEmpty);
+  });
+
   test('adding a calendar event goes through the device backend on Android',
       () async {
     final out = await executor.run(req(
