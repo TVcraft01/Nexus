@@ -77,4 +77,40 @@ void main() {
     expect(plan.isAuthorized(esp), isTrue);
     expect(plan.isAuthorized(const DeviceCapabilities(deviceId: 'esp32')), isFalse);
   });
+
+  group('a status always explains itself', () {
+    test('no status other than success is ever a bare verdict', () {
+      for (final status in AgentResultStatus.values) {
+        final bare = explainStatus(status);
+        if (status == AgentResultStatus.succeeded) {
+          expect(bare, isEmpty, reason: 'success needs no apology');
+          continue;
+        }
+        // A bare label is the thing the user should never see: "Unavailable"
+        // on its own says nothing about what is missing, and reads as the app
+        // pretending it tried. Every other status has to explain itself.
+        expect(bare, isNotEmpty, reason: status.name);
+        expect(
+          bare.toLowerCase(),
+          isNot(equals(status.name.toLowerCase())),
+          reason: '${status.name} must say more than its own name',
+        );
+        expect(bare.length, greaterThan(15), reason: status.name);
+      }
+    });
+
+    test('a real reason is passed through untouched', () {
+      const reason =
+          'I can\'t open email on this device — try on a device with a mail app.';
+      expect(explainStatus(AgentResultStatus.unavailable, reason), reason);
+    });
+
+    test('whitespace is not a reason', () {
+      expect(explainStatus(AgentResultStatus.unavailable, '   '), isNotEmpty);
+      expect(
+        explainStatus(AgentResultStatus.unavailable, '   '),
+        isNot(equals('   ')),
+      );
+    });
+  });
 }

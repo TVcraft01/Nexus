@@ -474,9 +474,22 @@ class CommandInterpreter {
     }
 
     // --- Device list
-    if (RegExp(r'^(show|list|what|which).*devices?').hasMatch(norm) ||
-        norm == 'devices' ||
-        norm == 'my devices') {
+    // "find my other devices" belongs here, not in the web search further
+    // down that claims the verb "find": the question is about the devices
+    // Nexus is paired with, and answering it with a Google search is both
+    // the wrong answer and a false claim about what the assistant can do.
+    // Anything mentioning "device(s)" is a device question, whatever verb
+    // it is asked with.
+    if (_oneOf(norm, const [
+          'devices',
+          'my devices',
+          'my other devices',
+          'other devices',
+          'nexus devices',
+          'my nexus devices',
+        ]) ||
+        RegExp(r'^(show|list|what|which|find|locate|see).*devices?\b')
+            .hasMatch(norm)) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.deviceList, target: 'local'),
       );
