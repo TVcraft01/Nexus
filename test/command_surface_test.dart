@@ -421,9 +421,9 @@ void main() {
     // The bug this guards: the generic "find …" web-search matcher claimed
     // "find my other devices" and opened a search for "my other devices" —
     // a wrong answer that also claimed the assistant cannot do something it
-    // does perfectly well. Anything about devices is a device question,
-    // whatever verb it is asked with.
-    test('listing devices routes to the Nexus registry', () {
+    // does perfectly well. A question about your own devices is a question
+    // for Nexus, whatever verb it is asked with.
+    test('listing your devices routes to the Nexus registry', () {
       for (final phrase in const [
         'find my other devices',
         'find my devices',
@@ -435,9 +435,24 @@ void main() {
         'show my devices',
         'list my devices',
         'what devices do i have',
+        // "where are …" is a location question about *the user's* devices, so
+        // it belongs to the registry — not to the memory matcher that owns
+        // "where is the X" and would otherwise answer for a device by name.
+        'where are my devices',
       ]) {
         expectAction(phrase, AgentActions.deviceList, target: 'local');
       }
+    });
+
+    test('the singular "my device" stays a find, not a listing', () {
+      // The counterweight. "find my phone" and "where is my laptop" are a
+      // standing per-device feature, matched by noun in the find/ring block;
+      // a device-list rule that matched "device" too would silently take them
+      // over, because it runs first. Only the plural is a listing.
+      expectAction('find my device', AgentActions.findDevice, target: 'device');
+      expectAction('find my phone', AgentActions.findDevice, target: 'phone');
+      expectAction('locate my laptop', AgentActions.findDevice, target: 'laptop');
+      expectAction('where is my pc', AgentActions.findDevice, target: 'pc');
     });
 
     test('a real search still searches', () {

@@ -81,7 +81,7 @@ void main() {
   group('a status always explains itself', () {
     test('no status other than success is ever a bare verdict', () {
       for (final status in AgentResultStatus.values) {
-        final bare = explainStatus(status);
+        final bare = status.explain();
         if (status == AgentResultStatus.succeeded) {
           expect(bare, isEmpty, reason: 'success needs no apology');
           continue;
@@ -99,16 +99,31 @@ void main() {
       }
     });
 
+    test('every status can name itself and describe a device\'s outcome', () {
+      for (final status in AgentResultStatus.values) {
+        expect(status.label, isNotEmpty, reason: status.name);
+        expect(status.clause, isNotEmpty, reason: status.name);
+        // The chip label is a verdict, not a sentence: the explanation and the
+        // chip must not be the same words, or the chip has stopped explaining.
+        expect(status.label, isNot(equals(status.explain())), reason: status.name);
+      }
+      // The chip labels are what the user already reads; they are part of the
+      // interface, not an implementation detail to be reworded freely.
+      expect(AgentResultStatus.needsInfo.label, 'Question');
+      expect(AgentResultStatus.required.label, 'Approval needed');
+      expect(AgentResultStatus.unavailable.label, 'Unavailable');
+    });
+
     test('a real reason is passed through untouched', () {
       const reason =
           'I can\'t open email on this device — try on a device with a mail app.';
-      expect(explainStatus(AgentResultStatus.unavailable, reason), reason);
+      expect(AgentResultStatus.unavailable.explain(reason), reason);
     });
 
     test('whitespace is not a reason', () {
-      expect(explainStatus(AgentResultStatus.unavailable, '   '), isNotEmpty);
+      expect(AgentResultStatus.unavailable.explain('   '), isNotEmpty);
       expect(
-        explainStatus(AgentResultStatus.unavailable, '   '),
+        AgentResultStatus.unavailable.explain('   '),
         isNot(equals('   ')),
       );
     });
