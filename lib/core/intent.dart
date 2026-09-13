@@ -235,20 +235,37 @@ class IntentResolver {
       }
     }
 
+    // Before "understood and impossible": a question about a failure is not a
+    // request to attempt the thing that failed. "why can't you generate an
+    // image" must diagnose, not be answered by the image rule as though the
+    // user had asked for a picture.
+    if (_match(kDiagnosticRules, text) case final diagnostic?) {
+      return IntentMatched(diagnostic);
+    }
+
     for (final unsupported in kUnsupportedIntents) {
       if (!text.satisfies(unsupported.needs)) continue;
       if (unsupported.forbids.any(text.contains)) continue;
       return IntentUnsupported(unsupported.message);
     }
 
-    for (final rule in kIntentRules) {
+    if (_match(kIntentRules, text) case final command?) {
+      return IntentMatched(command);
+    }
+    return null;
+  }
+
+  /// The first rule in [rules] that claims [text], or null when none does.
+  ///
+  /// A rule may match its words and still decline: matching is a keyword
+  /// question, and a rule whose arguments are not readable in this sentence
+  /// is not really its own, so the next rule gets its turn.
+  ParsedCommand? _match(List<IntentRule> rules, IntentText text) {
+    for (final rule in rules) {
       if (!text.satisfies(rule.needs)) continue;
       if (rule.forbids.any(text.contains)) continue;
-      // A rule may still decline after matching its words — its arguments
-      // are not readable, so the sentence is not really its own.
       final command = rule.build?.call(text);
-      if (command == null) continue;
-      return IntentMatched(command);
+      if (command != null) return command;
     }
     return null;
   }
@@ -516,10 +533,75 @@ final List<IntentRule> kIntentRules = [
       'sync',
       'clipboard',
     },
-    build: (_) => const ParsedCommand(
+    // "what devices can you use" and "what can my devices do" are the same
+    // registry lookup as "show my devices" and a different answer: not which
+    // devices exist, but what each of them can actually do. The detail rides
+    // on the command so the catalogue answers the question that was asked.
+    build: (text) => ParsedCommand(
       action: AgentActions.deviceList,
       target: 'local',
+      arguments: asksWhatDevicesCanDo(text)
+          ? const {'detail': 'capabilities'}
+          : const {},
     ),
+  ),
+];
+
+/// Whether a device question is asking what the devices can *do*, rather than
+/// which ones exist. One predicate for the whole class — "what devices can you
+/// use", "what can my devices do", "which devices are able to play music" —
+/// because they are one question phrased around the verb.
+bool asksWhatDevicesCanDo(IntentText text) =>
+    text.has('use') ||
+    text.contains('able to') ||
+    (text.has('can') && (text.has('do') || text.has('does')));
+
+/// Questions about what Nexus just failed to do, answered from the failure it
+/// recorded rather than from a guess about it.
+///
+/// Separate from [kIntentRules] because the resolver reads them *before* the
+/// unsupported intents: "why can't you generate an image" names an image and
+/// would otherwise be answered as a request for one.
+final List<IntentRule> kDiagnosticRules = [
+  IntentRule(
+    AgentActions.helpGet,
+    needs: [
+      {'why', 'how'},
+      {
+        'cant',
+        "can't",
+        'cannot',
+        'unable',
+        'fail',
+        'failed',
+        'fails',
+        'didnt',
+        "didn't",
+        'not',
+      },
+      {
+        'you',
+        'nexus',
+        'it',
+        'this',
+        'that',
+        'do',
+        'does',
+        'work',
+        'working',
+        'happen',
+      },
+    ],
+    // "how come" is the one multi-word opener worth claiming; "how" alone is
+    // left to the catalogue, which reads "how are you" as a greeting.
+    build: (text) {
+      if (text.has('how') && !text.contains('how come')) return null;
+      return const ParsedCommand(
+        action: AgentActions.helpGet,
+        target: 'local',
+        arguments: {'topic': 'why'},
+      );
+    },
   ),
 ];
 

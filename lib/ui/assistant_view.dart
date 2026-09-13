@@ -153,6 +153,7 @@ class _AssistantViewState extends State<AssistantView> {
         name: widget.mesh.identity.name,
         online: true,
         capabilities: defaultCapabilitiesFor(widget.mesh.identity.platform),
+        platform: widget.mesh.identity.platform,
       ),
       // The set of actions this device can truly execute end to end: they
       // run immediately from typed input — no Approve/Deny prompt. One
@@ -326,6 +327,10 @@ class _AssistantViewState extends State<AssistantView> {
           name: d.name,
           online: mesh.isOnline(d.id),
           capabilities: defaultCapabilitiesFor(d.platform),
+          // The platform the peer reported at pairing, so a question about
+          // "my phone" can resolve against the real registry instead of
+          // hoping the device's name contains the word.
+          platform: d.platform,
         ),
       );
     }

@@ -7,9 +7,11 @@
 import 'dart:math';
 
 import 'agent_contract.dart';
+import 'capability.dart';
 import 'command_interpreter.dart';
 import 'memory.dart';
 import 'reminders.dart';
+import 'resource_map.dart';
 import 'timezones.dart';
 
 /// The window onto the assistant's state the catalog may touch while
@@ -31,7 +33,32 @@ class AnswerContext {
     this.onFactLearned,
     this.userName,
     this.assistantName = 'Nexus',
+    this.verifiedLocally = const {},
+    this.unable,
   });
+
+  /// The actions this device genuinely runs end to end. Everything else it
+  /// lists as a capability is an assumption from its own platform, and the
+  /// resource map says so rather than flattening the two.
+  final Set<String> verifiedLocally;
+
+  /// Who can do what around this device.
+  ///
+  /// Derived from [devices] and [local] on each read rather than stored, so a
+  /// cached context cannot report a device that has since gone away, and so
+  /// there is one owner of "what counts as able" instead of each answer
+  /// having its own rule.
+  ResourceMap get resources => ResourceMap.of(
+    local: local,
+    paired: devices(),
+    verifiedLocally: verifiedLocally,
+  );
+
+  /// What Nexus last could not do, or null when nothing has failed.
+  ///
+  /// A function rather than a value because the refusal that matters is the
+  /// one that just happened — always after this context was built.
+  final UnableReport? Function()? unable;
 
   /// Everything the user told Nexus about their world, each entry carrying
   /// where it came from. Mutable on purpose: remembering and forgetting are
@@ -59,11 +86,11 @@ List<String> _capabilitiesOf(AgentDeviceSnapshot? device) =>
     device?.capabilities.map((c) => c.id).toList() ?? const [];
 
 /// Whether [action] can actually execute somewhere in the assistant's world
-/// right now — on this device, or on a paired device the mesh can reach.
-bool _somewhereRuns(AnswerContext ctx, String action) {
-  if (_capabilitiesOf(ctx.local).contains(action)) return true;
-  return ctx.devices().any((d) => d.capabilities.any((c) => c.id == action));
-}
+/// — on this device, or on a paired device. "Somewhere" deliberately ignores
+/// whether the device is reachable right now: a phone that is offline still
+/// has the address book that makes a call worth asking about.
+bool _somewhereRuns(AnswerContext ctx, String action) =>
+    ctx.resources.reach(action).hasAnyDevice;
 
 /// The devices whose real name (or id) matches the noun the user said.
 ///
@@ -76,13 +103,28 @@ bool _somewhereRuns(AnswerContext ctx, String action) {
 List<AgentDeviceSnapshot> _devicesMatching(AnswerContext ctx, String noun) {
   final key = noun.trim().toLowerCase();
   if (key.isEmpty) return const [];
-  return ctx
+  final named = ctx
       .devices()
       .where(
         (d) =>
             d.name.toLowerCase().contains(key) ||
             d.id.toLowerCase() == key,
       )
+      .toList();
+  if (named.isNotEmpty) return named;
+  // Nothing is called that. The noun may be a *kind* — "my phone", "my pc" —
+  // and the registry knows each device's platform, because pairing exchanged
+  // it. So the kind resolves against real data instead of against a device's
+  // name happening to contain the word: a phone called "Pixel 8" is still a
+  // phone, and asking for it should find it.
+  final kinds = {
+    for (final kind in DeviceKind.values)
+      if (deviceKindWords(kind).contains(key)) kind,
+  };
+  if (kinds.isEmpty) return const [];
+  return ctx
+      .devices()
+      .where((d) => kinds.contains(deviceKindOf(d.platform)))
       .toList();
 }
 
@@ -161,6 +203,176 @@ AgentDispatchResult _answerWith(String text) => AgentDispatchResult(
   status: AgentResultStatus.succeeded,
   dispatch: AgentMessage(text),
 );
+
+/// "what devices can you use?" — every device Nexus knows, and what each can
+/// really do.
+///
+/// The distinction the answer turns on is evidence. This device's own actions
+/// are split into the ones it genuinely runs and the ones it merely lists
+/// from its platform; a paired device has never announced anything, so its
+/// abilities are assumptions and are labelled as such. Presenting either as
+/// fact would be the exact overclaim the brief forbids.
+AgentDispatchResult deviceReportAnswer(AnswerContext ctx) {
+  final devices = ctx.resources.devices;
+  if (devices.isEmpty) {
+    return _answerWith(
+      'I don\'t know about any devices yet. Pair one from the Devices tab '
+      'and I\'ll tell you what it can do.',
+    );
+  }
+
+  final lines = <String>[];
+  var assumedPeers = 0;
+  for (final device in devices) {
+    if (!device.online) {
+      lines.add('${device.name} — offline, so I can\'t use it right now.');
+      continue;
+    }
+    final verified = [
+      for (final id in device.capabilityIds)
+        if (device.evidenceFor(id) == CapabilityEvidence.verified) id,
+    ];
+    final assumed = [
+      for (final id in device.capabilityIds)
+        if (device.evidenceFor(id) == CapabilityEvidence.assumed) id,
+    ];
+    if (verified.isEmpty && assumed.isEmpty) {
+      lines.add('${device.name} — I don\'t know what it can do; '
+          'it has never told me.');
+      continue;
+    }
+    final head = device.isThisDevice
+        ? '${device.name} — this device'
+        : '${device.name} — ${_kindWord(device.kind)}, online';
+    final parts = <String>[head];
+    if (verified.isNotEmpty) {
+      parts.add('  runs now: ${_labelsFor(verified)}');
+    }
+    if (assumed.isNotEmpty) {
+      if (!device.isThisDevice) assumedPeers++;
+      parts.add(
+        device.isThisDevice
+            ? '  listed but not wired up here: ${_labelsFor(assumed)}'
+            : '  assumed from its platform: ${_labelsFor(assumed)}',
+      );
+    }
+    lines.add(parts.join('\n'));
+  }
+
+  final tail = assumedPeers == 0
+      ? ''
+      : '\n\nA paired device has never told me what it can really do, so those are '
+            'read off its platform, not from it.';
+  return _answerWith('Devices I can use:\n  ${lines.join('\n  ')}$tail');
+}
+
+/// The label for one capability, or its raw id when the registry has no entry
+/// — never a blank, which would read as "this device can nothing".
+String _labelOf(String capabilityId) =>
+    capabilityFor(capabilityId)?.label ?? capabilityId;
+
+/// Capability labels for [ids], in a stable order, capped so one talkative
+/// device cannot crowd out the others.
+String _labelsFor(List<String> ids) {
+  const shown = 6;
+  final labels = [for (final id in ids) _labelOf(id)]..sort();
+  if (labels.length <= shown) return labels.join(', ');
+  return '${labels.take(shown).join(', ')}, +${labels.length - shown} more';
+}
+
+String _kindWord(DeviceKind kind) => switch (kind) {
+  DeviceKind.phone => 'phone',
+  DeviceKind.computer => 'computer',
+  DeviceKind.other => 'device',
+};
+
+/// "why can't you do this?" — the last thing Nexus could not do, explained
+/// from the failure it recorded at the time.
+///
+/// The four reasons are the whole point of the answer: "I didn't understand
+/// you", "Nexus has no such ability", "no device you have can do it" and
+/// "it wasn't permitted" are four different problems with four different next
+/// actions. The sentence is chosen by the recorded reason, and the recorded
+/// words are quoted rather than paraphrased, so the explanation cannot invent
+/// a cause the failure never had.
+AgentDispatchResult unableAnswer(AnswerContext ctx) {
+  final report = ctx.unable?.call();
+  if (report == null) {
+    return _answerWith(
+      'Nothing has failed, so there\'s nothing to explain. Ask me to do '
+      'something and, if I can\'t, ask me why.',
+    );
+  }
+
+  final why = switch (report.reason) {
+    UnableReason.notUnderstood =>
+      'I didn\'t understand "${report.input}", so I never tried — Nexus had no '
+          'meaning for those words, and guessing at one would have run '
+          'something you did not ask for.',
+    UnableReason.noSuchCapability => report.capabilityLabel == null
+        ? 'I understood the request, but Nexus has no such ability at all — '
+              'nothing on any device would change that.'
+        : 'I understood it as ${report.capabilityLabel}, but Nexus has no '
+              '${report.capabilityLabel} ability at all — nothing on any '
+              'device would change that.',
+    UnableReason.noCapableDevice => _noCapableDeviceWhy(ctx, report),
+    UnableReason.notAuthorized => switch (report.status) {
+      AgentResultStatus.denied =>
+        'You turned it down, so nothing ran. That was your decision, not a '
+            'fault — ask again and I\'ll wait for your go-ahead.',
+      AgentResultStatus.required =>
+        'It is still waiting for your go-ahead. Nothing runs until you '
+            'approve it.',
+      _ => 'The request was not permitted, so it did not run.',
+    },
+    // The failure carried no cause — so the answer says that, and only adds
+    // what the live reach map can still confirm, rather than inventing a
+    // reason the failure never had.
+    null => _unattributedWhy(ctx, report),
+  };
+
+  final detail = report.detail?.trim();
+  final lines = <String>[why];
+  if (detail != null && detail.isNotEmpty) lines.add('What I said: "$detail"');
+  return _answerWith(lines.join('\n\n'));
+}
+
+/// The "understood, but nowhere here can do it" explanation, from the real
+/// reach map: whether anyone holds the capability, whether they are in reach,
+/// and where the registry says it works.
+String _noCapableDeviceWhy(AnswerContext ctx, UnableReport report) {
+  final capability = report.capability;
+  if (capability == null) {
+    return 'I understood the request, but no device I know about can do it.';
+  }
+  final reach = ctx.resources.reach(capability);
+  final what = report.capabilityLabel ?? capability;
+  final where = reach.declaredOn;
+  if (!reach.hasAnyDevice) {
+    return 'I understood it as $what, but no device you have says it can do '
+        'that${where == null ? '.' : ' — it takes $where.'}';
+  }
+  // A device gained the ability between the failure and the question. Say
+  // what is true now instead of repeating a verdict that has gone stale.
+  final named = [for (final d in reach.able) d.name].join(', ');
+  return 'I understood it as $what. Nothing held it when I tried, and '
+      '$named lists it now.';
+}
+
+/// The failure carried no cause the record can name. Say only what the live
+/// reach map still confirms, and never fill the gap with a guess.
+String _unattributedWhy(AnswerContext ctx, UnableReport report) {
+  final capability = report.capability;
+  final holders = capability == null
+      ? const <String>[]
+      : [for (final d in ctx.resources.reach(capability).able) d.name];
+  if (holders.isEmpty) {
+    return 'I can\'t say why from the record — all I have is what I said at '
+        'the time.';
+  }
+  return 'I can\'t say why from the record: the ability is on '
+      '${holders.join(', ')}, so a missing device was not the reason.';
+}
 
 /// The honest answer when a contact action has no taught number and nothing
 /// in the assistant's world can execute it: teach the number instead of
@@ -340,6 +552,10 @@ String? _contactNumber(Iterable<MemoryFact> facts, String name) {
 AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
   switch (command.action) {
     case AgentActions.helpGet:
+      // "why can't you do this?" is a question about the last failure, not a
+      // request for the catalogue — the interpreter marks it with a topic so
+      // this switch can tell the two apart.
+      if (command.arguments['topic'] == 'why') return unableAnswer(ctx);
       return const AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(

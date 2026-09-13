@@ -3,6 +3,7 @@ import 'answers.dart';
 import 'command_interpreter.dart';
 import 'intent.dart';
 import 'memory.dart';
+import 'resource_map.dart';
 
 /// What the assistant remembers between sessions:
 ///  - [learned]: a phrase the user taught, mapped to the command it means
@@ -78,6 +79,12 @@ class CommandService {
   /// beside the question's key so an answer can be turned into the command it
   /// names. Removed when answered, so a question can never be answered twice.
   final Map<String, AmbiguousPhrasing> _pendingChoices = {};
+
+  /// The last thing Nexus could not do, or null when nothing has failed. One
+  /// field, not a log: "why can't you do this?" is about the request that
+  /// just failed, and a history of every refusal is a different feature with
+  /// its own privacy questions.
+  UnableReport? _unable;
 
   /// The capability of the intent that actually ran last. This is the entire
   /// conversational context Nexus keeps: one antecedent, and only an executed
@@ -338,6 +345,16 @@ class CommandService {
         // Understood, and impossible — said plainly, with the reason, and
         // with nothing run in its place. The failure is Nexus's missing
         // capability, not the user's phrasing, and the sentence says so.
+        //
+        // "No such capability" is recorded here rather than by the dispatch
+        // wrapper: the sentence named something Nexus has no ability for, so
+        // there is no capability id and no device that could change it — a
+        // different failure from "nobody here can do this".
+        _unable = UnableReport(
+          input: text,
+          reason: UnableReason.noSuchCapability,
+          detail: interpreted.explanation,
+        );
         return AgentDispatchResult(
           status: AgentResultStatus.unavailable,
           message: interpreted.explanation!,
@@ -372,6 +389,15 @@ class CommandService {
             ),
           );
         }
+        // The sentence stayed unresolved and Nexus is asking rather than
+        // acting — but it is also the honest record of a phrasing Nexus does
+        // not understand, which is exactly what "why can't you do this?"
+        // should explain if the user asks instead of teaching it.
+        _unable = UnableReport(
+          input: text,
+          reason: UnableReason.notUnderstood,
+          detail: 'I don\'t understand "$text" yet.',
+        );
         _pendingContext['teach:$normalized'] = normalized;
         // When the phrase smells like a call or text but missed the exact
         // patterns, say the shape instead of sending them into the generic
@@ -604,10 +630,94 @@ class CommandService {
     );
   }
 
+  /// Every recognized command leaves through here, which is what makes this
+  /// the one place a failure can be recorded: whatever the outcome, "why
+  /// can't you do this?" can explain it from what actually happened rather
+  /// than from a guess made afterwards.
+  AgentDispatchResult _dispatchParsed(
+    ParsedCommand command,
+    AgentApproval approval,
+    String requestId, {
+    String? rawInput,
+  }) {
+    final result = _dispatch(command, approval, requestId, rawInput: rawInput);
+    _rememberUnable(command, result, rawInput);
+    return result;
+  }
+
+  /// Records the last request Nexus could not carry out, so the explanation
+  /// of it comes from the request rather than from a story told afterwards.
+  ///
+  /// A clarification is Nexus *asking*, so it neither fails nor succeeds and
+  /// leaves the record alone; a request that worked clears it, because then
+  /// nothing is awaiting an explanation.
+  void _rememberUnable(
+    ParsedCommand command,
+    AgentDispatchResult result,
+    String? rawInput,
+  ) {
+    final status = result.status;
+    // A clarification is Nexus asking, not failing — the vocabulary's own
+    // rule, and the record follows it rather than contradicting it.
+    if (status == AgentResultStatus.needsInfo) return;
+
+    final reach = _resources.reach(command.action);
+    // "Understood, and no device you have can do it" is a fact about the world,
+    // so it is read from the registry rather than guessed from a status.
+    //
+    // Only a capability with *some* device behind it counts: an action the
+    // catalogue answers on its own (the time, maths, memory) has no device
+    // backend to be missing, which is what [CapabilityReach.declaredOn] means
+    // by null. Without that check an ordinary "what time is it" would leave
+    // Nexus claiming no device can tell the time.
+    final nobodyHoldsIt = reach.declaredOn != null && !reach.hasAnyDevice;
+
+    if (status == AgentResultStatus.succeeded) {
+      // A request that worked leaves nothing to explain — unless it was an
+      // action no device here can actually run, which is precisely the
+      // "understood, and nobody here can" case the user is owed an answer for.
+      _unable = nobodyHoldsIt
+          ? UnableReport(
+              input: (rawInput ?? command.action).trim(),
+              reason: UnableReason.noCapableDevice,
+              capability: command.action,
+              detail: result.message,
+              status: status,
+            )
+          : null;
+      return;
+    }
+
+    final reason = switch (status) {
+      AgentResultStatus.denied ||
+      AgentResultStatus.required => UnableReason.notAuthorized,
+      // An unavailable action whose ability does exist around here is recorded
+      // without a reason rather than blamed on a device that was never
+      // missing — the answer will say exactly that.
+      _ => nobodyHoldsIt ? UnableReason.noCapableDevice : null,
+    };
+    _unable = UnableReport(
+      input: (rawInput ?? command.action).trim(),
+      reason: reason,
+      capability: command.action,
+      detail: result.message,
+      status: status,
+    );
+  }
+
+  /// Who can do what around this device, read fresh from the same device list
+  /// every answer uses. One derivation, so the record and the answers cannot
+  /// disagree about who is able.
+  ResourceMap get _resources => ResourceMap.of(
+    local: local,
+    paired: devices(),
+    verifiedLocally: locallyExecutable,
+  );
+
   /// Routes a recognized command: local intents run here, blink and clipboard
   /// go through the existing contract, and catalog intents that need a
   /// capability this device lacks are offered to a device that has it.
-  AgentDispatchResult _dispatchParsed(
+  AgentDispatchResult _dispatch(
     ParsedCommand command,
     AgentApproval approval,
     String requestId, {
@@ -615,6 +725,11 @@ class CommandService {
   }) {
     final action = command.action;
     if (action == AgentActions.deviceList) {
+      // "what devices can you use?" is answered from the resource map, not
+      // from the device widget — the catalogue owns those words.
+      if (command.arguments['detail'] == 'capabilities') {
+        return deviceReportAnswer(_answerContext);
+      }
       return dispatchCommand(
         command: command,
         devices: devices(),
@@ -1104,6 +1219,10 @@ class CommandService {
     onFactLearned: onFactLearned,
     userName: _userName,
     assistantName: _assistantName,
+    // The one definition of "what this device really runs", so a report of
+    // what Nexus can do never counts an assumption as a fact.
+    verifiedLocally: locallyExecutable,
+    unable: () => _unable,
   );
 
   ParsedCommand _withArgument(
