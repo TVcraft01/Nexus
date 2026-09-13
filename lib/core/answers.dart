@@ -34,8 +34,9 @@ class AnswerContext {
     this.userName,
     this.assistantName = 'Nexus',
     this.verifiedLocally = const {},
-    this.unable,
-  });
+    MemoryLedger Function()? ledger,
+    this.lastAction,
+  }) : _ledgerSource = ledger;
 
   /// The actions this device genuinely runs end to end. Everything else it
   /// lists as a capability is an assumption from its own platform, and the
@@ -54,11 +55,22 @@ class AnswerContext {
     verifiedLocally: verifiedLocally,
   );
 
-  /// What Nexus last could not do, or null when nothing has failed.
+  /// Where the taught phrases and remembered preferences came from, so a
+  /// question about provenance can count them without the answer needing its
+  /// own copy of the memory.
   ///
-  /// A function rather than a value because the refusal that matters is the
-  /// one that just happened — always after this context was built.
-  final UnableReport? Function()? unable;
+  /// A function, not a value: the ledger is immutable, so a ledger captured
+  /// when this context was built would go stale the moment something new was
+  /// learned. A context nobody gave one to holds nothing, which is the honest
+  /// reading of "nothing was recorded".
+  final MemoryLedger Function()? _ledgerSource;
+  MemoryLedger get ledger => _ledgerSource?.call() ?? const MemoryLedger();
+
+  /// What Nexus last actually did, or null when nothing has been done yet.
+  ///
+  /// A function rather than a value because the action that matters is the one
+  /// that just happened — always after this context was built.
+  final LastAction? Function()? lastAction;
 
   /// Everything the user told Nexus about their world, each entry carrying
   /// where it came from. Mutable on purpose: remembering and forgetting are
@@ -286,8 +298,108 @@ String _kindWord(DeviceKind kind) => switch (kind) {
   DeviceKind.other => 'device',
 };
 
-/// "why can't you do this?" — the last thing Nexus could not do, explained
-/// from the failure it recorded at the time.
+/// "why did you do that?" — the most recent thing Nexus actually did,
+/// explained from the record it made while doing it.
+///
+/// Every clause comes from that record: which sentence it read, how it
+/// resolved it, which capability that became, which device ran it and what
+/// came of it. When nothing has been done yet the answer says so instead of
+/// inventing a history, and when nothing *ran* — an unresolved sentence or a
+/// question — it says that too, because claiming to have acted is the one
+/// thing this answer must never do.
+AgentDispatchResult lastActionAnswer(AnswerContext ctx) {
+  final action = ctx.lastAction?.call();
+  if (action == null) {
+    return _answerWith(
+      'I haven\'t done anything yet, so there\'s nothing to explain. Ask me '
+      'something, then ask me again.',
+    );
+  }
+
+  final lines = <String>['You said "${action.input}".'];
+  // Nothing ran: say what Nexus did instead of what it did not do, and never
+  // dress a question or an unresolved sentence up as an action.
+  switch (action.origin) {
+    case ActionOrigin.question:
+      lines.add('Nothing ran — I asked you something instead.');
+      if (action.detail.isNotEmpty) {
+        lines.add('What I asked: "${action.detail}"');
+      }
+      return _answerWith(lines.join('\n\n'));
+    case ActionOrigin.notUnderstood:
+      lines.add('I never understood it, so nothing was attempted.');
+      if (action.detail.isNotEmpty) {
+        lines.add('What I said: "${action.detail}"');
+      }
+      return _answerWith(lines.join('\n\n'));
+    case ActionOrigin.unsupported:
+      lines.add(
+        'I understood the request, and Nexus has no ability for it at all — '
+        'nothing ran.',
+      );
+      if (action.detail.isNotEmpty) {
+        lines.add('What I said: "${action.detail}"');
+      }
+      return _answerWith(lines.join('\n\n'));
+    case ActionOrigin.capability || ActionOrigin.taught:
+      break;
+  }
+
+  final how = action.capabilityLabel ?? action.capability ?? 'something';
+  final source = action.origin == ActionOrigin.taught
+      ? 'That is a phrase you taught me — it means $how'
+      : 'I understood it as $how';
+  if (action.failed) {
+    lines.add('$source, and nothing ran it.');
+    // The reason, from the same vocabulary "why can't you do this?" uses, so
+    // the two explanations cannot disagree about the same failure.
+    lines.add(_reasonSentence(ctx, action));
+    // And the words Nexus actually used, quoted — the evidence the reason above
+    // is drawn from, rather than a paraphrase of it.
+    if (action.detail.isNotEmpty) lines.add('What I said: "${action.detail}"');
+  } else {
+    lines.add(
+      action.device == null
+          ? '$source.'
+          : '$source, and ${action.device} ran it.',
+    );
+    if (action.detail.isNotEmpty) lines.add('It came off: "${action.detail}"');
+  }
+  return _answerWith(lines.join('\n\n'));
+}
+
+/// The reason, in the four-part vocabulary, for a failure the record explains.
+/// One owner, so "why did you do that?" and "why can't you do this?" speak
+/// about the same failure with the same words.
+String _reasonSentence(AnswerContext ctx, LastAction action) =>
+    switch (action.reason) {
+      UnableReason.notUnderstood =>
+        'I didn\'t understand "${action.input}", so I never tried — Nexus had '
+            'no meaning for those words, and guessing at one would have run '
+            'something you did not ask for.',
+      UnableReason.noSuchCapability => action.capabilityLabel == null
+          ? 'Nexus has no such ability at all — nothing on any device would '
+                'change that.'
+          : 'Nexus has no ${action.capabilityLabel} ability at all — nothing '
+                'on any device would change that.',
+      UnableReason.noCapableDevice => _noCapableDeviceWhy(ctx, action),
+      UnableReason.notAuthorized => switch (action.status) {
+        AgentResultStatus.denied =>
+          'You turned it down, so nothing ran. That was your decision, not a '
+              'fault — ask again and I\'ll wait for your go-ahead.',
+        AgentResultStatus.required =>
+          'It is still waiting for your go-ahead. Nothing runs until you '
+              'approve it.',
+        _ => 'The request was not permitted, so it did not run.',
+      },
+      // The failure carried no cause — so the answer says that, and only adds
+      // what the live reach map can still confirm, rather than inventing a
+      // reason the failure never had.
+      null => _unattributedWhy(ctx, action),
+    };
+
+/// "why can't you do this?" — the last failure, explained from the record
+/// made at the time.
 ///
 /// The four reasons are the whole point of the answer: "I didn't understand
 /// you", "Nexus has no such ability", "no device you have can do it" and
@@ -296,73 +408,68 @@ String _kindWord(DeviceKind kind) => switch (kind) {
 /// words are quoted rather than paraphrased, so the explanation cannot invent
 /// a cause the failure never had.
 AgentDispatchResult unableAnswer(AnswerContext ctx) {
-  final report = ctx.unable?.call();
-  if (report == null) {
+  final action = ctx.lastAction?.call();
+  if (action == null || !action.failed) {
+    // Nothing has failed. If Nexus asked something instead, that is what it
+    // did — and saying so is more useful than "nothing to explain".
+    if (action != null && action.origin == ActionOrigin.question) {
+      return _answerWith(
+        'I haven\'t failed at anything — I asked you something instead.\n\n'
+        'What I asked: "${action.detail}"',
+      );
+    }
     return _answerWith(
       'Nothing has failed, so there\'s nothing to explain. Ask me to do '
       'something and, if I can\'t, ask me why.',
     );
   }
 
-  final why = switch (report.reason) {
-    UnableReason.notUnderstood =>
-      'I didn\'t understand "${report.input}", so I never tried — Nexus had no '
-          'meaning for those words, and guessing at one would have run '
-          'something you did not ask for.',
-    UnableReason.noSuchCapability => report.capabilityLabel == null
-        ? 'I understood the request, but Nexus has no such ability at all — '
-              'nothing on any device would change that.'
-        : 'I understood it as ${report.capabilityLabel}, but Nexus has no '
-              '${report.capabilityLabel} ability at all — nothing on any '
-              'device would change that.',
-    UnableReason.noCapableDevice => _noCapableDeviceWhy(ctx, report),
-    UnableReason.notAuthorized => switch (report.status) {
-      AgentResultStatus.denied =>
-        'You turned it down, so nothing ran. That was your decision, not a '
-            'fault — ask again and I\'ll wait for your go-ahead.',
-      AgentResultStatus.required =>
-        'It is still waiting for your go-ahead. Nothing runs until you '
-            'approve it.',
-      _ => 'The request was not permitted, so it did not run.',
-    },
-    // The failure carried no cause — so the answer says that, and only adds
-    // what the live reach map can still confirm, rather than inventing a
-    // reason the failure never had.
-    null => _unattributedWhy(ctx, report),
-  };
-
-  final detail = report.detail?.trim();
-  final lines = <String>[why];
-  if (detail != null && detail.isNotEmpty) lines.add('What I said: "$detail"');
+  // Name the request being explained, and how Nexus read it. The record
+  // survives questions about it, so this answer can be asked long after the
+  // failure and must not assume the user still has the sentence in front of
+  // them — nor may it leave "it" unaccounted for.
+  final lines = <String>[];
+  if (action.origin != ActionOrigin.notUnderstood) {
+    final label = action.capabilityLabel;
+    lines.add(
+      label == null
+          ? 'The last thing you asked me was "${action.input}".'
+          : 'The last thing you asked me was "${action.input}", which I read '
+                'as $label.',
+    );
+  }
+  lines.add(_reasonSentence(ctx, action));
+  if (action.detail.isNotEmpty) lines.add('What I said: "${action.detail}"');
   return _answerWith(lines.join('\n\n'));
 }
 
 /// The "understood, but nowhere here can do it" explanation, from the real
 /// reach map: whether anyone holds the capability, whether they are in reach,
 /// and where the registry says it works.
-String _noCapableDeviceWhy(AnswerContext ctx, UnableReport report) {
-  final capability = report.capability;
+String _noCapableDeviceWhy(AnswerContext ctx, LastAction action) {
+  final capability = action.capability;
   if (capability == null) {
     return 'I understood the request, but no device I know about can do it.';
   }
   final reach = ctx.resources.reach(capability);
-  final what = report.capabilityLabel ?? capability;
   final where = reach.declaredOn;
   if (!reach.hasAnyDevice) {
-    return 'I understood it as $what, but no device you have says it can do '
-        'that${where == null ? '.' : ' — it takes $where.'}';
+    // The capability is named by the caller, which already knows how the
+    // sentence was read — repeating it here would say "I understood it as"
+    // twice in one answer.
+    return 'No device you have says it can do that'
+        '${where == null ? '.' : ' — it takes $where.'}';
   }
-  // A device gained the ability between the failure and the question. Say
+  // A device gained the ability between the attempt and the question. Say
   // what is true now instead of repeating a verdict that has gone stale.
   final named = [for (final d in reach.able) d.name].join(', ');
-  return 'I understood it as $what. Nothing held it when I tried, and '
-      '$named lists it now.';
+  return 'Nothing held it when I tried, and $named lists it now.';
 }
 
 /// The failure carried no cause the record can name. Say only what the live
 /// reach map still confirms, and never fill the gap with a guess.
-String _unattributedWhy(AnswerContext ctx, UnableReport report) {
-  final capability = report.capability;
+String _unattributedWhy(AnswerContext ctx, LastAction action) {
+  final capability = action.capability;
   final holders = capability == null
       ? const <String>[]
       : [for (final d in ctx.resources.reach(capability).able) d.name];
@@ -372,6 +479,57 @@ String _unattributedWhy(AnswerContext ctx, UnableReport report) {
   }
   return 'I can\'t say why from the record: the ability is on '
       '${holders.join(', ')}, so a missing device was not the reason.';
+}
+
+/// "what did you infer?" — an honest answer from a system that infers
+/// nothing.
+///
+/// Nexus has no inference engine: nothing derives a fact from behaviour, so
+/// there is nothing to report, and the answer says exactly that rather than
+/// dressing an assumption up as a conclusion. What it *does* hold is counted
+/// from the stamps themselves, by origin, so the distinctions the memory model
+/// records — you told me, a device reported it, one of your own answers
+/// created it, stored before sources existed — survive into the answer. An
+/// inference, if one ever existed, is labelled as an inference and not as a
+/// fact; that is the one thing this answer may never soften.
+AgentDispatchResult inferredAnswer(AnswerContext ctx) {
+  final byOrigin = <MemoryOrigin, int>{};
+  void count(MemoryOrigin origin) =>
+      byOrigin.update(origin, (n) => n + 1, ifAbsent: () => 1);
+  for (final fact in ctx.facts) {
+    count(fact.stamp.origin);
+  }
+  for (final stamp in ctx.ledger.stampMap.values) {
+    count(stamp.origin);
+  }
+
+  final inferred = byOrigin[MemoryOrigin.inferred] ?? 0;
+  final lines = <String>[
+    inferred == 0
+        ? 'No — I haven\'t inferred anything about you. Nothing in Nexus '
+              'works out a fact from your behaviour yet, so there is no '
+              'inference to show.'
+        : '$inferred of the things I hold came from an inference, not from '
+              'anything you told me — I worked them out from how you use '
+              'Nexus, and I may be wrong about any of them.',
+  ];
+
+  if (byOrigin.isEmpty) {
+    lines.add(
+      'I hold nothing about you at all right now, so there is nothing to '
+      'show either way.',
+    );
+  } else {
+    final counts = [
+      for (final origin in MemoryOrigin.values)
+        if (byOrigin[origin] case final n?) '  • ${origin.label}: $n',
+    ];
+    lines.add('Everything I hold, and where it came from:\n${counts.join('\n')}');
+    lines.add(
+      'Ask "what do you know about me" to see the entries themselves.',
+    );
+  }
+  return _answerWith(lines.join('\n\n'));
 }
 
 /// The honest answer when a contact action has no taught number and nothing
@@ -552,10 +710,11 @@ String? _contactNumber(Iterable<MemoryFact> facts, String name) {
 AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
   switch (command.action) {
     case AgentActions.helpGet:
-      // "why can't you do this?" is a question about the last failure, not a
-      // request for the catalogue — the interpreter marks it with a topic so
-      // this switch can tell the two apart.
+      // The diagnostic questions are about Nexus's own behaviour, not requests
+      // for the catalogue — the interpreter marks each with a topic so this
+      // switch can tell them apart.
       if (command.arguments['topic'] == 'why') return unableAnswer(ctx);
+      if (command.arguments['topic'] == 'actions') return lastActionAnswer(ctx);
       return const AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
@@ -1464,6 +1623,12 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       // the stored stamp: no canned explanation, and no searching for one.
       if (command.arguments['kind'] == 'provenance') {
         return _provenanceAnswer(ctx, qTopic);
+      }
+      // "What did you infer?" is the same question about memory asked about
+      // conclusions rather than entries, so it is the same capability with a
+      // different question — and it reads the stored origins, not a promise.
+      if (command.arguments['kind'] == 'inferred') {
+        return inferredAnswer(ctx);
       }
       if (qTopic.isEmpty) {
         return const AgentDispatchResult(

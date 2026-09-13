@@ -295,16 +295,46 @@ enum UnableReason {
   notAuthorized,
 }
 
-/// The last request Nexus could not carry out, recorded where it failed so
-/// "why can't you do this?" can explain from the real reason instead of
-/// guessing at one afterwards.
+/// How Nexus resolved a sentence, which is what "which intent did you
+/// understand" means in practice. Each value is reachable, and each one makes
+/// the answer say something different.
+enum ActionOrigin {
+  /// A capability from the registry: the sentence was understood as an action
+  /// Nexus knows.
+  capability,
+
+  /// A phrase the user taught, which mapped to a capability.
+  taught,
+
+  /// Understood as a request Nexus has no capability for at all — nothing on
+  /// any device would change it.
+  unsupported,
+
+  /// Not understood: the sentence never resolved to anything.
+  notUnderstood,
+
+  /// Nothing was attempted — Nexus asked the user something instead.
+  question,
+}
+
+/// The last thing Nexus actually did, recorded where it happened so "why did
+/// you do that?" and "why can't you do this?" explain from the real record
+/// instead of a story told afterwards.
 ///
-/// One field, not a trace: the question is about the thing that just failed.
-/// A record of everything Nexus ever refused is a log, which is a different
-/// feature with its own retention and privacy questions.
-class UnableReport {
+/// One field, not a trace: both questions are about the request that just
+/// happened. A history of every action is a log, which is a different feature
+/// with its own retention and privacy questions.
+class LastAction {
   /// What the user actually said.
   final String input;
+
+  /// How Nexus resolved the sentence.
+  final ActionOrigin origin;
+
+  /// The device that ran it, in the user's terms, or null when none could be
+  /// named — a result with no local device known, for instance. Never guessed
+  /// at.
+  final String? device;
 
   /// Which of the four reasons this was, or null when the record cannot
   /// attribute one.
@@ -314,29 +344,42 @@ class UnableReport {
   /// while the ability really exists around here. Guessing "no device can do
   /// it" then would be exactly the invented cause this model exists to
   /// prevent, so the answer says it cannot say why and quotes what it
-  /// actually said.
+  /// actually said. Null also means "nothing failed": see [outcome].
   final UnableReason? reason;
 
   /// The capability the sentence resolved to, when it resolved to one.
   final String? capability;
 
-  /// What Nexus actually said at the time, verbatim. The explanation quotes
-  /// it rather than paraphrasing, so it can never invent a cause.
-  final String? detail;
+  /// What Nexus actually said at the time, verbatim, or '' when it said
+  /// nothing. The explanation quotes it rather than paraphrasing, so it can
+  /// never invent a cause or a result.
+  final String detail;
 
   /// The result's own status, for [UnableReason.notAuthorized] — the difference
   /// between "you said no" and "it is waiting for your go-ahead" is in there.
   final AgentResultStatus? status;
 
-  const UnableReport({
+  const LastAction({
     required this.input,
+    this.origin = ActionOrigin.capability,
+    this.device,
     this.reason,
     this.capability,
-    this.detail,
-    this.status,
+    this.detail = '',
+    required this.status,
   });
 
   /// The registry's label for [capability], or null when Nexus has no entry.
   String? get capabilityLabel =>
       capability == null ? null : capabilityFor(capability!)?.label;
+
+  /// Whether Nexus was unable to do what was asked.
+  ///
+  /// Read from the record rather than from the status alone, because the two
+  /// do not line up: a sentence Nexus never understood carries a reason but no
+  /// status failure, and a request the catalogue *answered* while no device
+  /// here can run it carries a reason on a success. A clarification carries
+  /// neither, because asking is not failing — the status vocabulary's own rule.
+  bool get failed =>
+      reason != null || status == AgentResultStatus.unavailable;
 }
