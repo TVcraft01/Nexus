@@ -75,7 +75,7 @@ void main() {
     expect(result.ok, isTrue, reason: result.error);
 
     final learned = Completer<void>();
-    phone.onLearnedPhraseReceived = (phrase, meaning) {
+    phone.onLearnedPhraseReceived = (phrase, meaning, [from = '']) {
       if (phrase == 'cable-hi' && meaning == 'cable-hello') {
         if (!learned.isCompleted) learned.complete();
       }

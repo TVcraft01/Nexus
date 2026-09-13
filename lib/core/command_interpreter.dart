@@ -1354,6 +1354,26 @@ class CommandInterpreter {
         ),
       );
     }
+    // --- Why Nexus knows something: the same question about memory, asked
+    // about its provenance. It is the same capability (what Nexus knows about
+    // you), so it is the same action with a different question — the answer
+    // reads the stored origin and source rather than a canned line.
+    final whyKnow = RegExp(
+      r'^(?:why do you (?:know|remember)|how do you know|where did you '
+      r'(?:learn|hear|get|find))(?: about| of)? (?:my |the )?(.*)$',
+    ).firstMatch(norm);
+    if (whyKnow != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.memoryQuestion,
+          target: 'local',
+          arguments: {
+            'topic': whyKnow.group(1)!.trim(),
+            'kind': 'provenance',
+          },
+        ),
+      );
+    }
 
     // --- Notes: "note that X" / "save X"
     final note =

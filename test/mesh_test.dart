@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/command_service.dart';
 import 'package:nexus/core/identity.dart';
+import 'package:nexus/core/memory.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/core/serial_transport.dart';
 import 'package:nexus/core/version.dart';
@@ -1448,9 +1449,11 @@ void main() {
     // The live assistant claims the knowledge: it adopts the phrase and its
     // own persistence funnel writes the store (the mesh only delivers when a
     // listener is attached — never both).
-    meshB.onLearnedPhraseReceived = (phrase, meaning) {
+    String? learnedFrom;
+    meshB.onLearnedPhraseReceived = (phrase, meaning, [from = '']) {
       seenPhrase = phrase;
       seenMeaning = meaning;
+      learnedFrom = from;
       meshB.store.agentLearned = {...meshB.store.agentLearned, phrase: meaning};
     };
 
@@ -1462,6 +1465,9 @@ void main() {
     await _waitFor(() => seenPhrase != null);
     expect(seenPhrase, 'call tvcraft');
     expect(seenMeaning, 'call tvcraft01 〘✘δτκ⑤⑦〙');
+    // The sender is named, so a phrase learned from a peer records a real
+    // source rather than "a device".
+    expect(learnedFrom, isNotEmpty);
     // Persisted by the claiming listener's funnel, usable right away.
     expect(meshB.store.agentLearned['call tvcraft'], 'call tvcraft01 〘✘δτκ⑤⑦〙');
   });
@@ -1495,7 +1501,20 @@ void main() {
             meshB.store.profileAssistantName != null,
       );
       expect(meshB.store.agentLearned['call tvcraft'], 'call bob');
-      expect(meshB.store.agentFacts, ['my wifi password is nexus']);
+      expect(
+        [for (final fact in meshB.store.agentFacts) fact.text],
+        ['my wifi password is nexus'],
+      );
+      // The mesh wrote these itself, with no assistant listening — and each
+      // one still records where it came from rather than being a bare value.
+      expect(meshB.store.agentFacts.single.stamp.origin, MemoryOrigin.device);
+      expect(meshB.store.agentFacts.single.stamp.source.trim(), isNotEmpty);
+      expect(
+        meshB.store.agentLedger
+            .stampFor(MemoryLedgerKind.preference, 'timer.set.seconds')
+            .origin,
+        MemoryOrigin.device,
+      );
       expect(meshB.store.agentDefaults['timer.set.seconds'], '5 minutes');
       expect(meshB.store.profileUserName, 'Sam');
       expect(meshB.store.profileAssistantName, 'Nexus');
@@ -1517,7 +1536,7 @@ void main() {
     // B taught "call tvcraft" -> "call bob" locally; A syncs a different one.
     meshB.store.agentLearned = {'call tvcraft': 'call bob'};
     var adopted = false;
-    meshB.onLearnedPhraseReceived = (_, _) => adopted = true;
+    meshB.onLearnedPhraseReceived = (_, _, [from = '']) => adopted = true;
 
     await meshA.broadcastLearnedPhrase('call tvcraft', 'call alice');
 
@@ -1543,9 +1562,14 @@ void main() {
     // The live assistant claims the fact: it adopts it and its persistence
     // funnel writes the store (the mesh only delivers when a listener is
     // attached — never both).
-    meshB.onFactReceived = (fact) {
+    String? factFrom;
+    meshB.onFactReceived = (fact, [from = '']) {
       seenFact = fact;
-      meshB.store.agentFacts = [...meshB.store.agentFacts, fact];
+      factFrom = from;
+      meshB.store.agentFacts = [
+        ...meshB.store.agentFacts,
+        MemoryFact(fact, MemoryStamp.now(MemoryOrigin.device, from)),
+      ];
     };
 
     await meshA.broadcastFact('my wifi password is nexus');
@@ -1553,7 +1577,17 @@ void main() {
     await _waitFor(() => seenFact != null);
     expect(seenFact, 'my wifi password is nexus');
     // Persisted by the claiming listener's funnel, deduplicated on delivery.
-    expect(meshB.store.agentFacts, ['my wifi password is nexus']);
+    expect(
+      [for (final fact in meshB.store.agentFacts) fact.text],
+      ['my wifi password is nexus'],
+    );
+    // And the sender is named, not guessed at: a fact from a paired device
+    // says so in its provenance.
+    expect(factFrom, isNotEmpty);
+    expect(
+      meshB.store.agentFacts.single.stamp.origin,
+      MemoryOrigin.device,
+    );
   });
 
   test(
@@ -1570,16 +1604,24 @@ void main() {
       );
       expect(result.ok, isTrue);
 
-      meshB.store.agentFacts = ['my wifi password is nexus'];
+      meshB.store.agentFacts = [
+        MemoryFact(
+          'my wifi password is nexus',
+          MemoryStamp.now(MemoryOrigin.explicit, 'test'),
+        ),
+      ];
       var adopted = false;
-      meshB.onFactReceived = (_) => adopted = true;
+      meshB.onFactReceived = (_, [from = '']) => adopted = true;
 
       await meshA.broadcastFact('my wifi password is nexus');
 
       // Nothing may adopt (or re-add) — the fact is already there.
       await Future<void>.delayed(const Duration(milliseconds: 300));
       expect(adopted, isFalse);
-      expect(meshB.store.agentFacts, ['my wifi password is nexus']);
+      expect(
+        [for (final fact in meshB.store.agentFacts) fact.text],
+        ['my wifi password is nexus'],
+      );
     },
   );
 
@@ -1629,7 +1671,7 @@ void main() {
     dynamic seenValue;
     // The live assistant claims the default: it adopts it and its funnel
     // writes the store (the mesh only delivers when a listener is attached).
-    meshB.onDefaultReceived = (key, value) {
+    meshB.onDefaultReceived = (key, value, [from = '']) {
       seenKey = key;
       seenValue = value;
       meshB.store.agentDefaults = {...meshB.store.agentDefaults, key: value};

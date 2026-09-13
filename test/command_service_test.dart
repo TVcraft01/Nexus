@@ -518,16 +518,30 @@ void main() {
     });
 
     test('facts survive a restart via AgentMemory', () {
-      final first = CommandService(devices: () => const []);
+      final first = CommandService(
+        devices: () => const [],
+        local: const AgentDeviceSnapshot(
+          id: 'd1',
+          name: 'Test Desk',
+          online: true,
+        ),
+      );
       first.execute('remember that my bike code is 4321');
 
-      // "Restart": a fresh service rebuilt from the persisted snapshot.
+      // "Restart": a fresh service rebuilt from the persisted snapshot, with
+      // the provenance that is stored beside it.
       final second = CommandService(
         devices: () => const [],
-        memory: AgentMemory(facts: first.factsSnapshot),
+        memory: AgentMemory(facts: first.memoryFacts),
       );
       final recall = second.execute('what do you know about me');
       expect((recall.dispatch! as AgentMessage).text, contains('bike code'));
+      // Where it came from survives too, so the answer about the user's own
+      // memory is not a guess.
+      expect(
+        (recall.dispatch! as AgentMessage).text,
+        contains('you told me this on Test Desk'),
+      );
     });
 
     test('adoptFact persists without re-broadcasting', () {
