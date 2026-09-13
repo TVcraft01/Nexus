@@ -181,8 +181,8 @@ void main() {
       final service = _service();
       _ask(service, 'flashlight on');
       final text = _text(_ask(service, 'why can\'t you do this'));
-      expect(text, contains('I understood it as Flashlight'));
-      expect(text, contains('no device you have says it can do that'));
+      expect(text, contains('which I read as Flashlight'));
+      expect(text, contains('No device you have says it can do that'));
       expect(text, contains('it takes a phone'));
     });
 
@@ -237,13 +237,16 @@ void main() {
       );
     });
 
-    test('a success clears the record, so the answer cannot go stale', () {
+    test('a request that worked is not replayed as a failure', () {
       final service = _service(devices: [_phone()]);
       _ask(service, 'generate an image of a cat');
       expect(
         _text(_ask(service, 'why can\'t you do this')),
         contains('Nexus has no such ability'),
       );
+      // The record always holds the most recent action, so a success makes
+      // this question answer "nothing has failed" rather than repeating an
+      // older failure as though it had just happened.
       _ask(service, 'what time is it');
       expect(
         _text(_ask(service, 'why can\'t you do this')),
@@ -274,7 +277,7 @@ void main() {
       noCapableDevice.execute('flashlight on');
       expect(
         _text(noCapableDevice.execute('why can\'t you do this')),
-        contains('no device you have says it can do that'),
+        contains('No device you have says it can do that'),
       );
 
       final notAuthorized = _service(devices: [_phone()]);
@@ -288,11 +291,17 @@ void main() {
     test('a question is neither a success nor a failure', () {
       final service = _service(devices: [_phone()]);
       _ask(service, 'generate an image of a cat');
-      // Asking the user something does not overwrite what is being explained.
-      _ask(service, 'call mom');
+      // Asking the user something becomes the last thing Nexus did, and it is
+      // reported as a question — never as a failure, and never as an action.
+      final asked = _ask(service, 'call mom');
+      expect(asked.status, AgentResultStatus.needsInfo);
+      final text = _text(_ask(service, 'why can\'t you do this'));
+      expect(text, contains('I haven\'t failed at anything'));
+      expect(text, contains('What I asked'));
       expect(
-        _text(_ask(service, 'why can\'t you do this')),
-        isNot(contains('Nothing has failed')),
+        text,
+        isNot(contains('no ability at all')),
+        reason: 'the previous failure is not replayed as if it just happened',
       );
     });
   });

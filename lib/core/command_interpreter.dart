@@ -1385,6 +1385,26 @@ class CommandInterpreter {
       );
     }
 
+    // --- What Nexus worked out on its own. The same capability (what Nexus
+    // knows about you) asked about conclusions instead of entries, answered
+    // from the stored origins — which today means saying plainly that no
+    // inference exists, rather than presenting an assumption as a fact.
+    if (RegExp(
+      r'^(?:what (?:did|do|have) you (?:infer|inferred|deduce|deduced|'
+      r'guess|guessed|assume|assumed|figure out|figured out|work out|'
+      r'worked out)|what have you (?:inferred|deduced|guessed|assumed|'
+      r'figured out|worked out)|did you (?:infer|deduce|guess|assume) '
+      r'anything|have you (?:inferred|deduced|guessed|assumed) anything)$',
+    ).hasMatch(norm)) {
+      return InterpretResult.matched(
+        const ParsedCommand(
+          action: AgentActions.memoryQuestion,
+          target: 'local',
+          arguments: {'kind': 'inferred'},
+        ),
+      );
+    }
+
     // --- Notes: "note that X" / "save X"
     final note =
         RegExp(r'^(note|write down|make a note)( down)?( that)? (.+)$')

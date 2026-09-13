@@ -80,11 +80,12 @@ class CommandService {
   /// names. Removed when answered, so a question can never be answered twice.
   final Map<String, AmbiguousPhrasing> _pendingChoices = {};
 
-  /// The last thing Nexus could not do, or null when nothing has failed. One
-  /// field, not a log: "why can't you do this?" is about the request that
-  /// just failed, and a history of every refusal is a different feature with
-  /// its own privacy questions.
-  UnableReport? _unable;
+  /// The last thing Nexus actually did, or null when nothing has been done
+  /// yet. One field, not a log: "why did you do that?" and "why can't you do
+  /// this?" are both about the request that just happened, and a history of
+  /// everything Nexus ever did is a different feature with its own retention
+  /// and privacy questions.
+  LastAction? _lastAction;
 
   /// The capability of the intent that actually ran last. This is the entire
   /// conversational context Nexus keeps: one antecedent, and only an executed
@@ -277,7 +278,7 @@ class CommandService {
     // 1. A taught phrase wins: the user already told us what this means.
     final taught = _learned[normalized];
     if (taught != null) {
-      return _dispatchInput(taught, approval, requestId);
+      return _dispatchInput(taught, approval, requestId, rawInput: text);
     }
 
     // 2. Otherwise let the interpreter understand it.
@@ -310,9 +311,24 @@ class CommandService {
         if (fromFacts.status == AgentResultStatus.succeeded &&
             fromFacts.dispatch is AgentMessage &&
             (fromFacts.dispatch as AgentMessage).action == null) {
+          _lastAction = _actionRecord(
+            input: text,
+            command: interpreted.command!,
+            result: fromFacts,
+          );
           return fromFacts;
         }
         _pendingContext['arg:$key'] = normalized;
+        // A question is something Nexus did — it asked — so it is recorded as
+        // exactly that rather than as an action that ran.
+        _lastAction = LastAction(
+          input: text,
+          origin: ActionOrigin.question,
+          device: _deviceNameFor(interpreted.command?.target),
+          capability: interpreted.command?.action,
+          detail: interpreted.question ?? '',
+          status: AgentResultStatus.needsInfo,
+        );
         return AgentDispatchResult(
           status: AgentResultStatus.needsInfo,
           dispatch: AgentClarification(
@@ -332,6 +348,13 @@ class CommandService {
         // path is entered only for a key the service still holds, which is
         // what keeps a stale question from swallowing a later input.
         _pendingContext[key] = normalized;
+        _lastAction = LastAction(
+          input: text,
+          origin: ActionOrigin.question,
+          capability: interpreted.command?.action,
+          detail: phrasing.question,
+          status: AgentResultStatus.needsInfo,
+        );
         return AgentDispatchResult(
           status: AgentResultStatus.needsInfo,
           dispatch: AgentClarification(
@@ -346,14 +369,17 @@ class CommandService {
         // with nothing run in its place. The failure is Nexus's missing
         // capability, not the user's phrasing, and the sentence says so.
         //
-        // "No such capability" is recorded here rather than by the dispatch
-        // wrapper: the sentence named something Nexus has no ability for, so
-        // there is no capability id and no device that could change it — a
-        // different failure from "nobody here can do this".
-        _unable = UnableReport(
+        // "Understood, and impossible" is recorded here rather than by the
+        // dispatch wrapper: the sentence named something Nexus has no ability
+        // for, so there is no capability id, no device that ran it and no
+        // device that could — a different failure from "nobody here can do
+        // this".
+        _lastAction = LastAction(
           input: text,
+          origin: ActionOrigin.unsupported,
           reason: UnableReason.noSuchCapability,
-          detail: interpreted.explanation,
+          detail: interpreted.explanation ?? '',
+          status: AgentResultStatus.unavailable,
         );
         return AgentDispatchResult(
           status: AgentResultStatus.unavailable,
@@ -393,10 +419,12 @@ class CommandService {
         // acting — but it is also the honest record of a phrasing Nexus does
         // not understand, which is exactly what "why can't you do this?"
         // should explain if the user asks instead of teaching it.
-        _unable = UnableReport(
+        _lastAction = LastAction(
           input: text,
+          origin: ActionOrigin.notUnderstood,
           reason: UnableReason.notUnderstood,
           detail: 'I don\'t understand "$text" yet.',
+          status: AgentResultStatus.needsInfo,
         );
         _pendingContext['teach:$normalized'] = normalized;
         // When the phrase smells like a call or text but missed the exact
@@ -448,7 +476,7 @@ class CommandService {
         );
         onMemoryChanged?.call();
         onPhraseLearned?.call(phrase, suggested);
-        return _dispatchInput(suggested, approval, requestId);
+        return _dispatchInput(suggested, approval, requestId, rawInput: phrase);
       }
       // The re-ask must keep the suggested meaning stored — if the next
       // answer is a plain "yes" it has to run the suggestion, not the
@@ -591,23 +619,35 @@ class CommandService {
     );
     onMemoryChanged?.call();
     onPhraseLearned?.call(CommandInterpreter.normalizePhrase(phrase), answer);
-    return _dispatchParsed(interpreted.command!, approval, requestId);
-  }
-
-  AgentDispatchResult _dispatchInput(
-    String input,
-    AgentApproval approval,
-    String requestId,
-  ) {
-    final interpreted = _interpreter.interpret(input.toLowerCase());
-    if (interpreted.outcome != InterpretOutcome.matched) {
-      return const AgentDispatchResult(status: AgentResultStatus.unavailable);
-    }
     return _dispatchParsed(
       interpreted.command!,
       approval,
       requestId,
-      rawInput: input,
+      rawInput: answer,
+    );
+  }
+
+  /// Runs the meaning of a phrase, keeping the words the user actually said as
+  /// the raw input: the record of what Nexus did must quote the sentence the
+  /// person typed, not the sentence it was translated into.
+  AgentDispatchResult _dispatchInput(
+    String input,
+    AgentApproval approval,
+    String requestId, {
+    required String rawInput,
+  }) {
+    final interpreted = _interpreter.interpret(input.toLowerCase());
+    if (interpreted.outcome != InterpretOutcome.matched) {
+      return const AgentDispatchResult(status: AgentResultStatus.unavailable);
+    }
+    // A phrase the user taught: the same dispatch, but the answer can say
+    // where the meaning came from — them, rather than the registry.
+    return _dispatchParsed(
+      interpreted.command!,
+      approval,
+      requestId,
+      rawInput: rawInput,
+      origin: ActionOrigin.taught,
     );
   }
 
@@ -620,6 +660,7 @@ class CommandService {
     AgentApproval approval,
     String requestId, {
     String? rawInput,
+    ActionOrigin? origin,
   }) {
     _lastCapability = command.action;
     return _dispatchParsed(
@@ -627,40 +668,62 @@ class CommandService {
       approval,
       requestId,
       rawInput: rawInput,
+      origin: origin,
     );
   }
 
-  /// Every recognized command leaves through here, which is what makes this
-  /// the one place a failure can be recorded: whatever the outcome, "why
-  /// can't you do this?" can explain it from what actually happened rather
-  /// than from a guess made afterwards.
+  /// Every recognized command leaves through here, and every one of them is
+  /// recorded: whatever the outcome, "why did you do that?" can explain what
+  /// actually happened rather than a story about it, and "why can't you do
+  /// this?" can explain the failure it really had.
   AgentDispatchResult _dispatchParsed(
     ParsedCommand command,
     AgentApproval approval,
     String requestId, {
     String? rawInput,
+    ActionOrigin? origin,
   }) {
     final result = _dispatch(command, approval, requestId, rawInput: rawInput);
-    _rememberUnable(command, result, rawInput);
+    // A question about the record must not become the record: if answering
+    // "why did you do that?" replaced the thing it was asked about, the next
+    // time the user asked, the only honest answer left would be about the
+    // question itself.
+    if (!_readsTheRecord(command)) {
+      _lastAction = _actionRecord(
+        input: rawInput ?? command.action,
+        command: command,
+        result: result,
+        origin: origin,
+      );
+    }
     return result;
   }
 
-  /// Records the last request Nexus could not carry out, so the explanation
-  /// of it comes from the request rather than from a story told afterwards.
-  ///
-  /// A clarification is Nexus *asking*, so it neither fails nor succeeds and
-  /// leaves the record alone; a request that worked clears it, because then
-  /// nothing is awaiting an explanation.
-  void _rememberUnable(
-    ParsedCommand command,
-    AgentDispatchResult result,
-    String? rawInput,
-  ) {
-    final status = result.status;
-    // A clarification is Nexus asking, not failing — the vocabulary's own
-    // rule, and the record follows it rather than contradicting it.
-    if (status == AgentResultStatus.needsInfo) return;
+  /// Whether [command] only reports what Nexus itself did. These are the
+  /// questions answered *from* the last-action record, so they are left out of
+  /// it — a record of the question instead of the action would make both
+  /// transparency answers unable to tell the truth.
+  bool _readsTheRecord(ParsedCommand command) =>
+      command.action == AgentActions.helpGet &&
+      const {
+        'why',
+        'actions',
+      }.contains(command.arguments['topic']);
 
+  /// The record of one request: what was asked, how Nexus resolved it, which
+  /// device ran it, and what came of it.
+  ///
+  /// Built from the result rather than from a summary of it, so the two
+  /// explanations cannot drift from what actually happened — and so the
+  /// reason for a failure is read where the failure is known, not invented
+  /// afterwards.
+  LastAction _actionRecord({
+    required String input,
+    required ParsedCommand command,
+    required AgentDispatchResult result,
+    ActionOrigin? origin,
+  }) {
+    final status = result.status;
     final reach = _resources.reach(command.action);
     // "Understood, and no device you have can do it" is a fact about the world,
     // so it is read from the registry rather than guessed from a status.
@@ -671,38 +734,51 @@ class CommandService {
     // by null. Without that check an ordinary "what time is it" would leave
     // Nexus claiming no device can tell the time.
     final nobodyHoldsIt = reach.declaredOn != null && !reach.hasAnyDevice;
-
-    if (status == AgentResultStatus.succeeded) {
-      // A request that worked leaves nothing to explain — unless it was an
-      // action no device here can actually run, which is precisely the
-      // "understood, and nobody here can" case the user is owed an answer for.
-      _unable = nobodyHoldsIt
-          ? UnableReport(
-              input: (rawInput ?? command.action).trim(),
-              reason: UnableReason.noCapableDevice,
-              capability: command.action,
-              detail: result.message,
-              status: status,
-            )
-          : null;
-      return;
-    }
-
     final reason = switch (status) {
+      // The user's own no, or a go-ahead not yet given: not a missing device
+      // and not something Nexus lacks.
       AgentResultStatus.denied ||
       AgentResultStatus.required => UnableReason.notAuthorized,
-      // An unavailable action whose ability does exist around here is recorded
-      // without a reason rather than blamed on a device that was never
-      // missing — the answer will say exactly that.
+      // A question asks for information; it is not a verdict on the request.
+      AgentResultStatus.needsInfo => null,
       _ => nobodyHoldsIt ? UnableReason.noCapableDevice : null,
     };
-    _unable = UnableReport(
-      input: (rawInput ?? command.action).trim(),
-      reason: reason,
+    return LastAction(
+      input: input.trim(),
+      origin: origin ??
+          (status == AgentResultStatus.needsInfo
+              ? ActionOrigin.question
+              : ActionOrigin.capability),
+      device: _deviceNameFor(command.target),
       capability: command.action,
-      detail: result.message,
+      reason: reason,
+      detail: _spokenLine(result),
       status: status,
     );
+  }
+
+  /// The line Nexus actually said, from either shape a result carries it in: a
+  /// message-only result (a refusal, a question) or a dispatch with words.
+  /// Empty when there was nothing to say — never filled in with a summary.
+  String _spokenLine(AgentDispatchResult result) {
+    final message = result.message.trim();
+    if (message.isNotEmpty) return message;
+    return switch (result.dispatch) {
+      AgentMessage(:final text) => text.trim(),
+      AgentClarification(:final question) => question.trim(),
+      _ => '',
+    };
+  }
+
+  /// The name of the device [target] names, or null when it does not name one
+  /// Nexus knows. "local" is this device; a peer is looked up in the real
+  /// registry, so an unknown target stays unknown rather than being labelled.
+  String? _deviceNameFor(String? target) {
+    final key = (target ?? '').trim();
+    if (key.isEmpty) return null;
+    final resolved = _resolve(key, _allDevices());
+    if (resolved != null) return resolved.name;
+    return key == 'local' ? local?.name : null;
   }
 
   /// Who can do what around this device, read fresh from the same device list
@@ -1222,7 +1298,12 @@ class CommandService {
     // The one definition of "what this device really runs", so a report of
     // what Nexus can do never counts an assumption as a fact.
     verifiedLocally: locallyExecutable,
-    unable: () => _unable,
+    // Both of these are read through a function: the ledger is replaced on
+    // every write and the last action changes on every request, so a value
+    // captured when this context was built would answer with something that
+    // is no longer true.
+    ledger: () => _ledger,
+    lastAction: () => _lastAction,
   );
 
   ParsedCommand _withArgument(

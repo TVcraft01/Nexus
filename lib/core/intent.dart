@@ -563,6 +563,52 @@ bool asksWhatDevicesCanDo(IntentText text) =>
 /// unsupported intents: "why can't you generate an image" names an image and
 /// would otherwise be answered as a request for one.
 final List<IntentRule> kDiagnosticRules = [
+  // "why did you do that" / "what did you just do" — a question about the last
+  // thing Nexus actually did, answered from the record it made while doing it.
+  // Its words are narrow on purpose: "why do you *know* that" is a different
+  // question (memory provenance, answered by the catalogue), and a rule that
+  // claimed it here would replace a real answer about memory with a report
+  // about actions.
+  IntentRule(
+    AgentActions.helpGet,
+    needs: [
+      {'why', 'what'},
+      {'did', 'do', 'done'},
+      {'you', 'that', 'this', 'it'},
+    ],
+    forbids: {
+      'know',
+      'knows',
+      'knew',
+      'remember',
+      'remembered',
+      'learn',
+      'learned',
+      'heard',
+      'say',
+      'said',
+      'tell',
+      'told',
+      'talk',
+      'chat',
+      'infer',
+    },
+    build: (text) {
+      // Only the shapes that really name an action. Anything else declines and
+      // keeps whatever the catalogue would have answered — this rule must
+      // never turn an unrelated question into a report of something Nexus did.
+      final shape = RegExp(
+        r'^(?:why|what) (?:did|do) you (?:just )?(?:do|done|did)\b',
+      );
+      if (!shape.hasMatch(text.text)) return null;
+      return const ParsedCommand(
+        action: AgentActions.helpGet,
+        target: 'local',
+        arguments: {'topic': 'actions'},
+      );
+    },
+  ),
+
   IntentRule(
     AgentActions.helpGet,
     needs: [
