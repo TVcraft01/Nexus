@@ -212,6 +212,42 @@ class IntentUnsupported extends IntentResolution {
   const IntentUnsupported(this.message);
 }
 
+/// The stages of understanding, in the order the resolver applies them.
+///
+/// Precedence used to be the shape of [IntentResolver.resolve]'s body: a
+/// reader had to infer it from the order of statements, and nothing could
+/// check it. It is data now — [kIntentStages] is the single declaration, the
+/// resolver walks it, and `test/intent_precedence_test.dart` reads the same
+/// list to prove that every rule is reachable and that a sentence two stages
+/// could claim goes to the earlier one.
+enum IntentStage {
+  /// One sentence, two honest readings. Asking is the answer: guessing
+  /// between them would be worse than one question.
+  ambiguous,
+
+  /// A question about a failure, which must not be answered as a request to
+  /// attempt the thing that failed.
+  diagnostic,
+
+  /// Understood, and impossible here — said plainly instead of being turned
+  /// into a lookalike action.
+  unsupported,
+
+  /// Understood, and Nexus can act.
+  matched,
+}
+
+/// Every stage, in application order.
+///
+/// A stage missing from this list is a stage whose rules can never run, and a
+/// stage listed twice asks the same question twice; the test pins both.
+const List<IntentStage> kIntentStages = [
+  IntentStage.ambiguous,
+  IntentStage.diagnostic,
+  IntentStage.unsupported,
+  IntentStage.matched,
+];
+
 /// The resolver. Pure and stateless: the interpreter owns the normalized
 /// text, and this decides only what it means.
 class IntentResolver {
@@ -222,35 +258,56 @@ class IntentResolver {
   /// layer has nothing to say — in which case the interpreter keeps whatever
   /// it would have done before, unchanged.
   ///
-  /// Order matters and is declared, not computed: a phrasing that is both
-  /// ambiguous and keyword-matched stays ambiguous (checked first), because
-  /// guessing between two honest readings is worse than one question.
+  /// The stages are applied in the order [kIntentStages] declares, so the
+  /// precedence is one list rather than the shape of this body.
   IntentResolution? resolve(String normalized) {
     final text = IntentText(normalized);
     if (text.words.length < 2) return null;
 
+    for (final stage in kIntentStages) {
+      final resolution = _inStage(stage, text);
+      if (resolution != null) return resolution;
+    }
+    return null;
+  }
+
+  /// What [stage] makes of [text], or null when it claims nothing.
+  ///
+  /// The switch is exhaustive on purpose: a stage added to [IntentStage]
+  /// without a claim here does not compile, so the vocabulary of
+  /// understanding and the order it is applied in cannot drift apart.
+  IntentResolution? _inStage(IntentStage stage, IntentText text) =>
+      switch (stage) {
+        IntentStage.ambiguous => _ambiguity(text),
+        // A question about a failure is not a request to attempt the thing
+        // that failed: "why can't you generate an image" must diagnose, not
+        // be answered by the image rule as though the user had asked for a
+        // picture.
+        IntentStage.diagnostic => switch (_match(kDiagnosticRules, text)) {
+          final command? => IntentMatched(command),
+          _ => null,
+        },
+        IntentStage.unsupported => _unsupported(text),
+        IntentStage.matched => switch (_match(kIntentRules, text)) {
+          final command? => IntentMatched(command),
+          _ => null,
+        },
+      };
+
+  IntentResolution? _ambiguity(IntentText text) {
     for (final ambiguous in kAmbiguousPhrasings) {
       for (final phrase in ambiguous.phrases) {
         if (text.contains(phrase)) return IntentAmbiguous(ambiguous);
       }
     }
+    return null;
+  }
 
-    // Before "understood and impossible": a question about a failure is not a
-    // request to attempt the thing that failed. "why can't you generate an
-    // image" must diagnose, not be answered by the image rule as though the
-    // user had asked for a picture.
-    if (_match(kDiagnosticRules, text) case final diagnostic?) {
-      return IntentMatched(diagnostic);
-    }
-
+  IntentResolution? _unsupported(IntentText text) {
     for (final unsupported in kUnsupportedIntents) {
       if (!text.satisfies(unsupported.needs)) continue;
       if (unsupported.forbids.any(text.contains)) continue;
       return IntentUnsupported(unsupported.message);
-    }
-
-    if (_match(kIntentRules, text) case final command?) {
-      return IntentMatched(command);
     }
     return null;
   }
@@ -272,82 +329,91 @@ class IntentResolver {
 }
 
 // ---------------------------------------------------------------------------
-// Argument extraction
+// Argument extraction — the layer's own helper
 // ---------------------------------------------------------------------------
 
-const Set<String> _weekdayWords = {
-  'week',
-  'weekend',
-  'monday',
-  'tuesday',
-  'wednesday',
-  'thursday',
-  'friday',
-  'saturday',
-  'sunday',
-  'lundi',
-  'mardi',
-  'mercredi',
-  'jeudi',
-  'vendredi',
-  'samedi',
-  'dimanche',
-};
+/// The readers that turn a sentence's words into the arguments a capability
+/// takes. They are part of the paraphrase layer, not a third matcher beside
+/// it: every rule above builds its command with one of these, and the exact
+/// catalogue reuses [cleanWeatherPlace] instead of keeping a second copy of
+/// the same stoplist — the defect that prompted it (a weather question about
+/// a city called "the morning") was the catalogue's own.
+abstract final class IntentArgs {
+  /// Weekday names and the week horizon they stand for, shared with the
+  /// bounded follow-up context.
+  static const Set<String> weekdayWords = {
+    'week',
+    'weekend',
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+    'saturday',
+    'sunday',
+    'lundi',
+    'mardi',
+    'mercredi',
+    'jeudi',
+    'vendredi',
+    'samedi',
+    'dimanche',
+  };
 
-/// The calendar horizon the question asks about. The native side already
-/// understands exactly these three, so a phrase is mapped onto them rather
-/// than inventing a fourth: a named weekday is inside the week horizon.
-String calendarWhen(IntentText text) {
-  if (text.has('tomorrow') || text.has('demain')) return 'tomorrow';
-  if (_weekdayWords.any(text.words.contains) ||
-      text.contains('next week') ||
-      text.contains('this week')) {
-    return 'week';
+  /// Words that follow a place preposition without being one ("in the
+  /// morning", "in two hours") — a weather question must not report them as a
+  /// city.
+  static const Set<String> _nonPlaceTail = {
+    'the morning',
+    'the afternoon',
+    'the evening',
+    'the night',
+    'the week',
+    'the weekend',
+    'an hour',
+    'a bit',
+  };
+
+  /// The calendar horizon the question asks about. The native side already
+  /// understands exactly these three, so a phrase is mapped onto them rather
+  /// than inventing a fourth: a named weekday is inside the week horizon.
+  static String calendarWhen(IntentText text) {
+    if (text.has('tomorrow') || text.has('demain')) return 'tomorrow';
+    if (weekdayWords.any(text.words.contains) ||
+        text.contains('next week') ||
+        text.contains('this week')) {
+      return 'week';
+    }
+    return 'today';
   }
-  return 'today';
+
+  /// [raw] as a place name, or '' when it is really the time phrase the
+  /// question carried — a phrase fragment presented as data is the same
+  /// defect class as a punctuation mark captured into an argument.
+  static String cleanWeatherPlace(String raw) {
+    final place = raw.trim();
+    if (place.isEmpty) return '';
+    if (_nonPlaceTail.contains(place)) return '';
+    if (RegExp(r'\d').hasMatch(place)) return '';
+    return place;
+  }
+
+  /// The place a weather question named, or '' when it named none ("is it
+  /// going to rain" is about here). Only a trailing `in|at|for <words>`
+  /// counts, so a phrase Nexus cannot parse never turns into a bogus city.
+  static String weatherPlace(IntentText text) {
+    final match = RegExp(
+      r'\b(?:in|at|for) ([a-z][a-z\-]+(?: [a-z][a-z\-]+)*)$',
+    ).firstMatch(text.text);
+    if (match == null) return '';
+    return cleanWeatherPlace(match.group(1)!);
+  }
+
+  /// Rain and umbrella questions are the same question, and the weather
+  /// service already answers it with its own `rain` kind.
+  static String weatherKind(IntentText text) =>
+      text.anyOf(const {'rain', 'umbrella', 'raining'}) ? 'rain' : 'now';
 }
-
-/// Words that follow a place preposition without being one ("in the morning",
-/// "in two hours") — a weather question must not report them as a city.
-const Set<String> _nonPlaceTail = {
-  'the morning',
-  'the afternoon',
-  'the evening',
-  'the night',
-  'the week',
-  'the weekend',
-  'an hour',
-  'a bit',
-};
-
-/// [raw] as a place name, or '' when it is really the time phrase the
-/// question carried. Shared with the exact catalogue's own weather rule,
-/// which used to hand the weather service a city called "the morning" — a
-/// phrase fragment presented as data, which is the same defect class as a
-/// punctuation mark captured into an argument.
-String cleanWeatherPlace(String raw) {
-  final place = raw.trim();
-  if (place.isEmpty) return '';
-  if (_nonPlaceTail.contains(place)) return '';
-  if (RegExp(r'\d').hasMatch(place)) return '';
-  return place;
-}
-
-/// The place a weather question named, or '' when it named none ("is it
-/// going to rain" is about here). Only a trailing `in|at|for <words>` counts,
-/// so a phrase Nexus cannot parse never turns into a bogus city.
-String weatherPlace(IntentText text) {
-  final match = RegExp(
-    r'\b(?:in|at|for) ([a-z][a-z\-]+(?: [a-z][a-z\-]+)*)$',
-  ).firstMatch(text.text);
-  if (match == null) return '';
-  return cleanWeatherPlace(match.group(1)!);
-}
-
-/// Rain and umbrella questions are the same question, and the weather
-/// service already answers it with its own `rain` kind.
-String weatherKind(IntentText text) =>
-    text.anyOf(const {'rain', 'umbrella', 'raining'}) ? 'rain' : 'now';
 
 // ---------------------------------------------------------------------------
 // The rules
@@ -400,7 +466,7 @@ final List<IntentRule> kIntentRules = [
     build: (text) => ParsedCommand(
       action: AgentActions.calendarRead,
       target: 'local',
-      arguments: {'when': calendarWhen(text)},
+      arguments: {'when': IntentArgs.calendarWhen(text)},
     ),
   ),
 
@@ -433,7 +499,7 @@ final List<IntentRule> kIntentRules = [
     build: (text) => ParsedCommand(
       action: AgentActions.weatherGet,
       target: 'local',
-      arguments: {'place': weatherPlace(text), 'kind': weatherKind(text)},
+      arguments: {'place': IntentArgs.weatherPlace(text), 'kind': IntentArgs.weatherKind(text)},
     ),
   ),
 
@@ -716,7 +782,7 @@ final List<AmbiguousPhrasing> kAmbiguousPhrasings = [
         build: (text) => ParsedCommand(
           action: AgentActions.calendarRead,
           target: 'local',
-          arguments: {'when': calendarWhen(text)},
+          arguments: {'when': IntentArgs.calendarWhen(text)},
         ),
       ),
       AmbiguousChoice(
@@ -726,7 +792,7 @@ final List<AmbiguousPhrasing> kAmbiguousPhrasings = [
         build: (text) => ParsedCommand(
           action: AgentActions.weatherGet,
           target: 'local',
-          arguments: {'place': weatherPlace(text), 'kind': weatherKind(text)},
+          arguments: {'place': IntentArgs.weatherPlace(text), 'kind': IntentArgs.weatherKind(text)},
         ),
       ),
     ],
@@ -799,8 +865,8 @@ final List<FollowUp> kFollowUps = [
   FollowUp(
     key: 'when',
     capability: AgentActions.calendarRead,
-    cueWords: {..._weekdayWords, 'today', 'tonight', 'tomorrow', 'demain'},
-    read: calendarWhen,
+    cueWords: {...IntentArgs.weekdayWords, 'today', 'tonight', 'tomorrow', 'demain'},
+    read: IntentArgs.calendarWhen,
   ),
   FollowUp(
     key: 'mode',

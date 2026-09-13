@@ -69,12 +69,53 @@ class InterpretResult {
       const InterpretResult._(InterpretOutcome.unknown);
 }
 
-class CommandInterpreter {
-  const CommandInterpreter();
+/// Where a sentence is understood, in rank order — the single statement of
+/// how an input is read, which used to be readable only by walking the body of
+/// [CommandInterpreter.interpret].
+///
+/// Rank, not position: the exact catalogue is not one contiguous block — the
+/// paraphrase layer sits inside it — but it outranks it wherever the two can
+/// answer the same sentence. A phrase the user has already learned keeps the
+/// answer the catalogue gives it; the layer may only add understanding for the
+/// phrasings the catalogue does not own; the generic readings catch what is
+/// left. `test/intent_precedence_test.dart` holds behaviour to all three.
+enum InterpretLayer {
+  /// The exact phrases and patterns the catalogue owns.
+  catalogue,
 
-  /// The paraphrase layer. Runs late — after every exact phrase and pattern
-  /// the catalogue owns — so it can only ever add understanding, never take a
-  /// phrase away from a rule that already claimed it.
+  /// Natural phrasings of the same capabilities. Its own order is
+  /// [kIntentStages], because inside one layer precedence is a stage question.
+  paraphrase,
+
+  /// The generic readings (`what is X`) that ask memory, then the web.
+  fallback,
+}
+
+/// Every layer, in rank order — first named wins when two can answer one
+/// sentence. A layer missing from this list can never run; one listed twice
+/// asks the same rules twice.
+const List<InterpretLayer> kInterpretLayers = [
+  InterpretLayer.catalogue,
+  InterpretLayer.paraphrase,
+  InterpretLayer.fallback,
+];
+
+class CommandInterpreter {
+  const CommandInterpreter({this.paraphrase = true});
+
+  /// Whether a sentence may be read by [InterpretLayer.paraphrase].
+  ///
+  /// True in the product. The switch exists so the layer's promise — it may
+  /// add understanding, never change an answer the catalogue already gives —
+  /// is checked against real phrases rather than asserted in a comment:
+  /// `test/intent_precedence_test.dart` interprets the advertised vocabulary
+  /// both ways and fails on any difference.
+  final bool paraphrase;
+
+  /// The paraphrase layer — [InterpretLayer.paraphrase]. It sits inside the
+  /// catalogue rather than after it (the blocks below it have not had their
+  /// chance yet), which is exactly why the promise has to be enforced rather
+  /// than assumed from the call site's position.
   static const _intents = IntentResolver();
 
   /// One canonical, fully-understood phrase per intent — the vocabulary used
@@ -653,9 +694,10 @@ class CommandInterpreter {
       // shapes: "weather paris" (bare) and "weather in paris" (connector).
       // A time phrase after the connector is not a city: "will it rain in
       // the morning" must ask about here, not about a place called "the
-      // morning". [cleanWeatherPlace] is the same stoplist the paraphrase
-      // layer uses, so the two cannot disagree about what a place is.
-      final place = cleanWeatherPlace(
+      // morning". [IntentArgs.cleanWeatherPlace] is the paraphrase layer's own
+      // reader, reused here, so the two cannot disagree about what a place
+      // is.
+      final place = IntentArgs.cleanWeatherPlace(
         weather.group(1)?.trim() ?? weather.group(2)?.trim() ?? '',
       );
       final rainy = RegExp(
@@ -956,26 +998,31 @@ class CommandInterpreter {
     }
 
     // --- Math
-    // --- Paraphrase resolution, the layer between the exact catalogue and
-    // the generic fallback below. Everything specific has already had its
-    // chance, so a rule here can only add understanding: a natural phrasing
-    // of a capability Nexus has ("check my calendar", "what can nexus do"),
-    // a request it understands but cannot do ("generate an image of a cat"),
-    // or one phrase that honestly means two things. Placed before the
-    // `what is X` fallback on purpose: that fallback answers "what's
-    // happening on my calendar" as a memory question about the literal
-    // phrase "happening on my calendar", which is worse than not
-    // understanding it. A phrase this layer declines falls through to the
-    // previous behaviour untouched.
-    switch (_intents.resolve(norm)) {
-      case IntentMatched(:final command):
-        return InterpretResult.matched(command);
-      case IntentAmbiguous(:final phrasing):
-        return InterpretResult.ambiguous(phrasing);
-      case IntentUnsupported(:final message):
-        return InterpretResult.unsupported(message);
-      case null:
-        break;
+    // --- Paraphrase resolution — [InterpretLayer.paraphrase]. It sits inside
+    // the catalogue, not after it: the command blocks above have had their
+    // chance, the blocks below have not. So a rule here can add understanding
+    // for a phrasing the catalogue does not own ("check my calendar", "what
+    // can nexus do"), refuse what Nexus cannot do ("generate an image of a
+    // cat"), or ask about one that honestly means two things — but it must
+    // never change an answer the catalogue already gives. That promise is
+    // enforced rather than believed: `test/intent_precedence_test.dart` reads
+    // the advertised vocabulary with this layer on and off and fails on any
+    // difference. Placed before the `what is X` fallback on purpose: that
+    // fallback answers "what's happening on my calendar" as a memory question
+    // about the literal phrase "happening on my calendar", which is worse
+    // than not understanding it. A phrase this layer declines falls through to
+    // the previous behaviour untouched.
+    if (paraphrase) {
+      switch (_intents.resolve(norm)) {
+        case IntentMatched(:final command):
+          return InterpretResult.matched(command);
+        case IntentAmbiguous(:final phrasing):
+          return InterpretResult.ambiguous(phrasing);
+        case IntentUnsupported(:final message):
+          return InterpretResult.unsupported(message);
+        case null:
+          break;
+      }
     }
 
     final what = RegExp(
