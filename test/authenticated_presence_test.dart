@@ -13,6 +13,7 @@
 // succeed again.
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/crypto.dart';
@@ -126,6 +127,79 @@ Future<_Pair> _pair({
   expect(result.ok, isTrue, reason: result.error);
   return (a: a, b: b, code: session.code, tmp: tmp);
 }
+
+/// A connection a paired peer has already opened honestly, plus the key it
+/// shares with the device it dialled — everything a real peer holds, and all
+/// that is needed to write someone else's id in `from`.
+class _PeerConnection {
+  _PeerConnection(this._socket, this._key);
+
+  final Socket _socket;
+  final Uint8List _key;
+
+  Future<void> send(Map<String, dynamic> frame) async {
+    final enc = await encryptToB64(encodeJson(frame), _key);
+    _socket.add(FrameDecoder.encodeFrame(encodeJson({'enc': enc})));
+    await _socket.flush();
+  }
+
+  Future<void> close() => _socket.close();
+}
+
+/// Opens a connection to [toId] as [from] really is, using the session key
+/// [from] genuinely shares with it, and waits until [target] has identified
+/// the connection as [from]. The honest opener is what makes a forged `from`
+/// on a later frame reachable at all — which is why the attacks below start
+/// here rather than with a stranger, and why the wait is part of the helper:
+/// a forged frame that arrives before the connection is attributed is dropped
+/// by the identify step, and would prove nothing about the sender check.
+Future<_PeerConnection> _openHonestly({
+  required MeshService from,
+  required MeshService target,
+  required String toId,
+  required int targetPort,
+  String host = '127.0.0.1',
+}) async {
+  final peer = from.pairedDevices.singleWhere((d) => d.id == toId);
+  final key = await deriveSessionKey(
+    pairingSecret: peer.pairingSecret,
+    myId: from.identity.id,
+    peerId: toId,
+  );
+  final socket = await Socket.connect(
+    host,
+    targetPort,
+    timeout: const Duration(seconds: 3),
+  );
+  final connection = _PeerConnection(socket, key);
+  await connection.send({
+    'type': NexusMessage.ping,
+    'from': from.identity.id,
+    'payload': {
+      'name': from.identity.name,
+      'port': from.store.port,
+      'platform': from.identity.platform,
+    },
+    'id': 'open-${from.identity.id}',
+    'ts': DateTime.now().millisecondsSinceEpoch,
+  });
+  await _waitFor(() => target.isOnline(from.identity.id));
+  return connection;
+}
+
+/// One frame, with a sender of the caller's choosing — the shape a malicious
+/// peer sends: a real key, and somebody else's id.
+Map<String, dynamic> _encrypted({
+  required String from,
+  required String type,
+  required Map<String, dynamic> payload,
+}) => {
+  'type': type,
+  'from': from,
+  'payload': payload,
+  'id': '$type-$from-${DateTime.now().microsecondsSinceEpoch}',
+  'ts': DateTime.now().millisecondsSinceEpoch,
+};
 
 Future<void> _waitFor(
   bool Function() condition, {
@@ -388,6 +462,245 @@ void main() {
         reason: 'the same captured bytes must not be applied twice',
       );
 
+      await h.a.stop();
+      await h.b.stop();
+    });
+  });
+
+  group('a paired peer cannot speak as another device', () {
+    // A paired peer holds a real session key, so it can always produce frames
+    // that decrypt. What it must not be able to do is write a *different*
+    // device's id in `from` and have that believed: presence, routes, learned
+    // phrases, facts and device-addressed answers all hang off that field, so a
+    // believable claim is a forged device. The identity a frame may speak as is
+    // the one the channel proved, and these are the attacks that check it.
+
+    /// A: paired with B, and separately with C. C then goes away, so anything
+    /// C is later seen to do can only have come from somewhere else.
+    Future<({MeshService a, MeshService b, MeshService c, Directory tmp})>
+    pairedWithTwo({required int portA, required int portB, required int portC}) async {
+      final tmp = await Directory.systemTemp.createTemp('nexus_impostor');
+      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = portA;
+      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = portB;
+      final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = portC;
+      await storeA.save();
+      await storeB.save();
+      await storeC.save();
+
+      MeshService mk(NexusStore store, String id, String name, String platform) =>
+          MeshService(
+            identity: DeviceInfo(id: id, name: name, platform: platform),
+            store: store,
+            onlineWindow: const Duration(seconds: 2),
+            visibleWindow: const Duration(seconds: 2),
+            heartbeatInterval: const Duration(seconds: 60),
+            connectTimeout: const Duration(milliseconds: 300),
+          );
+
+      final a = mk(storeA, 'device-a', 'PC', 'linux');
+      final b = mk(storeB, 'device-b', 'Phone', 'android');
+      final c = mk(storeC, 'device-c', 'Tablet', 'android');
+      await a.start();
+      await b.start();
+      await c.start();
+
+      final first = a.beginPairing();
+      expect(
+        (await b.pairWith(
+          address: '127.0.0.1',
+          port: a.port,
+          code: first.code,
+        )).ok,
+        isTrue,
+      );
+      final second = a.beginPairing();
+      expect(
+        (await c.pairWith(
+          address: '127.0.0.1',
+          port: a.port,
+          code: second.code,
+        )).ok,
+        isTrue,
+      );
+      await _waitFor(() => a.isPaired('device-b') && a.isPaired('device-c'));
+      await c.stop();
+      await _waitFor(() => !a.isOnline('device-c'));
+      return (a: a, b: b, c: c, tmp: tmp);
+    }
+
+    test('it cannot make another paired device look online', () async {
+      final h = await pairedWithTwo(
+        portA: 53480,
+        portB: 53481,
+        portC: 53482,
+      );
+      expect(h.a.isOnline('device-c'), isFalse, reason: 'C is away');
+
+      final impostor = await _openHonestly(
+        from: h.b,
+        target: h.a,
+        toId: 'device-a',
+        targetPort: h.a.port,
+      );
+
+      await impostor.send(
+        _encrypted(
+          from: 'device-c',
+          type: NexusMessage.ping,
+          payload: {'name': 'Tablet', 'port': 59997, 'platform': 'android'},
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      expect(
+        h.a.isOnline('device-c'),
+        isFalse,
+        reason: 'a claim cannot put a device online',
+      );
+
+      await impostor.close();
+      await h.a.stop();
+      await h.b.stop();
+    });
+
+    test('it cannot move where another paired device is reached', () async {
+      final lan = await _reachableIpv4();
+      final h = await pairedWithTwo(
+        portA: 53490,
+        portB: 53491,
+        portC: 53492,
+      );
+      final before = h.a.pairedDevices.singleWhere((d) => d.id == 'device-c');
+      final addressBefore = before.address;
+      final portBefore = before.port;
+
+      // Dialled over the LAN address, so the announced route is one the peer
+      // could really be reached at — the strongest version of the claim.
+      final impostor = await _openHonestly(
+        from: h.b,
+        target: h.a,
+        toId: 'device-a',
+        targetPort: h.a.port,
+        host: lan,
+      );
+      await impostor.send(
+        _encrypted(
+          from: 'device-c',
+          type: NexusMessage.ping,
+          payload: {'name': 'Tablet', 'port': 59997, 'platform': 'android'},
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      final after = h.a.pairedDevices.singleWhere((d) => d.id == 'device-c');
+      expect(
+        after.port,
+        portBefore,
+        reason: 'only the device itself may move its own route',
+      );
+      expect(after.address, addressBefore);
+
+      await impostor.close();
+      await h.a.stop();
+      await h.b.stop();
+    });
+
+    test('it cannot land a fact or a phrase as another device', () async {
+      final h = await pairedWithTwo(
+        portA: 53500,
+        portB: 53501,
+        portC: 53502,
+      );
+      final impostor = await _openHonestly(
+        from: h.b,
+        target: h.a,
+        toId: 'device-a',
+        targetPort: h.a.port,
+      );
+
+      // Sent while the connection is still honestly identified as B, which is
+      // the whole attack: the bytes are B's, the claim is C's.
+      await impostor.send(
+        _encrypted(
+          from: 'device-c',
+          type: NexusMessage.agentFact,
+          payload: {'text': 'the safe code is 1234'},
+        ),
+      );
+      await impostor.send(
+        _encrypted(
+          from: 'device-c',
+          type: NexusMessage.agentLearned,
+          payload: {'phrase': 'bring me home', 'meaning': 'show my devices'},
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      expect(
+        h.a.store.agentFacts,
+        isEmpty,
+        reason: 'memory must not adopt a fact under another device\'s name',
+      );
+      expect(
+        h.a.store.agentLearned,
+        isEmpty,
+        reason: 'a phrase that changes behaviour must not be adoptable as '
+            'another device',
+      );
+
+      await impostor.close();
+      await h.a.stop();
+      await h.b.stop();
+    });
+
+    test('the peer that owns the connection is still believed', () async {
+      // The counterweight: the guard keys on identity, not on "this connection
+      // is now suspicious". B's own frames must still land, with B's name on
+      // them, on the very connection it used for the refused claim.
+      final h = await pairedWithTwo(
+        portA: 53510,
+        portB: 53511,
+        portC: 53512,
+      );
+      final impostor = await _openHonestly(
+        from: h.b,
+        target: h.a,
+        toId: 'device-a',
+        targetPort: h.a.port,
+      );
+
+      await impostor.send(
+        _encrypted(
+          from: 'device-c',
+          type: NexusMessage.agentFact,
+          payload: {'text': 'the safe code is 1234'},
+        ),
+      );
+      await impostor.send(
+        _encrypted(
+          from: 'device-b',
+          type: NexusMessage.agentFact,
+          payload: {'text': 'the bin day is tuesday'},
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      expect(h.a.store.agentFacts, hasLength(1));
+      final landed = h.a.store.agentFacts.single;
+      expect(landed.text, 'the bin day is tuesday');
+      expect(
+        landed.sentence,
+        contains('Phone'),
+        reason: 'attributed to the device that really sent it',
+      );
+      expect(
+        landed.sentence,
+        isNot(contains('Tablet')),
+        reason: 'and never to the device whose id was claimed',
+      );
+      expect(h.a.isOnline('device-b'), isTrue);
+
+      await impostor.close();
       await h.a.stop();
       await h.b.stop();
     });

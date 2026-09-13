@@ -1164,6 +1164,8 @@ class MeshService extends ChangeNotifier {
       } catch (_) {
         return;
       }
+      // A plaintext frame has no authenticated identity yet: the only ones we
+      // act on (ping/pong) carry their own proof, checked where they are read.
       await _handleMessage(msg, socket, encrypted: false);
     }
   }
@@ -1198,7 +1200,10 @@ class MeshService extends ChangeNotifier {
     } catch (_) {
       return;
     }
-    await _handleMessage(msg, socket, encrypted: true);
+    // The identity is the one the channel proved: the key this frame actually
+    // decrypted against, or the peer this socket already belongs to. It is
+    // passed down so no later code has to believe what the payload says.
+    await _handleMessage(msg, socket, encrypted: true, provenId: peerId);
   }
 
   /// A frame we could not decrypt with any paired device's key might be a
@@ -1344,7 +1349,31 @@ class MeshService extends ChangeNotifier {
     NexusMessage msg,
     Socket socket, {
     required bool encrypted,
+    String? provenId,
   }) async {
+    // The identity a frame may speak as is the one the channel proved, never
+    // the one it claims. Decrypting with a peer's key proves which peer sent
+    // the bytes, so a frame whose `from` is a different device is either a
+    // bug or an attempt to act as that device — and every trusted thing below
+    // (presence, routes, learned phrases, facts, device-addressed answers)
+    // hangs off `msg.from`. Dropped before the replay guard so a forged id
+    // cannot burn a frame id a real peer still needs.
+    //
+    // One frame is not speaking as anyone: `serial.up` relays a payload from a
+    // node on the *sender's* cable, so its `from` names that node and the
+    // sender vouches for it over its own authenticated connection. It is
+    // exempt only when addressed to us, and it carries no authority — it fills
+    // a field for the UI to show.
+    final relayedOriginator =
+        msg.type == NexusMessage.serialUp && msg.to == identity.id;
+    if (provenId != null && msg.from != provenId && !relayedOriginator) {
+      debugPrint(
+        'NEXUS mesh: dropped ${msg.type} claiming ${msg.from} on a connection '
+        'authenticated as $provenId',
+      );
+      return;
+    }
+
     // Every frame is processed exactly once. A replay is the same bytes with
     // the same id, so this is where a captured presence claim, clipboard push
     // or agent instruction stops being a second event.
