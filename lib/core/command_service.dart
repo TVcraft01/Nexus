@@ -2,6 +2,7 @@ import 'agent_contract.dart';
 import 'answers.dart';
 import 'command_interpreter.dart';
 import 'intent.dart';
+import 'memory.dart';
 
 /// What the assistant remembers between sessions:
 ///  - [learned]: a phrase the user taught, mapped to the command it means
@@ -9,16 +10,22 @@ import 'intent.dart';
 ///  - [defaults]: an answer to a previous "which …?" question, keyed by the
 ///    argument (e.g. `media.play.playlist` -> "Chill Mix").
 ///  - [facts]: things the user told us about their world ("my wifi password
-///    is nexus"), kept as plain text so recall can search them by keyword.
+///    is nexus"), each carrying where it came from.
+///  - [ledger]: where the taught phrases and remembered preferences came
+///    from. Facts carry their own provenance inline; these two are held as
+///    value maps for the hot lookups, so their provenance lives beside them
+///    rather than inside them.
 class AgentMemory {
   final Map<String, String> learned;
   final Map<String, dynamic> defaults;
-  final List<String> facts;
+  final List<MemoryFact> facts;
+  final MemoryLedger ledger;
 
   const AgentMemory({
     this.learned = const {},
     this.defaults = const {},
     this.facts = const [],
+    this.ledger = const MemoryLedger(),
   });
 }
 
@@ -27,7 +34,13 @@ class CommandService {
   final CommandInterpreter _interpreter;
   final Map<String, String> _learned;
   final Map<String, dynamic> _defaults;
-  final List<String> _facts;
+  final List<MemoryFact> _facts;
+
+  /// Where the taught phrases and remembered preferences came from, recorded
+  /// at the moment each is learned — the same points that already learn.
+  /// Replaced wholesale on each write: a ledger is a value, not a sink.
+  MemoryLedger _ledger;
+
   final void Function()? onMemoryChanged;
 
   /// Fired when the user teaches a phrase on THIS device, so the view can
@@ -84,7 +97,8 @@ class CommandService {
   String? _contactAlias(String name) {
     final lower = name.trim().toLowerCase();
     if (lower.isEmpty) return null;
-    for (final fact in _facts) {
+    for (final remembered in _facts) {
+      final fact = remembered.text;
       final m = RegExp(
         r'^' + RegExp.escape(lower) + r'\s+(?:is|means)\s+(.+)$',
         caseSensitive: false,
@@ -103,8 +117,19 @@ class CommandService {
   /// Persists as a fact, like anything the user teaches.
   void learnContactAlias(String from, String to) {
     final fact = '${from.trim()} means ${to.trim()}';
-    if (_facts.any((f) => f.toLowerCase() == fact.toLowerCase())) return;
-    _facts.add(fact);
+    if (_facts.any((f) => f.text.toLowerCase() == fact.toLowerCase())) return;
+    // Nexus's own rule created this entry, out of an answer the user gave —
+    // which is exactly what the `system` origin means, so the answer to "why
+    // do you know that" can say so instead of claiming the user typed it.
+    _facts.add(
+      MemoryFact(
+        fact,
+        MemoryStamp.now(
+          MemoryOrigin.system,
+          'you confirmed "${from.trim()}" meant "${to.trim()}"',
+        ),
+      ),
+    );
     onMemoryChanged?.call();
     onFactLearned?.call(fact);
   }
@@ -134,6 +159,11 @@ class CommandService {
   /// must not forget it, and "I'll remember which one" is the promise.
   final Map<String, String> _pendingDeviceChoice = {};
 
+  /// The device this assistant is running on, named in the provenance of
+  /// everything the user tells it here — "you told me this on My PC" is a
+  /// real source, and it is the one the user can check.
+  String get _here => local?.name ?? 'this device';
+
   CommandService({
     required this.devices,
     AgentMemory memory = const AgentMemory(),
@@ -146,7 +176,11 @@ class CommandService {
     this._interpreter = const CommandInterpreter(),
   }) : _learned = Map.of(memory.learned),
        _defaults = Map.of(memory.defaults),
-       _facts = List.of(memory.facts);
+       _facts = List.of(memory.facts),
+       // Take on the provenance that arrived with this memory verbatim, so an
+       // entry the store seeded as legacy keeps its stamp rather than being
+       // re-stamped as something more specific than the truth.
+       _ledger = MemoryLedger.of(memory.ledger.stampMap);
 
   /// Snapshot of the taught phrases, for persisting to the store.
   Map<String, String> get learnedSnapshot => Map.unmodifiable(_learned);
@@ -154,28 +188,60 @@ class CommandService {
   /// Snapshot of the remembered argument defaults, for persisting.
   Map<String, dynamic> get defaultsSnapshot => Map.unmodifiable(_defaults);
 
-  /// Snapshot of the facts the user told us, for persisting.
-  List<String> get factsSnapshot => List.unmodifiable(_facts);
+  /// Where the learned phrases and remembered preferences came from, for
+  /// persisting beside their values.
+  MemoryLedger get ledgerSnapshot => _ledger;
+
+  /// The facts the user told us, as plain text — what the brain prompt and
+  /// the mesh broadcast want. [memoryFacts] is the same list with the
+  /// provenance that the transparency answers read.
+  List<String> get factsSnapshot =>
+      List.unmodifiable([for (final fact in _facts) fact.text]);
+
+  /// The facts with where each came from, for persisting and for answers.
+  List<MemoryFact> get memoryFacts => List.unmodifiable(_facts);
+
+  /// Where [kind]'s learned entry came from, or a legacy stamp when the
+  /// ledger has no record — never nothing, so a caller cannot accidentally
+  /// treat "unknown" as "no provenance".
+  MemoryStamp provenanceOf(MemoryLedgerKind kind, String key) =>
+      _ledger.stampFor(kind, key);
 
   /// Adopts a remembered default told to a paired device and synced over the
   /// mesh. A local answer wins over an incoming one; never fires
   /// [onDefaultLearned] — the default came FROM the mesh, broadcasting it
   /// back would loop forever.
-  void adoptDefault(String key, dynamic value) {
+  void adoptDefault(String key, dynamic value, {String from = ''}) {
     if (key.isEmpty || value == null) return;
     if (_defaults.containsKey(key)) return;
     _defaults[key] = value;
+    _ledger = _ledger.record(
+      MemoryLedgerKind.preference,
+      key,
+      MemoryStamp.now(
+        MemoryOrigin.device,
+        from.isEmpty ? 'a paired device' : from,
+      ),
+    );
     onMemoryChanged?.call();
   }
 
   /// Adopts a fact told to a paired device and synced over the mesh.
   /// Persists like a local remember, but never fires [onFactLearned] — the
   /// fact came FROM the mesh, broadcasting it back would loop forever.
-  void adoptFact(String fact) {
+  void adoptFact(String fact, {String from = ''}) {
     final clean = fact.trim();
     if (clean.isEmpty) return;
-    if (_facts.any((f) => f.toLowerCase() == clean.toLowerCase())) return;
-    _facts.add(clean);
+    if (_facts.any((f) => f.text.toLowerCase() == clean.toLowerCase())) return;
+    _facts.add(
+      MemoryFact(
+        clean,
+        MemoryStamp.now(
+          MemoryOrigin.device,
+          from.isEmpty ? 'a paired device' : from,
+        ),
+      ),
+    );
     onMemoryChanged?.call();
   }
 
@@ -349,6 +415,11 @@ class CommandService {
       if (suggested == null) return null;
       if (_isYes(answer)) {
         _learned[phrase] = suggested;
+        _ledger = _ledger.record(
+          MemoryLedgerKind.phrase,
+          phrase,
+          MemoryStamp.now(MemoryOrigin.explicit, _here),
+        );
         onMemoryChanged?.call();
         onPhraseLearned?.call(phrase, suggested);
         return _dispatchInput(suggested, approval, requestId);
@@ -417,6 +488,11 @@ class CommandService {
         );
       }
       _defaults[argKey] = answer;
+      _ledger = _ledger.record(
+        MemoryLedgerKind.preference,
+        argKey,
+        MemoryStamp.now(MemoryOrigin.explicit, _here),
+      );
       onMemoryChanged?.call();
       onDefaultLearned?.call(argKey, answer);
       return original != null
@@ -482,6 +558,11 @@ class CommandService {
       );
     }
     _learned[CommandInterpreter.normalizePhrase(phrase)] = answer;
+    _ledger = _ledger.record(
+      MemoryLedgerKind.phrase,
+      CommandInterpreter.normalizePhrase(phrase),
+      MemoryStamp.now(MemoryOrigin.explicit, _here),
+    );
     onMemoryChanged?.call();
     onPhraseLearned?.call(CommandInterpreter.normalizePhrase(phrase), answer);
     return _dispatchParsed(interpreted.command!, approval, requestId);
@@ -977,10 +1058,18 @@ class CommandService {
   /// Adopts a phrase taught on a paired device and synced over the mesh.
   /// Persists like a local teach, but never fires [onPhraseLearned] — the
   /// knowledge came FROM the mesh, broadcasting it back would loop forever.
-  void adoptLearned(String phrase, String meaning) {
+  void adoptLearned(String phrase, String meaning, {String from = ''}) {
     final key = CommandInterpreter.normalizePhrase(phrase);
     if (key.isEmpty) return;
     _learned[key] = meaning.trim().toLowerCase();
+    _ledger = _ledger.record(
+      MemoryLedgerKind.phrase,
+      key,
+      MemoryStamp.now(
+        MemoryOrigin.device,
+        from.isEmpty ? 'a paired device' : from,
+      ),
+    );
     onMemoryChanged?.call();
   }
 

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
 import 'identity.dart';
+import 'memory.dart';
 
 /// Everything Nexus persists on one device lives in a single JSON file in the
 /// app's private data directory. Nothing is ever sent anywhere; this is the
@@ -113,14 +114,43 @@ class NexusStore {
   }
 
   /// Things the user told the assistant about their world ("my wifi
-  /// password is nexus"), kept as plain text so recall can search them by
-  /// keyword. Survives restarts, like taught phrases.
-  List<String> get agentFacts => List<String>.from(
-    (_data['agent'] as Map<String, dynamic>?)?['facts'] as List? ?? const [],
-  );
+  /// password is nexus"), each with the provenance of where it came from.
+  /// Survives restarts, like taught phrases.
+  ///
+  /// Facts written by an older Nexus were stored as bare strings and had no
+  /// provenance; they load as [MemoryOrigin.legacy], which is the honest
+  /// answer rather than a guessed "you told me this". Nothing is dropped, and
+  /// an entry with no origin is refused rather than accepted.
+  List<MemoryFact> get agentFacts => [
+    for (final raw
+        in (_data['agent'] as Map<String, dynamic>?)?['facts'] as List? ??
+            const [])
+      MemoryFact.fromJson(raw),
+  ];
 
-  set agentFacts(List<String> value) {
-    _agentSection()['facts'] = List<String>.of(value);
+  set agentFacts(List<MemoryFact> value) {
+    _agentSection()['facts'] = [for (final fact in value) fact.toJson()];
+  }
+
+  /// Where the taught phrases and remembered preferences came from. Reads as
+  /// one stamp per learned value: whatever provenance was recorded, plus a
+  /// legacy stamp for every phrase or preference stored before provenance
+  /// existed — so no learned entry is ever without an origin.
+  MemoryLedger get agentLedger {
+    var ledger = MemoryLedger.fromJson(
+      (_data['agent'] as Map<String, dynamic>?)?['provenance'],
+    );
+    for (final phrase in agentLearned.keys) {
+      ledger = ledger.seedLegacy(MemoryLedgerKind.phrase, phrase);
+    }
+    for (final key in agentDefaults.keys) {
+      ledger = ledger.seedLegacy(MemoryLedgerKind.preference, key);
+    }
+    return ledger;
+  }
+
+  set agentLedger(MemoryLedger value) {
+    _agentSection()['provenance'] = value.toJson();
   }
 
   /// The user's name as synced from a paired device. The live profile lives

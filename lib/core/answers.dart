@@ -8,6 +8,7 @@ import 'dart:math';
 
 import 'agent_contract.dart';
 import 'command_interpreter.dart';
+import 'memory.dart';
 import 'reminders.dart';
 import 'timezones.dart';
 
@@ -32,10 +33,17 @@ class AnswerContext {
     this.assistantName = 'Nexus',
   });
 
-  final List<String> facts;
+  /// Everything the user told Nexus about their world, each entry carrying
+  /// where it came from. Mutable on purpose: remembering and forgetting are
+  /// memory writes, and the answers below are where they happen.
+  final List<MemoryFact> facts;
   final List<AgentDeviceSnapshot> Function() devices;
   final AgentDeviceSnapshot? local;
   final void Function()? onMemoryChanged;
+
+  /// The device this assistant is running on — the source named for anything
+  /// the user tells it here.
+  String get toldOn => local?.name ?? 'this device';
 
   /// What the assistant calls this user ("call me sam"), used in greetings.
   final String? userName;
@@ -217,7 +225,7 @@ Set<String> _topicWordsExpanded(String text) {
 /// "about bicycle". A fact matches when any of its words loosely matches
 /// any topic word — same word, a prefix, or small edit distance for
 /// typos. Synonyms ("internet" ↔ "wifi") are deliberately out of scope.
-List<String> _factsAbout(List<String> facts, String topic) {
+List<MemoryFact> _factsAbout(Iterable<MemoryFact> facts, String topic) {
   final topicWords = _topicWordsExpanded(topic);
   if (topicWords.isEmpty) return const [];
   bool loose(String factWord, String topicWord) {
@@ -236,11 +244,69 @@ List<String> _factsAbout(List<String> facts, String topic) {
     return words.any((fw) => topicWords.any((tw) => loose(fw, tw)));
   }
 
-  final hits = facts.where(factMatches).toList();
+  final hits = facts.where((fact) => factMatches(fact.text)).toList();
   hits.sort(
-    (a, b) => _factScore(b, topicWords).compareTo(_factScore(a, topicWords)),
+    (a, b) =>
+        _factScore(b.text, topicWords).compareTo(_factScore(a.text, topicWords)),
   );
   return hits;
+}
+
+/// The answer to "why do you know that?" / "why do you know about X" —
+/// built from the stored stamp of whatever fact matches, never from a canned
+/// sentence. It says plainly when nothing matches instead of falling back to
+/// a search, because a question about Nexus's own memory has no web answer.
+AgentDispatchResult _provenanceAnswer(AnswerContext ctx, String topic) {
+  // "why do you know that" carries no topic of its own — the interpreter
+  // hands back the word "that", which must not be searched for as if it
+  // named something.
+  if (topic.isEmpty ||
+      const {'that', 'this', 'it', 'those', 'these'}.contains(topic)) {
+    return const AgentDispatchResult(
+      status: AgentResultStatus.needsInfo,
+      message:
+          'What should I explain? Ask me "why do you know about my wifi '
+          'password".',
+    );
+  }
+  final hits = _factsAbout(ctx.facts, topic);
+  if (hits.isEmpty) {
+    return AgentDispatchResult(
+      status: AgentResultStatus.succeeded,
+      dispatch: AgentMessage(
+        'I don\'t know anything about "$topic" — nothing you told me matches '
+        'it, so there is nothing to explain.',
+      ),
+    );
+  }
+  final now = DateTime.now();
+  _markUsed(ctx, hits, now);
+  return AgentDispatchResult(
+    status: AgentResultStatus.succeeded,
+    dispatch: AgentMessage(
+      hits.length == 1
+          ? hits.single.explain(now)
+          : '${hits.length} things I know match "$topic":\n'
+                '${hits.map((f) => '  • ${f.explain(now)}').join('\n')}',
+    ),
+  );
+}
+
+/// Records that [used] answered something, by marking each fact used in the
+/// caller's live list. This is the one memory write a question can cause, and
+/// it is what makes "currently being used" more than a claim — but a fact
+/// already used today is not rewritten, so asking twice is not two writes.
+void _markUsed(AnswerContext ctx, List<MemoryFact> used, DateTime now) {
+  var changed = false;
+  for (final fact in used) {
+    final marked = fact.usedAt(now);
+    if (identical(marked, fact)) continue;
+    final at = ctx.facts.indexOf(fact);
+    if (at == -1) continue;
+    ctx.facts[at] = marked;
+    changed = true;
+  }
+  if (changed) ctx.onMemoryChanged?.call();
 }
 
 /// How strongly a fact matches a set of topic words — used only to order
@@ -261,10 +327,10 @@ String? _phoneIn(String fact) {
 /// The phone number nexus has been taught for a contact name, or null when
 /// no matching fact carries one — the device then falls back to its own
 /// address book. Best-scoring fact wins, like question recall.
-String? _contactNumber(List<String> facts, String name) {
+String? _contactNumber(Iterable<MemoryFact> facts, String name) {
   if (name.isEmpty) return null;
   for (final fact in _factsAbout(facts, name)) {
-    final number = _phoneIn(fact);
+    final number = _phoneIn(fact.text);
     if (number != null) return number;
   }
   return null;
@@ -366,10 +432,10 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       // A name taught as a memory fact ("remember that my name is john")
       // still answers here; otherwise the executor reads the profile store
       // — the first-class home — and answers honestly when unknown.
-      for (final fact in ctx.facts) {
+      for (final remembered in ctx.facts) {
         final name = RegExp(
           r'^(?:my name is|i am called|call me) (.+)$',
-        ).firstMatch(fact.trim());
+        ).firstMatch(remembered.text.trim());
         if (name != null) {
           return AgentDispatchResult(
             status: AgentResultStatus.succeeded,
@@ -1118,13 +1184,21 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           message: 'What should I remember? Try "remember that my wifi password is nexus".',
         );
       }
-      if (ctx.facts.any((f) => f.toLowerCase() == text.toLowerCase())) {
+      if (ctx.facts.any((f) => f.text.toLowerCase() == text.toLowerCase())) {
         return AgentDispatchResult(
           status: AgentResultStatus.succeeded,
           dispatch: AgentMessage('I already know that.'),
         );
       }
-      ctx.facts.add(text);
+      // The user said it, here — recorded as such, with this device named as
+      // the source, so "why do you know that" can answer with something the
+      // user can check rather than a canned line.
+      ctx.facts.add(
+        MemoryFact(
+          text,
+          MemoryStamp.now(MemoryOrigin.explicit, ctx.toldOn),
+        ),
+      );
       ctx.onMemoryChanged?.call();
       ctx.onFactLearned?.call(text);
       return AgentDispatchResult(
@@ -1152,19 +1226,29 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           ),
         );
       }
+      _markUsed(ctx, matches, DateTime.now());
       final heading = topic.isEmpty
           ? 'Here is what I know:'
           : 'About "$topic":';
+      // Each line says where it came from, in the user's own terms: told here,
+      // sent by a device, created by a rule, or genuinely unknown because it
+      // was stored before Nexus kept sources.
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
-          '$heading\n${matches.map((f) => '  • $f').join('\n')}',
+          '$heading\n${matches.map((f) => '  • ${f.describe()}').join('\n')}',
         ),
       );
     case AgentActions.memoryQuestion:
       // The payoff of memory: a personal question answered from what the
       // user actually said. Nothing stored? Fall back to the web honestly.
       final qTopic = (command.arguments['topic'] as String? ?? '').trim();
+      // "Why do you know that?" — the same question about the same memory,
+      // asked about its provenance instead of its content. Answered only from
+      // the stored stamp: no canned explanation, and no searching for one.
+      if (command.arguments['kind'] == 'provenance') {
+        return _provenanceAnswer(ctx, qTopic);
+      }
       if (qTopic.isEmpty) {
         return const AgentDispatchResult(
           status: AgentResultStatus.needsInfo,
@@ -1197,13 +1281,17 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           ),
         );
       }
+      _markUsed(ctx, hits, DateTime.now());
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
+          // One hit is the answer itself (a password is the password, not a
+          // provenance lecture); several are listed with where each came from,
+          // so the user can tell their own from a device's.
           hits.length == 1
-              ? hits.single
-              : '${hits.length} things you told me match "$qTopic":\n'
-                    '${hits.map((f) => '  • $f').join('\n')}',
+              ? hits.single.text
+              : '${hits.length} things I know match "$qTopic":\n'
+                    '${hits.map((f) => '  • ${f.describe()}').join('\n')}',
         ),
       );
     case AgentActions.memoryForget:
@@ -1217,7 +1305,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         );
       }
       final gone = ctx.facts
-          .where((f) => f.toLowerCase().contains(query.toLowerCase()))
+          .where((f) => f.text.toLowerCase().contains(query.toLowerCase()))
           .toList();
       if (gone.isEmpty) {
         return AgentDispatchResult(
@@ -1226,14 +1314,14 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         );
       }
       ctx.facts.removeWhere(
-        (f) => f.toLowerCase().contains(query.toLowerCase()),
+        (f) => f.text.toLowerCase().contains(query.toLowerCase()),
       );
       ctx.onMemoryChanged?.call();
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
           gone.length == 1
-              ? 'Forgotten: "${gone.single}".'
+              ? 'Forgotten: "${gone.single.text}".'
               : 'Forgotten ${gone.length} things.',
         ),
       );

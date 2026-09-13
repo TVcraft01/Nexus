@@ -163,11 +163,15 @@ class _AssistantViewState extends State<AssistantView> {
         learned: widget.mesh.store.agentLearned,
         defaults: widget.mesh.store.agentDefaults,
         facts: widget.mesh.store.agentFacts,
+        // Where the taught phrases and remembered preferences came from, with
+        // a legacy stamp filled in for anything stored before this existed.
+        ledger: widget.mesh.store.agentLedger,
       ),
       onMemoryChanged: () {
         widget.mesh.store.agentLearned = _service.learnedSnapshot;
         widget.mesh.store.agentDefaults = _service.defaultsSnapshot;
-        widget.mesh.store.agentFacts = _service.factsSnapshot;
+        widget.mesh.store.agentFacts = _service.memoryFacts;
+        widget.mesh.store.agentLedger = _service.ledgerSnapshot;
         // Best-effort persist — never a boot requirement.
         unawaited(widget.mesh.store.save());
       },
@@ -188,18 +192,19 @@ class _AssistantViewState extends State<AssistantView> {
       },
     );
     // And the other direction — adopt phrases taught on paired devices, live
-    // (not only after a restart).
-    widget.mesh.onLearnedPhraseReceived = (phrase, meaning) {
-      _service.adoptLearned(phrase, meaning);
+    // (not only after a restart). The peer that sent it is recorded as the
+    // source, so the memory says where it came from rather than "a device".
+    widget.mesh.onLearnedPhraseReceived = (phrase, meaning, [from = '']) {
+      _service.adoptLearned(phrase, meaning, from: from);
     };
     // And the other direction — adopt facts told to paired devices, live.
-    widget.mesh.onFactReceived = (fact) {
-      _service.adoptFact(fact);
+    widget.mesh.onFactReceived = (fact, [from = '']) {
+      _service.adoptFact(fact, from: from);
     };
     // And the other direction — adopt "which …?" answers from paired
     // devices, live (a local answer wins).
-    widget.mesh.onDefaultReceived = (key, value) {
-      _service.adoptDefault(key, value);
+    widget.mesh.onDefaultReceived = (key, value, [from = '']) {
+      _service.adoptDefault(key, value, from: from);
     };
     // And a rename on any device is a rename everywhere: the profile names
     // travel the mesh like taught phrases do.
@@ -401,6 +406,8 @@ class _AssistantViewState extends State<AssistantView> {
   ConversationContext _memoryContext() => ConversationContext(
     userName: _profileState?.userName,
     assistantName: _profileState?.assistantName ?? 'Nexus',
+    // The brain prompt only needs the text of what Nexus knows; provenance
+    // is for the user's questions, not the model's context.
     facts: _service.factsSnapshot,
     learned: _service.learnedSnapshot,
     defaults: _service.defaultsSnapshot,

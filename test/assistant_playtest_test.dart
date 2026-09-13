@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nexus/core/brain.dart';
 import 'package:nexus/core/identity.dart';
+import 'package:nexus/core/memory.dart';
 import 'package:nexus/core/query_log.dart';
 import 'package:nexus/core/reminders.dart';
 import 'package:nexus/core/speech.dart';
@@ -984,9 +985,18 @@ void main() {
       expect(calls, 2);
       expect(
         store.agentFacts.any(
-          (f) => f.toLowerCase() == 'alx means alex',
+          (f) => f.text.toLowerCase() == 'alx means alex',
         ),
         isTrue,
+      );
+      // The alias came from Nexus's own rule, off an answer the user gave —
+      // not from the user typing it, and the memory says so.
+      expect(
+        store.agentFacts
+            .firstWhere((f) => f.text.toLowerCase() == 'alx means alex')
+            .stamp
+            .origin,
+        MemoryOrigin.system,
       );
 
       // The alias persists into the service: next "call alx" names Alex

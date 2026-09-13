@@ -17,6 +17,7 @@ import '../core/command_interpreter.dart';
 import '../core/relay_client.dart';
 import '../core/crypto.dart';
 import '../core/identity.dart';
+import '../core/memory.dart';
 import '../core/network_info.dart';
 import '../core/pair_payload.dart';
 import '../core/protocol.dart';
@@ -360,7 +361,10 @@ class MeshService extends ChangeNotifier {
   /// wires this into the live [CommandService] so the learned meaning is
   /// usable immediately, not only after a restart. Receivers never re-broadcast
   /// — that would loop the mesh forever.
-  void Function(String phrase, String meaning)? onLearnedPhraseReceived;
+  /// [from] names the peer that sent it, so the memory keeps a real source
+  /// ("this came from TVcraft's phone") instead of a vague "a device".
+  void Function(String phrase, String meaning, [String from])?
+      onLearnedPhraseReceived;
 
   /// Fired when a paired device tells the assistant a fact and syncs it here.
   /// The view wires this into the live [CommandService] so the fact is usable
@@ -371,7 +375,7 @@ class MeshService extends ChangeNotifier {
   /// and the live assistant's own persistence funnel writes the store — never
   /// both. When nobody is listening (startup window, headless mesh), the mesh
   /// writes the store itself so the knowledge survives for the next boot.
-  void Function(String fact)? onFactReceived;
+  void Function(String fact, [String from])? onFactReceived;
 
   /// Fired when a paired device sets a reminder and syncs it here, so the
   /// assistant on THIS device reminds the user too — whoever they are near.
@@ -384,7 +388,7 @@ class MeshService extends ChangeNotifier {
   /// remembered default here. Same ownership rule as [onFactReceived]: with
   /// a listener attached, the live assistant's own funnel writes the store;
   /// otherwise the mesh persists it so it survives for the next boot.
-  void Function(String key, dynamic value)? onDefaultReceived;
+  void Function(String key, dynamic value, [String from])? onDefaultReceived;
 
   /// Fired when a paired device renames the user or the assistant and syncs
   /// the profile here, so every device answers as one person. Same
@@ -1643,15 +1647,24 @@ class MeshService extends ChangeNotifier {
           QueryLog.i.synced(phrase, meaning, from: msg.from, conflict: true);
           break;
         }
+        // Who taught it, in the user's terms: the paired device's name when
+        // this device knows it, its id otherwise. Recorded either way, so the
+        // memory never carries a phrase with no source.
+        final learnedFrom = _paired[msg.from]?.name ?? msg.from;
         // No live assistant to claim this phrase — persist it ourselves so it
         // survives until one starts. With a live listener, the assistant's own
         // persistence funnel owns the write (see [onLearnedPhraseReceived]).
         if (onLearnedPhraseReceived == null) {
           store.agentLearned = {...store.agentLearned, phrase: meaning};
+          store.agentLedger = store.agentLedger.record(
+            MemoryLedgerKind.phrase,
+            phrase,
+            MemoryStamp.now(MemoryOrigin.device, learnedFrom),
+          );
           _queueSave();
         }
         QueryLog.i.synced(phrase, meaning, from: msg.from);
-        onLearnedPhraseReceived?.call(phrase, meaning);
+        onLearnedPhraseReceived?.call(phrase, meaning, learnedFrom);
         notifyListeners();
 
       case NexusMessage.agentFact:
@@ -1662,20 +1675,24 @@ class MeshService extends ChangeNotifier {
         final text = msg.payload['text']?.toString().trim() ?? '';
         if (text.isEmpty) break;
         if (store.agentFacts.any(
-          (f) => f.toLowerCase() == text.toLowerCase(),
+          (f) => f.text.toLowerCase() == text.toLowerCase(),
         )) {
           QueryLog.i.syncedFact(text, from: msg.from, conflict: true);
           break;
         }
+        final toldBy = _paired[msg.from]?.name ?? msg.from;
         // No live assistant to claim this fact — persist it ourselves so it
         // survives until one starts. With a live listener, the assistant's own
         // persistence funnel owns the write (see [onFactReceived]).
         if (onFactReceived == null) {
-          store.agentFacts = [...store.agentFacts, text];
+          store.agentFacts = [
+            ...store.agentFacts,
+            MemoryFact(text, MemoryStamp.now(MemoryOrigin.device, toldBy)),
+          ];
           _queueSave();
         }
         QueryLog.i.syncedFact(text, from: msg.from);
-        onFactReceived?.call(text);
+        onFactReceived?.call(text, toldBy);
         notifyListeners();
 
       case NexusMessage.agentReminder:
@@ -1704,11 +1721,17 @@ class MeshService extends ChangeNotifier {
         if (key.isEmpty || value == null) break;
         if (store.agentDefaults.containsKey(key)) break;
         // No live assistant: persist it ourselves so it survives.
+        final answeredOn = _paired[msg.from]?.name ?? msg.from;
         if (onDefaultReceived == null) {
           store.agentDefaults = {...store.agentDefaults, key: value};
+          store.agentLedger = store.agentLedger.record(
+            MemoryLedgerKind.preference,
+            key,
+            MemoryStamp.now(MemoryOrigin.device, answeredOn),
+          );
           _queueSave();
         }
-        onDefaultReceived?.call(key, value);
+        onDefaultReceived?.call(key, value, answeredOn);
         notifyListeners();
 
       case NexusMessage.agentProfile:
