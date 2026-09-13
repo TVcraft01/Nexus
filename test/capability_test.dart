@@ -256,6 +256,97 @@ void main() {
     });
   });
 
+  group('the help answer is built from the registry', () {
+    const interpreter = CommandInterpreter();
+
+    test('every offered phrase resolves to the capability that offers it', () {
+      // The rule that makes the answer safe to derive: the registry may only
+      // offer a phrase that means the thing it is filed under. A phrase the
+      // interpreter reads as something else — or as nothing — cannot be
+      // advertised, because the answer would be lying about it.
+      for (final capability in kCapabilities) {
+        for (final phrase in phrasesOf(capability)) {
+          final result = interpreter.interpret(phrase);
+          expect(
+            result.command,
+            isNotNull,
+            reason: '"$phrase" is offered for ${capability.id} but is '
+                '${result.outcome}',
+          );
+          expect(
+            result.command!.action,
+            capability.id,
+            reason: '"$phrase" is offered for ${capability.id} but means '
+                '${result.command!.action}',
+          );
+        }
+      }
+    });
+
+    test('one phrase is offered by exactly one capability', () {
+      final seen = <String, String>{};
+      for (final capability in kCapabilities) {
+        for (final phrase in phrasesOf(capability)) {
+          expect(
+            seen[phrase],
+            isNull,
+            reason: '"$phrase" is offered by both ${seen[phrase]} and '
+                '${capability.id}',
+          );
+          seen[phrase] = capability.id;
+        }
+      }
+    });
+
+    test('a capability that offers phrasing says which section it is in', () {
+      for (final capability in kCapabilities) {
+        if (phrasesOf(capability).isEmpty) continue;
+        expect(
+          capability.helpGroup,
+          isNotNull,
+          reason: '${capability.id} offers a phrase but no section, so the '
+              'help answer would silently drop it',
+        );
+      }
+    });
+
+    test('every section a capability names is one the answer prints', () {
+      for (final capability in kCapabilities) {
+        final group = capability.helpGroup;
+        if (group == null) continue;
+        expect(
+          kHelpGroups,
+          contains(group),
+          reason: '${capability.id} is filed under "$group", which the help '
+              'answer never prints',
+        );
+      }
+    });
+
+    test('a section holds only capabilities that are really in it', () {
+      for (final group in kHelpGroups) {
+        final inGroup = helpCapabilitiesIn(group);
+        expect(
+          inGroup.map((c) => c.id).toSet().length,
+          inGroup.length,
+          reason: '$group lists a capability twice',
+        );
+        for (final capability in inGroup) {
+          expect(capability.helpGroup, group);
+          expect(phrasesOf(capability), isNotEmpty);
+        }
+      }
+      // Every offered capability is reachable from some section, so the
+      // answer cannot omit one by accident.
+      final reached = {for (final c in helpCapabilities) c.id};
+      final offering = {
+        for (final c in kCapabilities)
+          if (phrasesOf(c).isNotEmpty) c.id,
+      };
+      expect(reached, offering);
+    });
+  });
+
   group('platform gating', () {
     test('a phone advertises the same actions it always did', () {
       expect(

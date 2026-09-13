@@ -706,6 +706,80 @@ String? _contactNumber(Iterable<MemoryFact> facts, String name) {
   return null;
 }
 
+/// "what can you do?" — the catalogue, built from the capability registry.
+///
+/// The registry owns this answer: which capabilities are offered, the phrases
+/// they are offered as, the section each appears under and the one-line note
+/// beside it. A hand-written copy used to live here, and it had already fallen
+/// behind — 26 declared capabilities were never mentioned, and nothing could
+/// catch a line drifting from the phrase it claimed to describe.
+///
+/// Two things are added here that the registry deliberately does not hold,
+/// because they are about the device reading the answer rather than about the
+/// capability:
+///
+///  * **what needs another device.** A capability whose executors are all
+///    phones, read on a computer, says so instead of advertising something
+///    this device cannot run. Read from the registry's own platform sets, so
+///    it cannot disagree with what this device actually offers.
+///  * **the closing line**, which is about the assistant rather than any one
+///    capability.
+///
+/// Every double-quoted span below is a phrase the registry offers for exactly
+/// one capability; `test/command_surface_test.dart` reads this output back and
+/// proves that, so the answer cannot advertise a phrase that means something
+/// else or nothing at all.
+String helpText(AnswerContext ctx) {
+  final localKind = deviceKindOf(ctx.local?.platform ?? '');
+  final lines = <String>['Here is what I can do:'];
+  for (final group in kHelpGroups) {
+    final capabilities = helpCapabilitiesIn(group);
+    if (capabilities.isEmpty) continue;
+    lines
+      ..add('')
+      ..add('$group:');
+    for (final capability in capabilities) {
+      final phrases = [
+        for (final phrase in phrasesOf(capability)) '"$phrase"',
+      ].join(' / ');
+      lines.add('  $phrases${_helpTail(capability, localKind)}');
+    }
+  }
+  lines
+    ..add('')
+    ..add('If I misunderstand, just teach me once — I remember.');
+  return lines.join('\n');
+}
+
+/// The clause after a capability's phrases: its own note, and — when the
+/// capability runs only on a kind of device this is not — what it needs.
+String _helpTail(Capability capability, DeviceKind localKind) {
+  final notes = <String>[
+    ?capability.helpNote,
+    ?_needsDeviceNote(capability, localKind),
+  ];
+  return notes.isEmpty ? '' : ' — ${notes.join('; ')}';
+}
+
+/// "needs a phone" / "needs a computer" — said only when Nexus knows what kind
+/// of device it is running on and the capability's own platform set excludes
+/// it. An unknown platform says nothing rather than guessing, and a capability
+/// answered locally has no device to need.
+String? _needsDeviceNote(Capability capability, DeviceKind localKind) {
+  if (capability.platforms.isEmpty || localKind == DeviceKind.other) {
+    return null;
+  }
+  final kinds = {for (final p in capability.platforms) deviceKindOf(p)};
+  if (kinds.contains(localKind)) return null;
+  final elsewhere = [
+    for (final kind in [DeviceKind.phone, DeviceKind.computer])
+      if (kinds.contains(kind)) kind,
+  ];
+  if (elsewhere.isEmpty) return null;
+  // "a phone", not "phone": the line has to read as a sentence.
+  return 'needs ${elsewhere.map((k) => 'a ${_kindWord(k)}').join(' or ')}';
+}
+
 /// Locally executable intents that need no device: greeting, time, math.
 AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
   switch (command.action) {
@@ -715,67 +789,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       // switch can tell them apart.
       if (command.arguments['topic'] == 'why') return unableAnswer(ctx);
       if (command.arguments['topic'] == 'actions') return lastActionAnswer(ctx);
-      return const AgentDispatchResult(
-        status: AgentResultStatus.succeeded,
-        dispatch: AgentMessage(
-          'Here is what I can do:\n'
-          '\n'
-          'Time & Math:\n'
-          '  \"what time is it\" / \"what is the date\"\n'
-          '  \"what is 12 times 8\" / \"2 + 3\"\n'
-          '\n'
-          'System:\n'
-          '  \"open youtube\" — launch any app\n'
-          '  \"battery\" / \"screenshot\"\n'
-          '  \"flashlight on\" / \"brightness 50\"\n'
-          '  \"volume up\" / \"volume down\" / \"mute\"\n'
-          '  \"wifi on\" / \"bluetooth off\"\n'
-          '  \"lock screen\"\n'
-          '\n'
-          'Communication:\n'
-          '  \"call mom\" — open dialer\n'
-          '  \"text dad saying hello\" — send SMS\n'
-          '\n'
-          'Media:\n'
-          '  \"play\" / \"pause\" / \"next\" / \"previous\"\n'
-          '  \"shuffle\" / \"repeat\"\n'
-          '\n'
-          'Productivity:\n'
-          '  \"alarm for 7am\" / \"remind me to buy milk\"\n'
-          '  \"define serendipity\" / \"translate hello to French\"\n'
-          '  "convert 5 miles to km" / "convert 100 usd to eur"\n'
-          '  "what is 15% of 80" — math with percents\n'
-          '\n'
-          'Weather & Getting Around:\n'
-          '  "what is the weather" — live forecast, no city needed\n'
-          '  "what is the weather in paris" — any city\n'
-          '  "take me home" / "navigate to the office" — maps\n'
-          '\n'
-          'Email:\n'
-          '  "email mom saying hello" — opens your mail app\n'
-          '  "set volume to 50" — volume to a level\n'
-          '\n'
-          'Fun:\n'
-          '  \"roll a dice\" / \"flip a coin\" / \"random 1 to 100\"\n'
-          '  \"tell me a joke\"\n'
-          '\n'
-          'Clipboard & Devices:\n'
-          '  \"copy hello to my devices\"\n'
-          '  \"show my devices\" / \"blink the ESP32\"\n'
-          '\n'
-          'Web:\n'
-          '  \"search for flutter\" / \"open github.com\"\n'
-          '  \"note that buy milk\"\n'
-          '\n'
-          'Memory:\n'
-          '  "remember that my bike code is 4321"\n'
-          '  "what is my wifi password" — I answer from memory\n'
-          '  "what do you know about me" / "forget my bike code"\n'
-          '  "remember that mom is 0612345678" — then "call mom" / "text mom" use it\n'
-          '\n'
-          'If I misunderstand, just teach me once — I remember.',
-        ),
-      );
+      return _answerWith(helpText(ctx));
     case AgentActions.greet:
       final name = ctx.userName;
       const base =

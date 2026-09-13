@@ -37,7 +37,12 @@ void main() {
     }
   }
 
-  group('every help-text command resolves', () {
+  // Hand-listed coverage of the phrasings the help examples imply, plus the
+  // variants friends actually type. It asserts *behaviour*, and it is no
+  // longer what keeps the help answer honest: that is now derived, and lives
+  // in the group below, which reads the answer's own output instead of a
+  // copy of it.
+  group('the phrasings the examples imply, and their variants', () {
     test('time & date', () {
       expectAction('what time is it', AgentActions.timeGet, target: 'local');
       expectAction(
@@ -394,6 +399,119 @@ void main() {
     test('help & greeting', () {
       expectAction('what can you do', AgentActions.helpGet, target: 'local');
       expectAction('hello', AgentActions.greet, target: 'local');
+    });
+  });
+
+  group('the help answer offers only what the registry declares', () {
+    // The answer is built from the registry, so this proves it by reading the
+    // answer's own output: every phrase it offers resolves to the capability
+    // the registry files it under, and every capability the registry offers
+    // phrasing for is in the answer. A hand-written copy of the answer used
+    // to be the guard here, and a copy cannot catch the original drifting —
+    // it drifts with it.
+    String helpOutput({String platform = 'android'}) {
+      final local = AgentDeviceSnapshot(
+        id: 'local',
+        name: 'Test Phone',
+        online: true,
+        capabilities: defaultCapabilitiesFor(platform),
+        platform: platform,
+      );
+      final service = CommandService(devices: () => const [], local: local);
+      final result = service.execute('what can you do');
+      expect(result.status, AgentResultStatus.succeeded);
+      return (result.dispatch! as AgentMessage).text;
+    }
+
+    /// Every double-quoted span in the answer — the phrases it offers.
+    List<String> offered(String text) => RegExp(
+      r'"([^"]+)"',
+    ).allMatches(text).map((m) => m.group(1)!).toList();
+
+    test('every phrase it offers means the capability offering it', () {
+      final owner = {
+        for (final capability in helpCapabilities)
+          for (final phrase in phrasesOf(capability)) phrase: capability.id,
+      };
+      for (final platform in const ['android', 'linux', 'windows']) {
+        final spans = offered(helpOutput(platform: platform));
+        expect(
+          spans,
+          isNotEmpty,
+          reason: '$platform offers nothing at all',
+        );
+        for (final phrase in spans) {
+          expect(
+            owner[phrase],
+            isNotNull,
+            reason: '"$phrase" is offered on $platform but no capability '
+                'claims it',
+          );
+          final result = parse(phrase);
+          expect(
+            result.command,
+            isNotNull,
+            reason: '"$phrase" is offered on $platform but resolves to '
+                '${result.outcome}',
+          );
+          expect(
+            result.command!.action,
+            owner[phrase],
+            reason: '"$phrase" is offered for ${owner[phrase]} but means '
+                '${result.command!.action}',
+          );
+        }
+      }
+    });
+
+    test('it offers every phrase the registry offers, and no other', () {
+      final expected = [
+        for (final capability in helpCapabilities)
+          for (final phrase in phrasesOf(capability)) phrase,
+      ];
+      for (final platform in const ['android', 'linux', 'windows']) {
+        final spans = offered(helpOutput(platform: platform));
+        expect(spans, expected, reason: platform);
+        expect(
+          spans.toSet().length,
+          spans.length,
+          reason: '$platform: a phrase is offered twice',
+        );
+      }
+    });
+
+    test('it names every section the registry files a capability under', () {
+      final text = helpOutput();
+      for (final group in kHelpGroups) {
+        if (helpCapabilitiesIn(group).isEmpty) continue;
+        expect(text, contains('$group:'), reason: group);
+      }
+    });
+
+    test('it says what needs another device instead of pretending', () {
+      final desktop = helpOutput(platform: 'linux');
+      // A phone-only capability, read on a computer, says so.
+      expect(desktop, contains('"call mom" — open dialer; needs a phone'));
+      // A capability answered on this device needs no device at all.
+      expect(desktop, contains('"2 + 3"'));
+      expect(desktop, isNot(contains('"2 + 3" — needs')));
+
+      // A phone is one, so nothing needs another one.
+      final phone = helpOutput();
+      expect(phone, contains('"call mom" — open dialer'));
+      expect(phone, isNot(contains('needs a phone')));
+
+      // A platform Nexus has no word for says nothing, rather than guessing.
+      expect(helpOutput(platform: 'plan9'), isNot(contains('needs a')));
+    });
+
+    test('it keeps its human frame and its closing line', () {
+      final text = helpOutput();
+      expect(text, startsWith('Here is what I can do:'));
+      expect(
+        text,
+        endsWith('If I misunderstand, just teach me once — I remember.'),
+      );
     });
   });
 
