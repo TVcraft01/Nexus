@@ -175,11 +175,17 @@ class AgentDeviceSnapshot {
   final bool online;
   final List<DeviceCapability> capabilities;
 
+  /// The platform the device reported, or '' when it never said. It is a plain
+  /// string rather than an enum because peers report whatever they are, and an
+  /// unrecognised platform must read as "unknown", not as a wrong kind.
+  final String platform;
+
   const AgentDeviceSnapshot({
     required this.id,
     required this.name,
     required this.online,
     this.capabilities = const [],
+    this.platform = '',
   });
 
   @override
@@ -188,6 +194,7 @@ class AgentDeviceSnapshot {
       other.id == id &&
       other.name == name &&
       other.online == online &&
+      other.platform == platform &&
       _sameCapabilities(other.capabilities, capabilities);
 
   @override

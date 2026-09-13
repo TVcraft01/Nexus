@@ -553,8 +553,18 @@ class CommandInterpreter {
           'nexus devices',
           'my nexus devices',
         ])) {
+      // "what devices can you use" and "what can my devices do" are the same
+      // registry lookup as "show my devices" with a different question behind
+      // them: not which devices exist, but what each of them can do. The
+      // detail rides on the command so the catalogue answers what was asked.
       return InterpretResult.matched(
-        const ParsedCommand(action: AgentActions.deviceList, target: 'local'),
+        ParsedCommand(
+          action: AgentActions.deviceList,
+          target: 'local',
+          arguments: asksWhatDevicesCanDo(IntentText(norm))
+              ? const {'detail': 'capabilities'}
+              : const {},
+        ),
       );
     }
 
