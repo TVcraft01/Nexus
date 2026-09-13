@@ -1,9 +1,21 @@
 import 'dart:math' as math;
 
 import 'agent_contract.dart';
+import 'intent.dart';
 
-/// How an input was understood.
-enum InterpretOutcome { matched, needsInfo, unknown }
+/// How an input was understood. These are genuinely different findings, and
+/// collapsing any two of them loses something a caller needs:
+///
+///  - [matched] — understood, and Nexus can act.
+///  - [needsInfo] — understood, short one detail Nexus must ask for.
+///  - [ambiguous] — understood, and the sentence means two things; asking is
+///    the answer, not guessing.
+///  - [unsupported] — understood, and Nexus cannot do it. This is *not* the
+///    same as [unknown]: reporting "I don't understand" for a request Nexus
+///    comprehends perfectly blames the user's phrasing for a missing
+///    capability.
+///  - [unknown] — genuinely not understood.
+enum InterpretOutcome { matched, needsInfo, ambiguous, unsupported, unknown }
 
 class InterpretResult {
   final InterpretOutcome outcome;
@@ -11,11 +23,19 @@ class InterpretResult {
   final String? missingArgKey;
   final String? question;
 
+  /// The two readings when [outcome] is [InterpretOutcome.ambiguous].
+  final AmbiguousPhrasing? ambiguity;
+
+  /// Why Nexus cannot help, when [outcome] is [InterpretOutcome.unsupported].
+  final String? explanation;
+
   const InterpretResult._(
     this.outcome, {
     this.command,
     this.missingArgKey,
     this.question,
+    this.ambiguity,
+    this.explanation,
   });
 
   factory InterpretResult.matched(ParsedCommand command) =>
@@ -32,12 +52,30 @@ class InterpretResult {
     question: question,
   );
 
+  factory InterpretResult.ambiguous(AmbiguousPhrasing ambiguity) =>
+      InterpretResult._(
+        InterpretOutcome.ambiguous,
+        ambiguity: ambiguity,
+        question: ambiguity.question,
+      );
+
+  factory InterpretResult.unsupported(String explanation) =>
+      InterpretResult._(
+        InterpretOutcome.unsupported,
+        explanation: explanation,
+      );
+
   factory InterpretResult.unknown() =>
       const InterpretResult._(InterpretOutcome.unknown);
 }
 
 class CommandInterpreter {
   const CommandInterpreter();
+
+  /// The paraphrase layer. Runs late — after every exact phrase and pattern
+  /// the catalogue owns — so it can only ever add understanding, never take a
+  /// phrase away from a rule that already claimed it.
+  static const _intents = IntentResolver();
 
   /// One canonical, fully-understood phrase per intent — the vocabulary used
   /// for "did you mean …?" when an input nearly matches something known.
@@ -285,11 +323,17 @@ class CommandInterpreter {
         )
         .replaceAll(
           RegExp(
-            "^(?:i want to|i would like to|i'd like to|i need to|i need you to|help me|go ahead and|just|try to)\\s+",
+            "^(?:i want to|i would like to|i'd like to|i need to|i need you to|go ahead and|just|try to)\\s+",
           ),
           '',
         )
         .replaceAll(RegExp(r'^(?:can you|could you|would you)\s+'), '');
+    // "help me open youtube" is a request for the verb after it, so the
+    // politeness goes — but a bare "help me out" is a request for help
+    // itself, and stripping the noun would leave the single word "out", a
+    // fragment that means nothing and can never match anything. The strip
+    // therefore only happens when something command-like follows.
+    t = t.replaceAll(RegExp(r'^help me (?=\S+\s+\S)'), '');
     // Sentence punctuation is not part of the command. People type
     // "what can you do?" and "what time is it?" at least as often as the bare
     // phrase, and dictation adds the mark for them; the exact-match catalogue
@@ -313,7 +357,7 @@ class CommandInterpreter {
       previous = t;
       t = t.replaceAll(
         RegExp(
-          r'^(?:can you|could you|would you|will you|please|hey|yo|uh|um|so|okay|ok|alright|right|just|try to|help me|go ahead and)\s+',
+          r'^(?:can you|could you|would you|will you|please|hey|yo|uh|um|so|okay|ok|alright|right|just|try to|go ahead and)\s+',
         ),
         '',
       );
@@ -597,8 +641,13 @@ class CommandInterpreter {
       // device's location (one-time grant) or IP detection answers it. An
       // empty place means auto, handled in the executor. Two capture
       // shapes: "weather paris" (bare) and "weather in paris" (connector).
-      final place =
-          weather.group(1)?.trim() ?? weather.group(2)?.trim() ?? '';
+      // A time phrase after the connector is not a city: "will it rain in
+      // the morning" must ask about here, not about a place called "the
+      // morning". [cleanWeatherPlace] is the same stoplist the paraphrase
+      // layer uses, so the two cannot disagree about what a place is.
+      final place = cleanWeatherPlace(
+        weather.group(1)?.trim() ?? weather.group(2)?.trim() ?? '',
+      );
       final rainy = RegExp(
         r'rain|pleuvoir|pleut',
       ).hasMatch(norm);
@@ -897,6 +946,28 @@ class CommandInterpreter {
     }
 
     // --- Math
+    // --- Paraphrase resolution, the layer between the exact catalogue and
+    // the generic fallback below. Everything specific has already had its
+    // chance, so a rule here can only add understanding: a natural phrasing
+    // of a capability Nexus has ("check my calendar", "what can nexus do"),
+    // a request it understands but cannot do ("generate an image of a cat"),
+    // or one phrase that honestly means two things. Placed before the
+    // `what is X` fallback on purpose: that fallback answers "what's
+    // happening on my calendar" as a memory question about the literal
+    // phrase "happening on my calendar", which is worse than not
+    // understanding it. A phrase this layer declines falls through to the
+    // previous behaviour untouched.
+    switch (_intents.resolve(norm)) {
+      case IntentMatched(:final command):
+        return InterpretResult.matched(command);
+      case IntentAmbiguous(:final phrasing):
+        return InterpretResult.ambiguous(phrasing);
+      case IntentUnsupported(:final message):
+        return InterpretResult.unsupported(message);
+      case null:
+        break;
+    }
+
     final what = RegExp(
       r'^(what is|how much is|calculate|compute|work out|solve) (.+)$',
     ).firstMatch(norm);
