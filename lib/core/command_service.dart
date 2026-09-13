@@ -1,6 +1,7 @@
 import 'agent_contract.dart';
 import 'answers.dart';
 import 'command_interpreter.dart';
+import 'intent.dart';
 
 /// What the assistant remembers between sessions:
 ///  - [learned]: a phrase the user taught, mapped to the command it means
@@ -60,6 +61,22 @@ class CommandService {
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
 
+  /// The two readings behind each open "which did you mean?" question, kept
+  /// beside the question's key so an answer can be turned into the command it
+  /// names. Removed when answered, so a question can never be answered twice.
+  final Map<String, AmbiguousPhrasing> _pendingChoices = {};
+
+  /// The capability of the intent that actually ran last. This is the entire
+  /// conversational context Nexus keeps: one antecedent, and only an executed
+  /// intent can become it. A follow-up ("what about saturday?") is resolved
+  /// against it by [resolveFollowUp], which only fires when that intent
+  /// declared it accepts the very argument the follow-up carries — so Nexus
+  /// never invents an antecedent it cannot verify.
+  String? _lastCapability;
+
+  /// The capability the context currently points at, for tests and the view.
+  String? get contextCapability => _lastCapability;
+
   /// The contact [name] resolves to after a confirmed "did you mean?" or a
   /// taught fact ("alx means alex" / "remember that tv is TVcraft01"), or
   /// null when none is known. A phone fact ("mom is 06…") never counts as
@@ -109,6 +126,7 @@ class CommandService {
   /// service's memory so it can never swallow a later input.
   void cancelPending(String key) {
     _pendingContext.remove(key);
+    _pendingChoices.remove(key);
   }
 
   /// The device pinned for an action ("call mom" -> My Phone), keyed by the
@@ -193,7 +211,7 @@ class CommandService {
     final interpreted = _interpreter.interpret(normalized);
     switch (interpreted.outcome) {
       case InterpretOutcome.matched:
-        return _dispatchParsed(
+        return _runParsed(
           interpreted.command!,
           approval,
           requestId,
@@ -231,7 +249,42 @@ class CommandService {
           ),
         );
 
+      case InterpretOutcome.ambiguous:
+        // The sentence honestly means two things and Nexus will not pick for
+        // the user. One question, then the answer runs.
+        final phrasing = interpreted.ambiguity!;
+        final key = 'which:$normalized';
+        _pendingChoices[key] = phrasing;
+        // The marker that makes [answerTo] reach [_applyAnswer]: the answer
+        // path is entered only for a key the service still holds, which is
+        // what keeps a stale question from swallowing a later input.
+        _pendingContext[key] = normalized;
+        return AgentDispatchResult(
+          status: AgentResultStatus.needsInfo,
+          dispatch: AgentClarification(
+            question: phrasing.question,
+            key: key,
+            hint: 'I can do either one — say which.',
+          ),
+        );
+
+      case InterpretOutcome.unsupported:
+        // Understood, and impossible — said plainly, with the reason, and
+        // with nothing run in its place. The failure is Nexus's missing
+        // capability, not the user's phrasing, and the sentence says so.
+        return AgentDispatchResult(
+          status: AgentResultStatus.unavailable,
+          message: interpreted.explanation!,
+        );
+
       case InterpretOutcome.unknown:
+        // A follow-up on the request that just ran ("what about saturday?"
+        // after a calendar question). Only the intent that actually ran can
+        // be continued, and only for an argument that intent really reads.
+        final followUp = resolveFollowUp(normalized, _lastCapability);
+        if (followUp != null) {
+          return _runParsed(followUp, approval, requestId, rawInput: text);
+        }
         // A near-miss of something already known ("tex mom saying hi",
         // "what time is is")? Offer it. The user confirms with "yes" before
         // anything runs, so a wrong guess is only ever a question — never
@@ -311,6 +364,36 @@ class CommandService {
         approval,
         requestId,
         retryValue: suggested,
+      );
+    }
+    if (key.startsWith('which:')) {
+      // The answer to "your schedule, or the weather?". The original phrase
+      // is still in the key, so the chosen reading is rebuilt from the
+      // sentence the user actually typed — a "tomorrow" in it survives.
+      final phrasing = _pendingChoices[key];
+      if (phrasing == null) return null;
+      final original = IntentText(key.substring('which:'.length));
+      final choice = phrasing.choiceFor(answer);
+      if (choice == null) {
+        // Still unclear: ask again, and keep the question answerable rather
+        // than dropping it on the floor.
+        _pendingChoices[key] = phrasing;
+        return AgentDispatchResult(
+          status: AgentResultStatus.needsInfo,
+          dispatch: AgentClarification(
+            question: phrasing.question,
+            key: key,
+            hint: 'Say ${phrasing.choices.map((c) => c.label).join(' or ')}.',
+          ),
+        );
+      }
+      _pendingChoices.remove(key);
+      _pendingContext.remove(key);
+      return _runParsed(
+        choice.build(original),
+        approval,
+        requestId,
+        rawInput: answer,
       );
     }
     if (key.startsWith('arg:')) {
@@ -418,6 +501,25 @@ class CommandService {
       approval,
       requestId,
       rawInput: input,
+    );
+  }
+
+  /// Runs a recognized command and records it as the context an immediate
+  /// follow-up may continue. Only an intent that ran becomes the antecedent:
+  /// a taught phrase or a rejected suggestion must not silently become "what
+  /// I was just talking about".
+  AgentDispatchResult _runParsed(
+    ParsedCommand command,
+    AgentApproval approval,
+    String requestId, {
+    String? rawInput,
+  }) {
+    _lastCapability = command.action;
+    return _dispatchParsed(
+      command,
+      approval,
+      requestId,
+      rawInput: rawInput,
     );
   }
 

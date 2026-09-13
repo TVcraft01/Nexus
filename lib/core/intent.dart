@@ -1,0 +1,711 @@
+// The intent layer — one owner of "how a person's sentence means a
+// capability".
+//
+// The interpreter's catalogue is exact: 430 hand-listed phrases and 116
+// patterns, and until this file anything outside them was simply
+// "I don't understand". A read-only audit drove the brief's own example
+// phrasings through the real interpreter and found three different failures,
+// which is why this layer exists and why it has two kinds of rule:
+//
+//   * understood as the WRONG thing — "what's happening on my calendar?" and
+//     "what is the forecast" matched the generic `what is X` memory fallback
+//     and became memory lookups that end in a web search. A misparse is worse
+//     than a miss: the user gets a confident, wrong answer.
+//   * understood by NOBODY — "check my calendar", "help me out", "what can
+//     nexus do", "what have you learned about me" fell to the teach loop even
+//     though Nexus has the capability. A miss costs the user a lesson they
+//     should not have needed.
+//   * understood but IMPOSSIBLE — "generate an image of a cat" is a request
+//     Nexus comprehends completely and cannot do. Reporting it as "I don't
+//     understand" is a different, less honest sentence: it says the fault is
+//     the user's phrasing when the fault is a missing capability.
+//
+// The registry ([kCapabilities]) stays the vocabulary: every rule below names
+// an [AgentActions] constant, so a renamed action breaks the build instead of
+// silently orphaning a rule, and `test/intent_test.dart` asserts every matched
+// rule's id is a declared capability with a verified example.
+//
+// Two deliberate limits, both of which this file keeps rather than hides:
+//  - the "can't do it" rules explain themselves in the user's terms and then
+//    stop. They never substitute a lookalike action (no fake web search for an
+//    image request).
+//  - one ambiguity is modelled, not a general tie-breaker. "how is my day
+//    looking" genuinely means either the schedule or the weather, and the
+//    honest move is one question, not a guess. Anything wider is speculative
+//    machinery with no phrasing to justify it yet.
+import 'agent_contract.dart';
+
+/// One phrase family that means [capability].
+///
+/// [needs] is a conjunction: every group must be satisfied, and a group is
+/// satisfied by any one of its words. Words are matched whole, against the
+/// already-normalized text (lowercase, accents stripped, filler and trailing
+/// sentence punctuation removed by the interpreter). [forbids] is checked as
+/// a plain substring, so a multi-word entry like `schedule a` can disqualify
+/// the write-shaped reading of a phrase the read rule would otherwise claim.
+class IntentRule {
+  /// One of the [AgentActions] id constants.
+  final String capability;
+
+  /// Word groups; all must be satisfied, any word satisfies a group.
+  final List<Set<String>> needs;
+
+  /// Substrings that disqualify the rule when present.
+  final Set<String> forbids;
+
+  /// Builds the command this rule means. Returning null means "this sentence
+  /// is not for me after all" — how a rule that recognizes a shape but cannot
+  /// honestly read its arguments declines, so the resolver falls through to
+  /// the next rule instead of guessing.
+  final ParsedCommand? Function(IntentText text)? build;
+
+  const IntentRule(
+    this.capability, {
+    required this.needs,
+    this.forbids = const {},
+    this.build,
+  });
+}
+
+/// A normalized sentence, with the lookups a rule needs. Kept tiny on
+/// purpose: every rule below is a keyword question about words the user
+/// actually typed, not a grammar.
+class IntentText {
+  /// The normalized phrase the interpreter already produced.
+  final String text;
+
+  /// [text] split on whitespace, in order — order is what lets a multi-word
+  /// phrase be matched without matching its words scattered apart.
+  final List<String> tokens;
+
+  /// [tokens] as a set, for O(1) single-word membership.
+  final Set<String> words;
+
+  IntentText(String text)
+    : text = text,
+      tokens = text.split(' ').where((w) => w.isNotEmpty).toList(),
+      words = text.split(' ').where((w) => w.isNotEmpty).toSet();
+
+  /// True when [word] appears as a whole word.
+  bool has(String word) => words.contains(word);
+
+  /// True when any word of [group] appears.
+  bool anyOf(Set<String> group) => group.any(words.contains);
+
+  /// True when [phrase] appears as consecutive whole words — what
+  /// [IntentRule.forbids] needs for an entry like `new event`.
+  bool contains(String phrase) {
+    final parts = phrase.split(' ').where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty || parts.length > tokens.length) return false;
+    for (var start = 0; start + parts.length <= tokens.length; start++) {
+      var hit = true;
+      for (var i = 0; i < parts.length; i++) {
+        if (tokens[start + i] != parts[i]) {
+          hit = false;
+          break;
+        }
+      }
+      if (hit) return true;
+    }
+    return false;
+  }
+
+  /// True when every group in [needs] is satisfied.
+  bool satisfies(List<Set<String>> needs) => needs.every(anyOf);
+}
+
+/// A request Nexus understands and has no capability to perform. The message
+/// is the whole point: it names what was understood, says plainly that Nexus
+/// cannot do it, and stops — the failure mode this replaces was a lookalike
+/// action (a web search) presented as if it answered the request.
+class UnsupportedIntent {
+  /// What the user is asking for, in their words — the recognition side.
+  final List<Set<String>> needs;
+
+  /// Substrings that disqualify it.
+  final Set<String> forbids;
+
+  /// The honest sentence shown instead of pretending.
+  final String message;
+
+  const UnsupportedIntent({
+    required this.needs,
+    this.forbids = const {},
+    required this.message,
+  });
+}
+
+/// One side of an ambiguous question: a capability, the words that name it in
+/// an answer, and how to build its command when the user picks it.
+class AmbiguousChoice {
+  /// One of the [AgentActions] id constants.
+  final String capability;
+
+  /// Words that select this choice in the user's answer.
+  final Set<String> words;
+
+  /// How to say this choice back in the question.
+  final String label;
+
+  final ParsedCommand Function(IntentText text) build;
+
+  const AmbiguousChoice({
+    required this.capability,
+    required this.words,
+    required this.label,
+    required this.build,
+  });
+}
+
+/// A phrasing that genuinely means two different things. Modelled per
+/// phrasing rather than as a general tie-breaker: a general one would need
+/// overlapping keyword rules to exist, and today's rules deliberately do not
+/// overlap, so the only honest way to reach the ambiguity state is to say
+/// where it really is.
+class AmbiguousPhrasing {
+  /// Exact normalized phrasings (word-boundary matched) that trigger it.
+  final List<String> phrases;
+
+  /// The one question that asks for the missing decision.
+  final String question;
+
+  /// The choices, in the order they are offered in [question].
+  final List<AmbiguousChoice> choices;
+
+  const AmbiguousPhrasing({
+    required this.phrases,
+    required this.question,
+    required this.choices,
+  });
+
+  /// The choice the user's [answer] names, or null when the answer names
+  /// none of them — the caller re-asks rather than guessing.
+  AmbiguousChoice? choiceFor(String answer) {
+    final words = IntentText(answer).words;
+    for (final choice in choices) {
+      if (choice.words.any(words.contains)) return choice;
+    }
+    return null;
+  }
+}
+
+/// What the layer concluded.
+sealed class IntentResolution {
+  const IntentResolution();
+}
+
+/// The sentence means [command].
+class IntentMatched extends IntentResolution {
+  final ParsedCommand command;
+  const IntentMatched(this.command);
+}
+
+/// The sentence means one of several things; ask [phrasing.question].
+class IntentAmbiguous extends IntentResolution {
+  final AmbiguousPhrasing phrasing;
+  const IntentAmbiguous(this.phrasing);
+}
+
+/// The sentence was understood and cannot be done, for the stated reason.
+class IntentUnsupported extends IntentResolution {
+  final String message;
+  const IntentUnsupported(this.message);
+}
+
+/// The resolver. Pure and stateless: the interpreter owns the normalized
+/// text, and this decides only what it means.
+class IntentResolver {
+  const IntentResolver();
+
+  /// Resolves [normalized] (already normalized by the interpreter) to a
+  /// capability, an ambiguity or an unsupported request, or null when this
+  /// layer has nothing to say — in which case the interpreter keeps whatever
+  /// it would have done before, unchanged.
+  ///
+  /// Order matters and is declared, not computed: a phrasing that is both
+  /// ambiguous and keyword-matched stays ambiguous (checked first), because
+  /// guessing between two honest readings is worse than one question.
+  IntentResolution? resolve(String normalized) {
+    final text = IntentText(normalized);
+    if (text.words.length < 2) return null;
+
+    for (final ambiguous in kAmbiguousPhrasings) {
+      for (final phrase in ambiguous.phrases) {
+        if (text.contains(phrase)) return IntentAmbiguous(ambiguous);
+      }
+    }
+
+    for (final unsupported in kUnsupportedIntents) {
+      if (!text.satisfies(unsupported.needs)) continue;
+      if (unsupported.forbids.any(text.contains)) continue;
+      return IntentUnsupported(unsupported.message);
+    }
+
+    for (final rule in kIntentRules) {
+      if (!text.satisfies(rule.needs)) continue;
+      if (rule.forbids.any(text.contains)) continue;
+      // A rule may still decline after matching its words — its arguments
+      // are not readable, so the sentence is not really its own.
+      final command = rule.build?.call(text);
+      if (command == null) continue;
+      return IntentMatched(command);
+    }
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Argument extraction
+// ---------------------------------------------------------------------------
+
+const Set<String> _weekdayWords = {
+  'week',
+  'weekend',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+  'lundi',
+  'mardi',
+  'mercredi',
+  'jeudi',
+  'vendredi',
+  'samedi',
+  'dimanche',
+};
+
+/// The calendar horizon the question asks about. The native side already
+/// understands exactly these three, so a phrase is mapped onto them rather
+/// than inventing a fourth: a named weekday is inside the week horizon.
+String calendarWhen(IntentText text) {
+  if (text.has('tomorrow') || text.has('demain')) return 'tomorrow';
+  if (_weekdayWords.any(text.words.contains) ||
+      text.contains('next week') ||
+      text.contains('this week')) {
+    return 'week';
+  }
+  return 'today';
+}
+
+/// Words that follow a place preposition without being one ("in the morning",
+/// "in two hours") — a weather question must not report them as a city.
+const Set<String> _nonPlaceTail = {
+  'the morning',
+  'the afternoon',
+  'the evening',
+  'the night',
+  'the week',
+  'the weekend',
+  'an hour',
+  'a bit',
+};
+
+/// [raw] as a place name, or '' when it is really the time phrase the
+/// question carried. Shared with the exact catalogue's own weather rule,
+/// which used to hand the weather service a city called "the morning" — a
+/// phrase fragment presented as data, which is the same defect class as a
+/// punctuation mark captured into an argument.
+String cleanWeatherPlace(String raw) {
+  final place = raw.trim();
+  if (place.isEmpty) return '';
+  if (_nonPlaceTail.contains(place)) return '';
+  if (RegExp(r'\d').hasMatch(place)) return '';
+  return place;
+}
+
+/// The place a weather question named, or '' when it named none ("is it
+/// going to rain" is about here). Only a trailing `in|at|for <words>` counts,
+/// so a phrase Nexus cannot parse never turns into a bogus city.
+String weatherPlace(IntentText text) {
+  final match = RegExp(
+    r'\b(?:in|at|for) ([a-z][a-z\-]+(?: [a-z][a-z\-]+)*)$',
+  ).firstMatch(text.text);
+  if (match == null) return '';
+  return cleanWeatherPlace(match.group(1)!);
+}
+
+/// Rain and umbrella questions are the same question, and the weather
+/// service already answers it with its own `rain` kind.
+String weatherKind(IntentText text) =>
+    text.anyOf(const {'rain', 'umbrella', 'raining'}) ? 'rain' : 'now';
+
+// ---------------------------------------------------------------------------
+// The rules
+// ---------------------------------------------------------------------------
+
+/// Every matched rule, in priority order. Each names an [AgentActions] id.
+final List<IntentRule> kIntentRules = [
+  // --- Calendar: reading the schedule is a question, and people ask it many
+  // ways. The audit showed two of the brief's four phrasings already matched
+  // and two were answered as memory questions ("what's happening on my
+  // calendar" → a web search for the phrase). A schedule word is enough on
+  // its own: the exact catalogue above has already had its chance at app
+  // launches ("open my calendar") and event creation.
+  IntentRule(
+    AgentActions.calendarRead,
+    needs: [
+      {'calendar', 'schedule', 'agenda', 'diary', 'planner', 'plans'},
+      {
+        'what',
+        'whats',
+        'anything',
+        'any',
+        'check',
+        'show',
+        'see',
+        'view',
+        'read',
+        'look',
+        'clear',
+        'busy',
+        'free',
+        'happening',
+        'going',
+        'upcoming',
+        'today',
+        'tomorrow',
+        'tonight',
+        'next',
+        'week',
+        'on',
+        'my',
+        'the',
+      },
+    ],
+    // A phrase that creates an event is not a question about one. The exact
+    // catalogue handles "add X to my calendar" before this layer runs; these
+    // entries keep the write-shaped readings it does not cover out of the
+    // read rule, so the worst case is a miss, never a wrong action.
+    forbids: {'add', 'create', 'book', 'put', 'move', 'new event', 'set up'},
+    build: (text) => ParsedCommand(
+      action: AgentActions.calendarRead,
+      target: 'local',
+      arguments: {'when': calendarWhen(text)},
+    ),
+  ),
+
+  // --- Weather: "what is the forecast" was a memory question about "the
+  // forecast" that ended in a web search, and "do i need an umbrella" was
+  // unknown. Both are the same question the weather service already answers.
+  IntentRule(
+    AgentActions.weatherGet,
+    needs: [
+      {'weather', 'forecast', 'rain', 'raining', 'umbrella', 'snow', 'sunny'},
+      {
+        'what',
+        'whats',
+        'will',
+        'is',
+        'do',
+        'need',
+        'going',
+        'today',
+        'tomorrow',
+        'tonight',
+        'week',
+        'the',
+        'it',
+      },
+    ],
+    // "google the weather in paris" is a request to search, not a request for
+    // the weather service — the user named the tool they want.
+    forbids: {'google', 'search', 'look up', 'find'},
+    build: (text) => ParsedCommand(
+      action: AgentActions.weatherGet,
+      target: 'local',
+      arguments: {'place': weatherPlace(text), 'kind': weatherKind(text)},
+    ),
+  ),
+
+  // --- Memory recall: "what have you learned about me" and "did you remember
+  // what i told you" are the same question as "what do you know about me".
+  // Declared before the help rule because its words are far less common: a
+  // phrase that could read as either must go to the narrower reading.
+  IntentRule(
+    AgentActions.memoryRecall,
+    needs: [
+      {'know', 'learned', 'learnt', 'remember', 'remembered', 'told'},
+      {'you', 'your', 'nexus'},
+      {'me', 'about', 'i'},
+    ],
+    // "forget everything i told you" shares this rule's words but means the
+    // opposite of a recall, and the catalogue's own forget rule answers it.
+    // Declining here is what keeps a deletion request from being read as a
+    // request to read everything back.
+    forbids: {'forget'},
+    build: (text) {
+      // "…about <something>" names a topic, and a question about one of the
+      // user's own things is a targeted recall — the exact catalogue owns
+      // those, so decline and let it answer rather than listing everything.
+      final topic = RegExp(r'\babout (?!me\b|us\b)\w').firstMatch(text.text);
+      if (topic != null) return null;
+      return const ParsedCommand(
+        action: AgentActions.memoryRecall,
+        target: 'local',
+      );
+    },
+  ),
+
+  // --- Help: the exact catalogue knows "help", "what can you do" and "what
+  // are you able to do"; these are the same question phrased around them.
+  IntentRule(
+    AgentActions.helpGet,
+    needs: [
+      {'help', 'nexus', 'capabilities'},
+      {'me', 'out', 'what', 'whats', 'can', 'could', 'able', 'capabilities'},
+    ],
+    build: (text) {
+      // "help me <something>" is a request to do that something, not a
+      // request to hear the catalogue — decline and let the phrase be
+      // unknown or taught, rather than answering a different question.
+      final ask = RegExp(r'\bhelp me (\w+)').firstMatch(text.text);
+      if (ask != null &&
+          !const {'out', 'please', 'here', 'learn'}.contains(ask.group(1))) {
+        return null;
+      }
+      return const ParsedCommand(action: AgentActions.helpGet, target: 'local');
+    },
+  ),
+
+  // --- Devices: the registry answer, not a search. "what devices do i have"
+  // and "which devices are paired" are the same list as "show my devices".
+  IntentRule(
+    AgentActions.deviceList,
+    // Plural only: the singular noun means "the device I am speaking from",
+    // which is the exact catalogue's own class ("find my device"), answered
+    // shortly after this layer. Claiming it here would turn a question about
+    // one device into an inventory.
+    needs: [
+      {'devices'},
+      {
+        'what',
+        'whats',
+        'which',
+        'list',
+        'show',
+        'see',
+        'any',
+        'all',
+        'my',
+        'paired',
+        'connected',
+        'have',
+      },
+    ],
+    // Locating one device is a different question, and the catalogue's own
+    // rules (above and below this layer) answer it. Declining here keeps a
+    // singular "find my device" out of the plural list answer.
+    // "…to my devices" is the clipboard broadcast ("copy hello to my
+    // devices"), which the catalogue claims after this layer — declining
+    // keeps it from being answered as an inventory.
+    forbids: {
+      'find',
+      'where',
+      'locate',
+      'ring',
+      'pair',
+      'unpair',
+      'forget',
+      'copy',
+      'paste',
+      'send',
+      'share',
+      'sync',
+      'clipboard',
+    },
+    build: (_) => const ParsedCommand(
+      action: AgentActions.deviceList,
+      target: 'local',
+    ),
+  ),
+];
+
+/// Requests Nexus understands and genuinely cannot perform. Each one says so
+/// in the user's terms and offers the nearest real thing instead of a
+/// lookalike — the brief's rule is that no suggestion may stand in for a
+/// capability that does not exist.
+const List<UnsupportedIntent> kUnsupportedIntents = [
+  UnsupportedIntent(
+    // "generate an image of a cat", "make me a picture of a cat", "draw …".
+    needs: [
+      {
+        'image',
+        'picture',
+        'photo',
+        'drawing',
+        'artwork',
+        'illustration',
+        'logo',
+        'draw',
+        'sketch',
+        'paint',
+      },
+      {'generate', 'create', 'make', 'draw', 'sketch', 'paint', 'design', 'render', 'produce', 'of'},
+    ],
+    message:
+        'I understand — you want an image made. Nexus cannot generate images: '
+        'there is no image model here or on any paired device, so I will not '
+        'pretend to try. I can open a search for one, or show you what Nexus '
+        'can really do.',
+  ),
+  UnsupportedIntent(
+    // "use my strongest computer", "which device is fastest" — the resource
+    // map that would answer this does not exist yet, so saying "I don't
+    // understand" would hide a missing capability behind the user's phrasing.
+    needs: [
+      {'strongest', 'fastest', 'powerful', 'powerfull', 'beefiest', 'best'},
+      {'computer', 'device', 'pc', 'laptop', 'machine', 'node', 'server'},
+    ],
+    message:
+        'I can list the devices you have paired, but I do not rank them by '
+        'power yet — that needs the shared resource map, which is not built. '
+        'Ask me "show my devices" and name the one you want.',
+  ),
+];
+
+/// The one phrasing family that really means two things. Asking is the honest
+/// answer here: the user said "my day", and picking the calendar or the
+/// weather for them would be a guess dressed as understanding.
+final List<AmbiguousPhrasing> kAmbiguousPhrasings = [
+  AmbiguousPhrasing(
+    phrases: [
+      'how is my day looking',
+      'how does my day look',
+      'what does my day look like',
+      'what is my day like',
+      'how is my day',
+      'how is my day going',
+    ],
+    question: 'Your schedule, or the weather?',
+    choices: [
+      AmbiguousChoice(
+        capability: AgentActions.calendarRead,
+        words: {'schedule', 'calendar', 'agenda', 'plans', 'meetings', 'diary'},
+        label: 'schedule',
+        build: (text) => ParsedCommand(
+          action: AgentActions.calendarRead,
+          target: 'local',
+          arguments: {'when': calendarWhen(text)},
+        ),
+      ),
+      AmbiguousChoice(
+        capability: AgentActions.weatherGet,
+        words: {'weather', 'forecast', 'rain', 'umbrella', 'temperature'},
+        label: 'weather',
+        build: (text) => ParsedCommand(
+          action: AgentActions.weatherGet,
+          target: 'local',
+          arguments: {'place': weatherPlace(text), 'kind': weatherKind(text)},
+        ),
+      ),
+    ],
+  ),
+];
+
+// ---------------------------------------------------------------------------
+// Follow-ups: the explicit, bounded context mechanism
+// ---------------------------------------------------------------------------
+
+/// A thing the user can add to the previous request instead of repeating it.
+///
+/// This is the whole conversational-context mechanism: an intent opts in by
+/// declaring that it accepts [key], and a follow-up only fires when the
+/// immediately preceding matched intent declared the same key. There is no
+/// general "what did they mean by it" guessing, because that would need the
+/// assistant to invent an antecedent it cannot verify — the audit's rule is
+/// that a state with no real signal is not shown, and the same holds for an
+/// answer with no real antecedent.
+class FollowUp {
+  /// The argument key this follow-up fills, e.g. `when`.
+  final String key;
+
+  /// The intent that must have just run for the follow-up to apply.
+  final String capability;
+
+  /// Words that, alone, mean "the same request with a new [key]".
+  final Set<String> cueWords;
+
+  /// Reads the new value out of the follow-up, or null when it does not
+  /// carry one (then the phrase stays a normal unknown).
+  final Object? Function(IntentText text) read;
+
+  const FollowUp({
+    required this.key,
+    required this.capability,
+    required this.cueWords,
+    required this.read,
+  });
+}
+
+/// A follow-up question that only carries a value ("what about saturday?").
+const Set<String> _followUpLead = {
+  'what',
+  'whats',
+  'and',
+  'now',
+  'how',
+  'ok',
+  'okay',
+  'then',
+  'about',
+  'next',
+  'this',
+};
+
+/// True when the phrase is a follow-up in shape: it leads with a cue and
+/// carries no request of its own — a bare value, never a new sentence.
+bool looksLikeFollowUp(IntentText text) {
+  if (text.words.isEmpty) return false;
+  if (!_followUpLead.contains(text.words.first)) return false;
+  return text.words.length <= 6;
+}
+
+/// The follow-ups this pass supports, each backed by an argument the
+/// capability genuinely reads. Only two intents qualify today, and that is
+/// the honest count: a follow-up for an argument that is not read would be
+/// pretending to have understood.
+final List<FollowUp> kFollowUps = [
+  FollowUp(
+    key: 'when',
+    capability: AgentActions.calendarRead,
+    cueWords: {..._weekdayWords, 'today', 'tonight', 'tomorrow', 'demain'},
+    read: calendarWhen,
+  ),
+  FollowUp(
+    key: 'mode',
+    capability: AgentActions.volumeSet,
+    cueWords: {'louder', 'quieter', 'softer'},
+    read: (text) {
+      if (text.anyOf(const {'louder', 'up'})) return 'up';
+      if (text.anyOf(const {'quieter', 'softer', 'down'})) return 'down';
+      return null;
+    },
+  ),
+];
+
+/// Resolves [normalized] against the intent that just ran. Returns the command
+/// the follow-up means, or null when the phrase is not a follow-up of
+/// [previousCapability] — in which case the caller keeps its normal handling.
+ParsedCommand? resolveFollowUp(
+  String normalized,
+  String? previousCapability,
+) {
+  if (previousCapability == null) return null;
+  final text = IntentText(normalized);
+  if (!looksLikeFollowUp(text)) return null;
+  for (final followUp in kFollowUps) {
+    if (followUp.capability != previousCapability) continue;
+    if (!followUp.cueWords.any(text.words.contains)) continue;
+    final value = followUp.read(text);
+    if (value == null) continue;
+    return ParsedCommand(
+      action: followUp.capability,
+      target: 'local',
+      arguments: {followUp.key: value},
+    );
+  }
+  return null;
+}
