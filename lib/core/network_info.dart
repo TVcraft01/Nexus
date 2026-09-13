@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'system_command.dart';
+
 final RegExp _private172 = RegExp(r'^172\.(1[6-9]|2\d|3[01])\.');
 
 /// Whether an IP belongs to Tailscale's CGNAT range (100.64.0.0/10 and
@@ -104,7 +106,10 @@ Future<bool> isTailscaleAvailable() async {
 Future<TailscaleInfo?> detectTailscaleInfo() async {
   if (_tailscaleProbeDone) return _tailscaleInfoCache;
   try {
-    final result = await Process.run('tailscale', ['status', '--json']).timeout(
+    final result = await systemCommandRunner('tailscale', [
+      'status',
+      '--json',
+    ]).timeout(
       const Duration(seconds: 3),
       onTimeout: () {
         throw TimeoutException('tailscale status timed out');

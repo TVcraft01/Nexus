@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart'
     show debugPrint, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/services.dart';
 
+import '../core/system_command.dart';
+
 /// Info about a newer Nexus release, if one exists.
 class UpdateInfo {
   final String version;
@@ -197,12 +199,23 @@ class Updater {
     return true;
   }
 
-  static Future<bool> extractAndSwap(String archivePath, String installDir) async {
+  /// [run] unpacks the archive. The product leaves it null and uses the system
+  /// runner; a test passes one so the suite never shells out to `tar`.
+  static Future<bool> extractAndSwap(
+    String archivePath,
+    String installDir, {
+    CommandRunner? run,
+  }) async {
     final tmp = Directory('$installDir.new');
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
     tmp.createSync(recursive: true);
 
-    final extract = await Process.run('tar', ['-xzf', archivePath, '-C', tmp.path]);
+    final extract = await (run ?? systemCommandRunner)('tar', [
+      '-xzf',
+      archivePath,
+      '-C',
+      tmp.path,
+    ]);
     if (extract.exitCode != 0) {
       debugPrint('NEXUS updater: extract failed: ${extract.stderr}');
       return false;

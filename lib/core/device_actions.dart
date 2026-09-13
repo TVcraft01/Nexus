@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/services.dart' show MethodChannel;
 
 import 'agent_contract.dart';
+import 'system_command.dart';
 
 /// The outcome of one device-local action.
 class ActionResult {
@@ -274,6 +275,14 @@ class UnavailableDeviceActionBackend implements DeviceActionBackend {
 
 /// The desktop executor: timers via notify-send, web search via xdg-open.
 class DesktopDeviceActionBackend implements DeviceActionBackend {
+  /// [run] is how a program is launched. The product leaves it null and uses
+  /// the system runner; a test passes a recorder so the suite can assert what
+  /// would have run without opening a browser or popping a notification.
+  DesktopDeviceActionBackend({CommandRunner? run})
+    : _run = run ?? systemCommandRunner;
+
+  final CommandRunner _run;
+
   @override
   Future<(double, double)?> currentLocation() async => null;
 
@@ -299,7 +308,7 @@ class DesktopDeviceActionBackend implements DeviceActionBackend {
     }
     unawaited(_notify('Nexus · Timer', 'Timer set for $seconds seconds.'));
     unawaited(
-      Process.run('sh', [
+      _run('sh', [
         '-c',
         'sleep $seconds; notify-send "Nexus · Timer" "Timer finished."',
       ]).catchError((_) => ProcessResult(0, 0, '', '')),
@@ -319,7 +328,7 @@ class DesktopDeviceActionBackend implements DeviceActionBackend {
     final url =
         'https://www.google.com/search?q=${Uri.encodeQueryComponent(query)}';
     try {
-      await Process.run('xdg-open', [url]);
+      await _run('xdg-open', [url]);
     } catch (_) {
       return const ActionResult(false, 'I could not open a browser here.');
     }
@@ -328,7 +337,7 @@ class DesktopDeviceActionBackend implements DeviceActionBackend {
 
   Future<void> _notify(String title, String body) async {
     try {
-      await Process.run('notify-send', ['-t', '5000', title, body]);
+      await _run('notify-send', ['-t', '5000', title, body]);
     } catch (_) {}
   }
 }
