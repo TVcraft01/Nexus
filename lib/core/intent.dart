@@ -510,13 +510,18 @@ abstract final class IntentArgs {
     'them',
   };
 
+  /// The words of [raw], with empty runs dropped — the one reading of "what
+  /// words does this say" that the rules beside it share.
+  static List<String> _words(String raw) => raw
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((w) => w.isNotEmpty)
+      .toList();
+
   /// Whether [raw] is a demonstrative and nothing else — a phrase that names
   /// no value, as opposed to a value that happens to be a short word.
   static bool isUnattachedValue(String raw) {
-    final words = raw
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((w) => w.isNotEmpty);
+    final words = _words(raw);
     return words.isNotEmpty && words.every(unattachedWords.contains);
   }
 
@@ -527,6 +532,13 @@ abstract final class IntentArgs {
   /// the device-targeted send and the bare send all have to agree on what a
   /// recipient looks like, and they are three separate patterns.
   static const Set<String> recipientPrepositions = {'to', 'onto', 'on'};
+
+  /// The subset of those that can only ever introduce a recipient. "on" is
+  /// not one: it is also how a draft says when or where ("see you on
+  /// monday"), which is why it may not decide that a sentence carries a
+  /// second recipient.
+  static const Set<String> personPrepositions = {'to', 'onto'};
+
   static const String deviceNouns =
       'phone|pc|computer|laptop|tablet|tv|television|devices|other devices|others';
 
@@ -543,8 +555,7 @@ abstract final class IntentArgs {
   /// "to mom". The rest of the object is the user's own words — this reads
   /// the recipient, it never rewrites it.
   static String? leadingRecipient(String raw) {
-    final words =
-        raw.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    final words = _words(raw);
     var start = 0;
     while (start < words.length &&
         recipientPrepositions.contains(words[start])) {
@@ -564,19 +575,52 @@ abstract final class IntentArgs {
   /// said. The rule is the class rather than a list of device names, because
   /// "send to mom" invented a person called "to mom" exactly as "send to my
   /// pc" did.
-  static bool carriesRecipient(String raw) => raw
-      .trim()
-      .split(RegExp(r'\s+'))
-      .where((w) => w.isNotEmpty)
-      .any(recipientPrepositions.contains);
+  static bool carriesRecipient(String raw) =>
+      _words(raw).any(recipientPrepositions.contains);
 
-  /// Whether [raw] carries a recipient that names nobody: a preposition with
-  /// no name after it ("to"), a name that is only a demonstrative ("to
-  /// this"), or a recipient buried in an object that names no value ("this
-  /// to", "hello to my fridge"). Such an object is neither a value to send
-  /// nor a contact to send it to.
-  static bool namesNoRecipient(String raw) =>
-      carriesRecipient(raw) && leadingRecipient(raw) == null;
+  /// Whether [raw] *opens* with something that names nobody: a preposition
+  /// with no name after it ("to"), a name that is only a demonstrative ("to
+  /// this"), or a demonstrative for a whole head ("this to the tv"). Such an
+  /// object is neither a value to send nor a contact to send it to.
+  ///
+  /// Anchored at the head on purpose. Send and text hand the rest of the
+  /// object to the address book, which resolves the longest contact it knows
+  /// and treats the remainder as the draft — "text mom on my way" is mom plus
+  /// "on my way". A preposition *later* in the object is therefore a body
+  /// word, not a second recipient, and refusing those made every draft that
+  /// says "on" or "to" not understood. Only a head that names nobody leaves
+  /// the address book nothing to resolve.
+  static bool namesNoRecipient(String raw) {
+    final words = _words(raw);
+    if (words.isEmpty) return false;
+    if (unattachedWords.contains(words.first)) return true;
+    if (!recipientPrepositions.contains(words.first)) return false;
+    return leadingRecipient(raw) == null;
+  }
+
+  /// Whether [raw] names somebody *after* its head: "hello to mom", "see you
+  /// to night".
+  ///
+  /// Only a send needs this, because only a send has a competing reading for
+  /// those words — "send X to Y" names where the thing goes. This family
+  /// cannot tell the value from the name without the address book, so it
+  /// refuses rather than message a person called "hello to mom". A text has
+  /// one recipient and it is the first thing named, so a "to" in the rest of
+  /// its object is the draft's own word and this rule does not apply there.
+  ///
+  /// Only [personPrepositions], and this is the boundary that matters: "send
+  /// mom see you on monday" is a draft, and treating "on" as a second
+  /// recipient took the whole class of messages that say when or where.
+  static bool carriesPersonRecipientAfterHead(String raw) {
+    final words = _words(raw);
+    var i = 0;
+    while (i < words.length && recipientPrepositions.contains(words[i])) {
+      i++;
+    }
+    if (i >= words.length) return false;
+    i++; // the head name itself
+    return words.skip(i).any(personPrepositions.contains);
+  }
 }
 
 // ---------------------------------------------------------------------------

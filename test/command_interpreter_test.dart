@@ -1105,16 +1105,18 @@ void main() {
       }
     });
 
-    test('a recipient inside the object is never a contact either', () {
-      // Here the object is a value with a preposition buried in it, and no
-      // recipient is named at its head: nothing was said to send, so the
-      // sentence really is one Nexus did not understand — and it says so
-      // rather than inventing a person out of the preposition.
+    test('a recipient after the value is never a contact', () {
+      // "send X to Y" names where the thing goes, and this family cannot tell
+      // the value from the name without the address book, so it says it did
+      // not understand instead of messaging a person called "hello to mom".
+      // The boundary is "to", not "any preposition": see the sibling test
+      // below, where "on" belongs to the draft.
       for (final phrase in [
         'send this to',
         'send it to',
         'send hello to my fridge',
-        'send hello on my fridge',
+        'send hello to mom',
+        'send love you to mom',
       ]) {
         final result = interpreter.interpret(phrase);
         expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
@@ -1129,6 +1131,57 @@ void main() {
       final person = interpreter.interpret('send mom happy birthday');
       expect(person.command!.action, AgentActions.messageSend);
       expect(person.command!.arguments['contact'], 'mom happy birthday');
+    });
+
+    test('a draft that says when or where is still a draft', () {
+      // Regression pin, measured against the build before the recipient work:
+      // treating "on" as a second recipient made every draft that says when
+      // or where not understood — including these, which resolved fine before
+      // and resolve fine again. "on" is how a message says when, so it may
+      // never decide that a sentence carries a second recipient.
+      for (final phrase in [
+        'text mom on my way',
+        'text mom i am on my way',
+        'text jamie see you on monday',
+        'text mom happy birthday to you',
+        "text mom can't wait to see you",
+        'text mom dinner at 8',
+        'sms mom on my way',
+        'message mom running late to dinner',
+        'send mom see you on monday',
+        'send mom on my way',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(
+          result.command!.action,
+          AgentActions.messageSend,
+          reason: phrase,
+        );
+        expect(
+          result.command!.arguments['contact'],
+          isNot(isEmpty),
+          reason: phrase,
+        );
+      }
+
+      // Through the service the draft reaches a send, never the teach loop
+      // that asks the user to rephrase a sentence Nexus understood.
+      final service = CommandService(devices: () => const []);
+      final result = service.execute('text mom on my way');
+      expect(result.status, isNot(AgentResultStatus.unavailable));
+      expect(result.message, isNot(contains('understand')));
+    });
+
+    test('a device marker is not part of the name it follows', () {
+      // "send to jamie from my phone" says where the send goes, not who it
+      // goes to: the answer must name jamie, not a contact called "jamie from
+      // my phone" that no address book holds.
+      final result = interpreter.interpret('send to jamie from my phone');
+      expect(result.outcome, InterpretOutcome.needsInfo);
+      expect(result.missingArgKey, 'message.body');
+      expect(result.command!.arguments['contact'], 'jamie');
+      expect(result.question, 'What should I send to jamie?');
     });
 
     test('a recipient that names a device asks for the thing to send', () {
@@ -1205,13 +1258,11 @@ void main() {
 
       // An object that carries a recipient and names nobody is not a contact,
       // and neither is a demonstrative: "text to" has no name after the
-      // preposition, and "text hello to mom" names mom last, which no rule
-      // here reads yet — saying so beats inventing a person.
+      // preposition.
       for (final phrase in [
         'text to',
         'text this',
         'text it',
-        'text hello to mom',
       ]) {
         final result = interpreter.interpret(phrase);
         expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
@@ -1243,6 +1294,52 @@ void main() {
         expect(result.command!.action, AgentActions.clipboardWrite, reason: entry.key);
         expect(result.command!.arguments['text'], entry.value, reason: entry.key);
       }
+    });
+
+    test('one preposition vocabulary, read by every verb', () {
+      // The list lives once in IntentArgs, and this pins that it is read
+      // rather than restated: "copy this onto my pc" used to escape the
+      // device suffix — which knew only "to" and "on" — and put the words
+      // "onto my pc" on the clipboard, while "send this onto my pc" was
+      // already right. Every verb, every preposition, one answer.
+      for (final preposition in const ['to', 'onto', 'on']) {
+        final withValue = interpreter.interpret('copy hello $preposition my pc');
+        expect(
+          withValue.command!.action,
+          AgentActions.clipboardWrite,
+          reason: preposition,
+        );
+        expect(
+          withValue.command!.arguments['text'],
+          'hello',
+          reason: '$preposition must not leave the device in the text',
+        );
+
+        final withoutValue = interpreter.interpret('copy $preposition my pc');
+        expect(
+          withoutValue.command!.action,
+          AgentActions.clipboardWrite,
+          reason: preposition,
+        );
+        expect(
+          withoutValue.command!.arguments['text'],
+          '',
+          reason: '$preposition must ask for the text, not invent one',
+        );
+      }
+    });
+
+    test('a text object is handed to the address book, contacts first', () {
+      // A text has one recipient and it is the first thing named, so the rest
+      // of the object is the draft — including a "to", which is why "text mom
+      // can't wait to see you" works (pinned above). The cost of not guessing
+      // is this shape: "text hello to mom" is read as a contact called
+      // "hello to mom", and the address book is the only thing that can say
+      // whether it exists. That is exactly what the build before the recipient
+      // work did, and the alternative refused every draft containing "to".
+      final result = interpreter.interpret('text hello to mom');
+      expect(result.command!.action, AgentActions.messageSend);
+      expect(result.command!.arguments['contact'], 'hello to mom');
     });
   });
 }
