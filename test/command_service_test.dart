@@ -918,4 +918,115 @@ void main() {
       expect(msg.arguments?['contact'], 'tvcraft01');
     });
   });
+
+  group('sending to a person: the missing detail is asked for, never assumed', () {
+    const textPhone = AgentDeviceSnapshot(
+      id: 'phone1',
+      name: 'My Phone',
+      online: true,
+      capabilities: [
+        DeviceCapability(AgentActions.messageSend),
+        DeviceCapability(AgentActions.callPlace),
+      ],
+    );
+    CommandService withPhone() => CommandService(devices: () => const [textPhone]);
+
+    test('person sends that carry their text are untouched', () {
+      // The whole family friends actually type. Each must still reach the
+      // message action — never the generic "I don't understand" path.
+      for (final phrase in const [
+        'send a message to my wife',
+        'text jamie I\'m late',
+        'message mom happy birthday',
+        'send papi salut',
+        'text mom love you',
+        'send mom a text saying hi',
+        'send a text to mom saying hi',
+      ]) {
+        final result = withPhone().execute(phrase);
+        final dispatch = result.dispatch;
+        // Understood, and asking only which device should run it — never the
+        // generic "I don't understand" teach loop.
+        expect(dispatch, isA<AgentClarification>(), reason: phrase);
+        final ask = dispatch! as AgentClarification;
+        expect(ask.key, 'device:${AgentActions.messageSend}', reason: phrase);
+        expect(
+          ask.question,
+          isNot(contains('I don\'t understand')),
+          reason: phrase,
+        );
+      }
+    });
+
+    test('a named recipient with nothing to send asks what to send', () {
+      final result = withPhone().execute('send to mom');
+      expect(result.status, AgentResultStatus.needsInfo);
+      final ask = result.dispatch! as AgentClarification;
+      expect(ask.key, 'arg:message.body');
+      expect(ask.question, 'What should I send to mom?');
+      // The question is a question, not a verdict on a broken feature.
+      expect(result.status.isQuestion, isTrue);
+    });
+
+    test('the ask is answerable and the send really runs, with that body', () {
+      // The whole chain a desktop user walks: say who, say what, agree to
+      // send it from the phone. The body given at step two has to survive to
+      // the plan — the device question re-runs the sentence to route it.
+      final service = withPhone();
+      final asked = service.execute('send to mom');
+      final key = (asked.dispatch! as AgentClarification).key;
+
+      final whichDevice = service.execute('happy birthday', answerTo: key);
+      expect(whichDevice.status, AgentResultStatus.needsInfo);
+      final offer = whichDevice.dispatch! as AgentClarification;
+      expect(offer.key, 'device:${AgentActions.messageSend}');
+
+      final sent = service.execute('yes', answerTo: offer.key);
+      expect(sent.status, AgentResultStatus.succeeded);
+      final plan = (sent.dispatch! as AgentActionPlan).request;
+      expect(plan.action, AgentActions.messageSend);
+      expect(plan.target, 'phone1');
+      expect(plan.arguments['contact'], 'mom');
+      expect(plan.arguments['body'], 'happy birthday');
+    });
+
+    test('an abandoned ask does not leak its body into the next send', () {
+      // The body is content, not a preference: answering "where" once must
+      // never become the words sent to whoever is named next.
+      final service = withPhone();
+      final asked = service.execute('send to jamie');
+      final key = (asked.dispatch! as AgentClarification).key;
+      service.execute('hello', answerTo: key); // offer declined by silence
+
+      final later = service.execute('send to jamie');
+      expect(later.status, AgentResultStatus.needsInfo);
+      expect(
+        (later.dispatch! as AgentClarification).question,
+        'What should I send to jamie?',
+      );
+
+      final other = service.execute('send to mom');
+      expect(other.status, AgentResultStatus.needsInfo);
+      expect(
+        (other.dispatch! as AgentClarification).question,
+        'What should I send to mom?',
+      );
+    });
+
+    test('the body is content, never a remembered preference', () {
+      // `message.body` is the one content argument. A preference answer is
+      // broadcast (onDefaultLearned) and remembered forever; a message body
+      // must do neither, or the same words would be sent to whoever is named
+      // next.
+      final learned = <String, dynamic>{};
+      final service = CommandService(
+        devices: () => const [textPhone],
+        onDefaultLearned: (key, value) => learned[key] = value,
+      );
+      final asked = service.execute('send to jamie');
+      final key = (asked.dispatch! as AgentClarification).key;
+      service.execute('hello', answerTo: key);
+      expect(learned, isEmpty);
+    });
+  });
 }

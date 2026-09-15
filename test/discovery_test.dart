@@ -20,6 +20,21 @@ final _identity = DeviceInfo(
   platform: 'linux',
 );
 
+/// A UDP port this test owns.
+///
+/// Every other Nexus in the suite binds the canonical discovery port too, and
+/// a unicast datagram sent to a port that several sockets share is delivered
+/// to exactly one of them — so with company, the announcement a receive-path
+/// test just sent can land on another file's socket, and the test fails for a
+/// reason that has nothing to do with the receive path. [DiscoveryService]
+/// takes an explicit port for exactly this.
+Future<int> _ownPort() async {
+  final probe = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+  final port = probe.port;
+  probe.close();
+  return port;
+}
+
 /// Waits for [check] to become true, so a socket test never depends on one
 /// sleep being long enough.
 Future<void> _waitFor(bool Function() check, {Duration limit = const Duration(seconds: 3)}) async {
@@ -111,7 +126,11 @@ void main() {
 
     test('an announcement sent to the bound port is heard', () async {
       final heard = <DiscoveredDevice>[];
-      final service = DiscoveryService(identity: _identity, onDiscovered: heard.add);
+      final service = DiscoveryService(
+        identity: _identity,
+        onDiscovered: heard.add,
+        port: await _ownPort(),
+      );
       await service.start();
       addTearDown(service.stop);
 
@@ -142,7 +161,11 @@ void main() {
     // about a device count that the environment can change.
     test('its own announcement is never reported as a peer', () async {
       final heard = <DiscoveredDevice>[];
-      final service = DiscoveryService(identity: _identity, onDiscovered: heard.add);
+      final service = DiscoveryService(
+        identity: _identity,
+        onDiscovered: heard.add,
+        port: await _ownPort(),
+      );
       await service.start();
       addTearDown(service.stop);
 
@@ -156,7 +179,11 @@ void main() {
 
     test('a malformed datagram is ignored', () async {
       final heard = <DiscoveredDevice>[];
-      final service = DiscoveryService(identity: _identity, onDiscovered: heard.add);
+      final service = DiscoveryService(
+        identity: _identity,
+        onDiscovered: heard.add,
+        port: await _ownPort(),
+      );
       await service.start();
       addTearDown(service.stop);
 

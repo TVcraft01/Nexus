@@ -1071,17 +1071,40 @@ void main() {
       }
     });
 
-    test('a recipient is never a contact, whichever preposition it uses', () {
-      // The rule is the class, not the device list. The list this replaces
-      // caught "send hello to my fridge" and missed every leading form, so
-      // "send to mom" invented a person called "to mom" (with an offer to
-      // remember their number), "send to the tv" a person called "to the tv",
-      // and "send this to" a person called "this to". A preposition is never
-      // part of a name, and there is nothing to send either.
+    test('a named recipient with nothing to send is understood, not refused', () {
+      // The sentence names who to send to and nothing else, so the recipient
+      // is parsed and one detail is genuinely missing — the state that asks
+      // for it, not "I don't understand" for a sentence whose recipient is
+      // right there. The name is the user's own word with the preposition
+      // taken off: "to mom" is a recipient called mom, never a contact
+      // literally named "to mom".
+      for (final entry in const {
+        'send to mom': 'mom',
+        'send to my wife': 'my wife',
+        'send to jamie': 'jamie',
+        'send to dr smith': 'dr smith',
+        'send to the tv': 'the tv',
+      }.entries) {
+        final result = interpreter.interpret(entry.key);
+        expect(result.outcome, InterpretOutcome.needsInfo, reason: entry.key);
+        expect(result.missingArgKey, 'message.body', reason: entry.key);
+        final command = result.command!;
+        expect(command.action, AgentActions.messageSend, reason: entry.key);
+        expect(command.arguments['contact'], entry.value, reason: entry.key);
+        expect(
+          command.arguments['contact'],
+          isNot(contains(' to ')),
+          reason: '${entry.key} must not fold the preposition into the name',
+        );
+      }
+    });
+
+    test('a recipient inside the object is never a contact either', () {
+      // Here the object is a value with a preposition buried in it, and no
+      // recipient is named at its head: nothing was said to send, so the
+      // sentence really is one Nexus did not understand — and it says so
+      // rather than inventing a person out of the preposition.
       for (final phrase in [
-        'send to mom',
-        'send to the tv',
-        'send to jamie',
         'send this to',
         'send it to',
         'send hello to my fridge',
