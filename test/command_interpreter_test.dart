@@ -1071,6 +1071,64 @@ void main() {
       }
     });
 
+    test('a recipient is never a contact, whichever preposition it uses', () {
+      // The rule is the class, not the device list. The list this replaces
+      // caught "send hello to my fridge" and missed every leading form, so
+      // "send to mom" invented a person called "to mom" (with an offer to
+      // remember their number), "send to the tv" a person called "to the tv",
+      // and "send this to" a person called "this to". A preposition is never
+      // part of a name, and there is nothing to send either.
+      for (final phrase in [
+        'send to mom',
+        'send to the tv',
+        'send to jamie',
+        'send this to',
+        'send it to',
+        'send hello to my fridge',
+        'send hello on my fridge',
+        'send this to the tv',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
+        expect(
+          result.command?.action,
+          isNot(AgentActions.messageSend),
+          reason: '$phrase must not become a message to an invented contact',
+        );
+      }
+
+      // A real object with no recipient is still a person's name.
+      final person = interpreter.interpret('send mom happy birthday');
+      expect(person.command!.action, AgentActions.messageSend);
+      expect(person.command!.arguments['contact'], 'mom happy birthday');
+    });
+
+    test('a recipient that names a device asks for the thing to send', () {
+      // Here the missing detail is real and the clipboard path already names
+      // it, so this is the one recipient shape that is answered rather than
+      // refused: "send to my pc" sends nothing because nothing was said.
+      for (final phrase in [
+        'send to my pc',
+        'send to the phone',
+        'send on my laptop',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(
+          result.command!.action,
+          AgentActions.clipboardWrite,
+          reason: phrase,
+        );
+        expect(result.command!.arguments['text'], '', reason: phrase);
+      }
+
+      final service = CommandService(devices: () => const []);
+      final asked = service.execute('send to my pc');
+      expect(asked.status, AgentResultStatus.needsInfo);
+      expect(asked.message, contains('Nothing to copy'));
+      expect(asked.dispatch, isNull);
+    });
+
     test('a real send or copy is untouched', () {
       final pushed = interpreter.interpret('send hello to my pc');
       expect(pushed.command!.action, AgentActions.clipboardWrite);
