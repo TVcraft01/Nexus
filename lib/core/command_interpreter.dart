@@ -110,12 +110,6 @@ class CommandInterpreter {
     '(?:${IntentArgs.deviceNouns})\$',
   );
 
-  /// A phrase that opens with a recipient and names one: "to mom", "to my
-  /// wife", "on the laptop". What follows the preposition is the name.
-  static final RegExp _recipientWithName = RegExp(
-    '^(?:${IntentArgs.recipientPrepositions.join('|')}) (.+)',
-  );
-
   /// Whether a sentence may be read by [InterpretLayer.paraphrase].
   ///
   /// True in the product. The switch exists so the layer's promise — it may
@@ -1983,7 +1977,20 @@ class CommandInterpreter {
       r'(.+?)(?:\s+(?:saying|disant|en disant)\s+(.+))?$',
     ).firstMatch(norm);
     if (textMsg != null) {
-      final contact = _stripDeviceSuffix(textMsg.group(1)!);
+      // The trailing device marker ("on my phone") is read off first: it is
+      // where the send goes, not part of who it goes to, and leaving it in
+      // would read a real contact as an object carrying a recipient.
+      final object = _stripDeviceSuffix(textMsg.group(1)!).trim();
+      // "text to mom" names mom: the preposition introduces the recipient here
+      // exactly as it does for a send, so it is read off rather than folded
+      // into the name. An object that carries a recipient and names nobody
+      // ("text to", "text hello to mom") is a sentence Nexus did not
+      // understand, and a demonstrative names no contact at all.
+      if (IntentArgs.isUnattachedValue(object) ||
+          IntentArgs.namesNoRecipient(object)) {
+        return InterpretResult.unknown();
+      }
+      final contact = IntentArgs.leadingRecipient(object) ?? object;
       final body = _stripDeviceSuffix(textMsg.group(2) ?? '');
       return InterpretResult.matched(
         ParsedCommand(
@@ -2136,6 +2143,11 @@ class CommandInterpreter {
         '(?:^|\\s)(to|on) (my |the )?(?:${IntentArgs.deviceNouns})\$',
       ).firstMatch(text);
       if (recipient != null) text = text.substring(0, recipient.start).trim();
+      // A recipient left in the text names no device this verb can copy to,
+      // and a preposition is not text: "copy to mom" used to put the words
+      // "to mom" on the clipboard and push them to every paired device — the
+      // same invented value the send family no longer produces.
+      if (IntentArgs.carriesRecipient(text)) return InterpretResult.unknown();
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.clipboardWrite,
@@ -2150,11 +2162,17 @@ class CommandInterpreter {
     ).firstMatch(norm);
     if (sendClip != null) {
       final text = sendClip.group(1)!.trim();
+      // The same rule as the bare send: the thing going to a device has to
+      // be a value. "send this to my PC" names a demonstrative with no referent,
+      // and "send to mary jane on my phone" names a recipient — neither is
+      // text, so neither may become the text pushed to every paired device.
+      final isValue = !IntentArgs.isUnattachedValue(text) &&
+          !IntentArgs.carriesRecipient(text);
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.clipboardWrite,
           target: 'local',
-          arguments: {'text': IntentArgs.isUnattachedValue(text) ? '' : text},
+          arguments: {'text': isValue ? text : ''},
         ),
       );
     }
@@ -2168,29 +2186,27 @@ class CommandInterpreter {
     final bareSend = RegExp(r'^send (.+)$').firstMatch(norm);
     if (bareSend != null) {
       final object = bareSend.group(1)!.trim();
+      final recipient = IntentArgs.leadingRecipient(object);
       // A recipient with nothing to send is *understood*: the recipient was
       // parsed and a detail is missing. "I don't understand" claims Nexus did
-      // not parse a sentence whose recipient it plainly did, and the device
-      // form already answers from exactly this situation.
-      if (_recipientOnly.hasMatch(object)) {
-        // A device recipient: what is missing is the text to copy, and the
-        // clipboard path already asks for it.
-        return InterpretResult.matched(
-          ParsedCommand(
-            action: AgentActions.clipboardWrite,
-            target: 'local',
-            arguments: const {'text': ''},
-          ),
-        );
-      }
-      final named = _recipientWithName.firstMatch(object);
-      if (named != null) {
-        // Any other named recipient is someone to send to, so the missing
-        // detail is asked for in the family that sends to people: the answer
-        // fills the body, and the send is armed with the name the user gave —
-        // never with the preposition folded into it ("to mom" is a recipient
-        // called mom, not a contact called "to mom").
-        final recipient = named.group(1)!;
+      // not parse a sentence whose recipient it plainly did.
+      if (recipient != null) {
+        if (_recipientOnly.hasMatch(object)) {
+          // It names a device, so what is missing is the text to copy and the
+          // clipboard path already asks for it.
+          return InterpretResult.matched(
+            ParsedCommand(
+              action: AgentActions.clipboardWrite,
+              target: 'local',
+              arguments: const {'text': ''},
+            ),
+          );
+        }
+        // Anyone else is someone to send to, so the missing detail is asked
+        // for in the family that sends to people: the answer fills the body,
+        // and the send is armed with the name the user gave — never with the
+        // preposition folded into it ("to mom" is a recipient called mom, not
+        // a contact called "to mom").
         return InterpretResult.needsInfo(
           'message.body',
           'What should I send to $recipient?',
@@ -2202,7 +2218,7 @@ class CommandInterpreter {
         );
       }
       if (IntentArgs.isUnattachedValue(object) ||
-          IntentArgs.carriesRecipient(object)) {
+          IntentArgs.namesNoRecipient(object)) {
         // A pronoun or a recipient *inside* the object ("hello to my fridge")
         // names no value at all, and no recipient either — that one really is
         // a sentence Nexus did not understand, and it says so rather than

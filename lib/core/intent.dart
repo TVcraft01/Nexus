@@ -528,7 +528,32 @@ abstract final class IntentArgs {
   /// recipient looks like, and they are three separate patterns.
   static const Set<String> recipientPrepositions = {'to', 'onto', 'on'};
   static const String deviceNouns =
-      'phone|pc|computer|laptop|tablet|devices|other devices|others';
+      'phone|pc|computer|laptop|tablet|tv|television|devices|other devices|others';
+
+  /// The recipient a phrase names at its head, or null when it names nobody:
+  /// "to mom" → `mom`, "on my laptop" → `my laptop`, "hello to mom" → null.
+  ///
+  /// Null also covers the two ways a phrase seems to name someone and does
+  /// not: no name after the preposition ("to"), and a name that is only a
+  /// demonstrative ("to this", "to them"), which has no referent in a typed
+  /// conversation — the same reasoning as [unattachedWords].
+  ///
+  /// A run of prepositions is consumed whole, because no name and no value is
+  /// made of one: "send to to mom" names mom, never a person called
+  /// "to mom". The rest of the object is the user's own words — this reads
+  /// the recipient, it never rewrites it.
+  static String? leadingRecipient(String raw) {
+    final words =
+        raw.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    var start = 0;
+    while (start < words.length &&
+        recipientPrepositions.contains(words[start])) {
+      start++;
+    }
+    if (start == 0 || start == words.length) return null;
+    final name = words.sublist(start).join(' ');
+    return isUnattachedValue(name) ? null : name;
+  }
 
   /// Whether [raw] carries a recipient instead of a value: "to my pc", "to
   /// mom", "this to", "hello on my fridge".
@@ -544,6 +569,14 @@ abstract final class IntentArgs {
       .split(RegExp(r'\s+'))
       .where((w) => w.isNotEmpty)
       .any(recipientPrepositions.contains);
+
+  /// Whether [raw] carries a recipient that names nobody: a preposition with
+  /// no name after it ("to"), a name that is only a demonstrative ("to
+  /// this"), or a recipient buried in an object that names no value ("this
+  /// to", "hello to my fridge"). Such an object is neither a value to send
+  /// nor a contact to send it to.
+  static bool namesNoRecipient(String raw) =>
+      carriesRecipient(raw) && leadingRecipient(raw) == null;
 }
 
 // ---------------------------------------------------------------------------
