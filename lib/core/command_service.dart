@@ -71,6 +71,24 @@ class CommandService {
   /// loop the mesh).
   final void Function(String key, dynamic value)? onDefaultLearned;
 
+  /// Arguments that are *content* rather than preference: what to write in a
+  /// message, not what time an alarm goes off. An answer to one of these is
+  /// used for the one send it was given for and then dropped — remembering a
+  /// body would send the same words to whoever is named next, and reporting
+  /// it as a preference would tell the user they chose a setting they never
+  /// chose.
+  static const Set<String> _contentArgs = {'message.body'};
+
+  /// Answers to [_contentArgs], waiting for the single dispatch they belong
+  /// to. Separate from [_defaults] because they must not outlive that send.
+  final Map<String, dynamic> _onceAnswers = {};
+
+  /// How deep the service is inside one request's clarification chain. A chain
+  /// re-runs its own sentence to be routed ("do it on My Phone?" re-runs the
+  /// send), and a one-shot answer has to survive that; it must not survive the
+  /// next thing the user types.
+  int _chainDepth = 0;
+
   /// The last input behind each open clarification, keyed by the
   /// [AgentClarification.key] handed to the UI.
   final Map<String, String> _pendingContext = {};
@@ -264,6 +282,12 @@ class CommandService {
       return const AgentDispatchResult(status: AgentResultStatus.unavailable);
     }
 
+    // A one-shot content answer belongs to the chain it was given for. Nothing
+    // the user types *starts* a chain, so a fresh input drops any answer left
+    // over from an abandoned one: the next send asks again rather than reusing
+    // words that were meant for the last recipient.
+    if (answerTo == null && _chainDepth == 0) _onceAnswers.clear();
+
     // An answer to a pending question (which playlist? / teach me a phrase).
     if (answerTo != null) {
       final original = _pendingContext[answerTo];
@@ -295,12 +319,17 @@ class CommandService {
       case InterpretOutcome.needsInfo:
         final key = interpreted.missingArgKey!;
         // Remembered default? Then no question is needed anymore.
-        final remembered = _defaults[key];
+        final remembered = _defaults[key] ?? _onceAnswers[key];
         if (remembered != null) {
           return _dispatchParsed(
             _withArgument(interpreted.command!, key, remembered),
             approval,
             requestId,
+            // The sentence that is actually being run, not the action: a
+            // device offer raised from this dispatch re-runs the raw input
+            // when the user approves it, and an empty string there dead-ends
+            // as an unavailable answer with nothing to explain it.
+            rawInput: text,
           );
         }
         // A fact may already answer this ("remember that my name is john"
@@ -541,16 +570,22 @@ class CommandService {
           ),
         );
       }
-      _defaults[argKey] = answer;
-      _ledger = _ledger.record(
-        MemoryLedgerKind.preference,
-        argKey,
-        MemoryStamp.now(MemoryOrigin.explicit, _here),
-      );
-      onMemoryChanged?.call();
-      onDefaultLearned?.call(argKey, answer);
+      if (_contentArgs.contains(argKey)) {
+        // Content, not a setting: carry it to the one dispatch it was given
+        // for, and keep it out of the defaults and out of the ledger.
+        _onceAnswers[argKey] = answer;
+      } else {
+        _defaults[argKey] = answer;
+        _ledger = _ledger.record(
+          MemoryLedgerKind.preference,
+          argKey,
+          MemoryStamp.now(MemoryOrigin.explicit, _here),
+        );
+        onMemoryChanged?.call();
+        onDefaultLearned?.call(argKey, answer);
+      }
       return original != null
-          ? execute(original, approval: approval, requestId: requestId)
+          ? _resume(original, approval, requestId)
           : null;
     }
     if (key.startsWith('device:')) {
@@ -578,9 +613,25 @@ class CommandService {
         );
       }
       _pendingDeviceChoice[action] = resolved.id;
-      return execute(original, approval: approval, requestId: requestId);
+      return _resume(original, approval, requestId);
     }
     return null;
+  }
+
+  /// Re-runs the sentence a pending question was about, as part of the same
+  /// chain, so a one-shot answer given a moment ago is still there when the
+  /// sentence is interpreted again to be routed to a device.
+  AgentDispatchResult _resume(
+    String input,
+    AgentApproval approval,
+    String requestId,
+  ) {
+    _chainDepth++;
+    try {
+      return execute(input, approval: approval, requestId: requestId);
+    } finally {
+      _chainDepth--;
+    }
   }
 
   /// Shared heart of the teach loop, used by both a plain "teach me"

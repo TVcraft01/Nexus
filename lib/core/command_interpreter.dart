@@ -110,6 +110,12 @@ class CommandInterpreter {
     '(?:${IntentArgs.deviceNouns})\$',
   );
 
+  /// A phrase that opens with a recipient and names one: "to mom", "to my
+  /// wife", "on the laptop". What follows the preposition is the name.
+  static final RegExp _recipientWithName = RegExp(
+    '^(?:${IntentArgs.recipientPrepositions.join('|')}) (.+)',
+  );
+
   /// Whether a sentence may be read by [InterpretLayer.paraphrase].
   ///
   /// True in the product. The switch exists so the layer's promise — it may
@@ -2162,23 +2168,45 @@ class CommandInterpreter {
     final bareSend = RegExp(r'^send (.+)$').firstMatch(norm);
     if (bareSend != null) {
       final object = bareSend.group(1)!.trim();
+      // A recipient with nothing to send is *understood*: the recipient was
+      // parsed and a detail is missing. "I don't understand" claims Nexus did
+      // not parse a sentence whose recipient it plainly did, and the device
+      // form already answers from exactly this situation.
+      if (_recipientOnly.hasMatch(object)) {
+        // A device recipient: what is missing is the text to copy, and the
+        // clipboard path already asks for it.
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.clipboardWrite,
+            target: 'local',
+            arguments: const {'text': ''},
+          ),
+        );
+      }
+      final named = _recipientWithName.firstMatch(object);
+      if (named != null) {
+        // Any other named recipient is someone to send to, so the missing
+        // detail is asked for in the family that sends to people: the answer
+        // fills the body, and the send is armed with the name the user gave —
+        // never with the preposition folded into it ("to mom" is a recipient
+        // called mom, not a contact called "to mom").
+        final recipient = named.group(1)!;
+        return InterpretResult.needsInfo(
+          'message.body',
+          'What should I send to $recipient?',
+          ParsedCommand(
+            action: AgentActions.messageSend,
+            target: 'local',
+            arguments: {'contact': recipient},
+          ),
+        );
+      }
       if (IntentArgs.isUnattachedValue(object) ||
           IntentArgs.carriesRecipient(object)) {
-        // A recipient with nothing to send. "send to my pc" names a device and
-        // no value, so the missing detail is what to send — which the clipboard
-        // path already asks for. Every other recipient ("to mom", "this to",
-        // "hello on my fridge") is a sentence Nexus did not understand, and it
-        // says so rather than inventing a contact: reading "to mom" as a name
-        // offered to remember a phone number for a person called "to mom".
-        if (_recipientOnly.hasMatch(object)) {
-          return InterpretResult.matched(
-            ParsedCommand(
-              action: AgentActions.clipboardWrite,
-              target: 'local',
-              arguments: const {'text': ''},
-            ),
-          );
-        }
+        // A pronoun or a recipient *inside* the object ("hello to my fridge")
+        // names no value at all, and no recipient either — that one really is
+        // a sentence Nexus did not understand, and it says so rather than
+        // inventing a contact.
         return InterpretResult.unknown();
       }
       return InterpretResult.matched(
