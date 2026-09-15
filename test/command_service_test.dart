@@ -958,6 +958,52 @@ void main() {
       }
     });
 
+    test('every verb that names a recipient sends to that person, not to a preposition', () {
+      // The defect this pins was one verb wide: "send to mom" read the
+      // recipient, while "text to mom" made a contact called "to mom" that
+      // the device then looked up as a real person.
+      for (final input in const [
+        'text to mom',
+        'message to mom',
+        'sms to mom',
+        'msg to mom',
+      ]) {
+        final service = withPhone();
+        final offered = service.execute(input);
+        final offer = offered.dispatch! as AgentClarification;
+        expect(offer.key, 'device:${AgentActions.messageSend}', reason: input);
+        final sent = service.execute('yes', answerTo: offer.key);
+        final plan = (sent.dispatch! as AgentActionPlan).request;
+        expect(plan.arguments['contact'], 'mom', reason: input);
+      }
+    });
+
+    test('a value is never invented out of a preposition', () {
+      // "copy to mom" put the words "to mom" on the clipboard and pushed
+      // them to every paired device, and "send to mary jane on my phone" did
+      // the same with "to mary jane". Neither is text the user gave.
+      final service = CommandService(devices: () => const [textPhone]);
+      for (final input in const ['copy to mom', 'copy hello to mom']) {
+        final result = service.execute(input, approval: AgentApproval.approved);
+        final ask = result.dispatch! as AgentClarification;
+        expect(ask.key, startsWith('teach:'), reason: input);
+        expect(
+          ask.question,
+          contains('I don\'t understand'),
+          reason: input,
+        );
+      }
+      // A device really can be sent to — where the thing to send is the
+      // missing detail, not the recipient the sentence named.
+      final device = service.execute(
+        'send to mary jane on my phone',
+        approval: AgentApproval.approved,
+      );
+      expect(device.status, AgentResultStatus.needsInfo);
+      expect(device.message, contains('Nothing to copy'));
+      expect(device.dispatch, isNull);
+    });
+
     test('a named recipient with nothing to send asks what to send', () {
       final result = withPhone().execute('send to mom');
       expect(result.status, AgentResultStatus.needsInfo);

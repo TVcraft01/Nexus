@@ -83,11 +83,10 @@ class CommandService {
   /// to. Separate from [_defaults] because they must not outlive that send.
   final Map<String, dynamic> _onceAnswers = {};
 
-  /// How deep the service is inside one request's clarification chain. A chain
-  /// re-runs its own sentence to be routed ("do it on My Phone?" re-runs the
-  /// send), and a one-shot answer has to survive that; it must not survive the
-  /// next thing the user types.
-  int _chainDepth = 0;
+  /// Whether this call is a clarification chain re-running its own sentence
+  /// ("do it on My Phone?" re-runs the send). A one-shot answer has to survive
+  /// that; it must not survive the next thing the user types.
+  bool _inChain = false;
 
   /// The last input behind each open clarification, keyed by the
   /// [AgentClarification.key] handed to the UI.
@@ -286,7 +285,7 @@ class CommandService {
     // the user types *starts* a chain, so a fresh input drops any answer left
     // over from an abandoned one: the next send asks again rather than reusing
     // words that were meant for the last recipient.
-    if (answerTo == null && _chainDepth == 0) _onceAnswers.clear();
+    if (answerTo == null && !_inChain) _onceAnswers.clear();
 
     // An answer to a pending question (which playlist? / teach me a phrase).
     if (answerTo != null) {
@@ -626,11 +625,11 @@ class CommandService {
     AgentApproval approval,
     String requestId,
   ) {
-    _chainDepth++;
+    _inChain = true;
     try {
       return execute(input, approval: approval, requestId: requestId);
     } finally {
-      _chainDepth--;
+      _inChain = false;
     }
   }
 

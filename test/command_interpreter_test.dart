@@ -1056,10 +1056,13 @@ void main() {
     });
 
     test('a phrase carrying a recipient is not a contact name', () {
+      // "send this" names no value, and "send to this"/"send to that" name no
+      // recipient — a demonstrative has no referent in a typed conversation,
+      // so a message to a person called "this" is invented either way.
       for (final phrase in [
-        'send this to the tv',
-        'send hello to my tv',
         'send this',
+        'send to this',
+        'send to that',
       ]) {
         final result = interpreter.interpret(phrase);
         expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
@@ -1083,7 +1086,10 @@ void main() {
         'send to my wife': 'my wife',
         'send to jamie': 'jamie',
         'send to dr smith': 'dr smith',
-        'send to the tv': 'the tv',
+        // A run of prepositions is consumed whole: a typo names mom, it does
+        // not name a person called "to mom".
+        'send to to mom': 'mom',
+        'send onto mom': 'mom',
       }.entries) {
         final result = interpreter.interpret(entry.key);
         expect(result.outcome, InterpretOutcome.needsInfo, reason: entry.key);
@@ -1109,7 +1115,6 @@ void main() {
         'send it to',
         'send hello to my fridge',
         'send hello on my fridge',
-        'send this to the tv',
       ]) {
         final result = interpreter.interpret(phrase);
         expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
@@ -1134,6 +1139,12 @@ void main() {
         'send to my pc',
         'send to the phone',
         'send on my laptop',
+        // A TV is a device, not a person: reading it as a contact invented
+        // one called "the tv" and offered to remember its phone number.
+        'send to the tv',
+        'send to my tv',
+        'send this to the tv',
+        'copy to the tv',
       ]) {
         final result = interpreter.interpret(phrase);
         expect(result.outcome, InterpretOutcome.matched, reason: phrase);
@@ -1165,6 +1176,73 @@ void main() {
       final person = interpreter.interpret('send papi salut');
       expect(person.command!.action, AgentActions.messageSend);
       expect(person.command!.arguments['contact'], 'papi salut');
+    });
+
+    test('the sibling verbs read the recipient too, instead of inventing one', () {
+      // "text to mom" names mom: the preposition introduces the recipient for
+      // every verb that takes one, not just for "send". Reading it as part of
+      // the name created a contact called "to mom" that the contact path then
+      // treated as a real person.
+      for (final entry in const {
+        'text to mom': 'mom',
+        'message to mom': 'mom',
+        'sms to mom': 'mom',
+        'msg to mom': 'mom',
+        'text to mary jane': 'mary jane',
+      }.entries) {
+        final result = interpreter.interpret(entry.key);
+        expect(result.outcome, InterpretOutcome.matched, reason: entry.key);
+        final command = result.command!;
+        expect(command.action, AgentActions.messageSend, reason: entry.key);
+        expect(command.arguments['contact'], entry.value, reason: entry.key);
+      }
+
+      // A trailing device marker is where the text goes, not who it goes to —
+      // strip it before reading the recipient, or a real send stops working.
+      final onDevice = interpreter.interpret('text jamie on my phone');
+      expect(onDevice.command!.action, AgentActions.messageSend);
+      expect(onDevice.command!.arguments['contact'], 'jamie');
+
+      // An object that carries a recipient and names nobody is not a contact,
+      // and neither is a demonstrative: "text to" has no name after the
+      // preposition, and "text hello to mom" names mom last, which no rule
+      // here reads yet — saying so beats inventing a person.
+      for (final phrase in [
+        'text to',
+        'text this',
+        'text it',
+        'text hello to mom',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
+        expect(
+          result.command?.action,
+          isNot(AgentActions.messageSend),
+          reason: phrase,
+        );
+      }
+
+      // A copy goes to a device and nowhere else, and a preposition is never
+      // the text: "copy to mom" used to put the words "to mom" on the
+      // clipboard and push them to every paired device.
+      for (final phrase in [
+        'copy to mom',
+        'copy hello to mom',
+        'copy to',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
+      }
+
+      // A device really can be sent to, and the recipient is not the text.
+      for (final entry in const {
+        'copy to my pc': '',
+        'send to mary jane on my phone': '',
+      }.entries) {
+        final result = interpreter.interpret(entry.key);
+        expect(result.command!.action, AgentActions.clipboardWrite, reason: entry.key);
+        expect(result.command!.arguments['text'], entry.value, reason: entry.key);
+      }
     });
   });
 }
