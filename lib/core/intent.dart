@@ -184,10 +184,6 @@ class AmbiguousPhrasing {
   /// that decides it.
   final Set<String> decides;
 
-  /// Words that mean the sentence is doing something else — the day is being
-  /// written about, not asked about.
-  final Set<String> forbids;
-
   /// The one question that asks for the missing decision.
   final String question;
 
@@ -198,14 +194,13 @@ class AmbiguousPhrasing {
     required this.phrases,
     this.shape,
     this.decides = const {},
-    this.forbids = const {},
     required this.question,
     required this.choices,
   });
 
   /// Whether [text] is this question.
   bool claims(IntentText text) {
-    if (text.anyOf(decides) || text.anyOf(forbids)) return false;
+    if (text.anyOf(decides)) return false;
     return (shape?.call(text) ?? false) || phrases.any(text.contains);
   }
 
@@ -424,32 +419,50 @@ abstract final class IntentArgs {
     if (place.isEmpty) return '';
     if (_nonPlaceTail.contains(place)) return '';
     if (RegExp(r'\d').hasMatch(place)) return '';
-    // A possessive before a time noun is a time, not a place: "what's the
-    // weather for my day" was captured as a city called "my day". The
-    // stoplist above says the same thing one phrase at a time; this says it
-    // once for the family, so a phrasing nobody listed yet is still read as
-    // the time it is rather than as somewhere to look up.
-    final words = place.split(' ');
-    if (words.length == 2 &&
-        _placePossessives.contains(words.first) &&
-        _timeNouns.contains(words.last)) {
-      return '';
-    }
+    // A place made only of determiners and time nouns is a time, not a place:
+    // "what's the weather for this weekend" was captured as a city called
+    // "this weekend", and "my day" as one called "my day". One rule for the
+    // family, so a phrasing nobody listed — "next week", "these days", "the
+    // next day" — is still read as the time it is rather than as somewhere to
+    // look up. A real name is never made only of these words, so "new york"
+    // stays a place.
+    if (place.split(' ').every(_isTimeWord)) return '';
     return place;
   }
 
+  /// Whether [word] only narrows a time — a determiner or a time noun.
+  static bool _isTimeWord(String word) =>
+      _placeDeterminers.contains(word) || _namesTime(word);
+
+  /// Whether [word] names a unit of time, singular or plural.
+  static bool _namesTime(String word) =>
+      _timeNouns.contains(word) ||
+      (word.endsWith('s') && _timeNouns.contains(word.substring(0, word.length - 1)));
+
   /// Determiners that turn a time noun into a time rather than a place.
-  static const Set<String> _placePossessives = {
-    'my',
-    'our',
-    'your',
-    'their',
-    'his',
+  static const Set<String> _placeDeterminers = {
+    'a',
+    'all',
+    'an',
+    'each',
+    'every',
     'her',
+    'his',
+    'its',
+    'last',
+    'my',
+    'next',
+    'our',
+    'that',
     'the',
+    'their',
+    'these',
+    'this',
+    'those',
+    'your',
   };
 
-  /// Time nouns a possessive can precede without naming somewhere.
+  /// Time nouns that, with a determiner, name a time rather than somewhere.
   static const Set<String> _timeNouns = {
     'day',
     'week',
@@ -506,6 +519,31 @@ abstract final class IntentArgs {
         .where((w) => w.isNotEmpty);
     return words.isNotEmpty && words.every(unattachedWords.contains);
   }
+
+  /// The prepositions that introduce the recipient of a send or a copy, and
+  /// the device nouns one can name.
+  ///
+  /// Declared once for the same reason as [unattachedWords]: the copy verb,
+  /// the device-targeted send and the bare send all have to agree on what a
+  /// recipient looks like, and they are three separate patterns.
+  static const Set<String> recipientPrepositions = {'to', 'onto', 'on'};
+  static const String deviceNouns =
+      'phone|pc|computer|laptop|tablet|devices|other devices|others';
+
+  /// Whether [raw] carries a recipient instead of a value: "to my pc", "to
+  /// mom", "this to", "hello on my fridge".
+  ///
+  /// A preposition is never part of the thing being sent, and no name is made
+  /// of one, so such an object is neither a value to send nor a contact to
+  /// send it to — reading it as either invents something the sentence never
+  /// said. The rule is the class rather than a list of device names, because
+  /// "send to mom" invented a person called "to mom" exactly as "send to my
+  /// pc" did.
+  static bool carriesRecipient(String raw) => raw
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((w) => w.isNotEmpty)
+      .any(recipientPrepositions.contains);
 }
 
 // ---------------------------------------------------------------------------
@@ -876,23 +914,6 @@ const Set<String> _dayReadings = {
   'temperature',
 };
 
-/// The verbs that write rather than ask: "remember that my day starts at 6" is
-/// not a question about how the day is going.
-const Set<String> _dayWrites = {
-  'add',
-  'book',
-  'cancel',
-  'create',
-  'move',
-  'note',
-  'plan',
-  'put',
-  'remind',
-  'remember',
-  'schedule',
-  'set',
-};
-
 /// The words a question about the day *opens* with. Position is what decides:
 /// the same word inside a statement is a statement, and "my day was awful"
 /// must reach the conversation rather than this question. Every phrasing the
@@ -929,7 +950,6 @@ final List<AmbiguousPhrasing> kAmbiguousPhrasings = [
     ],
     shape: asksHowMyDayGoes,
     decides: _dayReadings,
-    forbids: _dayWrites,
     question: 'Your schedule, or the weather?',
     choices: [
       AmbiguousChoice(

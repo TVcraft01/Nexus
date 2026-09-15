@@ -576,6 +576,63 @@ void main() {
       );
     });
 
+    test('a day question that also says "plan" is still the question', () {
+      // These sentences used to be *declined* by the layer and then fall to
+      // the generic `what is X` path, which asked the user to remember the
+      // literal phrase — the very bug this shape exists to fix, re-opened by a
+      // set of write verbs that nothing pinned. There is no rewrite path for
+      // them (nothing infers a fact from behaviour), so declining was pure
+      // loss.
+      for (final phrase in const [
+        'how is my day looking plan',
+        'what is my day looking like plan',
+      ]) {
+        expect(
+          _interpret(phrase).outcome,
+          InterpretOutcome.ambiguous,
+          reason: phrase,
+        );
+      }
+
+      final asked = CommandService(
+        devices: () => const [],
+      ).execute('what is my day looking like plan');
+      expect(asked.status, AgentResultStatus.needsInfo);
+      expect(asked.dispatch, isA<AgentClarification>());
+      expect(
+        (asked.dispatch! as AgentClarification).question,
+        'Your schedule, or the weather?',
+      );
+    });
+
+    test('a time phrase is never a city, whatever words it uses', () {
+      // The rule this replaces only caught a possessive in front of exactly
+      // two words, so "the weather for this weekend" was looked up as a city
+      // called "this weekend" — the same defect class, one phrasing over.
+      for (final phrase in const [
+        'this weekend',
+        'next week',
+        'last night',
+        'these days',
+        'the next day',
+        'my week',
+      ]) {
+        expect(IntentArgs.cleanWeatherPlace(phrase), '', reason: phrase);
+      }
+      // A real place is still a place: no name is made only of time words.
+      for (final phrase in const ['paris', 'new york']) {
+        expect(IntentArgs.cleanWeatherPlace(phrase), phrase, reason: phrase);
+      }
+
+      final weather = _interpret('what is the weather for this weekend');
+      expect(weather.command!.action, AgentActions.weatherGet);
+      expect(
+        weather.command!.arguments['place'],
+        '',
+        reason: 'a time phrase is not a city to look up',
+      );
+    });
+
     test('a statement about the day is not this question', () {
       // Position is what decides: "my day was awful" is a sentence for the
       // conversation, and a shape that read the word "was" anywhere would

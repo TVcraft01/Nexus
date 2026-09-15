@@ -103,6 +103,13 @@ const List<InterpretLayer> kInterpretLayers = [
 class CommandInterpreter {
   const CommandInterpreter({this.paraphrase = true});
 
+  /// A phrase that is nothing but a recipient: "to my pc", "on the laptop".
+  /// The vocabulary is [IntentArgs]'s, so the send family declares it once.
+  static final RegExp _recipientOnly = RegExp(
+    '^(?:${IntentArgs.recipientPrepositions.join('|')}) (?:my |the )?'
+    '(?:${IntentArgs.deviceNouns})\$',
+  );
+
   /// Whether a sentence may be read by [InterpretLayer.paraphrase].
   ///
   /// True in the product. The switch exists so the layer's promise — it may
@@ -2120,7 +2127,7 @@ class CommandInterpreter {
     if (copy != null) {
       var text = copy.group(1)!.trim();
       final recipient = RegExp(
-        r'(?:^|\s)(to|on) (my |the )?(phone|pc|computer|laptop|tablet|devices|other devices|others)$',
+        '(?:^|\\s)(to|on) (my |the )?(?:${IntentArgs.deviceNouns})\$',
       ).firstMatch(text);
       if (recipient != null) text = text.substring(0, recipient.start).trim();
       return InterpretResult.matched(
@@ -2132,8 +2139,8 @@ class CommandInterpreter {
       );
     }
     final sendClip = RegExp(
-      r'^send (.+) (?:to|onto|on) (?:my |the )?'
-      r'(?:phone|pc|computer|laptop|tablet|devices|other devices|others)$',
+      '^send (.+) (?:${IntentArgs.recipientPrepositions.join('|')}) '
+      '(?:my |the )?(?:${IntentArgs.deviceNouns})\$',
     ).firstMatch(norm);
     if (sendClip != null) {
       final text = sendClip.group(1)!.trim();
@@ -2155,7 +2162,23 @@ class CommandInterpreter {
     final bareSend = RegExp(r'^send (.+)$').firstMatch(norm);
     if (bareSend != null) {
       final object = bareSend.group(1)!.trim();
-      if (IntentArgs.isUnattachedValue(object) || object.contains(' to ')) {
+      if (IntentArgs.isUnattachedValue(object) ||
+          IntentArgs.carriesRecipient(object)) {
+        // A recipient with nothing to send. "send to my pc" names a device and
+        // no value, so the missing detail is what to send — which the clipboard
+        // path already asks for. Every other recipient ("to mom", "this to",
+        // "hello on my fridge") is a sentence Nexus did not understand, and it
+        // says so rather than inventing a contact: reading "to mom" as a name
+        // offered to remember a phone number for a person called "to mom".
+        if (_recipientOnly.hasMatch(object)) {
+          return InterpretResult.matched(
+            ParsedCommand(
+              action: AgentActions.clipboardWrite,
+              target: 'local',
+              arguments: const {'text': ''},
+            ),
+          );
+        }
         return InterpretResult.unknown();
       }
       return InterpretResult.matched(
