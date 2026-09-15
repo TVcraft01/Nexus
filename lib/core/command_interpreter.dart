@@ -2139,8 +2139,12 @@ class CommandInterpreter {
     final copy = RegExp(r'^copy (.+)$').firstMatch(norm);
     if (copy != null) {
       var text = copy.group(1)!.trim();
+      // The preposition list is [IntentArgs]'s rather than a second copy of it:
+      // one vocabulary decides what names a device for every verb, so "copy
+      // this onto my pc" reaches the same answer as "copy this on my pc".
       final recipient = RegExp(
-        '(?:^|\\s)(to|on) (my |the )?(?:${IntentArgs.deviceNouns})\$',
+        '(?:^|\\s)(?:${IntentArgs.recipientPrepositions.join('|')}) '
+        '(?:my |the )?(?:${IntentArgs.deviceNouns})\$',
       ).firstMatch(text);
       if (recipient != null) text = text.substring(0, recipient.start).trim();
       // A recipient left in the text names no device this verb can copy to,
@@ -2207,22 +2211,27 @@ class CommandInterpreter {
         // and the send is armed with the name the user gave — never with the
         // preposition folded into it ("to mom" is a recipient called mom, not
         // a contact called "to mom").
+        // A trailing device marker says where the send goes, not who it goes
+        // to: "send to jamie from my phone" names jamie, never a contact
+        // called "jamie from my phone".
+        final who = _stripDeviceSuffix(recipient);
         return InterpretResult.needsInfo(
           'message.body',
-          'What should I send to $recipient?',
+          'What should I send to $who?',
           ParsedCommand(
             action: AgentActions.messageSend,
             target: 'local',
-            arguments: {'contact': recipient},
+            arguments: {'contact': who},
           ),
         );
       }
       if (IntentArgs.isUnattachedValue(object) ||
-          IntentArgs.namesNoRecipient(object)) {
-        // A pronoun or a recipient *inside* the object ("hello to my fridge")
-        // names no value at all, and no recipient either — that one really is
-        // a sentence Nexus did not understand, and it says so rather than
-        // inventing a contact.
+          IntentArgs.namesNoRecipient(object) ||
+          IntentArgs.carriesPersonRecipientAfterHead(object)) {
+        // A pronoun, a head that names nobody ("this to the tv"), or a value
+        // followed by a recipient ("hello to mom") names no contact this verb
+        // can act on: in all three the value was never said, so Nexus says it
+        // did not understand rather than inventing a person to message.
         return InterpretResult.unknown();
       }
       return InterpretResult.matched(
