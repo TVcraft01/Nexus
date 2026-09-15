@@ -2110,6 +2110,12 @@ class CommandInterpreter {
     // --- Clipboard: "copy <text>" or "send <text> to <device>". Only the
     // "copy" verb and device-targeted sends land here — a bare "send papi
     // salut" is a message to a person, never a clipboard write.
+    //
+    // The object has to be a value. "copy this" and "send this to my PC" name
+    // something with no referent in a typed conversation, and capturing the
+    // word "this" as the text pushed it to every paired device. The empty
+    // text is deliberate: the contract layer already answers "nothing to copy"
+    // honestly and asks for the text, which is what is actually missing.
     final copy = RegExp(r'^copy (.+)$').firstMatch(norm);
     if (copy != null) {
       var text = copy.group(1)!.trim();
@@ -2121,7 +2127,7 @@ class CommandInterpreter {
         ParsedCommand(
           action: AgentActions.clipboardWrite,
           target: 'local',
-          arguments: {'text': text},
+          arguments: {'text': IntentArgs.isUnattachedValue(text) ? '' : text},
         ),
       );
     }
@@ -2130,24 +2136,33 @@ class CommandInterpreter {
       r'(?:phone|pc|computer|laptop|tablet|devices|other devices|others)$',
     ).firstMatch(norm);
     if (sendClip != null) {
+      final text = sendClip.group(1)!.trim();
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.clipboardWrite,
           target: 'local',
-          arguments: {'text': sendClip.group(1)!.trim()},
+          arguments: {'text': IntentArgs.isUnattachedValue(text) ? '' : text},
         ),
       );
     }
 
     // Bare "send X": someone-directed, not clipboard (device-targeted
-    // sends were caught above).
+    // sends were caught above) — but only when X really is a name. "send
+    // this" names no value, and "send this to the TV" carries a recipient of
+    // its own, so reading either as a contact invents a person *and* offers
+    // to remember a phone number for them. Both are sentences Nexus did not
+    // understand, and saying so is the honest answer.
     final bareSend = RegExp(r'^send (.+)$').firstMatch(norm);
     if (bareSend != null) {
+      final object = bareSend.group(1)!.trim();
+      if (IntentArgs.isUnattachedValue(object) || object.contains(' to ')) {
+        return InterpretResult.unknown();
+      }
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.messageSend,
           target: 'local',
-          arguments: {'contact': bareSend.group(1)!.trim()},
+          arguments: {'contact': object},
         ),
       );
     }

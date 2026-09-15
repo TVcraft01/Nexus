@@ -41,6 +41,11 @@ class _Claim {
   /// matches, so a sentence the rule itself refuses is not its sentence.
   final ParsedCommand? Function(IntentText text)? build;
 
+  /// The claim's own predicate, for a class that holds one. An ambiguity
+  /// declares which words answer it before it is asked, so the mirror asks the
+  /// class instead of restating those words here and drifting apart from them.
+  final bool Function(IntentText text)? declares;
+
   const _Claim(
     this.stage,
     this.label, {
@@ -49,6 +54,7 @@ class _Claim {
     this.phrase,
     this.action,
     this.build,
+    this.declares,
   });
 }
 
@@ -69,6 +75,7 @@ List<_Claim> _claimsIn(IntentStage stage) => switch (stage) {
             for (final word in phrase.split(' ')) {word},
           ],
           phrase: phrase,
+          declares: ambiguity.claims,
         ),
   ],
   IntentStage.diagnostic => [
@@ -107,6 +114,7 @@ List<_Claim> _claimsIn(IntentStage stage) => switch (stage) {
 /// Whether [claim] still claims [text] — the same question the resolver asks
 /// its own rules.
 bool _claims(_Claim claim, IntentText text) {
+  if (claim.declares != null && !claim.declares!(text)) return false;
   if (claim.phrase != null && !text.contains(claim.phrase!)) return false;
   if (!text.satisfies(claim.needs)) return false;
   if (claim.forbids.any(text.contains)) return false;
