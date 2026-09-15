@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/command_interpreter.dart';
+import 'package:nexus/core/command_service.dart';
 
 void main() {
   const interpreter = CommandInterpreter();
@@ -1014,6 +1015,75 @@ void main() {
       final unknown = interpreter.interpret('what time is it in atlantis');
       expect(unknown.command!.action, AgentActions.timezoneGet);
       expect(unknown.command!.arguments['place'], 'atlantis');
+    });
+  });
+
+  group('the object of a send has to be a value', () {
+    // Audit finding, reproduced through the real service: "send this to my
+    // PC" captured the word "this" and pushed it to every paired device, and
+    // "send this to the TV" built a contact called "this to the tv" — a person
+    // Nexus invented, with an offer to remember their phone number. Neither
+    // sentence names a thing Nexus holds: in a typed conversation "this" has
+    // no referent at all.
+    test('a demonstrative is not text to copy', () {
+      for (final phrase in [
+        'send this to my pc',
+        'Send this to my PC.',
+        'copy this',
+        'copy this to my devices',
+        'send it to my phone',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(
+          result.command!.action,
+          AgentActions.clipboardWrite,
+          reason: phrase,
+        );
+        expect(result.command!.arguments['text'], '', reason: phrase);
+      }
+    });
+
+    test('so the service asks for the text instead of pushing a word', () {
+      final service = CommandService(devices: () => const []);
+      final result = service.execute('send this to my pc');
+      expect(result.status, AgentResultStatus.needsInfo);
+      expect(result.message, contains('Nothing to copy'));
+      // A question, not a plan: nothing is scripted for a device to run, and
+      // the answer the user gives is not remembered as a preference.
+      expect(result.dispatch, isNull);
+      expect(service.defaultsSnapshot, isEmpty);
+    });
+
+    test('a phrase carrying a recipient is not a contact name', () {
+      for (final phrase in [
+        'send this to the tv',
+        'send hello to my tv',
+        'send this',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
+        expect(
+          result.command?.action,
+          isNot(AgentActions.messageSend),
+          reason: '$phrase must not become a message to an invented contact',
+        );
+      }
+    });
+
+    test('a real send or copy is untouched', () {
+      final pushed = interpreter.interpret('send hello to my pc');
+      expect(pushed.command!.action, AgentActions.clipboardWrite);
+      expect(pushed.command!.arguments['text'], 'hello');
+
+      final copied = interpreter.interpret('copy hello to my devices');
+      expect(copied.command!.action, AgentActions.clipboardWrite);
+      expect(copied.command!.arguments['text'], 'hello');
+
+      // A bare "send X" with a real object is still a message to a person.
+      final person = interpreter.interpret('send papi salut');
+      expect(person.command!.action, AgentActions.messageSend);
+      expect(person.command!.arguments['contact'], 'papi salut');
     });
   });
 }

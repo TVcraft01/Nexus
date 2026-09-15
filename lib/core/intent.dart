@@ -163,8 +163,30 @@ class AmbiguousChoice {
 /// overlap, so the only honest way to reach the ambiguity state is to say
 /// where it really is.
 class AmbiguousPhrasing {
-  /// Exact normalized phrasings (word-boundary matched) that trigger it.
+  /// The phrasings this was written for, word-boundary matched so one is
+  /// recognized inside a longer sentence.
   final List<String> phrases;
+
+  /// The same question asked in words [phrases] cannot enumerate.
+  ///
+  /// A phrasing list is a sample of how people ask; the shape is what they
+  /// mean, and the shape reaches the phrasings the list cannot hold. The list
+  /// this replaced held six exact forms, so the contracted ones — "what's my
+  /// day looking like" — missed it and the generic `what is X` fallback
+  /// answered them as a memory question about the literal phrase "my day
+  /// looking like", which then offered to *remember* the user's answer.
+  final bool Function(IntentText text)? shape;
+
+  /// Words that answer the question before it is asked: a sentence carrying
+  /// one of these names the reading it wants, so it is not a tie. Checked for
+  /// both matching paths, because an exact phrasing inside a longer sentence
+  /// ("how is my day looking **on my calendar**") must not outrank the word
+  /// that decides it.
+  final Set<String> decides;
+
+  /// Words that mean the sentence is doing something else — the day is being
+  /// written about, not asked about.
+  final Set<String> forbids;
 
   /// The one question that asks for the missing decision.
   final String question;
@@ -174,9 +196,18 @@ class AmbiguousPhrasing {
 
   const AmbiguousPhrasing({
     required this.phrases,
+    this.shape,
+    this.decides = const {},
+    this.forbids = const {},
     required this.question,
     required this.choices,
   });
+
+  /// Whether [text] is this question.
+  bool claims(IntentText text) {
+    if (text.anyOf(decides) || text.anyOf(forbids)) return false;
+    return (shape?.call(text) ?? false) || phrases.any(text.contains);
+  }
 
   /// The choice the user's [answer] names, or null when the answer names
   /// none of them — the caller re-asks rather than guessing.
@@ -296,9 +327,7 @@ class IntentResolver {
 
   IntentResolution? _ambiguity(IntentText text) {
     for (final ambiguous in kAmbiguousPhrasings) {
-      for (final phrase in ambiguous.phrases) {
-        if (text.contains(phrase)) return IntentAmbiguous(ambiguous);
-      }
+      if (ambiguous.claims(text)) return IntentAmbiguous(ambiguous);
     }
     return null;
   }
@@ -395,8 +424,46 @@ abstract final class IntentArgs {
     if (place.isEmpty) return '';
     if (_nonPlaceTail.contains(place)) return '';
     if (RegExp(r'\d').hasMatch(place)) return '';
+    // A possessive before a time noun is a time, not a place: "what's the
+    // weather for my day" was captured as a city called "my day". The
+    // stoplist above says the same thing one phrase at a time; this says it
+    // once for the family, so a phrasing nobody listed yet is still read as
+    // the time it is rather than as somewhere to look up.
+    final words = place.split(' ');
+    if (words.length == 2 &&
+        _placePossessives.contains(words.first) &&
+        _timeNouns.contains(words.last)) {
+      return '';
+    }
     return place;
   }
+
+  /// Determiners that turn a time noun into a time rather than a place.
+  static const Set<String> _placePossessives = {
+    'my',
+    'our',
+    'your',
+    'their',
+    'his',
+    'her',
+    'the',
+  };
+
+  /// Time nouns a possessive can precede without naming somewhere.
+  static const Set<String> _timeNouns = {
+    'day',
+    'week',
+    'weekend',
+    'month',
+    'year',
+    'morning',
+    'afternoon',
+    'evening',
+    'night',
+    'hour',
+    'minute',
+    'time',
+  };
 
   /// The place a weather question named, or '' when it named none ("is it
   /// going to rain" is about here). Only a trailing `in|at|for <words>`
@@ -413,6 +480,32 @@ abstract final class IntentArgs {
   /// service already answers it with its own `rain` kind.
   static String weatherKind(IntentText text) =>
       text.anyOf(const {'rain', 'umbrella', 'raining'}) ? 'rain' : 'now';
+
+  /// Words that point at something without naming it.
+  ///
+  /// Declared once because two layers must agree on what "no value at all"
+  /// looks like: the rules here, and the catalogue's send family, which used
+  /// to take "send this to my PC" as text to copy and "send this to the TV"
+  /// as a contact called "this to the tv". In a typed conversation there is
+  /// no selection and no previous message, so the pronoun has no referent.
+  static const Set<String> unattachedWords = {
+    'this',
+    'that',
+    'these',
+    'those',
+    'it',
+    'them',
+  };
+
+  /// Whether [raw] is a demonstrative and nothing else — a phrase that names
+  /// no value, as opposed to a value that happens to be a short word.
+  static bool isUnattachedValue(String raw) {
+    final words = raw
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty);
+    return words.isNotEmpty && words.every(unattachedWords.contains);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -753,12 +846,73 @@ const List<UnsupportedIntent> kUnsupportedIntents = [
       {'strongest', 'fastest', 'powerful', 'powerfull', 'beefiest', 'best'},
       {'computer', 'device', 'pc', 'laptop', 'machine', 'node', 'server'},
     ],
+    // The resource map exists as data and interfaces, but nothing routes work
+    // through it on its own, so the honest sentence is about the missing
+    // ranking rather than about a missing subsystem: the previous wording
+    // told the user a component was unbuilt that is in fact on disk.
     message:
         'I can list the devices you have paired, but I do not rank them by '
-        'power yet — that needs the shared resource map, which is not built. '
-        'Ask me "show my devices" and name the one you want.',
+        'power yet — nothing picks a device for a task on its own. Ask me '
+        '"show my devices" and name the one you want.',
   ),
 ];
+
+/// The words that pick one reading of "my day" for the user. A sentence that
+/// names one is not a tie, and the rules that own those words answer it.
+const Set<String> _dayReadings = {
+  'calendar',
+  'schedule',
+  'agenda',
+  'planner',
+  'diary',
+  'meetings',
+  'appointments',
+  'weather',
+  'forecast',
+  'rain',
+  'umbrella',
+  'sunny',
+  'snow',
+  'temperature',
+};
+
+/// The verbs that write rather than ask: "remember that my day starts at 6" is
+/// not a question about how the day is going.
+const Set<String> _dayWrites = {
+  'add',
+  'book',
+  'cancel',
+  'create',
+  'move',
+  'note',
+  'plan',
+  'put',
+  'remind',
+  'remember',
+  'schedule',
+  'set',
+};
+
+/// The words a question about the day *opens* with. Position is what decides:
+/// the same word inside a statement is a statement, and "my day was awful"
+/// must reach the conversation rather than this question. Every phrasing the
+/// list above holds opens with one of these.
+const Set<String> _dayOpeners = {'how', 'what', 'whats', 'when', 'is', 'was'};
+
+/// Whether the sentence asks how the user's *day* is going — the one question
+/// that honestly means either the schedule or the weather.
+///
+/// A shape rather than a list of phrasings, and one predicate for the whole
+/// family so a contraction cannot slip past it: `normalizePhrase` turns
+/// "what's" into "what is", which is how "what's my day looking like" reached
+/// the `what is X` fallback while the uncontracted "how is my day looking"
+/// reached this question. "my day" is the subject and nothing here names a
+/// reading or writes anything, so the honest answer is one question.
+bool asksHowMyDayGoes(IntentText text) {
+  if (text.tokens.isEmpty) return false;
+  if (!_dayOpeners.contains(text.tokens.first)) return false;
+  return text.contains('my day');
+}
 
 /// The one phrasing family that really means two things. Asking is the honest
 /// answer here: the user said "my day", and picking the calendar or the
@@ -773,6 +927,9 @@ final List<AmbiguousPhrasing> kAmbiguousPhrasings = [
       'how is my day',
       'how is my day going',
     ],
+    shape: asksHowMyDayGoes,
+    decides: _dayReadings,
+    forbids: _dayWrites,
     question: 'Your schedule, or the weather?',
     choices: [
       AmbiguousChoice(

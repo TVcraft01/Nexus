@@ -507,4 +507,102 @@ void main() {
       expect(_actionOf('find my device'), AgentActions.findDevice);
     });
   });
+
+  group('the one question that really is two is a shape', () {
+    // The list this replaced held six exact phrasings, so the contracted ones
+    // slipped past it and the generic `what is X` fallback answered them as a
+    // memory question about the literal phrase "my day looking like" — which
+    // then offered to *remember* what the user said, turning one misread
+    // question into a stored fact about them.
+    test('the contracted phrasings reach the question', () {
+      for (final phrase in const [
+        "what's my day looking like",
+        'whats my day looking like',
+        "how's my day looking",
+        'how is my day looking',
+        'how is my day going',
+        'what does my day look like',
+        'was my day busy',
+      ]) {
+        final result = _interpret(phrase);
+        expect(
+          result.outcome,
+          InterpretOutcome.ambiguous,
+          reason: '"$phrase" is one question with two honest readings',
+        );
+        expect(
+          result.question,
+          'Your schedule, or the weather?',
+          reason: phrase,
+        );
+        expect(
+          result.command?.action,
+          isNot(AgentActions.memoryQuestion),
+          reason: '"$phrase" must never become a memory question',
+        );
+      }
+    });
+
+    test('through the service it asks, and remembers nothing', () {
+      final service = CommandService(devices: () => const []);
+      final result = service.execute("what's my day looking like");
+      expect(result.status, AgentResultStatus.needsInfo);
+      final dispatch = result.dispatch;
+      expect(dispatch, isA<AgentClarification>());
+      expect(
+        (dispatch! as AgentClarification).question,
+        'Your schedule, or the weather?',
+      );
+      expect(
+        service.defaultsSnapshot,
+        isEmpty,
+        reason: 'a question about the day teaches Nexus nothing',
+      );
+    });
+
+    test('naming one reading is not a tie', () {
+      // The exact phrasing is inside the longer sentence, but the word
+      // "calendar" has already answered the question.
+      expect(
+        _actionOf('how is my day looking on my calendar'),
+        AgentActions.calendarRead,
+      );
+      final weather = _interpret("what's the weather for my day");
+      expect(weather.command!.action, AgentActions.weatherGet);
+      expect(
+        weather.command!.arguments['place'],
+        '',
+        reason: 'a time phrase is not a city to look up',
+      );
+    });
+
+    test('a statement about the day is not this question', () {
+      // Position is what decides: "my day was awful" is a sentence for the
+      // conversation, and a shape that read the word "was" anywhere would
+      // have taken it away from the brain.
+      for (final phrase in const [
+        'my day was awful',
+        'i had a rough day today',
+        'remember that my day starts at 6',
+      ]) {
+        expect(
+          _interpret(phrase).outcome,
+          isNot(InterpretOutcome.ambiguous),
+          reason: '"$phrase" is not a question about how the day is going',
+        );
+      }
+    });
+  });
+
+  group('the answers describe the system Nexus actually has', () {
+    test('the device-ranking answer claims no missing subsystem', () {
+      // The resource map exists as data and interfaces; nothing routes work
+      // through it on its own. The sentence this replaces told the user a
+      // component was not built — a claim about the codebase, and a false one.
+      final result = _interpret('use my strongest computer');
+      expect(result.outcome, InterpretOutcome.unsupported);
+      expect(result.explanation, contains('rank'));
+      expect(result.explanation, isNot(contains('not built')));
+    });
+  });
 }
