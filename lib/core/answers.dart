@@ -538,7 +538,13 @@ AgentDispatchResult inferredAnswer(AnswerContext ctx) {
 /// own address book — the prompt only fires when no executor is reachable.)
 AgentDispatchResult _unknownContactAnswer(String contact, String verb) =>
     AgentDispatchResult(
-      status: AgentResultStatus.succeeded,
+      // A question, not a result. The sentence asks the user for something
+      // Nexus does not have, so reporting it as `succeeded` labelled the card
+      // "Done" over a request — the one status claim that was plainly untrue.
+      // `needsInfo` is the same status the interpreter uses when a sentence is
+      // understood and one detail is missing, and it keeps the core out of the
+      // error state, which a question is not.
+      status: AgentResultStatus.needsInfo,
       dispatch: AgentMessage(
         'I don\'t have a number for "$contact" yet. Teach me with '
         '"remember that $contact is 0612345678" — then your Nexus phone '

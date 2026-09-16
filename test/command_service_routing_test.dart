@@ -158,8 +158,15 @@ void main() {
       // No taught number and no phone reachable: echoing "Calling mom..."
       // would only fail at the executor. The honest answer asks to teach
       // the number — never a doomed action.
+      //
+      // It is a *question*, not a result: the card over this answer used to
+      // read "Done" while the sentence asked the user for the number, which
+      // is the one status claim that was plainly untrue. `needsInfo` is the
+      // same status the interpreter uses when a sentence is understood and
+      // one detail is missing, and it also keeps the core out of the error
+      // state, which a question is not.
       final result = service.execute('call mom');
-      expect(result.status, AgentResultStatus.succeeded);
+      expect(result.status, AgentResultStatus.needsInfo);
       final msg = result.dispatch! as AgentMessage;
       expect(msg.action, isNull);
       expect(msg.text, contains('Teach me'));

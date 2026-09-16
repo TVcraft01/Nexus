@@ -306,20 +306,29 @@ class _ToggleRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.bodyMedium),
-              const SizedBox(height: 2),
-              Text(detail, style: Theme.of(context).textTheme.bodySmall),
-            ],
+    // The whole row is the target, not just the switch: tapping a setting's
+    // name is what people actually do, and this row is over 300dp wide while
+    // the switch is 40dp tall — a tap that lands on the words used to do
+    // nothing at all. The switch keeps its own handler, so a tap on it is
+    // consumed there and cannot toggle twice.
+    return InkWell(
+      onTap: () => onChanged(!value),
+      borderRadius: BorderRadius.circular(8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.bodyMedium),
+                const SizedBox(height: 2),
+                Text(detail, style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
           ),
-        ),
-        Switch(value: value, onChanged: onChanged),
-      ],
+          Switch(value: value, onChanged: onChanged),
+        ],
+      ),
     );
   }
 }
