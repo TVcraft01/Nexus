@@ -202,9 +202,15 @@ void main() {
       // With no phone reachable and no taught number, echoing "Calling
       // mom..." would only fail at the executor. The honest answer asks to
       // be taught the number instead.
+      //
+      // And it is a *question*: the card over this answer used to read
+      // "Done" while the sentence asked the user for the number. Asking for
+      // something Nexus does not have is `needsInfo`, the same status the
+      // interpreter uses for a sentence it understood with one detail
+      // missing — never a completed result, and never an error.
       for (final phrase in ['call mom', 'text john']) {
         final result = service.execute(phrase);
-        expect(result.status, AgentResultStatus.succeeded, reason: phrase);
+        expect(result.status, AgentResultStatus.needsInfo, reason: phrase);
         final msg = result.dispatch! as AgentMessage;
         expect(msg.text, contains('Teach me'), reason: phrase);
         expect(msg.action, isNull, reason: phrase); // nothing to execute
@@ -956,6 +962,42 @@ void main() {
           reason: phrase,
         );
       }
+    });
+
+    test('the ask promises only what it keeps: a body is used once, a '
+        'preference is remembered', () {
+      // The playtest caught the card promising "I'll remember your answer, so
+      // you won't have to tell me again" over the question "What should I
+      // send to mom?" — while the body of a message is deliberately used for
+      // that one send and dropped. A promise the code does not keep is a lie
+      // the user only discovers on the next message.
+      final body = withPhone().execute('send to mom');
+      final bodyAsk = body.dispatch! as AgentClarification;
+      expect(bodyAsk.question, contains('What should I send'));
+      expect(
+        bodyAsk.hint,
+        isNot(contains('tell me again')),
+        reason: 'a message body is content, not a remembered preference — the '
+            'card must not promise it will be reused',
+      );
+      expect(bodyAsk.hint, contains("won't remember"));
+
+      // A preference still makes the larger promise — and keeps it: the
+      // answer really does become a default, so the next ask skips it.
+      final service = withPhone();
+      final time = service.execute('set a timer for');
+      final timeAsk = time.dispatch! as AgentClarification;
+      expect(timeAsk.hint, contains('remember'));
+      service.execute('5 minutes', answerTo: timeAsk.key);
+      final again = service.execute('set a timer for');
+      expect(again.status, AgentResultStatus.succeeded,
+          reason: 'no question the second time — the answer was remembered');
+      final dispatch = again.dispatch!;
+      final Map<String, dynamic> args = dispatch is AgentActionPlan
+          ? dispatch.request.arguments
+          : (dispatch as AgentMessage).arguments ?? const {};
+      expect(args['seconds'], 300,
+          reason: 'the remembered answer really is reused');
     });
 
     test('every verb that names a recipient sends to that person, not to a preposition', () {

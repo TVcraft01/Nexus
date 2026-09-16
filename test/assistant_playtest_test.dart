@@ -1014,4 +1014,33 @@ void main() {
       await mesh.stop();
     }
   });
+
+  testWidgets(
+    'a request for missing information is a question card, never "Done"',
+    (tester) async {
+      // The playtest defect: "call mom" on a desktop with no phone taught
+      // answered "I don't have a number for \"mom\" yet…" — a request for the
+      // number — under a card labelled "Done". The chip and the sentence have
+      // to agree: something Nexus still needs from the user is a question.
+      final (store, mesh) = await boot();
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump();
+
+        await ask(tester, 'call mom');
+        await tester.pump(const Duration(milliseconds: 400));
+
+        expect(find.text('Question'), findsOneWidget);
+        expect(find.text('Done'), findsNothing);
+        expect(find.textContaining('Teach me'), findsOneWidget);
+        // And it is answerable: the taught number is surfaced on the retry.
+        await ask(tester, 'remember that mom is 0612345678');
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(store.agentFacts.any((f) => f.text.contains('0612345678')), isTrue);
+      } finally {
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
 }

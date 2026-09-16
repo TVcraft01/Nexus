@@ -79,6 +79,17 @@ class CommandService {
   /// chose.
   static const Set<String> _contentArgs = {'message.body'};
 
+  /// What the card promises after it asks a question.
+  ///
+  /// For a preference — an alarm time, a playlist — the promise holds: the
+  /// answer becomes a remembered default. For content it does not, and saying
+  /// it would be a lie the user pays for later (they would expect the same
+  /// words to be reused, then watch the next message ask again). The smaller
+  /// promise is the true one.
+  String _answerHintFor(String argKey) => _contentArgs.contains(argKey)
+      ? "I'll use it for this one — I won't remember the words."
+      : "I'll remember your answer, so you won't have to tell me again.";
+
   /// Answers to [_contentArgs], waiting for the single dispatch they belong
   /// to. Separate from [_defaults] because they must not outlive that send.
   final Map<String, dynamic> _onceAnswers = {};
@@ -362,7 +373,7 @@ class CommandService {
           dispatch: AgentClarification(
             question: interpreted.question!,
             key: 'arg:$key',
-            hint: 'I\'ll remember your answer, so you won\'t have to tell me again.',
+            hint: _answerHintFor(key),
           ),
         );
 
