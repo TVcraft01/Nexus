@@ -13,6 +13,7 @@ import '../core/tiny_brain.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
+import 'update_banner.dart';
 import 'assistant_view.dart';
 import 'devices_view.dart';
 import 'files_view.dart';
@@ -40,10 +41,13 @@ class _HomeShellState extends State<HomeShell> {
 
   UpdateInfo? _update;
   bool _applying = false;
+
+  /// What the user still has to do to finish an update — a step, not a failure.
+  String? _updateNote;
+
   String? _updateError;
   String? _lastPeerUpdateVersion;
   bool _peerUpdateChecking = false;
-  bool _updateChecked = false;
 
   @override
   void initState() {
@@ -72,14 +76,12 @@ class _HomeShellState extends State<HomeShell> {
     }
   }
 
-  Future<UpdateInfo?> _checkForUpdates({bool force = false}) async {
-    if (_updateChecked && !force) return null;
-    _updateChecked = true;
-    final info = await Updater.checkForUpdate(currentVersion: appVersion);
-    if (info != null && mounted) {
-      setState(() => _update = info);
+  Future<UpdateCheck> _checkForUpdates() async {
+    final check = await Updater.checkForUpdate(currentVersion: appVersion);
+    if (check.info != null && mounted) {
+      setState(() => _update = check.info);
     }
-    return info;
+    return check;
   }
 
   void _checkPeerUpdate() {
@@ -98,9 +100,9 @@ class _HomeShellState extends State<HomeShell> {
         return;
       }
       unawaited(
-        _checkForUpdates(force: true)
-            .then((info) {
-              if (info != null) _lastPeerUpdateVersion = version;
+        _checkForUpdates()
+            .then((check) {
+              if (check.info != null) _lastPeerUpdateVersion = version;
             })
             .whenComplete(() => _peerUpdateChecking = false),
       );
@@ -125,6 +127,7 @@ class _HomeShellState extends State<HomeShell> {
     setState(() {
       _applying = true;
       _updateError = null;
+      _updateNote = null;
     });
     try {
       final path = await Updater.download(info.downloadUrl!);
@@ -137,24 +140,30 @@ class _HomeShellState extends State<HomeShell> {
       }
 
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // Hand the APK to the system installer; the user confirms there.
-        final applied = await Updater.applyUpdate(path);
+        // Hand the APK to the system installer; the user confirms it there.
+        // The three outcomes read very differently to the person holding the
+        // phone: Android may first send them to the screen that lets Nexus
+        // install apps, and the install resumes by itself when they return —
+        // saying nothing there is what made the update look broken.
+        final outcome = await Updater.applyUpdate(path);
         setState(() {
           _applying = false;
-          if (!applied) {
-            _updateError = 'Could not open the installer. Try downloading from GitHub manually.';
-          }
+          _updateError = outcome == UpdateApply.failed
+              ? 'Could not open the installer. Try downloading from GitHub manually.'
+              : null;
+          _updateNote = updateHandoffNote(outcome);
         });
       } else if (defaultTargetPlatform == TargetPlatform.linux) {
         // Linux: extract, swap, and relaunch.
         final installDir = File(Platform.resolvedExecutable).parent.path;
-        final applied = await Updater.applyUpdate(path, installDir: installDir);
-        if (applied) {
+        final outcome = await Updater.applyUpdate(path, installDir: installDir);
+        if (outcome == UpdateApply.applied) {
           exit(0);
         }
         setState(() {
           _applying = false;
-          _updateError = 'The update could not be applied. Run update.sh to update manually.';
+          _updateError =
+              'The update could not be applied. Run update.sh to update manually.';
         });
       } else {
         // Windows and macOS have no in-app installer wired up. Name what the
@@ -232,17 +241,18 @@ class _HomeShellState extends State<HomeShell> {
           AssistantView(mesh: widget.mesh, brain: _brain),
           SettingsView(
             mesh: widget.mesh,
-            onCheckForUpdate: () => _checkForUpdates(force: true),
+            onCheckForUpdate: _checkForUpdates,
           ),
         ];
 
         final content = Column(
           children: [
             if (_update != null)
-              _UpdateBanner(
+              UpdateBanner(
                 info: _update!,
                 applying: _applying,
                 error: _updateError,
+                note: _updateNote,
                 onUpdate: _updateNow,
                 onDismiss: () => setState(() => _update = null),
               ),
@@ -302,56 +312,6 @@ class _HomeShellState extends State<HomeShell> {
                 ),
         );
       },
-    );
-  }
-}
-
-class _UpdateBanner extends StatelessWidget {
-  final UpdateInfo info;
-  final bool applying;
-  final String? error;
-  final VoidCallback onUpdate;
-  final VoidCallback onDismiss;
-
-  const _UpdateBanner({
-    required this.info,
-    required this.applying,
-    required this.error,
-    required this.onUpdate,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final windows = defaultTargetPlatform == TargetPlatform.windows;
-    return MaterialBanner(
-      leading: Icon(
-        error == null ? Icons.system_update_rounded : Icons.error_outline_rounded,
-      ),
-      content: Text(
-        error ??
-            (applying
-                ? 'Updating to v${info.version}…'
-                : windows
-                    ? 'Nexus v${info.version} is available'
-                    : 'Nexus v${info.version} is available'),
-      ),
-      actions: [
-        TextButton(
-          onPressed: applying ? null : onDismiss,
-          child: const Text('Later'),
-        ),
-        FilledButton(
-          onPressed: applying ? null : onUpdate,
-          child: Text(
-            windows
-                ? 'View update'
-                : defaultTargetPlatform == TargetPlatform.android
-                    ? 'Update & install'
-                    : 'Update & restart',
-          ),
-        ),
-      ],
     );
   }
 }

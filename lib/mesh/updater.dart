@@ -19,6 +19,72 @@ class UpdateInfo {
   });
 }
 
+/// A fetched answer: the body and the status it arrived with.
+///
+/// The status is carried because it *is* the reason. GitHub answers 403 when it
+/// is rate-limiting a network and 404 when nothing is published, and both of
+/// those bodies decode as JSON — so a check that dropped the status could only
+/// report "no update", which is how a phone on a carrier network came to be
+/// told it was up to date when nothing had been checked.
+class UpdateResponse {
+  final int status;
+  final String body;
+  const UpdateResponse(this.status, this.body);
+}
+
+/// What came of looking for an update: the release to install when there is
+/// one, and — when there is not — whether that answer is real or the check
+/// itself could not be made.
+///
+/// The distinction is the whole point: "nothing newer" is a fact Nexus can
+/// state, "GitHub refused to answer" is not, and the two must never render as
+/// the same sentence.
+class UpdateCheck {
+  final UpdateInfo? info;
+
+  /// Why the check could not be made, in the user's terms. Null when it could.
+  final String? failure;
+
+  const UpdateCheck(this.info, {this.failure});
+
+  /// The check ran and there is nothing newer to install.
+  static const UpdateCheck upToDate = UpdateCheck(null);
+
+  bool get failed => failure != null;
+}
+
+/// What came of handing an update to the platform.
+enum UpdateApply {
+  /// Linux: unpacked, swapped in and relaunched.
+  applied,
+
+  /// Android: the system installer is open — the user confirms the install
+  /// there, and the app is replaced when they do.
+  installerOpened,
+
+  /// Android: this app may not install packages yet. The platform has opened
+  /// the settings screen that grants it and is holding the downloaded file, so
+  /// the install resumes by itself on return — the user just needs to be told
+  /// what that screen was for.
+  needsPermission,
+
+  /// Nothing was handed over: say so and name the manual path.
+  failed,
+}
+
+/// What the hand-off needs the user to know, or null when it needs no words.
+///
+/// One owner for these sentences: the phone's update path is the one a user
+/// actually walks, and "nothing was said at all" was what made it look broken.
+String? updateHandoffNote(UpdateApply outcome) => switch (outcome) {
+      UpdateApply.applied || UpdateApply.failed => null,
+      UpdateApply.installerOpened =>
+        'The Android installer is open — confirm the install there.',
+      UpdateApply.needsPermission =>
+        'Allow Nexus to install this update on the screen that just opened — '
+            'the install continues by itself when you come back.',
+    };
+
 /// Cross-platform update discovery and application.
 ///
 /// Linux and Android have an automatic install path. Windows can discover a
@@ -62,55 +128,86 @@ class Updater {
     }
   }
 
-  static Future<UpdateInfo?> checkForUpdate({
+  static String _latestReleaseUrl(String owner, String repo) =>
+      'https://api.github.com/repos/$owner/$repo/releases/latest';
+
+  static Future<UpdateCheck> checkForUpdate({
     required String currentVersion,
     String owner = 'TVcraft01',
     String repo = 'Nexus',
-    Future<String> Function(String url)? fetch,
+    Future<UpdateResponse> Function(String url)? fetch,
   }) async {
     final assetName = _assetName;
-    if (assetName == null) return null;
+    if (assetName == null) {
+      return const UpdateCheck(
+        null,
+        failure: 'no Nexus build is published for this platform',
+      );
+    }
 
     final fetcher = fetch ?? _httpGet;
+    final UpdateResponse response;
     try {
-      final json = await _latestReleaseJson(fetcher, owner: owner, repo: repo);
-      if (json == null) return null;
-      final tag = json['tag_name'];
-      if (tag is! String) return null;
-      final version = tag.replaceFirst(RegExp(r'^v'), '');
-      if (compareVersions(version, currentVersion) <= 0) return null;
-
-      final downloadUrl = _assetUrl(json, assetName);
-      if (downloadUrl == null) {
-        debugPrint(
-          'NEXUS updater: v$version exists but has no $assetName asset',
-        );
-        return null;
-      }
-
-      final releaseUrl = json['html_url'] as String?;
-      debugPrint('NEXUS updater: update available v$version');
-      return UpdateInfo(
-        version: version,
-        downloadUrl: downloadUrl,
-        releaseUrl: releaseUrl,
-      );
+      response = await fetcher(_latestReleaseUrl(owner, repo));
     } catch (e) {
-      debugPrint('NEXUS updater: check failed (${e.runtimeType}) — no update');
-      return null;
+      debugPrint('NEXUS updater: check failed (${e.runtimeType})');
+      return const UpdateCheck(
+        null,
+        failure: 'the network could not reach GitHub',
+      );
     }
+    if (response.status != 200) {
+      final failure = _reasonFor(response.status);
+      debugPrint('NEXUS updater: check failed — $failure');
+      return UpdateCheck(null, failure: failure);
+    }
+
+    Map<String, dynamic>? json;
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) json = decoded;
+    } catch (_) {
+      json = null;
+    }
+    final tag = json?['tag_name'];
+    if (tag is! String) {
+      return const UpdateCheck(
+        null,
+        failure: 'GitHub answered something Nexus could not read',
+      );
+    }
+
+    final version = tag.replaceFirst(RegExp(r'^v'), '');
+    if (compareVersions(version, currentVersion) <= 0) {
+      return UpdateCheck.upToDate;
+    }
+
+    final downloadUrl = _assetUrl(json!, assetName);
+    if (downloadUrl == null) {
+      final failure = 'v$version is published without a $assetName build';
+      debugPrint('NEXUS updater: $failure');
+      return UpdateCheck(null, failure: failure);
+    }
+
+    debugPrint('NEXUS updater: update available v$version');
+    return UpdateCheck(UpdateInfo(
+      version: version,
+      downloadUrl: downloadUrl,
+      releaseUrl: json['html_url'] as String?,
+    ));
   }
 
-  static Future<Map<String, dynamic>?> _latestReleaseJson(
-    Future<String> Function(String url) fetch, {
-    required String owner,
-    required String repo,
-  }) async {
-    final body = await fetch(
-      'https://api.github.com/repos/$owner/$repo/releases/latest',
-    );
-    final json = jsonDecode(body);
-    return json is Map<String, dynamic> ? json : null;
+  /// Why a non-200 answer happened, in the user's terms.
+  ///
+  /// GitHub rate-limits by network, not by client, so a 403 on a phone is a
+  /// whole carrier IP being throttled — the answer a user most needs to hear,
+  /// and the one that must never be softened into "up to date".
+  static String _reasonFor(int status) {
+    if (status == 403 || status == 429) {
+      return 'GitHub is rate-limiting this network — try again in a few minutes';
+    }
+    if (status == 404) return 'no Nexus release is published yet';
+    return 'GitHub answered $status';
   }
 
   static String? _assetUrl(Map<String, dynamic> json, String assetName) {
@@ -127,12 +224,14 @@ class Updater {
   static Future<String?> latestApkUrl({
     String owner = 'TVcraft01',
     String repo = 'Nexus',
-    Future<String> Function(String url)? fetch,
+    Future<UpdateResponse> Function(String url)? fetch,
   }) async {
     final fetcher = fetch ?? _httpGet;
     try {
-      final json = await _latestReleaseJson(fetcher, owner: owner, repo: repo);
-      if (json == null) return null;
+      final response = await fetcher(_latestReleaseUrl(owner, repo));
+      if (response.status != 200) return null;
+      final json = jsonDecode(response.body);
+      if (json is! Map<String, dynamic>) return null;
       return _assetUrl(json, 'nexus.apk');
     } catch (e) {
       debugPrint('NEXUS updater: latest APK lookup failed (${e.runtimeType})');
@@ -165,7 +264,13 @@ class Updater {
     }
   }
 
-  static Future<bool> applyUpdate(
+  /// Hands [archivePath] to the platform.
+  ///
+  /// The three Android answers are deliberately distinct. `permission` means
+  /// Android opened the "install unknown apps" screen and kept the file: the
+  /// install resumes by itself on return, so it is not a failure — and it is
+  /// not a silent success either, which is what a bool turned it into.
+  static Future<UpdateApply> applyUpdate(
     String archivePath, {
     String? installDir,
   }) async {
@@ -175,17 +280,23 @@ class Updater {
           'path': archivePath,
         });
         debugPrint('NEXUS updater: Android installer status: $status');
-        return status == 'launched' || status == 'permission';
+        return switch (status) {
+          'launched' => UpdateApply.installerOpened,
+          'permission' => UpdateApply.needsPermission,
+          _ => UpdateApply.failed,
+        };
       } catch (e) {
         debugPrint('NEXUS updater: Android install failed: $e');
-        return false;
+        return UpdateApply.failed;
       }
     }
 
     if (defaultTargetPlatform != TargetPlatform.linux || installDir == null) {
-      return false;
+      return UpdateApply.failed;
     }
-    if (!await extractAndSwap(archivePath, installDir)) return false;
+    if (!await extractAndSwap(archivePath, installDir)) {
+      return UpdateApply.failed;
+    }
     try {
       await Process.start(
         '$installDir${Platform.pathSeparator}nexus',
@@ -196,7 +307,7 @@ class Updater {
       debugPrint('NEXUS updater: relaunch failed: $e');
     }
     debugPrint('NEXUS updater: update applied, relaunching');
-    return true;
+    return UpdateApply.applied;
   }
 
   /// [run] unpacks the archive. The product leaves it null and uses the system
@@ -237,13 +348,18 @@ class Updater {
     return true;
   }
 
-  static Future<String> _httpGet(String url) async {
+  static Future<UpdateResponse> _httpGet(String url) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
     try {
       final request = await client.getUrl(Uri.parse(url));
       request.headers.set(HttpHeaders.userAgentHeader, 'nexus-updater/1');
       final response = await request.close();
-      return await response.transform(utf8.decoder).join();
+      // The body is read either way: an error status still carries GitHub's
+      // own explanation, and the caller decides what the status means.
+      return UpdateResponse(
+        response.statusCode,
+        await response.transform(utf8.decoder).join(),
+      );
     } finally {
       client.close();
     }

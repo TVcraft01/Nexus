@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/system_command.dart';
 import 'package:nexus/mesh/updater.dart';
@@ -33,6 +35,10 @@ class _Unpacker {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  tearDown(() => debugDefaultTargetPlatformOverride = null);
+
   test('extractAndSwap replaces the install dir with the new bundle', () async {
     final tmp = await Directory.systemTemp.createTemp('nexus_update_test');
     final installDir = '${tmp.path}/install';
@@ -131,5 +137,57 @@ void main() {
     }
 
     await tmp.delete(recursive: true);
+  });
+
+  group('the Android installer hand-off', () {
+    const channel = MethodChannel('dev.nexus.nexus/installer');
+
+    /// Drives the real `applyUpdate` against the statuses the Kotlin side
+    /// returns (`MainActivity.installApk`), with no device in the loop.
+    Future<UpdateApply> handOff(String? status) async {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        expect(call.method, 'installApk');
+        expect(call.arguments, {'path': '/tmp/nexus.apk'});
+        return status;
+      });
+      try {
+        return await Updater.applyUpdate('/tmp/nexus.apk');
+      } finally {
+        messenger.setMockMethodCallHandler(channel, null);
+      }
+    }
+
+    setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.android);
+
+    test('a launched installer is its own outcome', () async {
+      expect(await handOff('launched'), UpdateApply.installerOpened);
+    });
+
+    test('the permission step is not a failure and not a silent success',
+        () async {
+      // Android opened the "install unknown apps" screen and kept the file; the
+      // install resumes on return. It used to be reported as success, so the app
+      // said nothing at all while the user was looking at a settings list.
+      final outcome = await handOff('permission');
+      expect(outcome, UpdateApply.needsPermission);
+      expect(updateHandoffNote(outcome), isNotNull);
+    });
+
+    test('an error status or a thrown channel is a failure', () async {
+      expect(await handOff('error'), UpdateApply.failed);
+
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        throw PlatformException(code: 'NO_PATH');
+      });
+      try {
+        expect(await Updater.applyUpdate('/tmp/nexus.apk'), UpdateApply.failed);
+      } finally {
+        messenger.setMockMethodCallHandler(channel, null);
+      }
+    });
   });
 }

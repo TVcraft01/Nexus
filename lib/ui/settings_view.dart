@@ -12,7 +12,7 @@ import 'theme.dart';
 
 class SettingsView extends StatefulWidget {
   final MeshService mesh;
-  final Future<UpdateInfo?> Function()? onCheckForUpdate;
+  final Future<UpdateCheck> Function()? onCheckForUpdate;
   const SettingsView({super.key, required this.mesh, this.onCheckForUpdate});
 
   @override
@@ -209,20 +209,27 @@ class _SettingsViewState extends State<SettingsView> {
                               _checkResult = null;
                             });
                             try {
-                              final info =
+                              final check =
                                   await widget.onCheckForUpdate!();
                               if (!mounted) return;
                               setState(() {
                                 _checking = false;
-                                _checkResult = info != null
-                                    ? 'Update to v${info.version} available'
-                                    : 'Up to date — v$appVersion';
+                                // Three different answers, never conflated: a
+                                // check that could not be made must not read as
+                                // "up to date".
+                                _checkResult = switch (check) {
+                                  UpdateCheck(:final info?) =>
+                                    'Update to v${info.version} available',
+                                  UpdateCheck(:final failure?) =>
+                                    'Could not check — $failure',
+                                  _ => 'Up to date — v$appVersion',
+                                };
                               });
                             } catch (e) {
                               if (!mounted) return;
                               setState(() {
                                 _checking = false;
-                                _checkResult = 'Check failed — try again';
+                                _checkResult = 'Could not check — try again';
                               });
                             }
                           },
