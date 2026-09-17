@@ -1331,7 +1331,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       if (contact.isEmpty) {
         return const AgentDispatchResult(
           status: AgentResultStatus.needsInfo,
-          message: 'Who should I call?',
+          message: AgentAsks.whoToCall,
         );
       }
       final isVideo = command.arguments['mode'] == 'video';
@@ -1372,7 +1372,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       if (contact.isEmpty) {
         return const AgentDispatchResult(
           status: AgentResultStatus.needsInfo,
-          message: 'Who should I text?',
+          message: AgentAsks.whoToText,
         );
       }
       final body = command.arguments['body'] as String?;
@@ -1394,7 +1394,7 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       if (contact.isEmpty) {
         return const AgentDispatchResult(
           status: AgentResultStatus.needsInfo,
-          message: 'Who should I email?',
+          message:        AgentAsks.whoToEmail,
         );
       }
       final body = command.arguments['body'] as String?;

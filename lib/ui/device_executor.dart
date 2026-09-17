@@ -939,7 +939,7 @@ class DeviceExecutor {
 
   Future<ActionResult> _placeCall(String contact, String? number) async {
     if (contact.isEmpty) {
-      return const ActionResult(false, 'Who should I call?', needsDetail: true);
+      return const ActionResult(false, AgentAsks.whoToCall, needsDetail: true);
     }
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
@@ -1009,7 +1009,7 @@ class DeviceExecutor {
     String? body,
   ) async {
     if (contact.isEmpty) {
-      return const ActionResult(false, 'Who should I text?', needsDetail: true);
+      return const ActionResult(false, AgentAsks.whoToText, needsDetail: true);
     }
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
@@ -1675,7 +1675,7 @@ class DeviceExecutor {
     if (contact.isEmpty) {
       return const ActionResult(
         false,
-        'Who should I email?',
+        AgentAsks.whoToEmail,
         needsDetail: true,
       );
     }

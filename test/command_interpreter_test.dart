@@ -1149,12 +1149,70 @@ void main() {
         );
       }
 
-      // A recipient that is not a device this interpreter knows is a person to
-      // send to — the address book decides, never a guess about the noun.
-      final unknownDevice = interpreter.interpret('send hello to my fridge');
-      expect(unknownDevice.command!.action, AgentActions.messageSend);
-      expect(unknownDevice.command!.arguments['contact'], 'my fridge');
-      expect(unknownDevice.command!.arguments['body'], 'hello');
+      // A recipient the address book could be handed is a name or a
+      // relationship. One Nexus *describes* rather than names — "my fridge",
+      // "the couch" — is not a person, and the address-book reading of it
+      // proved the point against itself: read that way, the answer the
+      // contract layer produced was "I don't have a number for 'my fridge'
+      // yet. Teach me with 'remember that my fridge is 0612345678'" — a phone
+      // number offered for an appliance. Refusing is what this family already
+      // does with every object it cannot hand to the address book.
+      for (final phrase in [
+        'send hello to my fridge',
+        'send hello to the couch',
+        'send happy birthday to the couch',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
+        expect(
+          result.command?.action,
+          isNot(AgentActions.messageSend),
+          reason: '$phrase must not become a message to an invented contact',
+        );
+      }
+
+      // A name, and a relationship by its own word, are people without any
+      // guessing — the one list is [IntentArgs.relationshipWords], and it is
+      // the whole of what tells "my wife" apart from "my fridge".
+      for (final entry in const {
+        'send hello to jamie': ('jamie', 'hello'),
+        'send hello to my wife': ('my wife', 'hello'),
+        'send love you to my mom': ('my mom', 'love you'),
+        'send hello to dr smith': ('dr smith', 'hello'),
+      }.entries) {
+        final result = interpreter.interpret(entry.key);
+        expect(result.outcome, InterpretOutcome.matched, reason: entry.key);
+        expect(
+          result.command!.action,
+          AgentActions.messageSend,
+          reason: entry.key,
+        );
+        expect(
+          result.command!.arguments['contact'],
+          entry.value.$1,
+          reason: entry.key,
+        );
+        expect(
+          result.command!.arguments['body'],
+          entry.value.$2,
+          reason: entry.key,
+        );
+      }
+
+      // An object that ends where a name should start names nobody: the
+      // recipient is missing, and "hello to" is not a contact either.
+      for (final phrase in [
+        'send hello to',
+        'send happy birthday onto',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
+        expect(
+          result.command?.action,
+          isNot(AgentActions.messageSend),
+          reason: phrase,
+        );
+      }
 
       // A real object with no recipient is still a person's name.
       final person = interpreter.interpret('send mom happy birthday');
@@ -1426,6 +1484,121 @@ void main() {
       final result = interpreter.interpret('text hello to mom');
       expect(result.command!.action, AgentActions.messageSend);
       expect(result.command!.arguments['contact'], 'hello to mom');
+    });
+  });
+
+  group('a question about what Nexus can do is answered as a question', () {
+    // Audit finding, reproduced through the real service: "what can you do
+    // with my calendar" ran a calendar read (the card read "Working" while the
+    // user had asked what Nexus can do with the calendar), and "what can you
+    // do with a detailed image of a cat" was answered with the apology for an
+    // image Nexus cannot make. Both sentences satisfy the needs of the action
+    // rules they name, so the question is its own stage, applied first.
+    test('a topic that also names an action is still a question', () {
+      for (final phrase in [
+        'what can you do with my calendar',
+        'what can you do with the calendar',
+        'what can you do with a detailed image of a cat',
+        'what can you do with the weather',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(
+          result.command!.action,
+          AgentActions.helpGet,
+          reason: '$phrase asks about a capability; it must not do the thing',
+        );
+        expect(
+          result.command!.arguments['topic'],
+          isNotNull,
+          reason: phrase,
+        );
+      }
+    });
+
+    test('a topic that names a device is the registry\'s answer', () {
+      // Singular as well as plural: "what can you do with my phone" is the
+      // question a phone-first user asks, and it used to fall past the
+      // plural-only device rule into "I don't understand" while the answer
+      // that lists what each device advertises was already there.
+      for (final phrase in [
+        'what can you do with my devices',
+        'what can you do with my phone',
+        'what can you do with my pc',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(
+          result.command!.action,
+          AgentActions.deviceList,
+          reason: phrase,
+        );
+        expect(
+          result.command!.arguments['detail'],
+          'capabilities',
+          reason: phrase,
+        );
+      }
+    });
+
+    test('the ordinary ways of asking land on the same question', () {
+      const expected = {
+        'what can you do': '',
+        'what can you do with music': 'music',
+        'what can nexus do with music': 'music',
+        'what can i do with music': 'music',
+        'what can you do for fun': 'fun',
+        'tell me what you can do': '',
+        'show me what you can do': '',
+        'what else can you do': '',
+      };
+      for (final entry in expected.entries) {
+        final result = interpreter.interpret(entry.key);
+        expect(result.outcome, InterpretOutcome.matched, reason: entry.key);
+        expect(
+          result.command!.action,
+          AgentActions.helpGet,
+          reason: entry.key,
+        );
+        expect(
+          result.command!.arguments['topic'] ?? '',
+          entry.value,
+          reason: entry.key,
+        );
+      }
+    });
+
+    test('a question with no topic behind the preposition is the whole list', () {
+      // "what can you do with" has the verb run on past its preposition, so
+      // the topic it carries names nothing. The answer reads the topic's own
+      // words rather than its raw text, so this reaches the whole list instead
+      // of quoting "do with" back as something Nexus has never heard of.
+      final service = CommandService(devices: () => const []);
+      final result = service.execute('what can you do with');
+      expect(result.status, AgentResultStatus.succeeded);
+      final said = (result.dispatch! as AgentMessage).text;
+      expect(said, contains('Here is what I can do'));
+      expect(said, isNot(contains("I don't have anything listed")));
+    });
+
+    test('and never the phrase it has no meaning for', () {
+      // The teach loop is for sentences Nexus cannot read, not for questions
+      // about itself: "tell me what you can do" reached it, and the hint it
+      // printed pointed at "what can you do" — the same question, in the
+      // wording the layer happened to be built around.
+      final service = CommandService(devices: () => const []);
+      for (final phrase in [
+        'tell me what you can do',
+        'what can nexus do with music',
+      ]) {
+        final result = service.execute(phrase);
+        expect(result.status, AgentResultStatus.succeeded, reason: phrase);
+        expect(
+          (result.dispatch! as AgentMessage).text,
+          isNot(contains("I don't understand")),
+          reason: '$phrase is a question about Nexus, not a phrase to teach it',
+        );
+      }
     });
   });
 }
