@@ -1043,4 +1043,68 @@ void main() {
       }
     },
   );
+
+  testWidgets(
+    'the catalogue answers a part of itself on the real screen',
+    (tester) async {
+      // "what can you do" used to answer with all 47 capabilities at once,
+      // which is a wall rather than an answer. Asking about one part has to
+      // reach that part, through the same surface a person types into.
+      final (store, mesh) = await boot();
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump();
+
+        // The short answer, and the invitation to hear any area in full.
+        await ask(tester, 'what can you do');
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(find.textContaining('Here is what I can do:'), findsOneWidget);
+        expect(find.textContaining('Your things:'), findsOneWidget);
+        expect(find.textContaining('what can you do with your day'), findsWidgets);
+        // It is not the wall: the full catalogue names many things the
+        // summary does not.
+        expect(find.textContaining('bluetooth off'), findsNothing);
+
+        // One part of it, in full.
+        await ask(tester, 'what can you do with music');
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(find.textContaining('Media:'), findsOneWidget);
+        expect(find.textContaining('"next"'), findsOneWidget);
+
+        // A part it has nothing for says so instead of inventing one.
+        await ask(tester, 'what can you do with files');
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(
+          find.textContaining('I don\'t have anything listed for "files" yet'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Everyday tasks'), findsWidgets);
+      } finally {
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets(
+    'a sentence that names only a device asks who, on the real screen',
+    (tester) async {
+      // "text on my phone" was answered as a confident text to a contact
+      // called "my phone". Nobody to send to is a question, not an action.
+      final (store, mesh) = await boot();
+      try {
+        await tester.pumpWidget(harness(mesh));
+        await tester.pump();
+
+        await ask(tester, 'text on my phone');
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(find.text('Question'), findsOneWidget);
+        expect(find.textContaining('Who should I text?'), findsOneWidget);
+        expect(find.textContaining('Opening text'), findsNothing);
+      } finally {
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
 }

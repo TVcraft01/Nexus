@@ -1105,18 +1105,40 @@ void main() {
       }
     });
 
-    test('a recipient after the value is never a contact', () {
-      // "send X to Y" names where the thing goes, and this family cannot tell
-      // the value from the name without the address book, so it says it did
-      // not understand instead of messaging a person called "hello to mom".
-      // The boundary is "to", not "any preposition": see the sibling test
-      // below, where "on" belongs to the draft.
-      for (final phrase in [
+    test('a recipient after the value is the recipient, and the value is the body', () {
+      // "send hello to mom" names both halves of its own sentence: what is
+      // sent, and who it goes to. Reading it as a contact called "hello to
+      // mom" invents a name nobody said; refusing it claims Nexus did not
+      // parse a sentence whose parts it plainly did. So the words before the
+      // preposition are the body, and what follows is the recipient. An
+      // earlier pass refused all of these on purpose; the recipient being
+      // understood is what a person asking for it expects.
+      for (final entry in const {
+        'send hello to mom': ('mom', 'hello'),
+        'send love you to mom': ('mom', 'love you'),
+        'send happy birthday to mom': ('mom', 'happy birthday'),
+      }.entries) {
+        final result = interpreter.interpret(entry.key);
+        expect(result.outcome, InterpretOutcome.matched, reason: entry.key);
+        final command = result.command!;
+        expect(command.action, AgentActions.messageSend, reason: entry.key);
+        expect(command.arguments['contact'], entry.value.$1, reason: entry.key);
+        expect(command.arguments['body'], entry.value.$2, reason: entry.key);
+      }
+
+      // A device is a destination for the text, not a person: the clipboard
+      // reading keeps every phrase that already worked.
+      final device = interpreter.interpret('send hello to my pc');
+      expect(device.command!.action, AgentActions.clipboardWrite);
+      expect(device.command!.arguments['text'], 'hello');
+
+      // Nothing before the preposition is not a body, and nothing after it is
+      // not a recipient: 'send this to mom' names no value to send.
+      for (final phrase in const [
         'send this to',
         'send it to',
-        'send hello to my fridge',
-        'send hello to mom',
-        'send love you to mom',
+        'send this to mom',
+        'send it to mom',
       ]) {
         final result = interpreter.interpret(phrase);
         expect(result.outcome, InterpretOutcome.unknown, reason: phrase);
@@ -1126,6 +1148,13 @@ void main() {
           reason: '$phrase must not become a message to an invented contact',
         );
       }
+
+      // A recipient that is not a device this interpreter knows is a person to
+      // send to — the address book decides, never a guess about the noun.
+      final unknownDevice = interpreter.interpret('send hello to my fridge');
+      expect(unknownDevice.command!.action, AgentActions.messageSend);
+      expect(unknownDevice.command!.arguments['contact'], 'my fridge');
+      expect(unknownDevice.command!.arguments['body'], 'hello');
 
       // A real object with no recipient is still a person's name.
       final person = interpreter.interpret('send mom happy birthday');
@@ -1286,14 +1315,71 @@ void main() {
       }
 
       // A device really can be sent to, and the recipient is not the text.
+      final toDevice = interpreter.interpret('copy to my pc');
+      expect(toDevice.command!.action, AgentActions.clipboardWrite);
+      expect(toDevice.command!.arguments['text'], '');
+
+      // A person with a device marker is a person: "on my phone" says which
+      // device sends it, not what is sent — so "send to mary jane on my phone"
+      // is the same understood sentence "send to mary jane" is, asked for its
+      // body, never the name "mary jane" pushed to the clipboard.
+      final personOnDevice = interpreter.interpret(
+        'send to mary jane on my phone',
+      );
+      expect(personOnDevice.outcome, InterpretOutcome.needsInfo);
+      expect(personOnDevice.missingArgKey, 'message.body');
+      expect(personOnDevice.command!.action, AgentActions.messageSend);
+      expect(personOnDevice.command!.arguments['contact'], 'mary jane');
+    });
+
+    test('a device marker is never the person a message is for', () {
+      // "text on my phone" names where it would be sent and nobody to send it
+      // to. It used to resolve a contact called "my phone" and open a text to
+      // a person who does not exist; the honest answer asks who.
       for (final entry in const {
-        'copy to my pc': '',
-        'send to mary jane on my phone': '',
+        'text on my phone': 'Who should I text?',
+        'call on my phone': 'Who should I call?',
       }.entries) {
         final result = interpreter.interpret(entry.key);
-        expect(result.command!.action, AgentActions.clipboardWrite, reason: entry.key);
-        expect(result.command!.arguments['text'], entry.value, reason: entry.key);
+        expect(result.outcome, InterpretOutcome.needsInfo, reason: entry.key);
+        expect(result.question, entry.value, reason: entry.key);
+        expect(
+          result.command!.arguments['contact'],
+          isNull,
+          reason: '${entry.key} must not name a contact',
+        );
       }
+
+      // A device marker after a real name is read off it, for every device
+      // this interpreter knows — not only the three nouns a second,
+      // hand-written list happened to carry.
+      for (final phrase in const [
+        'text jamie on my pc',
+        'text jamie on my phone',
+        'text jamie on my laptop',
+        'call jamie on my pc',
+      ]) {
+        final result = interpreter.interpret(phrase);
+        expect(result.command!.arguments['contact'], 'jamie', reason: phrase);
+      }
+
+      // Through the service it is a question, not a confident action — and a
+      // question whose answer is used once, not remembered as the next call's
+      // recipient.
+      final service = CommandService(devices: () => const []);
+      final asked = service.execute('call on my phone');
+      expect(asked.status, AgentResultStatus.needsInfo);
+      final clarification = asked.dispatch! as AgentClarification;
+      expect(clarification.question, 'Who should I call?');
+      expect(clarification.hint, contains('for this one'));
+
+      // And the question is answerable: the reply becomes the recipient, and
+      // the sentence is re-run with it rather than making the user type the
+      // whole thing again.
+      final answered = service.execute('mom', answerTo: clarification.key);
+      final told = answered.dispatch! as AgentMessage;
+      expect(told.text, contains('mom'));
+      expect(told.text, isNot(contains('"my phone"')));
     });
 
     test('one preposition vocabulary, read by every verb', () {

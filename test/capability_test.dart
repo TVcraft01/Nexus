@@ -345,6 +345,68 @@ void main() {
       };
       expect(reached, offering);
     });
+
+    test('every offered section is in exactly one area', () {
+      // The areas are how the short answer is organised. A section no area
+      // covers is one the summary never mentions and no area lists in full —
+      // reachable only by asking about it by name, which is how the
+      // hand-written wall fell behind. The entry point's own group is the
+      // exception: it is the question, not a part of the answer.
+      final covered = <String, String>{};
+      for (final area in kHelpAreas) {
+        expect(area.groups, isNotEmpty, reason: area.name);
+        expect(area.name.trim(), isNotEmpty, reason: area.name);
+        expect(area.question.trim(), isNotEmpty, reason: area.name);
+        for (final group in area.groups) {
+          expect(
+            kHelpGroups,
+            contains(group),
+            reason: '${area.name} claims "$group", which is no section',
+          );
+          expect(
+            covered[group],
+            isNull,
+            reason: '"$group" is claimed by both ${covered[group]} and '
+                '${area.name}',
+          );
+          covered[group] = area.name;
+        }
+        expect(
+          helpCapabilitiesInArea(area),
+          isNotEmpty,
+          reason: '${area.name} covers nothing to offer',
+        );
+      }
+      for (final group in kHelpGroups) {
+        if (group == kHelpEntryGroup || helpCapabilitiesIn(group).isEmpty) {
+          continue;
+        }
+        expect(covered[group], isNotNull, reason: '"$group" is in no area');
+      }
+    });
+
+    test('every offered section has a headline the summary can show', () {
+      for (final group in kHelpGroups) {
+        final headline = helpHeadline(group);
+        if (helpCapabilitiesIn(group).isEmpty) {
+          expect(headline, isNull, reason: '$group offers nothing');
+          continue;
+        }
+        expect(headline, isNotNull, reason: group);
+        expect(headline!.helpGroup, group, reason: group);
+        expect(phrasesOf(headline), isNotEmpty, reason: group);
+        // The headline the summary prints is a phrase the registry offers, so
+        // the short answer can only show something that really parses.
+        expect(
+          [
+            for (final capability in helpCapabilitiesIn(group))
+              for (final phrase in phrasesOf(capability)) phrase,
+          ],
+          contains(headline.example ?? phrasesOf(headline).first),
+          reason: group,
+        );
+      }
+    });
   });
 
   group('platform gating', () {

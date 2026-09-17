@@ -1036,14 +1036,28 @@ void main() {
         );
       }
       // A device really can be sent to — where the thing to send is the
-      // missing detail, not the recipient the sentence named.
+      // missing detail, not the device the sentence named.
       final device = service.execute(
-        'send to mary jane on my phone',
+        'send to my phone',
         approval: AgentApproval.approved,
       );
       expect(device.status, AgentResultStatus.needsInfo);
       expect(device.message, contains('Nothing to copy'));
       expect(device.dispatch, isNull);
+
+      // And a person with a device marker is a person: "on my phone" says
+      // where the message is sent, so what is missing is the body. An earlier
+      // pass read the object as the missing clipboard text here, which is the
+      // same invented value in the other direction — "mary jane" is a name,
+      // not a thing to push to a device.
+      final person = service.execute(
+        'send to mary jane on my phone',
+        approval: AgentApproval.approved,
+      );
+      expect(person.status, AgentResultStatus.needsInfo);
+      final personAsk = person.dispatch! as AgentClarification;
+      expect(personAsk.key, 'arg:message.body');
+      expect(personAsk.question, 'What should I send to mary jane?');
     });
 
     test('a named recipient with nothing to send asks what to send', () {

@@ -13,8 +13,11 @@
 //   skills.dart       -> [skillCatalog]      (what shapes the ranking)
 //   assistant_view    -> [suggestionExamples] (the one-tap fallback chips)
 //   agent_contract    -> [defaultCapabilitiesFor] (what this platform offers)
-//   answers.dart      -> the help answer, built from [helpGroup],
-//                        [Capability.helpPhrases] and [Capability.helpNote]
+//   answers.dart      -> the help answer: its short summary from [kHelpAreas]
+//                        and [helpHeadline], each area's or section's full list
+//                        from [helpCapabilitiesInArea] / [helpCapabilitiesIn],
+//                        every phrase from [phrasesOf], and the part a question
+//                        asked about from [helpAreasNamed] / [helpSectionsNamed].
 //
 // `AgentActions` stays the vocabulary — the ids themselves are not duplicated
 // here, they are referenced, so a rename breaks the build instead of silently
@@ -409,6 +412,176 @@ List<Capability> helpCapabilitiesIn(String group) => [
 List<Capability> get helpCapabilities => [
   for (final group in kHelpGroups) ...helpCapabilitiesIn(group),
 ];
+
+/// One area of what Nexus can do, as the short help answer offers it: the
+/// plain name it is listed under, the sentence a user can say to hear that
+/// area in full, and the sections it covers.
+///
+/// Areas are the *answer's* structure, not a second capability list: each one
+/// covers whole [kHelpGroups] sections, so a capability added to a section is
+/// reachable from the area holding it without anybody editing the answer. The
+/// reverse is what the old hand-written wall did — it fell behind the registry
+/// because a capability and its wording lived in two places.
+class HelpArea {
+  /// How the short answer lists it ("Your things").
+  final String name;
+
+  /// A sentence a user can really say to hear this area in full. Every one is
+  /// asserted to resolve back to this area through the real interpreter, so
+  /// the answer cannot invite a question that means something else.
+  final String question;
+
+  /// The [kHelpGroups] sections it covers.
+  final List<String> groups;
+
+  const HelpArea(this.name, {required this.question, required this.groups});
+}
+
+/// The section holding the answer to "what can you do" itself. It is the way
+/// *into* the answer rather than a part of it, so no area lists it — and
+/// `test/capability_test.dart` asserts that every other offered section is in
+/// exactly one area, so a capability cannot fall out of the answer unnoticed.
+const String kHelpEntryGroup = 'Nexus';
+
+/// The areas the short answer lists, in the order it lists them.
+const List<HelpArea> kHelpAreas = [
+  HelpArea(
+    'Your day',
+    question: 'what can you do with your day',
+    groups: ['Time & Math', 'Weather & Getting Around', 'Media'],
+  ),
+  HelpArea(
+    'Your things',
+    question: 'what can you do with your things',
+    groups: ['Web', 'Memory', 'Clipboard & Devices'],
+  ),
+  HelpArea(
+    'This device',
+    question: 'what can you do with this device',
+    groups: ['System', 'Communication', 'Email'],
+  ),
+  HelpArea(
+    'Everyday tasks',
+    question: 'what can you do with everyday tasks',
+    groups: ['Productivity'],
+  ),
+  HelpArea('Fun', question: 'what can you do for fun', groups: ['Fun']),
+];
+
+/// The sections of [area], in the order the answer prints them.
+List<String> helpSectionsInArea(HelpArea area) => [
+  for (final group in kHelpGroups)
+    if (area.groups.contains(group)) group,
+];
+
+/// Every capability [area] offers, in registry order.
+List<Capability> helpCapabilitiesInArea(HelpArea area) => [
+  for (final group in helpSectionsInArea(area)) ...helpCapabilitiesIn(group),
+];
+
+/// The capability the short answer speaks for [group]: the registry's own
+/// canonical example where the section has one — the phrase already verified
+/// to parse — and otherwise the first capability it offers. Null when the
+/// section offers nothing, which is what keeps an unadvertised section out of
+/// the summary instead of printing an empty line for it.
+Capability? helpHeadline(String group) {
+  final capabilities = helpCapabilitiesIn(group);
+  if (capabilities.isEmpty) return null;
+  for (final capability in capabilities) {
+    if (capability.example != null) return capability;
+  }
+  return capabilities.first;
+}
+
+/// The sections a user's [topic] names, in [kHelpGroups] order — so "music",
+/// "timers" and "jokes" each reach the section that actually holds them,
+/// without a second list of aliases to keep in step with the registry.
+List<String> helpSectionsNamed(String topic) {
+  final words = helpTopicWords(topic);
+  if (words.isEmpty) return const [];
+  return [
+    for (final group in kHelpGroups)
+      if (helpSectionWords(group).any(words.contains)) group,
+  ];
+}
+
+/// Every word [group] answers to: its own name and the labels of the
+/// capabilities in it.
+Set<String> helpSectionWords(String group) => {
+  ...helpTopicWords(group),
+  for (final capability in helpCapabilitiesIn(group))
+    ...helpTopicWords(capability.label),
+};
+
+/// The areas a user's [topic] names *by their own name*, in [kHelpAreas]
+/// order. An area's name is what the answer itself offers as a way in, so it
+/// outranks a section: "what can you do with this device" is the device area,
+/// not the one section that happens to have "device" in its name.
+///
+/// A topic that names no area name but does name one of their sections is
+/// answered by [helpSectionsNamed] instead, so nothing an area covers is out
+/// of reach without this having to also match its sections' words.
+List<HelpArea> helpAreasNamed(String topic) {
+  final words = helpTopicWords(topic);
+  if (words.isEmpty) return const [];
+  return [
+    for (final area in kHelpAreas)
+      if (helpTopicWords(area.name).any(words.contains)) area,
+  ];
+}
+
+/// The words of [topic] that can name a thing: lower case, singular enough
+/// that "timers" and "timer" agree, with the words every question carries
+/// dropped — so "what can you do with the weather" names the weather while
+/// "what can you do for me" names nothing and is read as the whole list.
+Set<String> helpTopicWords(String topic) => {
+  for (final word in topic.toLowerCase().split(RegExp(r'[^a-z0-9]+')))
+    if (word.isNotEmpty && !_topicWordsToIgnore.contains(word)) _singular(word),
+};
+
+String _singular(String word) => word.length > 3 && word.endsWith('s')
+    ? word.substring(0, word.length - 1)
+    : word;
+
+/// The words a capability question says about itself rather than about what
+/// Nexus can do.
+const Set<String> _topicWordsToIgnore = {
+  'a',
+  'about',
+  'all',
+  'an',
+  'and',
+  'any',
+  'are',
+  'at',
+  'can',
+  'could',
+  'do',
+  'does',
+  'else',
+  'for',
+  'i',
+  'in',
+  'into',
+  'is',
+  'it',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'our',
+  'some',
+  'that',
+  'the',
+  'this',
+  'to',
+  'what',
+  'whats',
+  'with',
+  'you',
+  'your',
+};
 
 /// The capabilities a device of [platform] advertises by default — a phone
 /// can make calls and send texts, a desktop usually cannot. Devices that

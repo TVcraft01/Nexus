@@ -409,7 +409,7 @@ void main() {
     // phrasing for is in the answer. A hand-written copy of the answer used
     // to be the guard here, and a copy cannot catch the original drifting —
     // it drifts with it.
-    String helpOutput({String platform = 'android'}) {
+    CommandService serviceFor(String platform) {
       final local = AgentDeviceSnapshot(
         id: 'local',
         name: 'Test Phone',
@@ -417,99 +417,257 @@ void main() {
         capabilities: defaultCapabilitiesFor(platform),
         platform: platform,
       );
-      final service = CommandService(devices: () => const [], local: local);
-      final result = service.execute('what can you do');
-      expect(result.status, AgentResultStatus.succeeded);
+      return CommandService(devices: () => const [], local: local);
+    }
+
+    /// The real answer to [phrase], through the real service.
+    String answerFor(String phrase, {String platform = 'android'}) {
+      final result = serviceFor(platform).execute(phrase);
+      expect(result.status, AgentResultStatus.succeeded, reason: phrase);
       return (result.dispatch! as AgentMessage).text;
     }
 
-    /// Every double-quoted span in the answer — the phrases it offers.
-    List<String> offered(String text) => RegExp(
-      r'"([^"]+)"',
-    ).allMatches(text).map((m) => m.group(1)!).toList();
+    String helpOutput({String platform = 'android', String? topic}) => answerFor(
+      topic == null ? 'what can you do' : 'what can you do with $topic',
+      platform: platform,
+    );
 
-    test('every phrase it offers means the capability offering it', () {
-      final owner = {
-        for (final capability in helpCapabilities)
-          for (final phrase in phrasesOf(capability)) phrase: capability.id,
-      };
+    /// Every double-quoted span in the answer — the phrases it offers.
+    List<String> offered(String text) =>
+        RegExp(r'"([^"]+)"').allMatches(text).map((m) => m.group(1)!).toList();
+
+    /// The capability that offers [phrase], by the registry's own declaration.
+    String? ownerOf(String phrase) => {
+      for (final capability in helpCapabilities)
+        for (final offeredPhrase in phrasesOf(capability))
+          offeredPhrase: capability.id,
+    }[phrase];
+
+    /// Every section the answer prints, other than the entry point's own —
+    /// "what can you do" is the way in, not a part of the list it prints.
+    final sections = [
+      for (final group in kHelpGroups)
+        if (group != kHelpEntryGroup && helpCapabilitiesIn(group).isNotEmpty)
+          group,
+    ];
+
+    /// A topic that reaches [section]: its own first name word. The whole name
+    /// is not one for every section — "Clipboard & Devices" names the user's
+    /// devices, which the registry answers about paired hardware instead, and
+    /// rightly so.
+    String topicFor(String section) => section.split(' ').first;
+
+    test('the summary stays short and names every area', () {
+      // The wall this replaced was 72 lines of 47 capabilities in one message,
+      // which is not an answer a person reads. The summary shows one phrase per
+      // section and says how to hear the rest.
       for (final platform in const ['android', 'linux', 'windows']) {
-        final spans = offered(helpOutput(platform: platform));
-        expect(
-          spans,
-          isNotEmpty,
-          reason: '$platform offers nothing at all',
-        );
-        for (final phrase in spans) {
-          expect(
-            owner[phrase],
-            isNotNull,
-            reason: '"$phrase" is offered on $platform but no capability '
-                'claims it',
-          );
-          final result = parse(phrase);
-          expect(
-            result.command,
-            isNotNull,
-            reason: '"$phrase" is offered on $platform but resolves to '
-                '${result.outcome}',
-          );
-          expect(
-            result.command!.action,
-            owner[phrase],
-            reason: '"$phrase" is offered for ${owner[phrase]} but means '
-                '${result.command!.action}',
-          );
+        final text = helpOutput(platform: platform);
+        expect(text.split('\n').length, lessThan(15), reason: platform);
+        for (final area in kHelpAreas) {
+          expect(text, contains('${area.name}:'), reason: area.name);
+          for (final group in helpSectionsInArea(area)) {
+            final headline = helpHeadline(group);
+            if (headline == null) continue;
+            expect(
+              text,
+              contains('"${headline.example ?? phrasesOf(headline).first}"'),
+              reason: 'the summary must show something for $group',
+            );
+          }
+        }
+        // And the question it invites is one that really resolves.
+        expect(text, contains('"${kHelpAreas.first.question}"'));
+      }
+    });
+
+    test('every phrase it offers means the capability that offers it', () {
+      for (final platform in const ['android', 'linux', 'windows']) {
+        final texts = [
+          helpOutput(platform: platform),
+          for (final area in kHelpAreas) helpOutput(topic: area.name),
+          for (final section in sections) helpOutput(topic: topicFor(section)),
+        ];
+        for (final text in texts) {
+          final spans = offered(text);
+          expect(spans, isNotEmpty, reason: '$platform offers nothing at all');
+          for (final phrase in spans) {
+            if (ownerOf(phrase) case final capabilityId?) {
+              final result = parse(phrase);
+              expect(
+                result.command,
+                isNotNull,
+                reason: '"$phrase" is offered on $platform but resolves to '
+                    '${result.outcome}',
+              );
+              expect(
+                result.command!.action,
+                capabilityId,
+                reason: '"$phrase" is offered for $capabilityId but means '
+                    '${result.command!.action}',
+              );
+              continue;
+            }
+            // Or it is one of the questions the answer itself invites, which
+            // has to reach the answer rather than something else.
+            expect(
+              [for (final area in kHelpAreas) area.question],
+              contains(phrase),
+              reason: '"$phrase" is offered on $platform but no capability '
+                  'claims it and it is not a question the answer invites',
+            );
+            expect(
+              parse(phrase).command?.action,
+              AgentActions.helpGet,
+              reason: phrase,
+            );
+          }
         }
       }
     });
 
-    test('it offers every phrase the registry offers, and no other', () {
-      final expected = [
-        for (final capability in helpCapabilities)
-          for (final phrase in phrasesOf(capability)) phrase,
-      ];
-      for (final platform in const ['android', 'linux', 'windows']) {
-        final spans = offered(helpOutput(platform: platform));
-        expect(spans, expected, reason: platform);
+    test('each section in full is exactly the phrases filed under it', () {
+      for (final section in sections) {
+        final text = helpOutput(topic: topicFor(section));
+        final spans = offered(text);
+        final expected = [
+          for (final capability in helpCapabilitiesIn(section))
+            for (final phrase in phrasesOf(capability)) phrase,
+        ];
+        expect(text, contains('$section:'), reason: section);
+        expect(spans, expected, reason: section);
         expect(
           spans.toSet().length,
           spans.length,
-          reason: '$platform: a phrase is offered twice',
+          reason: '$section offers a phrase twice',
         );
       }
     });
 
-    test('it names every section the registry files a capability under', () {
-      final text = helpOutput();
-      for (final group in kHelpGroups) {
-        if (helpCapabilitiesIn(group).isEmpty) continue;
-        expect(text, contains('$group:'), reason: group);
+    test('every phrase the registry offers is reachable, and each area is whole', () {
+      // The summary shows one phrase per section, so the rest have to arrive
+      // through a question the answer invites: a phrase no shape prints is one
+      // a user can never discover, which is how the old wall fell behind.
+      final reachable = <String>{};
+      for (final section in sections) {
+        reachable.addAll(offered(helpOutput(topic: topicFor(section))));
+      }
+      // Everything except the entry point's own phrase ("what can you do"),
+      // which is the question being asked rather than something to discover.
+      final everything = [
+        for (final capability in helpCapabilities)
+          if (capability.helpGroup != kHelpEntryGroup)
+            for (final phrase in phrasesOf(capability)) phrase,
+      ];
+      expect(everything, isNotEmpty);
+      expect(reachable, everything.toSet());
+
+      for (final area in kHelpAreas) {
+        final text = helpOutput(topic: area.name);
+        for (final section in helpSectionsInArea(area)) {
+          expect(text, contains('$section:'), reason: '${area.name} / $section');
+          for (final capability in helpCapabilitiesIn(section)) {
+            for (final phrase in phrasesOf(capability)) {
+              expect(
+                text,
+                contains('"$phrase"'),
+                reason: '${area.name} must offer all of $section',
+              );
+            }
+          }
+        }
       }
     });
 
+    test('the questions the answer invites reach the areas they name', () {
+      for (final area in kHelpAreas) {
+        final parsed = parse(area.question);
+        expect(parsed.outcome, InterpretOutcome.matched, reason: area.question);
+        expect(parsed.command!.action, AgentActions.helpGet, reason: area.question);
+        final text = answerFor(area.question);
+        for (final section in helpSectionsInArea(area)) {
+          expect(text, contains('$section:'), reason: area.question);
+        }
+      }
+      // A section can be asked about directly too, which is what makes the
+      // summary's single phrase per section an entry point rather than a
+      // teaser.
+      expect(answerFor('what can you do with music'), contains('Media:'));
+      expect(answerFor('what can you do with timers'), contains('Productivity:'));
+    });
+
+    test('a question about Nexus itself is the whole list', () {
+      // A topic that only names the assistant asks for everything, not for a
+      // part of it: the rule for capability questions declines and the
+      // catalogue's own help phrases answer, which is the same answer.
+      for (final phrase in const [
+        'what can you help with',
+        'what can nexus do',
+        'what can you do for me',
+      ]) {
+        expect(answerFor(phrase), startsWith('Here is what I can do:'),
+            reason: phrase);
+      }
+    });
+
+    test('a topic it has nothing for says so, and advertises nothing', () {
+      final text = answerFor('what can you do with files');
+      expect(text, contains('I don\'t have anything listed for "files" yet.'));
+      expect(text, contains('Or just ask me for it'));
+      for (final area in kHelpAreas) {
+        expect(text, contains(area.name), reason: area.name);
+      }
+      // Nothing invented: the only phrase in the answer is the word asked
+      // about, handed straight back.
+      expect(offered(text), ['files']);
+    });
+
     test('it says what needs another device instead of pretending', () {
-      final desktop = helpOutput(platform: 'linux');
-      // A phone-only capability, read on a computer, says so.
+      // Where the summary shows the capability...
+      expect(
+        helpOutput(platform: 'linux'),
+        contains('"call mom" — open dialer; needs a phone'),
+      );
+      // ...and in the section that holds it, in full.
+      final desktop = helpOutput(platform: 'linux', topic: 'Communication');
       expect(desktop, contains('"call mom" — open dialer; needs a phone'));
       // A capability answered on this device needs no device at all.
-      expect(desktop, contains('"2 + 3"'));
-      expect(desktop, isNot(contains('"2 + 3" — needs')));
+      final maths = helpOutput(platform: 'linux', topic: 'Time & Math');
+      expect(maths, contains('"2 + 3"'));
+      expect(maths, isNot(contains('"2 + 3" — needs')));
 
       // A phone is one, so nothing needs another one.
-      final phone = helpOutput();
+      final phone = helpOutput(topic: 'Communication');
       expect(phone, contains('"call mom" — open dialer'));
       expect(phone, isNot(contains('needs a phone')));
 
       // A platform Nexus has no word for says nothing, rather than guessing.
-      expect(helpOutput(platform: 'plan9'), isNot(contains('needs a')));
+      expect(
+        helpOutput(platform: 'plan9', topic: 'Communication'),
+        isNot(contains('needs a')),
+      );
     });
 
     test('it keeps its human frame and its closing line', () {
-      final text = helpOutput();
-      expect(text, startsWith('Here is what I can do:'));
+      // The list answers open with the frame and close with the same line,
+      // whatever part of the catalogue they are showing.
+      for (final phrase in const [
+        'what can you do',
+        'what can you do with music',
+        'what can you do with your things',
+      ]) {
+        final text = answerFor(phrase);
+        expect(text, startsWith('Here is what I can do'), reason: phrase);
+        expect(
+          text,
+          endsWith('If I misunderstand, just teach me once — I remember.'),
+          reason: phrase,
+        );
+      }
+      // The honest "nothing for that" answer is a different answer, so it
+      // leads with its own sentence — and still signs off the same way.
       expect(
-        text,
+        answerFor('what can you do with files'),
         endsWith('If I misunderstand, just teach me once — I remember.'),
       );
     });
@@ -559,6 +717,27 @@ void main() {
         'where are my devices',
       ]) {
         expectAction(phrase, AgentActions.deviceList, target: 'local');
+      }
+    });
+
+    test('asking what you can do with your devices stays the device answer', () {
+      // "what can you do with my devices" is a question about the user's
+      // hardware, not one section of the catalogue: the device registry's
+      // answer names each paired device and what it advertises, which is
+      // exactly what was asked. The capability rule declines for a device noun
+      // so this keeps its owner.
+      for (final phrase in const [
+        'what can you do with my devices',
+        'what can i do with my devices',
+        'what can you do with my other devices',
+        'what can my devices do',
+        'what devices can you use',
+      ]) {
+        expect(
+          parse(phrase).command?.action,
+          AgentActions.deviceList,
+          reason: phrase,
+        );
       }
     });
 

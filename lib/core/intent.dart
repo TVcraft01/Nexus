@@ -34,6 +34,7 @@
 //    honest move is one question, not a guess. Anything wider is speculative
 //    machinery with no phrasing to justify it yet.
 import 'agent_contract.dart';
+import 'capability.dart';
 
 /// One phrase family that means [capability].
 ///
@@ -598,28 +599,28 @@ abstract final class IntentArgs {
     return leadingRecipient(raw) == null;
   }
 
-  /// Whether [raw] names somebody *after* its head: "hello to mom", "see you
-  /// to night".
+  /// A phrase that names a value *and* the person it goes to — "hello to mom",
+  /// "love you to mom" — read as `(value, recipient)`. Null when it names only
+  /// one of the two.
   ///
-  /// Only a send needs this, because only a send has a competing reading for
-  /// those words — "send X to Y" names where the thing goes. This family
-  /// cannot tell the value from the name without the address book, so it
-  /// refuses rather than message a person called "hello to mom". A text has
-  /// one recipient and it is the first thing named, so a "to" in the rest of
-  /// its object is the draft's own word and this rule does not apply there.
-  ///
-  /// Only [personPrepositions], and this is the boundary that matters: "send
-  /// mom see you on monday" is a draft, and treating "on" as a second
-  /// recipient took the whole class of messages that say when or where.
-  static bool carriesPersonRecipientAfterHead(String raw) {
+  /// The last preposition is the one that introduces the recipient, and the
+  /// words before it are what is being sent: no other reading of "send hello
+  /// to mom" is honest, because the sentence itself says which part is which.
+  /// Only [personPrepositions] ("to", "onto") — the same boundary as
+  /// everywhere else: "on" is how a draft says when or where ("send mom see
+  /// you on monday"), and treating it as a second recipient took the whole
+  /// class of messages that say "on my way".
+  static ({String value, String recipient})? splitAtRecipient(String raw) {
     final words = _words(raw);
-    var i = 0;
-    while (i < words.length && recipientPrepositions.contains(words[i])) {
-      i++;
+    for (var i = words.length - 1; i > 0; i--) {
+      if (!personPrepositions.contains(words[i])) continue;
+      if (i == words.length - 1) continue; // nothing named after it
+      return (
+        value: words.sublist(0, i).join(' '),
+        recipient: words.sublist(i + 1).join(' '),
+      );
     }
-    if (i >= words.length) return false;
-    i++; // the head name itself
-    return words.skip(i).any(personPrepositions.contains);
+    return null;
   }
 }
 
@@ -676,6 +677,59 @@ final List<IntentRule> kIntentRules = [
       target: 'local',
       arguments: {'when': IntentArgs.calendarWhen(text)},
     ),
+  ),
+
+  // --- One part of the catalogue, asked about directly: "what can you do
+  // with music", "what can you do with your things", "what can i do for fun",
+  // "what can you automate". The same question as "what can you do", asked
+  // about a part of it, and answered by the registry from the section or area
+  // the words name — the topic rides on the command so the catalogue answers
+  // the part that was asked about instead of the whole list.
+  //
+  // Declared before the weather rule on purpose: "what can you do with the
+  // weather" satisfies that rule's own words ('what' + 'do' + 'weather') and
+  // would otherwise be answered as a request for the forecast, which is a
+  // different question. Two things it declines, because each already has an
+  // owner whose answer is the one being asked for:
+  //
+  //  * a device noun ("what can you do with my devices") — the device
+  //    registry's answer, which is each device's capabilities;
+  //  * a topic that only names the assistant itself ("what can you help
+  //    with") — a request for the whole list, which the catalogue's own help
+  //    phrases answer.
+  IntentRule(
+    AgentActions.helpGet,
+    needs: [
+      {'what', 'whats'},
+      {'can', 'could'},
+      {'you', 'i'},
+    ],
+    build: (text) {
+      final asked = RegExp(
+        r'^(?:what|whats) (?:else )?(?:can|could) (?:you|i)(?: (.*))?$',
+      ).firstMatch(text.text);
+      if (asked == null) return null;
+      final what = (asked.group(1) ?? '').trim();
+      // "…do", "…do with X": the verb is the question's own and the topic is
+      // what it asks about. "what can you automate" has no verb of ours in it,
+      // so what follows the question is the topic itself.
+      final verbatim = RegExp(
+        r'^(?:do|does)(?: (?:with|for|about|on) (.*))?$',
+      ).firstMatch(what);
+      final topic = verbatim == null
+          ? what
+          : (verbatim.group(1) ?? '').trim();
+      if (_topicNamesDevice.hasMatch(topic)) return null;
+      final named = helpTopicWords(topic);
+      if (named.isNotEmpty && named.every(_topicNamesNexus.contains)) {
+        return null;
+      }
+      return ParsedCommand(
+        action: AgentActions.helpGet,
+        target: 'local',
+        arguments: {'topic': topic},
+      );
+    },
   ),
 
   // --- Weather: "what is the forecast" was a memory question about "the
@@ -820,6 +874,19 @@ final List<IntentRule> kIntentRules = [
     ),
   ),
 ];
+
+/// Whether a capability question names one of the user's devices. Those are
+/// the device registry's answer — what each paired device advertises — rather
+/// than a section of this catalogue, so the rule above declines and lets it
+/// answer.
+final RegExp _topicNamesDevice = RegExp(
+  '\\b(?:${IntentArgs.deviceNouns})\\b',
+);
+
+/// The words that name the assistant itself rather than anything it can do.
+/// "what can you help with" asks for the whole list, not for a part of it, so
+/// the rule above declines and the catalogue's own help phrases answer.
+const Set<String> _topicNamesNexus = {'help', 'nexus', 'assistant'};
 
 /// Whether a device question is asking what the devices can *do*, rather than
 /// which ones exist. One predicate for the whole class — "what devices can you

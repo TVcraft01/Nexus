@@ -1941,11 +1941,22 @@ class CommandInterpreter {
           ),
         );
       }
-      // Strip trailing "on my phone" etc.
-      final cleaned = who.replaceAll(
-        RegExp(r'\s+(?:on|from)\s+(?:my\s+)?(?:phone|device|cell)$'),
-        '',
-      );
+      // A trailing device marker says where the call happens, not who it is.
+      // Read off by the one marker reader the whole interpreter shares, so
+      // "call jamie on my pc" names jamie too rather than a contact called
+      // "jamie on my pc". When the marker is all there is ("call on my
+      // phone"), nobody was named and the honest answer asks who.
+      final cleaned = _stripDeviceSuffix(who);
+      if (cleaned.isEmpty) {
+        return InterpretResult.needsInfo(
+          'call.contact',
+          'Who should I call?',
+          const ParsedCommand(
+            action: AgentActions.callPlace,
+            target: 'local',
+          ),
+        );
+      }
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.callPlace,
@@ -1981,6 +1992,20 @@ class CommandInterpreter {
       // where the send goes, not part of who it goes to, and leaving it in
       // would read a real contact as an object carrying a recipient.
       final object = _stripDeviceSuffix(textMsg.group(1)!).trim();
+      // The object *is* the device marker: "text on my phone" names where the
+      // text would go and nobody to send it to. Asking for the recipient is
+      // the honest answer — reading "my phone" as a contact opened a text to
+      // a person who does not exist.
+      if (object.isEmpty) {
+        return InterpretResult.needsInfo(
+          'message.contact',
+          'Who should I text?',
+          const ParsedCommand(
+            action: AgentActions.messageSend,
+            target: 'local',
+          ),
+        );
+      }
       // "text to mom" names mom: the preposition introduces the recipient here
       // exactly as it does for a send, so it is read off rather than folded
       // into the name. An object that carries a recipient and names nobody
@@ -2160,8 +2185,14 @@ class CommandInterpreter {
         ),
       );
     }
+    // The destination prepositions, not every recipient preposition: for a
+    // send, "on <device>" names the device that performs it — how every other
+    // verb here already reads a trailing "on my phone" — so it cannot also
+    // mean the device the text is pushed to. "send mom on my phone" is a
+    // message to mom, not the word "mom" on the clipboard; "send hello to my
+    // pc" is unchanged. A copy is text by definition, so it keeps all three.
     final sendClip = RegExp(
-      '^send (.+) (?:${IntentArgs.recipientPrepositions.join('|')}) '
+      '^send (.+) (?:${IntentArgs.personPrepositions.join('|')}) '
       '(?:my |the )?(?:${IntentArgs.deviceNouns})\$',
     ).firstMatch(norm);
     if (sendClip != null) {
@@ -2189,23 +2220,28 @@ class CommandInterpreter {
     // understand, and saying so is the honest answer.
     final bareSend = RegExp(r'^send (.+)$').firstMatch(norm);
     if (bareSend != null) {
-      final object = bareSend.group(1)!.trim();
+      // The trailing device marker is read off first, for every shape below:
+      // it says where the send happens, never who or what it is. "send mom on
+      // my phone" names mom, and "send on my laptop" names nothing at all.
+      final raw = bareSend.group(1)!.trim();
+      final object = _stripDeviceSuffix(raw);
+      // Nothing but a device marker ("send to my pc", "send on my laptop"):
+      // what is missing is the text, and the clipboard path already asks for
+      // it by name.
+      if (object.isEmpty || _recipientOnly.hasMatch(raw)) {
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.clipboardWrite,
+            target: 'local',
+            arguments: const {'text': ''},
+          ),
+        );
+      }
       final recipient = IntentArgs.leadingRecipient(object);
       // A recipient with nothing to send is *understood*: the recipient was
       // parsed and a detail is missing. "I don't understand" claims Nexus did
       // not parse a sentence whose recipient it plainly did.
       if (recipient != null) {
-        if (_recipientOnly.hasMatch(object)) {
-          // It names a device, so what is missing is the text to copy and the
-          // clipboard path already asks for it.
-          return InterpretResult.matched(
-            ParsedCommand(
-              action: AgentActions.clipboardWrite,
-              target: 'local',
-              arguments: const {'text': ''},
-            ),
-          );
-        }
         // Anyone else is someone to send to, so the missing detail is asked
         // for in the family that sends to people: the answer fills the body,
         // and the send is armed with the name the user gave — never with the
@@ -2225,13 +2261,34 @@ class CommandInterpreter {
           ),
         );
       }
+      // "send hello to mom" names both halves of the sentence: what is sent,
+      // and who it goes to. Read as a message to that person, with the words
+      // before the preposition as the body — the alternative (messaging a
+      // contact called "hello to mom") invents a name the user never said, and
+      // refusing the sentence claims Nexus did not parse one whose parts it
+      // plainly did.
+      final split = IntentArgs.splitAtRecipient(object);
+      if (split != null) {
+        // "send this to mom" still names no value to send.
+        if (IntentArgs.isUnattachedValue(split.value)) {
+          return InterpretResult.unknown();
+        }
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.messageSend,
+            target: 'local',
+            arguments: {
+              'contact': _stripDeviceSuffix(split.recipient),
+              'body': split.value,
+            },
+          ),
+        );
+      }
       if (IntentArgs.isUnattachedValue(object) ||
-          IntentArgs.namesNoRecipient(object) ||
-          IntentArgs.carriesPersonRecipientAfterHead(object)) {
-        // A pronoun, a head that names nobody ("this to the tv"), or a value
-        // followed by a recipient ("hello to mom") names no contact this verb
-        // can act on: in all three the value was never said, so Nexus says it
-        // did not understand rather than inventing a person to message.
+          IntentArgs.namesNoRecipient(object)) {
+        // A pronoun, or a head that names nobody ("this to the tv"): the value
+        // was never said, so Nexus says it did not understand rather than
+        // inventing a person to message.
         return InterpretResult.unknown();
       }
       return InterpretResult.matched(
@@ -2835,11 +2892,22 @@ class CommandInterpreter {
         _ => true,
       };
 
-  /// Removes a trailing device marker ("on my phone") so it never becomes
-  /// part of a contact name or a message draft.
+  /// Removes a device marker ("on my phone", "from my laptop") so it never
+  /// becomes part of a contact name or a message draft — and returns nothing
+  /// at all when the object *is* the marker ("text on my phone" names no
+  /// recipient, so the caller asks for one instead of messaging a person
+  /// called "my phone").
+  ///
+  /// The vocabulary is [IntentArgs.deviceNouns]'s, read rather than restated,
+  /// so every device this interpreter knows is a marker for every verb: a
+  /// hand-written list of three nouns here meant "text jamie on my pc" kept
+  /// "on my pc" in the contact while "text jamie on my phone" did not.
   String _stripDeviceSuffix(String s) => s
       .replaceAll(
-        RegExp(r'\s+(?:on|from)\s+(?:my\s+)?(?:phone|device|cell)$'),
+        RegExp(
+          '(?:^|\\s+)(?:on|from|via|using)\\s+(?:my\\s+|the\\s+)?'
+          '(?:${IntentArgs.deviceNouns})\$',
+        ),
         '',
       )
       .trim();
