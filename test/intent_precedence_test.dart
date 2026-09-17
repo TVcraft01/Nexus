@@ -37,6 +37,13 @@ class _Claim {
   /// [IntentStage.unsupported]).
   final String? action;
 
+  /// Other capabilities the same stage's rule may answer with, when one rule
+  /// has two honest answers. The capability question is the whole of this: a
+  /// topic that names a device is answered with the device registry rather
+  /// than the catalogue, which is still an answer about capabilities and still
+  /// a question — never the action the same words also name.
+  final Set<String> alsoAnswers;
+
   /// Present when the rule can still decline a sentence whose words it
   /// matches, so a sentence the rule itself refuses is not its sentence.
   final ParsedCommand? Function(IntentText text)? build;
@@ -53,9 +60,14 @@ class _Claim {
     this.forbids = const {},
     this.phrase,
     this.action,
+    this.alsoAnswers = const {},
     this.build,
     this.declares,
   });
+
+  /// Whether [answered] is one of the answers this stage declares.
+  bool answersWith(String? answered) =>
+      answered == action || alsoAnswers.contains(answered);
 }
 
 /// The rules of [stage], read from the same lists the resolver reads.
@@ -65,6 +77,20 @@ class _Claim {
 /// hand-copied list could. Every rule of an existing stage is read from its
 /// list, so a new rule is covered without editing this mirror.
 List<_Claim> _claimsIn(IntentStage stage) => switch (stage) {
+  IntentStage.capabilityQuestion => [
+    for (var i = 0; i < kCapabilityQuestionRules.length; i++)
+      _Claim(
+        stage,
+        'capability question #$i (${kCapabilityQuestionRules[i].capability})',
+        needs: kCapabilityQuestionRules[i].needs,
+        forbids: kCapabilityQuestionRules[i].forbids,
+        action: kCapabilityQuestionRules[i].capability,
+        // The device registry's answer, which the same rule gives for a topic
+        // that names one of the user's devices.
+        alsoAnswers: const {AgentActions.deviceList},
+        build: kCapabilityQuestionRules[i].build,
+      ),
+  ],
   IntentStage.ambiguous => [
     for (final ambiguity in kAmbiguousPhrasings)
       for (final phrase in ambiguity.phrases)
@@ -126,10 +152,11 @@ bool _claims(_Claim claim, IntentText text) {
 bool _answers(_Claim claim, InterpretResult result) => switch (claim.stage) {
   IntentStage.ambiguous => result.outcome == InterpretOutcome.ambiguous,
   IntentStage.unsupported => result.outcome == InterpretOutcome.unsupported,
+  IntentStage.capabilityQuestion ||
   IntentStage.diagnostic ||
   IntentStage.matched =>
     result.outcome == InterpretOutcome.matched &&
-        result.command?.action == claim.action,
+        claim.answersWith(result.command?.action),
 };
 
 /// The sentence [claim] describes, built from its own words in group order.
@@ -213,10 +240,11 @@ void main() {
               final answers = switch (earlier) {
                 IntentStage.ambiguous => resolution is IntentAmbiguous,
                 IntentStage.unsupported => resolution is IntentUnsupported,
+                IntentStage.capabilityQuestion ||
                 IntentStage.diagnostic ||
                 IntentStage.matched =>
                   resolution is IntentMatched &&
-                      resolution.command.action == a.action,
+                      a.answersWith(resolution.command.action),
               };
               if (!answers) {
                 violations.add(
@@ -235,6 +263,48 @@ void main() {
             'kIntentStages was not exercised at all',
       );
       expect(violations, isEmpty);
+    });
+
+    test('a capability question is never answered by doing the thing', () {
+      // Every action rule, every diagnostic rule and every unsupported intent
+      // contributes a word a user could ask about, and each of those words is
+      // what makes the sentence theirs as well as the question's: "what can
+      // you do with the calendar" satisfies the calendar rule, "…with a
+      // detailed image of a cat" satisfies the image intent. Asked that way,
+      // every one of them has to come back a question — answered by the
+      // capability stage — because the defect this stage exists for is a
+      // schedule read where an explanation was asked for.
+      final topics = [
+        for (final rule in kIntentRules) rule.needs.first.first,
+        for (final rule in kDiagnosticRules) rule.needs.first.first,
+        for (final intent in kUnsupportedIntents) intent.needs.first.first,
+      ];
+      expect(
+        topics.length,
+        kIntentRules.length +
+            kDiagnosticRules.length +
+            kUnsupportedIntents.length,
+        reason: 'the corpus is one topic per rule of every other stage — '
+            'every rule, not a sample of topics chosen because they pass',
+      );
+      final answeredByAnAction = <String>[];
+      for (final topic in topics.toSet()) {
+        final asked = 'what can you do with $topic';
+        final result = const CommandInterpreter().interpret(asked);
+        final action = result.command?.action;
+        if (action != AgentActions.helpGet &&
+            action != AgentActions.deviceList) {
+          answeredByAnAction.add('"$asked" → ${action ?? result.outcome.name}');
+        }
+      }
+      expect(
+        answeredByAnAction,
+        isEmpty,
+        reason: 'a capability question must be answered as a question: the '
+            'only right answers are what Nexus can do (help.get) and what each '
+            'device advertises (device.list), never the action the same words '
+            'also name',
+      );
     });
 
     test('the check would notice a rule that is stolen', () {

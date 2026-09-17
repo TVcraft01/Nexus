@@ -248,6 +248,15 @@ class IntentUnsupported extends IntentResolution {
 /// list to prove that every rule is reachable and that a sentence two stages
 /// could claim goes to the earlier one.
 enum IntentStage {
+  /// A question about what Nexus itself can do, answered as a question.
+  ///
+  /// First, because it is a question and the words it is built from are the
+  /// words action rules are built from too: "what can you do with the
+  /// calendar" satisfies the calendar rule's own needs exactly as it
+  /// satisfies this one's, so a stage behind it answers the question by doing
+  /// the thing — a schedule read where an explanation was asked for.
+  capabilityQuestion,
+
   /// One sentence, two honest readings. Asking is the answer: guessing
   /// between them would be worse than one question.
   ambiguous,
@@ -269,6 +278,7 @@ enum IntentStage {
 /// A stage missing from this list is a stage whose rules can never run, and a
 /// stage listed twice asks the same question twice; the test pins both.
 const List<IntentStage> kIntentStages = [
+  IntentStage.capabilityQuestion,
   IntentStage.ambiguous,
   IntentStage.diagnostic,
   IntentStage.unsupported,
@@ -305,6 +315,12 @@ class IntentResolver {
   /// understanding and the order it is applied in cannot drift apart.
   IntentResolution? _inStage(IntentStage stage, IntentText text) =>
       switch (stage) {
+        IntentStage.capabilityQuestion => switch (
+          _match(kCapabilityQuestionRules, text)
+        ) {
+          final command? => IntentMatched(command),
+          _ => null,
+        },
         IntentStage.ambiguous => _ambiguity(text),
         // A question about a failure is not a request to attempt the thing
         // that failed: "why can't you generate an image" must diagnose, not
@@ -543,6 +559,102 @@ abstract final class IntentArgs {
   static const String deviceNouns =
       'phone|pc|computer|laptop|tablet|tv|television|devices|other devices|others';
 
+  /// Words that introduce something described rather than named — "my wife",
+  /// "the couch".
+  static const Set<String> determiners = {
+    'a',
+    'an',
+    'the',
+    'my',
+    'our',
+    'your',
+    'his',
+    'her',
+    'their',
+    'this',
+    'that',
+    'these',
+    'those',
+  };
+
+  /// The people a sentence describes by their relationship instead of naming —
+  /// the words a determiner may introduce and still be a recipient ("send
+  /// hello to my wife"). English and French, because the message family is
+  /// bilingual; normalisation has already folded the accents.
+  ///
+  /// A closed list on purpose, and the whole of what tells "my wife" apart
+  /// from "my fridge": outside it, a determiner-led phrase names something
+  /// that cannot read a message, so a sentence that puts one where a recipient
+  /// goes is a sentence this layer did not understand rather than a contact to
+  /// invent. A name needs no determiner — "send hello to jamie" — which is how
+  /// the rest of the address book is reached.
+  static const Set<String> relationshipWords = {
+    'aunt',
+    'boyfriend',
+    'brother',
+    'cousin',
+    'dad',
+    'daddy',
+    'daughter',
+    'father',
+    'femme',
+    'fiance',
+    'fiancee',
+    'fille',
+    'fils',
+    'frere',
+    'girlfriend',
+    'grandad',
+    'grandfather',
+    'grandma',
+    'grandmother',
+    'grandpa',
+    'granny',
+    'husband',
+    'mama',
+    'maman',
+    'mamie',
+    'mari',
+    'mere',
+    'mom',
+    'mother',
+    'mum',
+    'nephew',
+    'niece',
+    'oncle',
+    'papa',
+    'papi',
+    'parent',
+    'parents',
+    'partner',
+    'pere',
+    'sibling',
+    'sister',
+    'soeur',
+    'son',
+    'spouse',
+    'tante',
+    'uncle',
+    'wife',
+  };
+
+  /// Whether [raw] can stand where a recipient goes: a name or a number
+  /// ("mom", "jamie", "mary jane", "0612345678"), or one of
+  /// [relationshipWords] with or without its determiner ("my wife", "wife").
+  ///
+  /// A phrase Nexus describes rather than names — "my fridge", "the couch",
+  /// "my pc" — names a thing, so the verbs that hand an object to the address
+  /// book ask this first: reading one as a recipient invented a person called
+  /// "my fridge" and offered to remember a phone number for them.
+  static bool namesPerson(String raw) {
+    final words = _words(raw);
+    if (words.isEmpty) return false;
+    if (words.every(unattachedWords.contains)) return false;
+    if (RegExp('\\b(?:$deviceNouns)\\b').hasMatch(raw)) return false;
+    if (!determiners.contains(words.first)) return true;
+    return words.any(relationshipWords.contains);
+  }
+
   /// The recipient a phrase names at its head, or null when it names nobody:
   /// "to mom" → `mom`, "on my laptop" → `my laptop`, "hello to mom" → null.
   ///
@@ -595,7 +707,13 @@ abstract final class IntentArgs {
     final words = _words(raw);
     if (words.isEmpty) return false;
     if (unattachedWords.contains(words.first)) return true;
-    if (!recipientPrepositions.contains(words.first)) return false;
+    if (!recipientPrepositions.contains(words.first)) {
+      // A phrase that *ends* where a name should start names nobody just as
+      // plainly: "send hello to" is a value with the recipient still missing,
+      // and reading it as a contact called "hello to" invents the same person
+      // the leading case refuses.
+      return recipientPrepositions.contains(words.last);
+    }
     return leadingRecipient(raw) == null;
   }
 
@@ -626,6 +744,99 @@ abstract final class IntentArgs {
 
 // ---------------------------------------------------------------------------
 // The rules
+// ---------------------------------------------------------------------------
+// The capability question
+// ---------------------------------------------------------------------------
+
+/// Questions about what Nexus can do, asked about one part of it: "what can
+/// you do with music", "what can you do with your things", "what can i do
+/// for fun", "what can you automate". The same question as "what can you
+/// do", asked about a part of it, answered by the registry from the section
+/// or area the words name — the topic rides on the command so the catalogue
+/// answers the part that was asked about instead of the whole list.
+///
+/// They are their own stage, applied before every action rule, because they
+/// are questions. The words are the same words: "what can you do with the
+/// calendar" and "what can you do with a detailed image of a cat" satisfy the
+/// calendar and image rules' own needs, so anywhere below them the question is
+/// answered by doing the thing — a schedule read, or an apology for an image
+/// Nexus cannot make, where an explanation of the capability was asked for.
+///
+/// Two topics belong to someone else, and each is handed over the way its
+/// owner can answer it: a topic that only names the assistant itself ("what
+/// can you help with") asks for the whole list, so this rule declines and the
+/// catalogue's own help phrases answer; a topic that names a device is
+/// answered here *in the device registry's vocabulary* — `device.list` with
+/// the capability detail — because that answer is each device's
+/// capabilities, which is the question the user asked.
+final List<IntentRule> kCapabilityQuestionRules = [
+  IntentRule(
+    AgentActions.helpGet,
+    needs: [
+      {'what', 'whats'},
+      {'can', 'could'},
+      {'you', 'i', 'nexus', 'assistant'},
+    ],
+    build: (text) {
+      // Two orders, because people use both: "what can you do" and "tell me
+      // what you can do". The second is the same question with the subject in
+      // front of its verb, and reading only the first made the ordinary
+      // sentence "tell me what you can do" a phrase Nexus had never heard.
+      final asked = RegExp(
+        r'^(?:tell me |show me |say )?(?:what|whats) (?:else )?'
+        r'(?:(?:can|could) (?:you|i|nexus|assistant)'
+        r'|(?:you|i|nexus|assistant) (?:can|could))(?: (.*))?$',
+      ).firstMatch(text.text);
+      if (asked == null) return null;
+      final what = (asked.group(1) ?? '').trim();
+      // "…do", "…do with X": the verb is the question's own and the topic is
+      // what it asks about. "what can you automate" has no verb of ours in it,
+      // so what follows the question is the topic itself.
+      final verbatim = RegExp(
+        r'^(?:do|does)(?: (?:with|for|about|on) (.*))?$',
+      ).firstMatch(what);
+      final topic = verbatim == null
+          ? what
+          : (verbatim.group(1) ?? '').trim();
+      final named = helpTopicWords(topic);
+      if (named.isNotEmpty && named.every(_topicNamesNexus.contains)) {
+        return null;
+      }
+      // A topic that names a device is not a section of this catalogue but the
+      // device registry's answer — what each paired device actually advertises
+      // — so it is asked in that vocabulary rather than read as a section
+      // called "my phone". Singular as well as plural: a phone-first user asks
+      // about "my phone", and that question used to fall past the plural-only
+      // device rule into "I don't understand" while its own answer existed.
+      if (_topicNamesDevice.hasMatch(topic)) {
+        return const ParsedCommand(
+          action: AgentActions.deviceList,
+          target: 'local',
+          arguments: {'detail': 'capabilities'},
+        );
+      }
+      return ParsedCommand(
+        action: AgentActions.helpGet,
+        target: 'local',
+        arguments: {'topic': topic},
+      );
+    },
+  ),
+];
+
+/// Whether a capability question names one of the user's devices. Those are
+/// the device registry's answer — what each paired device advertises — rather
+/// than a section of this catalogue, so the rule above answers about devices
+/// instead of looking for a section with that name.
+final RegExp _topicNamesDevice = RegExp(
+  '\\b(?:${IntentArgs.deviceNouns})\\b',
+);
+
+/// The words that name the assistant itself rather than anything it can do.
+/// "what can you help with" asks for the whole list, not for a part of it, so
+/// the rule above declines and the catalogue's own help phrases answer.
+const Set<String> _topicNamesNexus = {'help', 'nexus', 'assistant'};
+
 // ---------------------------------------------------------------------------
 
 /// Every matched rule, in priority order. Each names an [AgentActions] id.
@@ -677,59 +888,6 @@ final List<IntentRule> kIntentRules = [
       target: 'local',
       arguments: {'when': IntentArgs.calendarWhen(text)},
     ),
-  ),
-
-  // --- One part of the catalogue, asked about directly: "what can you do
-  // with music", "what can you do with your things", "what can i do for fun",
-  // "what can you automate". The same question as "what can you do", asked
-  // about a part of it, and answered by the registry from the section or area
-  // the words name — the topic rides on the command so the catalogue answers
-  // the part that was asked about instead of the whole list.
-  //
-  // Declared before the weather rule on purpose: "what can you do with the
-  // weather" satisfies that rule's own words ('what' + 'do' + 'weather') and
-  // would otherwise be answered as a request for the forecast, which is a
-  // different question. Two things it declines, because each already has an
-  // owner whose answer is the one being asked for:
-  //
-  //  * a device noun ("what can you do with my devices") — the device
-  //    registry's answer, which is each device's capabilities;
-  //  * a topic that only names the assistant itself ("what can you help
-  //    with") — a request for the whole list, which the catalogue's own help
-  //    phrases answer.
-  IntentRule(
-    AgentActions.helpGet,
-    needs: [
-      {'what', 'whats'},
-      {'can', 'could'},
-      {'you', 'i'},
-    ],
-    build: (text) {
-      final asked = RegExp(
-        r'^(?:what|whats) (?:else )?(?:can|could) (?:you|i)(?: (.*))?$',
-      ).firstMatch(text.text);
-      if (asked == null) return null;
-      final what = (asked.group(1) ?? '').trim();
-      // "…do", "…do with X": the verb is the question's own and the topic is
-      // what it asks about. "what can you automate" has no verb of ours in it,
-      // so what follows the question is the topic itself.
-      final verbatim = RegExp(
-        r'^(?:do|does)(?: (?:with|for|about|on) (.*))?$',
-      ).firstMatch(what);
-      final topic = verbatim == null
-          ? what
-          : (verbatim.group(1) ?? '').trim();
-      if (_topicNamesDevice.hasMatch(topic)) return null;
-      final named = helpTopicWords(topic);
-      if (named.isNotEmpty && named.every(_topicNamesNexus.contains)) {
-        return null;
-      }
-      return ParsedCommand(
-        action: AgentActions.helpGet,
-        target: 'local',
-        arguments: {'topic': topic},
-      );
-    },
   ),
 
   // --- Weather: "what is the forecast" was a memory question about "the
@@ -874,19 +1032,6 @@ final List<IntentRule> kIntentRules = [
     ),
   ),
 ];
-
-/// Whether a capability question names one of the user's devices. Those are
-/// the device registry's answer — what each paired device advertises — rather
-/// than a section of this catalogue, so the rule above declines and lets it
-/// answer.
-final RegExp _topicNamesDevice = RegExp(
-  '\\b(?:${IntentArgs.deviceNouns})\\b',
-);
-
-/// The words that name the assistant itself rather than anything it can do.
-/// "what can you help with" asks for the whole list, not for a part of it, so
-/// the rule above declines and the catalogue's own help phrases answer.
-const Set<String> _topicNamesNexus = {'help', 'nexus', 'assistant'};
 
 /// Whether a device question is asking what the devices can *do*, rather than
 /// which ones exist. One predicate for the whole class — "what devices can you

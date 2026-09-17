@@ -1950,7 +1950,7 @@ class CommandInterpreter {
       if (cleaned.isEmpty) {
         return InterpretResult.needsInfo(
           'call.contact',
-          'Who should I call?',
+          AgentAsks.whoToCall,
           const ParsedCommand(
             action: AgentActions.callPlace,
             target: 'local',
@@ -1999,7 +1999,7 @@ class CommandInterpreter {
       if (object.isEmpty) {
         return InterpretResult.needsInfo(
           'message.contact',
-          'Who should I text?',
+          AgentAsks.whoToText,
           const ParsedCommand(
             action: AgentActions.messageSend,
             target: 'local',
@@ -2251,6 +2251,12 @@ class CommandInterpreter {
         // to: "send to jamie from my phone" names jamie, never a contact
         // called "jamie from my phone".
         final who = _stripDeviceSuffix(recipient);
+        // A recipient-only send names no value and claims nothing, so it asks
+        // for the missing half whatever the recipient turns out to be: the
+        // address book, not this layer, is the judge of who the user meant.
+        // The value-then-recipient form below is stricter for exactly that
+        // reason — there the sentence's own words say which half is the name,
+        // and Nexus would be claiming a message rather than asking a question.
         return InterpretResult.needsInfo(
           'message.body',
           'What should I send to $who?',
@@ -2273,14 +2279,19 @@ class CommandInterpreter {
         if (IntentArgs.isUnattachedValue(split.value)) {
           return InterpretResult.unknown();
         }
+        // The sentence said which half is which, so the half after the
+        // preposition has to be able to be a recipient. "send hello to my
+        // fridge" names a thing where a person goes, and messaging it — or
+        // offering to remember its number — is inventing a contact the user
+        // never named. Pronouncing it unread is what this family does with
+        // every other object it cannot hand to the address book.
+        final who = _stripDeviceSuffix(split.recipient);
+        if (!IntentArgs.namesPerson(who)) return InterpretResult.unknown();
         return InterpretResult.matched(
           ParsedCommand(
             action: AgentActions.messageSend,
             target: 'local',
-            arguments: {
-              'contact': _stripDeviceSuffix(split.recipient),
-              'body': split.value,
-            },
+            arguments: {'contact': who, 'body': split.value},
           ),
         );
       }

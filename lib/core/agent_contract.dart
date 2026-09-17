@@ -257,6 +257,21 @@ class AgentMessage extends AgentDispatch {
 // advertises is derived from the capability registry — see
 // `core/capability.dart`'s `defaultCapabilitiesFor`.
 
+/// The questions Nexus asks when a sentence named the action but not the
+/// contact, worded once for every layer that can raise one.
+///
+/// The interpreter asks before dispatch ("text on my phone"), the catalogue
+/// asks when the dispatched command reached it with no contact, and a device
+/// agent asks when its own address book needs the name. Three layers, one
+/// question: a user who is asked the same thing twice must not read two
+/// different sentences, and a wording owned in three places drifts the first
+/// time one of them is edited.
+abstract final class AgentAsks {
+  static const String whoToCall = 'Who should I call?';
+  static const String whoToText = 'Who should I text?';
+  static const String whoToEmail = 'Who should I email?';
+}
+
 /// The assistant needs one more piece of information before it can act —
 /// either a missing argument ("which playlist?") or a phrase it has never
 /// heard before ("what should \"bring me home\" mean?"). The UI shows the
