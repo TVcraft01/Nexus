@@ -72,12 +72,17 @@ class CommandService {
   final void Function(String key, dynamic value)? onDefaultLearned;
 
   /// Arguments that are *content* rather than preference: what to write in a
-  /// message, not what time an alarm goes off. An answer to one of these is
-  /// used for the one send it was given for and then dropped — remembering a
-  /// body would send the same words to whoever is named next, and reporting
-  /// it as a preference would tell the user they chose a setting they never
-  /// chose.
-  static const Set<String> _contentArgs = {'message.body'};
+  /// message, or who one text or call is for — not what time an alarm goes
+  /// off. An answer to one of these is used for the one request it was given
+  /// for and then dropped: remembering a body would send the same words to
+  /// whoever is named next, remembering a recipient would silently re-address
+  /// the next one, and reporting either as a preference would tell the user
+  /// they chose a setting they never chose.
+  static const Set<String> _contentArgs = {
+    'message.body',
+    'message.contact',
+    'call.contact',
+  };
 
   /// What the card promises after it asks a question.
   ///

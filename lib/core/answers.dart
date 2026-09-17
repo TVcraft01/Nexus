@@ -712,13 +712,31 @@ String? _contactNumber(Iterable<MemoryFact> facts, String name) {
   return null;
 }
 
+/// The line every help answer ends with — the human frame around the list.
+const String _helpClosingLine =
+    'If I misunderstand, just teach me once — I remember.';
+
 /// "what can you do?" — the catalogue, built from the capability registry.
 ///
 /// The registry owns this answer: which capabilities are offered, the phrases
-/// they are offered as, the section each appears under and the one-line note
-/// beside it. A hand-written copy used to live here, and it had already fallen
-/// behind — 26 declared capabilities were never mentioned, and nothing could
-/// catch a line drifting from the phrase it claimed to describe.
+/// they are offered as, the section each appears under, the areas those
+/// sections are grouped into, and the note beside each capability. A
+/// hand-written copy used to live here, and it had already fallen behind — 26
+/// declared capabilities were never mentioned, and nothing could catch a line
+/// drifting from the phrase it claimed to describe.
+///
+/// Four shapes, because 47 capabilities in one message is a wall rather than
+/// an answer:
+///
+///  * **no topic** — the summary: one line per area, showing one phrase per
+///    section ([helpHeadline]), and how to hear any of it in full.
+///  * **a topic naming a section** ("what can you do with music") — that
+///    section in full, because that is the thing that was asked about.
+///  * **a topic naming only an area** ("what can you do with your things") —
+///    every section of that area, in registry order.
+///  * **a topic naming nothing** ("what can you do with files") — said
+///    plainly, with the areas that do exist. Nothing is invented to have
+///    something to say.
 ///
 /// Two things are added here that the registry deliberately does not hold,
 /// because they are about the device reading the answer rather than about the
@@ -731,31 +749,120 @@ String? _contactNumber(Iterable<MemoryFact> facts, String name) {
 ///  * **the closing line**, which is about the assistant rather than any one
 ///    capability.
 ///
-/// Every double-quoted span below is a phrase the registry offers for exactly
-/// one capability; `test/command_surface_test.dart` reads this output back and
-/// proves that, so the answer cannot advertise a phrase that means something
-/// else or nothing at all.
-String helpText(AnswerContext ctx) {
+/// Every double-quoted span below is either a phrase the registry offers for
+/// exactly one capability or an area's own question;
+/// `test/command_surface_test.dart` reads this output back and proves both, so
+/// the answer cannot offer a phrase that means something else or nothing at
+/// all.
+String helpText(AnswerContext ctx, {String? topic}) {
+  final asked = (topic ?? '').trim();
   final localKind = deviceKindOf(ctx.local?.platform ?? '');
+  // A question whose words say nothing about what Nexus can do — "what can you
+  // do for me" — is the whole list, not a topic nobody has heard of.
+  if (asked.isEmpty || helpTopicWords(asked).isEmpty) {
+    return _helpSummary(localKind);
+  }
+  // An area named outright is the area: it is one of the ways in the answer
+  // itself offers. Otherwise the narrower reading wins, as it does in the
+  // intent rules: a question naming one section gets that section, not the
+  // whole area holding it.
+  final areas = helpAreasNamed(asked);
+  if (areas.isNotEmpty) {
+    return _helpScoped(asked, [
+      for (final area in areas) ...helpSectionsInArea(area),
+    ], localKind);
+  }
+  final sections = helpSectionsNamed(asked);
+  if (sections.isNotEmpty) {
+    return _helpScoped(asked, sections, localKind);
+  }
+  return _helpNothingFor(asked);
+}
+
+/// The short answer: what Nexus can do, one line per area, and how to hear any
+/// of it in full.
+String _helpSummary(DeviceKind localKind) {
   final lines = <String>['Here is what I can do:'];
-  for (final group in kHelpGroups) {
+  final areas = [
+    for (final area in kHelpAreas) ?_areaHeadline(area, localKind),
+  ];
+  if (areas.isNotEmpty) {
+    lines
+      ..add('')
+      ..addAll(areas);
+  }
+  lines
+    ..add('')
+    ..add(
+      'Ask about any of them in full — "${kHelpAreas.first.question}" — '
+      'or just tell me what you want.',
+    )
+    ..add('')
+    ..add(_helpClosingLine);
+  return lines.join('\n');
+}
+
+/// One area as the summary lists it: its name and one phrase per section it
+/// covers, or null when the area offers nothing at all. The phrase is
+/// [helpHeadline]'s — the registry's own canonical example where a section has
+/// one — and keeps [_helpTail], so a summary read on a computer still says
+/// which of its lines this device cannot run.
+String? _areaHeadline(HelpArea area, DeviceKind localKind) {
+  final headlines = [
+    for (final group in helpSectionsInArea(area))
+      if (helpHeadline(group) case final capability?)
+        '"${capability.example ?? phrasesOf(capability).first}"'
+            '${_helpTail(capability, localKind)}',
+  ];
+  if (headlines.isEmpty) return null;
+  return '${area.name}: ${headlines.join(' / ')}';
+}
+
+/// What Nexus can do with [asked], in full: every section named, each with all
+/// the phrases it offers.
+String _helpScoped(
+  String asked,
+  List<String> sections,
+  DeviceKind localKind,
+) {
+  final lines = <String>['Here is what I can do with $asked:'];
+  for (final group in sections) {
     final capabilities = helpCapabilitiesIn(group);
     if (capabilities.isEmpty) continue;
     lines
       ..add('')
-      ..add('$group:');
-    for (final capability in capabilities) {
-      final phrases = [
-        for (final phrase in phrasesOf(capability)) '"$phrase"',
-      ].join(' / ');
-      lines.add('  $phrases${_helpTail(capability, localKind)}');
-    }
+      ..add('$group:')
+      ..addAll([
+        for (final capability in capabilities)
+          '  ${[
+            for (final phrase in phrasesOf(capability)) '"$phrase"',
+          ].join(' / ')}${_helpTail(capability, localKind)}',
+      ]);
   }
   lines
     ..add('')
-    ..add('If I misunderstand, just teach me once — I remember.');
+    ..add(_helpClosingLine);
   return lines.join('\n');
 }
+
+/// The honest answer when a topic names nothing in this answer. It says what
+/// it does not list, offers what it does, and points at the path that can
+/// really answer — ask for the thing itself, and Nexus either does it or says
+/// why it cannot. It never reaches for a neighbouring capability to appear
+/// more capable than it is, and it never claims Nexus is unable to do
+/// something it can (this list is not the whole of Nexus: driving an app is
+/// a capability no section here advertises yet).
+String _helpNothingFor(String asked) => [
+  'I don\'t have anything listed for "$asked" yet.',
+  '',
+  'The areas I do have: ${kHelpAreas.map((area) => area.name).join(', ')} — '
+      'say one back to me and I\'ll list it in full.',
+  '',
+  'Or just ask me for it: if I can, I will — and if I can\'t, I\'ll tell you '
+      'why.',
+  '',
+  _helpClosingLine,
+].join('\n');
 
 /// The clause after a capability's phrases: its own note, and — when the
 /// capability runs only on a kind of device this is not — what it needs.
@@ -795,7 +902,13 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
       // switch can tell them apart.
       if (command.arguments['topic'] == 'why') return unableAnswer(ctx);
       if (command.arguments['topic'] == 'actions') return lastActionAnswer(ctx);
-      return _answerWith(helpText(ctx));
+      // Any other topic is the area or section the user asked about — "what
+      // can you do with music" — and the answer is that part of the catalogue
+      // rather than the summary. The registry decides what the topic names, so
+      // an unknown one is answered honestly rather than guessed at.
+      return _answerWith(
+        helpText(ctx, topic: command.arguments['topic'] as String?),
+      );
     case AgentActions.greet:
       final name = ctx.userName;
       const base =
