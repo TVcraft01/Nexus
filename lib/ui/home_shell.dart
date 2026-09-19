@@ -20,6 +20,48 @@ import 'files_view.dart';
 import 'settings_view.dart';
 import 'theme.dart';
 
+/// One navigation entry, in one list.
+///
+/// The phone's bottom bar and the desktop rail are two layouts of the same
+/// thing: same order, same names, same icons, same words for the user. Only
+/// the layout differs — a phone is not a shrunken desktop, and the desktop is
+/// not a stretched phone.
+class NexusDestination {
+  const NexusDestination({
+    required this.label,
+    required this.icon,
+    required this.selectedIcon,
+  });
+
+  final String label;
+  final IconData icon;
+  final IconData selectedIcon;
+}
+
+/// Assistant first: it is the app's main screen, not a tab among peers.
+const List<NexusDestination> kNexusDestinations = [
+  NexusDestination(
+    label: 'Assistant',
+    icon: Icons.forum_outlined,
+    selectedIcon: Icons.forum_rounded,
+  ),
+  NexusDestination(
+    label: 'Devices',
+    icon: Icons.devices_outlined,
+    selectedIcon: Icons.devices_rounded,
+  ),
+  NexusDestination(
+    label: 'Files',
+    icon: Icons.folder_outlined,
+    selectedIcon: Icons.folder_rounded,
+  ),
+  NexusDestination(
+    label: 'Settings',
+    icon: Icons.tune_outlined,
+    selectedIcon: Icons.tune_rounded,
+  ),
+];
+
 class HomeShell extends StatefulWidget {
   final MeshService mesh;
   const HomeShell({super.key, required this.mesh});
@@ -29,7 +71,10 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
+  /// Starts on the Assistant: the first thing a new user should see is what
+  /// Nexus is and where to talk to it, not a device list they do not have yet.
   int _index = 0;
+
   ClipEntry? _lastShown;
 
   /// The conversational brain, one per platform: desktops run a strong
@@ -134,7 +179,8 @@ class _HomeShellState extends State<HomeShell> {
       if (path == null) {
         setState(() {
           _applying = false;
-          _updateError = 'Could not download the update. Check your connection and try again.';
+          _updateError =
+              'Could not download the update. Check your connection and try again.';
         });
         return;
       }
@@ -190,29 +236,6 @@ class _HomeShellState extends State<HomeShell> {
       defaultTargetPlatform == TargetPlatform.windows ||
       defaultTargetPlatform == TargetPlatform.macOS;
 
-  static const _destinations = [
-    NavigationRailDestination(
-      icon: Icon(Icons.devices_rounded),
-      selectedIcon: Icon(Icons.devices_rounded),
-      label: Text('Devices'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.folder_rounded),
-      selectedIcon: Icon(Icons.folder_rounded),
-      label: Text('Files'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.forum_rounded),
-      selectedIcon: Icon(Icons.forum_rounded),
-      label: Text('Assistant'),
-    ),
-    NavigationRailDestination(
-      icon: Icon(Icons.tune_rounded),
-      selectedIcon: Icon(Icons.tune_rounded),
-      label: Text('Settings'),
-    ),
-  ];
-
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -236,15 +259,18 @@ class _HomeShellState extends State<HomeShell> {
         }
 
         final views = [
+          AssistantView(mesh: widget.mesh, brain: _brain),
           DevicesView(mesh: widget.mesh),
           FilesView(mesh: widget.mesh),
-          AssistantView(mesh: widget.mesh, brain: _brain),
           SettingsView(
             mesh: widget.mesh,
             onCheckForUpdate: _checkForUpdates,
           ),
         ];
 
+        // The update banner sits at the head of the page it belongs to, not
+        // floating over the content: it is about this app, and it disappears
+        // once there is nothing to offer.
         final content = Column(
           children: [
             if (_update != null)
@@ -262,23 +288,27 @@ class _HomeShellState extends State<HomeShell> {
           ],
         );
 
+        // The keyboard owns the bottom edge while it is open: the navigation
+        // bar steps aside so the composer sits directly above the keys, in the
+        // thumb zone the user is already looking at.
+        final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
+
         return Scaffold(
+          resizeToAvoidBottomInset: true,
           body: _isDesktop
               ? Row(
                   children: [
-                    NavigationRail(
-                      selectedIndex: _index,
-                      onDestinationSelected: (i) => setState(() => _index = i),
-                      labelType: NavigationRailLabelType.all,
-                      groupAlignment: -0.8,
-                      backgroundColor: NexusColors.surface,
-                      destinations: _destinations,
+                    _DesktopRail(
+                      index: _index,
+                      onSelect: (i) => setState(() => _index = i),
                     ),
                     const VerticalDivider(width: 1),
                     Expanded(
                       child: Center(
                         child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 980),
+                          constraints: const BoxConstraints(
+                            maxWidth: NexusSize.desktop,
+                          ),
                           child: content,
                         ),
                       ),
@@ -286,32 +316,68 @@ class _HomeShellState extends State<HomeShell> {
                   ],
                 )
               : SafeArea(bottom: false, child: content),
-          bottomNavigationBar: _isDesktop
+          bottomNavigationBar: _isDesktop || keyboardOpen
               ? null
-              : NavigationBar(
-                  selectedIndex: _index,
-                  onDestinationSelected: (i) => setState(() => _index = i),
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.devices_rounded),
-                      label: 'Devices',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.folder_rounded),
-                      label: 'Files',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.forum_rounded),
-                      label: 'Assistant',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.tune_rounded),
-                      label: 'Settings',
-                    ),
-                  ],
+              : _PhoneNavBar(
+                  index: _index,
+                  onSelect: (i) => setState(() => _index = i),
                 ),
         );
       },
+    );
+  }
+}
+
+/// The phone's bottom bar: four touch-first destinations, in the thumb zone.
+class _PhoneNavBar extends StatelessWidget {
+  const _PhoneNavBar({required this.index, required this.onSelect});
+
+  final int index;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return NavigationBar(
+      selectedIndex: index,
+      onDestinationSelected: onSelect,
+      destinations: [
+        for (final d in kNexusDestinations)
+          NavigationDestination(
+            icon: Icon(d.icon),
+            selectedIcon: Icon(d.selectedIcon),
+            label: d.label,
+            tooltip: d.label,
+          ),
+      ],
+    );
+  }
+}
+
+/// The desktop rail: the same destinations, laid out for a pointer and a
+/// mouse-sized window.
+class _DesktopRail extends StatelessWidget {
+  const _DesktopRail({required this.index, required this.onSelect});
+
+  final int index;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return NavigationRail(
+      selectedIndex: index,
+      onDestinationSelected: onSelect,
+      labelType: NavigationRailLabelType.all,
+      groupAlignment: -0.9,
+      backgroundColor: palette.surface,
+      destinations: [
+        for (final d in kNexusDestinations)
+          NavigationRailDestination(
+            icon: Icon(d.icon),
+            selectedIcon: Icon(d.selectedIcon),
+            label: Text(d.label),
+          ),
+      ],
     );
   }
 }

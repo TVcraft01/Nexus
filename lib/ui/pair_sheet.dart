@@ -12,8 +12,54 @@ import '../core/pair_payload.dart';
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
 import 'cable_pair_page.dart';
+import 'components/nexus_ui.dart';
 import 'scan_qr_page.dart';
 import 'theme.dart';
+
+/// One device the sheet found on the network, ready to pair with.
+class _NearbyPick extends StatelessWidget {
+  const _NearbyPick({
+    required this.name,
+    required this.platform,
+    required this.onPair,
+  });
+
+  final String name;
+  final String platform;
+  final VoidCallback onPair;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return NexusGroup(
+      children: [
+        NexusRow(
+          title: name,
+          subtitle: '${platformLabel(platform)} · on your network',
+          minHeight: NexusSize.row,
+          leading: Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: palette.accentTint(0.10),
+              borderRadius: NexusRadius.row,
+            ),
+            child: Icon(
+              platformIcon(platform),
+              size: 20,
+              color: palette.accent,
+            ),
+          ),
+          trailing: FilledButton(
+            onPressed: onPair,
+            child: const Text('Pair'),
+          ),
+        ),
+      ],
+    );
+  }
+}
 
 /// Opens the pairing sheet. If [nearby] is given, the "Enter code" tab is
 /// pre-filled with that device's address and port.
@@ -44,7 +90,17 @@ class _PairSheet extends StatefulWidget {
 }
 
 class _PairSheetState extends State<_PairSheet> {
-  int _tab = 0; // 0 = show my code, 1 = enter a code
+  /// Which step of the sheet is showing.
+  ///
+  /// The sheet opens on a chooser, not on a wall of transports: there is one
+  /// obvious way to pair (the device you can see, or a QR code) and the rest
+  /// is one tap away. -1 = chooser, 0 = show my code, 1 = enter a code,
+  /// 2 = pair over cable.
+  int _tab = -1;
+
+  /// Whether "More ways to connect" is open.
+  bool _moreWays = false;
+
   late PairingSession _session;
   late final TextEditingController _codeController;
   late final TextEditingController _addressController;
@@ -78,10 +134,19 @@ class _PairSheetState extends State<_PairSheet> {
     _portController = TextEditingController(
       text: '${widget.nearby?.port ?? widget.mesh.port}',
     );
-    if (widget.nearby != null) _tab = 1;
+    if (widget.nearby != null) _prefill(widget.nearby);
     // Add our LAN IP to the QR as soon as we know it, so the other device can
     // connect straight from a scan without typing an address.
     unawaited(_refreshQrWithIp());
+  }
+
+  /// Points the code step at a device the user picked from the nearby list,
+  /// so the common path is one tap instead of an address to type.
+  void _prefill(DiscoveredDevice? device) {
+    if (device == null) return;
+    _tab = 1;
+    _addressController.text = device.address;
+    _portController.text = '${device.port}';
   }
 
   Future<void> _refreshQrWithIp() async {
@@ -245,64 +310,153 @@ class _PairSheetState extends State<_PairSheet> {
               const SizedBox(height: 18),
               Row(
                 children: [
-                  Text(
-                    'Pair a device',
-                    style: Theme.of(context).textTheme.titleLarge,
+                  if (_tab >= 0)
+                    IconButton(
+                      onPressed: () => setState(() => _tab = -1),
+                      tooltip: 'Back',
+                      icon: const Icon(Icons.arrow_back_rounded),
+                    ),
+                  Expanded(
+                    child: Text(
+                      _tab < 0 ? 'Add device' : 'Finish pairing',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
                   ),
-                  const Spacer(),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
                     tooltip: 'Close',
-                    icon: const Icon(
-                      Icons.close_rounded,
-                      color: NexusColors.muted,
-                    ),
+                    icon: const Icon(Icons.close_rounded),
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
-              SegmentedButton<int>(
-                segments: [
-                  const ButtonSegment(
-                    value: 0,
-                    label: Text('Show my code'),
-                    icon: Icon(Icons.qr_code_2_rounded, size: 16),
-                  ),
-                  const ButtonSegment(
-                    value: 1,
-                    label: Text('Enter a code'),
-                    icon: Icon(Icons.keyboard_rounded, size: 16),
-                  ),
-                  const ButtonSegment(
-                    value: 2,
-                    label: Text('Pair over cable'),
-                    icon: Icon(Icons.usb_rounded, size: 16),
-                  ),
-                ],
-                selected: {_tab},
-                onSelectionChanged: (s) => setState(() => _tab = s.first),
-                style: SegmentedButton.styleFrom(
-                  backgroundColor: NexusColors.surface,
-                  foregroundColor: NexusColors.muted,
-                  selectedForegroundColor: NexusColors.accent,
-                  selectedBackgroundColor: NexusColors.accent.withValues(
-                    alpha: 0.12,
-                  ),
-                  side: const BorderSide(color: NexusColors.border),
-                ),
-              ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 6),
               Expanded(
-                child: _tab == 0
-                    ? _buildShowTab(context)
-                    : _tab == 1
-                    ? _buildEnterTab(context)
-                    : _buildCableTab(context),
+                child: switch (_tab) {
+                  -1 => _buildChooseTab(context),
+                  0 => _buildShowTab(context),
+                  1 => _buildEnterTab(context),
+                  _ => _buildCableTab(context),
+                },
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  /// The chooser: the one obvious way in, the rest behind a tap.
+  Widget _buildChooseTab(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    final nearby = widget.mesh.nearbyDevices
+        .where((d) => !widget.mesh.isPaired(d.id))
+        .toList();
+
+    return ListView(
+      padding: const EdgeInsets.only(top: NexusSpace.sm, bottom: NexusSpace.lg),
+      children: [
+        Text(
+          nearby.isEmpty
+              ? 'No devices nearby yet. Turn Nexus on and open Devices → Add '
+                  'device on the other one, or use a QR code below.'
+              : 'Pick a device you can see. Pairing asks for a code on the '
+                  'other side.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        if (nearby.isNotEmpty) ...[
+          const SizedBox(height: NexusSpace.md),
+          for (final device in nearby)
+            Padding(
+              padding: const EdgeInsets.only(bottom: NexusSpace.sm),
+              child: _NearbyPick(
+                name: device.name,
+                platform: device.platform,
+                onPair: () => setState(() {
+                  _prefill(device);
+                  _error = null;
+                }),
+              ),
+            ),
+        ],
+        if (_canScan) ...[
+          const SizedBox(height: NexusSpace.lg),
+          FilledButton.tonalIcon(
+            onPressed: () => unawaited(_scanQr()),
+            icon: const Icon(Icons.qr_code_scanner_rounded, size: 20),
+            label: const Text('Scan a QR code'),
+          ),
+        ],
+        const SizedBox(height: NexusSpace.lg),
+        Divider(color: palette.separator, height: 1),
+        const SizedBox(height: NexusSpace.sm),
+        // Progressive disclosure: every transport is here, none of them is in
+        // the way of the two that matter.
+        InkWell(
+          onTap: () => setState(() => _moreWays = !_moreWays),
+          borderRadius: NexusRadius.row,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: NexusSpace.md),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'More ways to connect',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                Icon(
+                  _moreWays
+                      ? Icons.expand_less_rounded
+                      : Icons.expand_more_rounded,
+                  color: palette.textTertiary,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_moreWays) ...[
+          NexusGroup(
+            children: [
+              NexusRow(
+                title: 'Enter a code from the other device',
+                minHeight: NexusSize.rowCompact,
+                leading: Icon(
+                  Icons.keyboard_rounded,
+                  size: 20,
+                  color: palette.textSecondary,
+                ),
+                chevron: true,
+                onTap: () => setState(() => _tab = 1),
+              ),
+              NexusRow(
+                title: 'Show my code instead',
+                minHeight: NexusSize.rowCompact,
+                leading: Icon(
+                  Icons.qr_code_2_rounded,
+                  size: 20,
+                  color: palette.textSecondary,
+                ),
+                chevron: true,
+                onTap: () => setState(() => _tab = 0),
+              ),
+              if (_canCable)
+                NexusRow(
+                  title: 'Pair over a USB cable',
+                  subtitle: 'Needs the device plugged into this computer.',
+                  minHeight: NexusSize.rowCompact,
+                  leading: Icon(
+                    Icons.usb_rounded,
+                    size: 20,
+                    color: palette.textSecondary,
+                  ),
+                  chevron: true,
+                  onTap: () => setState(() => _tab = 2),
+                ),
+            ],
+          ),
+          const SizedBox(height: NexusSpace.md),
+        ],
+      ],
     );
   }
 

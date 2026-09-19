@@ -11,6 +11,7 @@ import '../core/command_service.dart';
 import '../core/conversation.dart';
 import '../core/conversation_engine.dart';
 import '../core/device_actions.dart';
+import '../core/distributed_brain.dart';
 import '../core/dream.dart';
 import '../core/predictions.dart';
 import '../core/profile.dart';
@@ -19,9 +20,9 @@ import '../core/reminders.dart';
 import '../core/skills.dart';
 import '../core/speech.dart';
 import '../mesh/mesh_service.dart';
+import 'components/nexus_ui.dart';
 import 'device_executor.dart';
 import 'nexus_core.dart';
-import 'nexus_header.dart';
 import 'theme.dart';
 
 /// The assistant is a translator from human to machine: it asks when it
@@ -58,6 +59,12 @@ class _AssistantViewState extends State<AssistantView> {
   final _controller = TextEditingController();
   final _focus = FocusNode();
   String _lastInput = '';
+
+  /// The system this device is, in the registry's own vocabulary — the string
+  /// the mesh advertises and every platform set is written in. One fact, read
+  /// from the device's own identity, that filters every word this screen shows
+  /// a user: a chip or a hint may only name what this platform really runs.
+  String get _platform => widget.mesh.identity.platform;
 
   /// The conversation engine: owns the thread (user bubbles and assistant
   /// cards), the brain-exchange state machine, and the brain's health. The
@@ -1044,29 +1051,40 @@ class _AssistantViewState extends State<AssistantView> {
       ].take(6).toList();
     } else if (totalSkillUses >= 2) {
       // A real skill pattern exists (a single stray ask is not a routine).
-      suggestions = ['what can you do', ...skillExamples].take(6).toList();
+      // Discovery leads: the help chip's phrase comes from the registry too.
+      final discovery = _phrase(AgentActions.helpGet, _platform);
+      suggestions = [
+        if (discovery != null) discovery,
+        ...skillExamples,
+      ].take(6).toList();
     } else {
-      suggestions = suggestionExamples();
+      suggestions = suggestionExamplesFor(_platform);
     }
+    // A chip is a tap target a thumb has to hit one-handed, so its row is the
+    // full [NexusSize.minTouch] tall and the chip is centred in it: the
+    // measured target on the phone was 40dp, under both Android's 48dp and
+    // this app's own minimum.
     return SizedBox(
-      height: 40,
+      height: NexusSize.minTouch,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: NexusSpace.lg),
         children: [
           for (final s in suggestions)
             Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ActionChip(
-                label: Text(s, style: const TextStyle(fontSize: 12)),
-                onPressed: () {
-                  _controller.text = s;
-                  _onSubmit();
-                },
+              padding: const EdgeInsets.only(right: NexusSpace.sm),
+              child: Center(
+                child: ActionChip(
+                  label: Text(s, style: const TextStyle(fontSize: 12)),
+                  onPressed: () {
+                    _controller.text = s;
+                    _onSubmit();
+                  },
+                ),
               ),
             ),
           // Room to scroll the last chip clear of the edge.
-          const SizedBox(width: 16),
+          const SizedBox(width: NexusSpace.lg),
         ],
       ),
     );
@@ -1127,17 +1145,25 @@ class _AssistantViewState extends State<AssistantView> {
               _firstStep(
                 Icons.touch_app_rounded,
                 'Tap a suggestion',
-                'the chips above run real things I can do',
+                'the chips below run real things I can do',
               ),
-              _firstStep(
-                Icons.call_rounded,
-                '"call mom"',
-                'I dial, or ask once who you mean — then remember',
-              ),
+              if (_phrase(AgentActions.callPlace, _platform) case final call?)
+                _firstStep(
+                  Icons.call_rounded,
+                  '"$call"',
+                  'I dial, or ask once who you mean — then remember',
+                )
+              else if (_phrase(AgentActions.emailSend, _platform)
+                  case final email?)
+                _firstStep(
+                  Icons.mail_rounded,
+                  '"$email"',
+                  'I write, or ask once who you mean — then remember',
+                ),
               _firstStep(
                 Icons.memory_rounded,
                 '"remember that …"',
-                'a fact I keep; ask "what do you know about me"',
+                'a fact I keep; ask ${_quoted(_phrase(AgentActions.memoryRecall, _platform))}',
               ),
               _firstStep(
                 Icons.devices_rounded,
@@ -1472,7 +1498,11 @@ class _AssistantViewState extends State<AssistantView> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (sheetContext) =>
-          _DreamSheet(service: _service, insights: insights),
+          _DreamSheet(
+            service: _service,
+            insights: insights,
+            platform: _platform,
+          ),
     );
     // Teaching inside the sheet closes gaps — refresh so the nudge
     // disappears without a restart when everything is understood.
@@ -1790,31 +1820,28 @@ class _AssistantViewState extends State<AssistantView> {
       children: [
         // One header for every tab — plus the assistant's own dream review:
         // what it failed to understand, mined from its log, fixable in place.
+        // Presence first: the Core, what it is doing, and the two quiet
+        // things you can do to it. The conversation is the point of this
+        // screen, so it gets the room and the header stays one row tall.
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 24, 12, 0),
-          child: Row(
-            children: [
-              Expanded(
-                child: NexusHeader(
-                  // The app's identity is the one place that shows what Nexus
-                  // is doing, so the assistant's icon tile is the live core.
-                  leading: NexusCore(state: _coreState, size: 40),
-                  icon: Icons.forum_rounded,
-                  title: 'Assistant',
-                  subtitle:
-                      'Type it like you\'d say it — I\'ll take care of it.',
-                ),
-              ),
+          padding: const EdgeInsets.fromLTRB(
+            NexusSpace.page,
+            NexusSpace.xl,
+            NexusSpace.sm,
+            0,
+          ),
+          child: NexusPresence(
+            state: _coreState,
+            contextLine: _presenceLine,
+            trailing: [
               IconButton(
                 tooltip: 'What I still misunderstand',
                 icon: const Icon(Icons.psychology_alt_outlined),
-                color: NexusColors.muted,
                 onPressed: () => unawaited(_showDreamReview(context)),
               ),
               IconButton(
                 tooltip: 'New conversation',
                 icon: const Icon(Icons.add_comment_outlined),
-                color: NexusColors.muted,
                 onPressed: _startNewConversation,
               ),
             ],
@@ -1826,72 +1853,118 @@ class _AssistantViewState extends State<AssistantView> {
         // A reminder that fired, waiting for a "Done".
         _reminderBanner(),
         if (widget.brain != null) _brainStatusLine(),
-        // While first-run setup is open, the composer and the example chips
-        // are out of the tree entirely — nothing to focus, submit, or tap.
-        if (!_onboardingActive) ...[
-          const SizedBox(height: 16),
-          // Input bar
-          Container(
-            margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          decoration: BoxDecoration(
-            color: NexusColors.surface,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: NexusColors.border),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _controller,
-                  focusNode: _focus,
-                  onSubmitted: (_) => _onSubmit(),
-                  decoration: InputDecoration(
-                    hintText: _conversation.pendingKey == null
-                        ? 'Ask anything — "what is the weather", "take me home"…'
-                        : 'Answer the question — or type a new command',
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
-                    ),
-                  ),
-                  style: const TextStyle(color: NexusColors.text, fontSize: 14),
-                ),
-              ),
-              IconButton(
-                tooltip: _listening ? 'Listening…' : 'Speak your question',
-                icon: Icon(
-                  _listening ? Icons.mic_rounded : Icons.mic_none_rounded,
-                  size: 20,
-                  color: _listening ? NexusColors.accent : NexusColors.muted,
-                ),
-                onPressed: _listening ? null : () => unawaited(_listen()),
-              ),
-              IconButton(
-                // The app's primary action, and an icon with no text — without
-                // this it reaches a screen reader as an unlabelled button.
-                tooltip: 'Send',
-                icon: const Icon(Icons.send_rounded, size: 20),
-                color: NexusColors.accent,
-                onPressed: _onSubmit,
-              ),
-            ],
-          ),
-        ),
-
-          // One-tap examples under the input bar.
-          _suggestionChips(),
-        ],
-
-        // Result area — rebuilds when an action arrives from another device.
+        // The conversation, and only the conversation, takes the room that is
+        // left. Everything above it is a status line; everything below it is
+        // the composer, where a thumb already is.
         Expanded(
           child: ListenableBuilder(
             listenable: widget.mesh,
             builder: (context, _) => _buildResult(),
           ),
         ),
+
+        // While first-run setup is open, the composer and the example chips
+        // are out of the tree entirely — nothing to focus, submit, or tap.
+        if (!_onboardingActive) ...[
+          // One-tap examples, directly above the field they fill in.
+          _suggestionChips(),
+          _composer(),
+        ],
       ],
     );
+  }
+
+  /// The input bar: the app's primary action, at the bottom of the screen
+  /// where the hand already is — never a control you have to reach for.
+  Widget _composer() {
+    final palette = NexusPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.lg,
+        NexusSpace.sm,
+        NexusSpace.lg,
+        NexusSpace.sm,
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          color: palette.surface,
+          borderRadius: NexusRadius.card,
+          border: Border.all(color: palette.separator),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                focusNode: _focus,
+                onSubmitted: (_) => _onSubmit(),
+                textInputAction: TextInputAction.send,
+                decoration: InputDecoration(
+                  hintText: _conversation.pendingKey == null
+                      ? _askHintFor(_platform)
+                      : 'Answer the question — or type a new command',
+                  filled: false,
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: NexusSpace.lg,
+                    vertical: NexusSpace.md,
+                  ),
+                ),
+                style: TextStyle(color: palette.textPrimary, fontSize: 15),
+              ),
+            ),
+            IconButton(
+              tooltip: _listening ? 'Listening…' : 'Speak your question',
+              icon: Icon(
+                _listening ? Icons.mic_rounded : Icons.mic_none_rounded,
+                size: 22,
+                color: _listening ? palette.accent : palette.textSecondary,
+              ),
+              onPressed: _listening ? null : () => unawaited(_listen()),
+            ),
+            // The app's primary action: labelled for screen readers, filled
+            // so it is unmistakably the thing to press, with its own 48dp
+            // target.
+            Padding(
+              padding: const EdgeInsets.only(right: NexusSpace.sm),
+              child: IconButton.filled(
+                tooltip: 'Send',
+                icon: const Icon(Icons.arrow_upward_rounded, size: 20),
+                onPressed: _onSubmit,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// One line that says what Nexus is doing right now, in words — the same
+  /// truth the Core shows in colour and motion. Nothing here is inferred from
+  /// a timer: each case is a signal this view actually has.
+  String get _presenceLine {
+    final mesh = widget.mesh;
+    switch (_coreState) {
+      case NexusCoreState.listening:
+        return 'Listening — say it when you are ready';
+      case NexusCoreState.thinking:
+        return 'Thinking about what you asked';
+      case NexusCoreState.working:
+        return 'Working on it';
+      case NexusCoreState.error:
+        return 'That last one did not work';
+      case NexusCoreState.offline:
+        return 'No paired device is reachable right now';
+      case NexusCoreState.idle:
+        final total = mesh.pairedDevices.length;
+        if (total == 0) return 'Ready — ask me anything';
+        final online = mesh.onlineCount;
+        return online == total
+            ? 'Ready · all $total devices reachable'
+            : 'Ready · $online of $total devices reachable';
+    }
   }
 
   /// What the core is allowed to say right now.
@@ -1985,7 +2058,14 @@ class _AssistantViewState extends State<AssistantView> {
     // A mesh model ("mesh:…") means the brain lives on a paired device —
     // say so in words the phone user understands, and never tell them to
     // install Ollama.
-    final viaMesh = _conversation.brainModel.startsWith('mesh:');
+    //
+    // A phone is that case even before anything is paired: its brain *is* a
+    // [DistributedBrain], because Android cannot run Ollama at all. The phone
+    // showed a dead end ("install Ollama and pull a model") to somebody with
+    // no way to install it; what they can actually do is pair their PC.
+    final viaMesh =
+        widget.brain is DistributedBrain ||
+        _conversation.brainModel.startsWith('mesh:');
     final (icon, color, text) = switch (_conversation.brainHealth) {
       BrainHealth.probing => (
         Icons.sync_rounded,
@@ -2069,6 +2149,7 @@ class _AssistantViewState extends State<AssistantView> {
       builder: (_) => _TeachPhraseDialog(
         phrase: phrase,
         service: _service,
+        platform: _platform,
       ),
     );
     if (!mounted || learned == null) return;
@@ -2654,7 +2735,9 @@ class _AssistantViewState extends State<AssistantView> {
       case AgentActions.ringDevice:
         return 'Ring ${request.target}';
       default:
-        return request.action;
+        // Naming a queued action is the registry's job — a raw id like
+        // 'calendar.add' is not something to show a person.
+        return capabilityFor(request.action)?.label ?? request.action;
     }
   }
 
@@ -2715,6 +2798,33 @@ class _AssistantViewState extends State<AssistantView> {
   }
 }
 
+/// A registry phrase in quotes for a hint line.
+String _quoted(String? phrase) => phrase == null ? 'ask me' : '"$phrase"';
+
+/// The registry phrase for [id] on [platform], or null when that system
+/// cannot reach it — the only way this file asks for wording to show a user.
+String? _phrase(String id, String platform) => advertisedPhrase(id, platform);
+
+/// The empty input's placeholder, named after two phrases the capability
+/// registry says Nexus can actually run on [platform], so the hint can never
+/// advertise a dead end.
+String _askHintFor(String platform) {
+  final phrases = [
+    _phrase(AgentActions.weatherGet, platform),
+    _phrase(AgentActions.navOpen, platform),
+  ].whereType<String>().toList();
+  return phrases.isEmpty
+      ? 'Ask anything…'
+      : 'Ask anything — ${phrases.map((p) => '"$p"').join(', ')}…';
+}
+
+/// The teach dialog's placeholder, drawn from the registry's own device
+/// phrase rather than spelled out beside it.
+String _teachHint(String platform) {
+  final phrase = _phrase(AgentActions.deviceList, platform);
+  return phrase == null ? 'means…' : 'means… e.g. "$phrase"';
+}
+
 /// A ticking clock: "It's HH:MM.", refreshed every second.
 class _LiveClock extends StatefulWidget {
   const _LiveClock();
@@ -2763,7 +2873,14 @@ class _TeachPhraseDialog extends StatefulWidget {
   final String phrase;
   final CommandService service;
 
-  const _TeachPhraseDialog({required this.phrase, required this.service});
+  /// The system this device is — what the placeholder may name.
+  final String platform;
+
+  const _TeachPhraseDialog({
+    required this.phrase,
+    required this.service,
+    required this.platform,
+  });
 
   @override
   State<_TeachPhraseDialog> createState() => _TeachPhraseDialogState();
@@ -2815,10 +2932,10 @@ class _TeachPhraseDialogState extends State<_TeachPhraseDialog> {
             controller: _controller,
             autofocus: true,
             onSubmitted: (_) => _teach(),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               isDense: true,
-              hintText: 'means… e.g. "show my devices"',
-              border: OutlineInputBorder(),
+              hintText: _teachHint(widget.platform),
+              border: const OutlineInputBorder(),
             ),
             style: const TextStyle(color: NexusColors.text, fontSize: 13),
           ),
@@ -2855,7 +2972,14 @@ class _DreamSheet extends StatefulWidget {
   final CommandService service;
   final List<DreamInsight> insights;
 
-  const _DreamSheet({required this.service, required this.insights});
+  /// The system this device is — what a row's placeholder may name.
+  final String platform;
+
+  const _DreamSheet({
+    required this.service,
+    required this.insights,
+    required this.platform,
+  });
 
   @override
   State<_DreamSheet> createState() => _DreamSheetState();
@@ -2923,6 +3047,7 @@ class _DreamSheetState extends State<_DreamSheet> {
                     service: widget.service,
                     phrase: open[index].phrase,
                     count: open[index].count,
+                    platform: widget.platform,
                     onTaught: (cmd) {
                       setState(() => _taught[open[index].phrase] = cmd);
                     },
@@ -2944,11 +3069,15 @@ class _DreamRow extends StatefulWidget {
   final int count;
   final _DreamRowCallback onTaught;
 
+  /// The system this device is — what the placeholder may name.
+  final String platform;
+
   const _DreamRow({
     required this.service,
     required this.phrase,
     required this.count,
     required this.onTaught,
+    required this.platform,
   });
 
   @override
@@ -3008,10 +3137,10 @@ class _DreamRowState extends State<_DreamRow> {
                   key: const ValueKey('dream-meaning'),
                   controller: _controller,
                   onSubmitted: (_) => _teach(),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     isDense: true,
-                    hintText: 'means… e.g. "show my devices"',
-                    border: OutlineInputBorder(),
+                    hintText: _teachHint(widget.platform),
+                    border: const OutlineInputBorder(),
                   ),
                   style: const TextStyle(color: NexusColors.text, fontSize: 13),
                 ),

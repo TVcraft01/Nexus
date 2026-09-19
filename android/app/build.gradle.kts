@@ -36,6 +36,14 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Signed with the same key as release, so a debug build installs
+            // *over* the app already on the phone. A machine-local debug key
+            // would force an uninstall first, which wipes the pairings,
+            // memory and learned phrases that live in app storage — the one
+            // thing you cannot get back by rebuilding.
+            signingConfig = signingConfigs.getByName("release")
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
         }

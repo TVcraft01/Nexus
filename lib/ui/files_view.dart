@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../mesh/mesh_service.dart';
-import 'devices_view.dart' show platformIcon;
+import 'components/nexus_ui.dart' show platformIcon;
 import 'nexus_header.dart';
 import 'theme.dart';
 

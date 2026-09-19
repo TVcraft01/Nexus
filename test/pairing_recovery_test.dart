@@ -264,6 +264,16 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
+    // The sheet opens on the chooser rather than on every transport at once,
+    // so the code step is one deliberate choice away.
+    expect(find.byType(QrImageView), findsNothing,
+        reason: 'the chooser must not open on a QR code');
+    await tester.tap(find.text('More ways to connect'));
+    await tester.pump();
+    await tester.tap(find.text('Show my code instead'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
     expect(find.byType(QrImageView), findsOneWidget,
         reason: 'a fresh code must show its QR');
     final shownCode = meshA.pendingCode!;
