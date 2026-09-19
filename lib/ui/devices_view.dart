@@ -167,14 +167,25 @@ class _Reachability extends StatelessWidget {
     // thing twice. Only a real operational notice is still worth a line here.
     if (total == 0 && note == null) return const SizedBox.shrink();
 
+    // One device is the common case, and the phone read "None of your 1
+    // devices are reachable right now." back to its owner — a count that
+    // only makes sense once there is more than one thing to count.
     final (NexusStatusLevel level, String text) = switch ((total, online)) {
       (0, _) => (
         NexusStatusLevel.offline,
         'No paired devices yet. Pair your first device to begin.',
       ),
+      (1, 1) => (
+        NexusStatusLevel.online,
+        'Your device is reachable right now.',
+      ),
       (final t, final o) when o == t => (
         NexusStatusLevel.online,
         'All $t devices reachable right now.',
+      ),
+      (1, 0) => (
+        NexusStatusLevel.offline,
+        "Your device isn't reachable right now.",
       ),
       (final t, 0) => (
         NexusStatusLevel.offline,
@@ -243,8 +254,11 @@ class _PairedRow extends StatelessWidget {
       title: device.name,
       subtitle: '${platformLabel(device.platform)} · $status',
       chevron: true,
-      trailing: Semantics(
-        label: status,
+      // The dot reinforces the words; it does not repeat them. On the phone
+      // this row announced its status three times — once in the row's own
+      // label, once from a label on the dot, once as a tooltip — so the dot
+      // now takes the same rule as NexusSwitchRow's switch: excluded.
+      trailing: ExcludeSemantics(
         child: Tooltip(
           message: status,
           child: NexusStatusDot(level: level, size: 10),
