@@ -12,6 +12,9 @@
 //
 //   skills.dart       -> [skillCatalog]      (what shapes the ranking)
 //   assistant_view    -> [suggestionExamples] (the one-tap fallback chips)
+//                        and [advertisedPhrase] / [capabilityAvailableOn]
+//                        (so a hint or a chip never names what this platform
+//                        cannot reach)
 //   agent_contract    -> [defaultCapabilitiesFor] (what this platform offers)
 //   answers.dart      -> the help answer: its short summary from [kHelpAreas]
 //                        and [helpHeadline], each area's or section's full list
@@ -398,6 +401,41 @@ List<String> suggestionExamples() => [
     if (capabilityFor(id) case final c?)
       c.suggestExample ?? c.example ?? '',
 ].where((phrase) => phrase.isNotEmpty).toList();
+
+/// Whether a device of [platform] can actually run [id].
+///
+/// The registry's own platform set is the whole rule, so a screen that offers
+/// something and the mesh that advertises it cannot disagree. A capability
+/// with no platform set is answered by the app itself — the time, arithmetic,
+/// memory — so it is reachable everywhere; one with a set is reachable exactly
+/// where its executor is. Any non-Android system stands in for the desktop
+/// set, the same way [defaultCapabilitiesFor] reads it.
+bool capabilityAvailableOn(String id, String platform) {
+  final capability = capabilityFor(id);
+  if (capability == null) return false;
+  if (!capability.isDeviceExecutable) return true;
+  final here = platform == 'android' ? 'android' : 'linux';
+  return capability.platforms.contains(here);
+}
+
+/// The phrase to *show* for [id] on [platform], or null when that platform
+/// cannot reach it.
+///
+/// Null is the honest answer, and the only one a caller needs: it is what
+/// stops a hint, a chip or an empty state from naming something this device
+/// would fail to do.
+String? advertisedPhrase(String id, String platform) {
+  final capability = capabilityFor(id);
+  if (capability == null || !capabilityAvailableOn(id, platform)) return null;
+  return capability.suggestExample ?? capability.example;
+}
+
+/// The one-tap fallback phrases a user on [platform] can really run, in
+/// [kSuggestionIds] order.
+List<String> suggestionExamplesFor(String platform) => [
+  for (final id in kSuggestionIds)
+    if (advertisedPhrase(id, platform) case final phrase?) phrase,
+];
 
 /// The capabilities the help answer offers in [group], in registry order:
 /// every one that names this section *and* has a phrase to offer.

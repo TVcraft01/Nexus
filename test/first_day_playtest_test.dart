@@ -87,7 +87,7 @@ void main() {
       // The composer and every chat affordance are out of the tree while
       // setup is open — only the two setup fields remain.
       expect(find.byType(TextField), findsNWidgets(2));
-      expect(find.byIcon(Icons.send_rounded), findsNothing);
+      expect(find.byTooltip('Send'), findsNothing);
       expect(find.byIcon(Icons.mic_none_rounded), findsNothing);
 
       // Typing in a setup field and pressing done must not submit anything:
@@ -97,7 +97,7 @@ void main() {
       await tester.pump();
       expect(find.text('Set me up — 30 seconds.'), findsOneWidget);
       expect(brain.replyCalls, 0);
-      expect(find.byIcon(Icons.send_rounded), findsNothing);
+      expect(find.byTooltip('Send'), findsNothing);
 
       // Complete setup — the composer comes back and works normally.
       await tester.enterText(

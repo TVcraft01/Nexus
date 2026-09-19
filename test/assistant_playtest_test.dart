@@ -183,11 +183,11 @@ void main() {
 
         // Whitespace-only submit must be a no-op.
         await ask(tester, '   ');
-        expect(find.byIcon(Icons.send_rounded), findsOneWidget);
+        expect(find.byTooltip('Send'), findsOneWidget);
         expect(find.textContaining('Hello! I am Nexus.'), findsOneWidget);
 
         // Empty submit via the send button must be a no-op too.
-        await tester.tap(find.byIcon(Icons.send_rounded));
+        await tester.tap(find.byTooltip('Send'));
         await tester.pump();
         expect(find.textContaining('Hello! I am Nexus.'), findsOneWidget);
 

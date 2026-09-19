@@ -7,9 +7,16 @@ import 'package:flutter/material.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
-import 'nexus_header.dart';
+import 'components/nexus_ui.dart';
 import 'theme.dart';
 
+/// Settings, in the order a person asks about them: who am I, what is
+/// connected, what does it know about me, how does the assistant behave, how
+/// does it look, how do I update it — and only then the technical parts.
+///
+/// Rows and groups, not one card per setting: a setting is a line in a list,
+/// and a separate rounded box around every line is decoration that says
+/// nothing.
 class SettingsView extends StatefulWidget {
   final MeshService mesh;
   final Future<UpdateCheck> Function()? onCheckForUpdate;
@@ -21,8 +28,8 @@ class SettingsView extends StatefulWidget {
 
 class _SettingsViewState extends State<SettingsView> {
   bool? _allFilesAccess; // Android: can this device read its whole storage?
-  bool _checking = false;
   String? _checkResult;
+  bool _checking = false;
 
   @override
   void initState() {
@@ -32,342 +39,238 @@ class _SettingsViewState extends State<SettingsView> {
     });
   }
 
+  MeshService get mesh => widget.mesh;
+
+  void _setBool(void Function() change) {
+    setState(change);
+    mesh.store.save();
+  }
+
+  Future<void> _checkForUpdate() async {
+    final check = widget.onCheckForUpdate;
+    if (check == null || _checking) return;
+    setState(() {
+      _checking = true;
+      _checkResult = null;
+    });
+    try {
+      final result = await check();
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        // Three different answers, never conflated: a check that could not be
+        // made must not read as "up to date".
+        _checkResult = switch (result) {
+          UpdateCheck(:final info?) => 'Update to v${info.version} available',
+          UpdateCheck(:final failure?) => 'Could not check — $failure',
+          _ => 'Up to date — v$appVersion',
+        };
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _checkResult = 'Could not check — try again';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final mesh = widget.mesh;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
+    final palette = NexusPalette.of(context);
+    final isAndroid = defaultTargetPlatform == TargetPlatform.android;
+    final icon = palette.textSecondary;
+
+    return NexusPage(
       children: [
-        const NexusHeader(
-          icon: Icons.tune_rounded,
+        const NexusPageHeader(
           title: 'Settings',
-          subtitle: 'This device and how it behaves.',
+          subtitle: 'This device and how Nexus behaves.',
         ),
-        const SizedBox(height: 20),
 
-        _SectionCard(
+        const NexusSectionHeader('You'),
+        NexusGroup(
           children: [
-            _SectionTitle('Clipboard sync'),
-            _ToggleRow(
+            NexusRow(
+              title: mesh.identity.name,
+              subtitle: 'This device · ${_platformName()}',
+              leading: Icon(Icons.person_outline_rounded, size: 20, color: icon),
+            ),
+          ],
+        ),
+
+        const NexusSectionHeader('Devices'),
+        NexusGroup(
+          children: [
+            NexusSwitchRow(
               title: 'Sync clipboard across devices',
-              detail:
-                  'One switch for everything: what I copy is shared with paired '
-                  'devices, and what they copy lands directly on my clipboard.',
+              subtitle: 'What you copy goes to paired devices, and theirs '
+                  'lands on your clipboard.',
               value: mesh.store.clipboardSync,
-              onChanged: (v) {
-                setState(() => mesh.store.clipboardSync = v);
-                mesh.store.save();
-              },
+              onChanged: (v) => _setBool(() => mesh.store.clipboardSync = v),
             ),
-            const Divider(height: 20),
-            _ToggleRow(
+            NexusSwitchRow(
               title: 'Always merge clipboard',
-              detail:
-                  'Push every copy immediately to all paired devices. Turn off '
-                  'for smart mode that waits 3 s and only syncs if you didn'
-                  't paste locally.',
+              subtitle: 'Push every copy immediately. Off uses smart mode: wait '
+                  "3 s and only sync if you didn't paste it here.",
               value: mesh.store.alwaysMerge,
-              onChanged: (v) {
-                setState(() => mesh.store.alwaysMerge = v);
-                mesh.store.save();
-              },
+              onChanged: (v) => _setBool(() => mesh.store.alwaysMerge = v),
             ),
-
-          ],
-        ),
-        const SizedBox(height: 14),
-
-        _SectionCard(
-          children: [
-            _SectionTitle('Network'),
-            _ToggleRow(
+            NexusSwitchRow(
               title: 'Broadcast discovery',
-              detail: 'Announce this device on the local network so others can find it.',
+              subtitle: 'Announce this device on the local network so others '
+                  'can find it.',
               value: mesh.store.broadcastDiscovery,
-              onChanged: (v) {
-                setState(() => mesh.store.broadcastDiscovery = v);
-                mesh.store.save();
-              },
+              onChanged: (v) => _setBool(() => mesh.store.broadcastDiscovery = v),
             ),
-            const Divider(height: 20),
-            _InfoRow(
+          ],
+        ),
+
+        const NexusSectionHeader('Privacy'),
+        NexusGroup(
+          children: [
+            NexusRow(
+              title: 'Local-first, no account',
+              subtitle: 'Pairing secrets and your data stay on your devices. '
+                  'Nothing is sent anywhere.',
+              leading: Icon(Icons.lock_outline_rounded, size: 20, color: icon),
+            ),
+            NexusRow(
               title: 'Reachability is honest',
-              detail:
-                  'A device is marked online only when this device has actually '
-                  'talked to it. If it shows “not reachable”, it really wasn’t.',
-              icon: Icons.verified_user_outlined,
+              subtitle: 'A device reads online only when this device has '
+                  'actually talked to it. If it shows "not reachable", it '
+                  'really was not.',
+              leading:
+                  Icon(Icons.verified_user_outlined, size: 20, color: icon),
             ),
-          ],
-        ),
-        const SizedBox(height: 14),
-
-        if (defaultTargetPlatform == TargetPlatform.android) ...[
-          _SectionCard(
-            children: [
-              _SectionTitle('Files on this device'),
-              _InfoRow(
+            if (isAndroid)
+              NexusRow(
                 title: 'Show all your files to paired devices',
-                detail: _allFilesAccess == false
-                    ? 'Without it, devices only see files Nexus downloaded. Grant '
-                          'it so your PC’s file manager can browse your photos, '
-                          'downloads and music.'
-                    : 'Paired devices can browse everything on this device — '
-                          'photos, downloads, music — and delete files you allow.',
-                icon: _allFilesAccess == false
-                    ? Icons.lock_outline_rounded
-                    : Icons.folder_open_rounded,
-              ),
-              const SizedBox(height: 10),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: FilledButton.tonalIcon(
+                subtitle: _allFilesAccess == false
+                    ? 'Off: devices only see files Nexus downloaded. Grant it '
+                        'so your PC can browse your photos and music.'
+                    : 'On: paired devices can browse this device and delete '
+                        'files you allow.',
+                leading: Icon(
+                  _allFilesAccess == false
+                      ? Icons.lock_outline_rounded
+                      : Icons.folder_open_rounded,
+                  size: 20,
+                  color: icon,
+                ),
+                trailing: FilledButton.tonal(
                   onPressed: MeshService.openAllFilesAccessSettings,
-                  icon: Icon(
-                    _allFilesAccess == false
-                        ? Icons.lock_open_rounded
-                        : Icons.settings_rounded,
-                    size: 18,
-                  ),
-                  label: Text(
-                    _allFilesAccess == false ? 'Grant access' : 'Open settings',
-                  ),
+                  child: Text(_allFilesAccess == false ? 'Grant' : 'Manage'),
                 ),
+                onTap: MeshService.openAllFilesAccessSettings,
               ),
-            ],
-          ),
-          const SizedBox(height: 14),
-        ],
+          ],
+        ),
 
-        _SectionCard(
+        const NexusSectionHeader('Assistant'),
+        NexusGroup(
           children: [
-            _SectionTitle('Updates'),
-            _ToggleRow(
+            NexusRow(
+              title: 'Understands what you teach it',
+              subtitle: 'Teach a phrase from any answer that missed, and it '
+                  'works on every paired device.',
+              leading: Icon(Icons.school_outlined, size: 20, color: icon),
+            ),
+            NexusRow(
+              title: 'Actions need your approval',
+              subtitle: 'Anything that changes another device waits for a yes '
+                  'on that device.',
+              leading: Icon(Icons.shield_outlined, size: 20, color: icon),
+            ),
+          ],
+        ),
+
+        const NexusSectionHeader('Appearance'),
+        NexusGroup(
+          children: [
+            NexusRow(
+              title: 'Dark',
+              subtitle: 'Nexus is built as one calm dark surface. Light mode '
+                  'is not available yet.',
+              minHeight: NexusSize.rowCompact,
+              leading: Icon(Icons.dark_mode_outlined, size: 20, color: icon),
+              trailing: Text(
+                'This device',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
+
+        const NexusSectionHeader('Updates'),
+        NexusGroup(
+          children: [
+            NexusSwitchRow(
               title: 'Check for updates automatically',
-              detail:
-                  'On startup, look for a newer Nexus release on GitHub and offer '
-                  'to install it.',
+              subtitle: 'On startup, look for a newer Nexus release on GitHub '
+                  'and offer to install it.',
               value: mesh.store.autoUpdate,
-              onChanged: (v) {
-                setState(() => mesh.store.autoUpdate = v);
-                mesh.store.save();
-              },
+              onChanged: (v) => _setBool(() => mesh.store.autoUpdate = v),
             ),
-            const Divider(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Check for updates now',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 2),
-                      if (_checking)
-                        const Text(
-                          'Checking…',
-                          style: TextStyle(
-                            color: NexusColors.muted,
-                            fontSize: 12,
-                          ),
-                        )
-                      else if (_checkResult != null)
-                        Text(
-                          _checkResult!,
-                          style: TextStyle(
-                            color: _checkResult!.startsWith('Update')
-                                ? NexusColors.accent
-                                : NexusColors.muted,
-                            fontSize: 12,
-                          ),
-                        )
-                      else
-                        Text(
-                          'Manually look for a newer release on GitHub.',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                    ],
-                  ),
-                ),
-                if (_checking)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 12),
-                    child: SizedBox(
-                      width: 16,
-                      height: 16,
+            NexusRow(
+              title: 'Check for updates now',
+              subtitle: _checking
+                  ? 'Checking…'
+                  : _checkResult ?? 'Manually look for a newer release.',
+              minHeight: NexusSize.rowCompact,
+              leading: Icon(
+                Icons.system_update_alt_rounded,
+                size: 20,
+                color: icon,
+              ),
+              trailing: _checking
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : FilledButton.tonal(
+                      onPressed: widget.onCheckForUpdate == null
+                          ? null
+                          : _checkForUpdate,
+                      child: const Text('Check now'),
                     ),
-                  )
-                else
-                  FilledButton.tonal(
-                    onPressed: widget.onCheckForUpdate == null
-                        ? null
-                        : () async {
-                            setState(() {
-                              _checking = true;
-                              _checkResult = null;
-                            });
-                            try {
-                              final check =
-                                  await widget.onCheckForUpdate!();
-                              if (!mounted) return;
-                              setState(() {
-                                _checking = false;
-                                // Three different answers, never conflated: a
-                                // check that could not be made must not read as
-                                // "up to date".
-                                _checkResult = switch (check) {
-                                  UpdateCheck(:final info?) =>
-                                    'Update to v${info.version} available',
-                                  UpdateCheck(:final failure?) =>
-                                    'Could not check — $failure',
-                                  _ => 'Up to date — v$appVersion',
-                                };
-                              });
-                            } catch (e) {
-                              if (!mounted) return;
-                              setState(() {
-                                _checking = false;
-                                _checkResult = 'Could not check — try again';
-                              });
-                            }
-                          },
-                    child: const Text('Check now'),
-                  ),
-              ],
+              onTap:
+                  widget.onCheckForUpdate == null ? null : _checkForUpdate,
             ),
           ],
         ),
-        const SizedBox(height: 14),
 
-        _SectionCard(
+        const NexusSectionHeader('About'),
+        NexusGroup(
           children: [
-            _SectionTitle('About'),
-            _InfoRow(
-              title: 'Nexus $appVersion — the mesh',
-              detail:
-                  'Local-first. No cloud, no account. Everything between paired '
-                  'devices is encrypted (AES-GCM) and travels direct.',
-              icon: Icons.info_outline_rounded,
-            ),
-            const Divider(height: 20),
-            const _InfoRow(
-              title: 'Privacy',
-              detail:
-                  'Pairing secrets and your data stay on your devices. Nothing is '
-                  'sent anywhere, ever.',
-              icon: Icons.lock_outline_rounded,
+            NexusRow(
+              title: 'Nexus $appVersion',
+              subtitle: 'Local-first mesh. Encrypted end to end (AES-GCM), '
+                  'direct between devices.',
+              minHeight: NexusSize.rowCompact,
+              leading: Icon(Icons.info_outline_rounded, size: 20, color: icon),
             ),
           ],
         ),
       ],
     );
   }
-}
 
-class _SectionCard extends StatelessWidget {
-  final List<Widget> children;
-  const _SectionCard({required this.children});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(children: children),
-      ),
-    );
-  }
-}
-
-class _SectionTitle extends StatelessWidget {
-  final String text;
-  const _SectionTitle(this.text);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Text(
-        text,
-        style: Theme.of(context).textTheme.titleMedium
-            ?.copyWith(color: NexusColors.accent),
-      ),
-    );
-  }
-}
-
-class _ToggleRow extends StatelessWidget {
-  final String title;
-  final String detail;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  const _ToggleRow({
-    required this.title,
-    required this.detail,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // The whole row is the target, not just the switch: tapping a setting's
-    // name is what people actually do, and this row is over 300dp wide while
-    // the switch is 40dp tall — a tap that lands on the words used to do
-    // nothing at all. The switch keeps its own handler, so a tap on it is
-    // consumed there and cannot toggle twice.
-    return InkWell(
-      onTap: () => onChanged(!value),
-      borderRadius: BorderRadius.circular(8),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: Theme.of(context).textTheme.bodyMedium),
-                const SizedBox(height: 2),
-                Text(detail, style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
-          ),
-          Switch(value: value, onChanged: onChanged),
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoRow extends StatelessWidget {
-  final String title;
-  final String detail;
-  final IconData icon;
-  const _InfoRow({
-    required this.title,
-    required this.detail,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 18, color: NexusColors.muted),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.bodyMedium),
-              const SizedBox(height: 2),
-              Text(detail, style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
-      ],
-    );
+  String _platformName() {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return 'Phone';
+      case TargetPlatform.iOS:
+        return 'iPhone';
+      case TargetPlatform.macOS:
+        return 'Mac';
+      case TargetPlatform.windows:
+        return 'Windows';
+      case TargetPlatform.linux:
+        return 'Linux';
+      default:
+        return 'Device';
+    }
   }
 }

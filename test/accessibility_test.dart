@@ -168,10 +168,11 @@ void main() {
 
       // The specific defect: an icon with no text and no tooltip, so a screen
       // reader announced the send button as nothing.
+      // Found by the name it must carry, not by its glyph: the test is about
+      // the name, and the composer's send affordance has changed shape.
       final send = tester
           .widgetList<IconButton>(find.byType(IconButton))
-          .where((b) => b.icon is Icon)
-          .where((b) => (b.icon as Icon).icon == Icons.send_rounded)
+          .where((b) => b.tooltip == 'Send')
           .toList();
       expect(send, hasLength(1), reason: 'the composer has one send button');
       expect(send.single.tooltip, isNotNull);

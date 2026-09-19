@@ -2,10 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/brain.dart';
+import 'package:nexus/core/capability.dart';
+import 'package:nexus/core/command_interpreter.dart';
 import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
@@ -1102,6 +1106,74 @@ void brainWidgetTests() {
       expect(find.text('Question'), findsNothing);
     } finally {
       QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('a desktop is never shown an example it cannot run',
+      (tester) async {
+    // The advertising surfaces a user actually sees on a PC: the welcome
+    // card's example line, the composer hint, and the chips. Every one of
+    // them is filtered by the registry's platform facts, so none offers a
+    // call or a flashlight on a machine that has neither.
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    final store = NexusStore(
+      explicitPath: '${Directory.systemTemp.createTempSync('desk').path}/s.json',
+    );
+    final mesh = MeshService(
+      identity: DeviceInfo(id: 'desk-device', name: 'Desk PC', platform: 'linux'),
+      store: store,
+    );
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      // The composer's placeholder quotes phrases this system can really run.
+      final hint = tester
+          .widget<TextField>(find.byType(TextField))
+          .decoration!
+          .hintText!;
+      for (final phrase in RegExp('"([^"]+)"')
+          .allMatches(hint)
+          .map((m) => m.group(1)!)) {
+        final result = const CommandInterpreter().interpret(phrase);
+        expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(
+          capabilityAvailableOn(result.command!.action, 'linux'),
+          isTrue,
+          reason: 'the hint offers "$phrase" on a desktop',
+        );
+      }
+
+      // The welcome card's example is one this system has: an email, not a
+      // call the desktop cannot place.
+      expect(find.textContaining('email mom'), findsOneWidget);
+      expect(find.textContaining('call mom'), findsNothing);
+
+      // And the chips on offer are all real here.
+      final chips = tester
+          .widgetList<ActionChip>(find.byType(ActionChip))
+          .map((chip) => (chip.label as Text).data!)
+          .toList();
+      expect(chips, isNotEmpty);
+      expect(chips, isNot(contains('call mom')));
+      for (final chip in chips) {
+        final result = const CommandInterpreter().interpret(chip);
+        expect(result.outcome, InterpretOutcome.matched, reason: chip);
+        expect(
+          capabilityAvailableOn(result.command!.action, 'linux'),
+          isTrue,
+          reason: 'the chip "$chip" cannot run here',
+        );
+      }
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
       await mesh.stop();
     }
   });
