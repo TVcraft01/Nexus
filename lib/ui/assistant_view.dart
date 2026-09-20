@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../core/agent_contract.dart';
+import '../core/audio_level.dart';
 import '../core/brain.dart';
 import '../core/capability.dart';
 import '../core/command_service.dart';
@@ -100,6 +102,18 @@ class _AssistantViewState extends State<AssistantView> {
   /// Whether the mic is listening right now (button becomes the live mic).
   bool _listening = false;
 
+  /// How loud the microphone is, 0 to 1, while the recogniser is running.
+  /// Straight from the platform's own measurement of what it hears, handed to
+  /// the Core's particle field as a [ValueListenable] so a voice arriving
+  /// twenty times a second repaints the dots without rebuilding this screen.
+  final ValueNotifier<double> _micLevel = ValueNotifier<double>(0);
+  StreamSubscription<double>? _micLevelSub;
+
+  /// Whether Nexus is speaking out loud right now, from the text-to-speech
+  /// engine's own utterance start/stop. Null when this device cannot report
+  /// it, in which case the Core shows no speaking state at all.
+  ValueListenable<bool>? _speaking;
+
   /// Whether we are waiting on the brain's reply for a phrase the interpreter
   /// did not know. Set by the view around the exchange it started, so the core
   /// reports thinking from the only place that knows an exchange is in flight.
@@ -153,6 +167,11 @@ class _AssistantViewState extends State<AssistantView> {
     // The conversation engine notifies on every thread/brain change; the
     // view rebuilds from it, exactly as its own setState used to.
     _conversation.addListener(_onConversationChanged);
+    // Utterance start/stop, so the Core can pulse in time with a voice that
+    // is really playing. A platform that cannot report it stays silent, and
+    // the Core simply never shows a speaking state.
+    _speaking = SpeechPlayback.current.speaking;
+    SpeechPlayback.current.listen();
     _service = CommandService(
       devices: _buildSnapshots,
       local: AgentDeviceSnapshot(
@@ -292,6 +311,8 @@ class _AssistantViewState extends State<AssistantView> {
     _reminderEngine.dispose();
     _conversation.removeListener(_onConversationChanged);
     _conversation.dispose();
+    _stopFollowingMicLevel();
+    _micLevel.dispose();
     _controller.dispose();
     _onboardName.dispose();
     _onboardAssistant.dispose();
@@ -663,6 +684,27 @@ class _AssistantViewState extends State<AssistantView> {
     }
   }
 
+  /// Follows the microphone for the duration of one utterance.
+  ///
+  /// The platform reports what the recogniser actually hears, so the Core's
+  /// wave is loudness and not a guess. A device with no level signal yields an
+  /// empty stream: the field still shows "listening" (the mic genuinely is
+  /// open) and simply breathes at its floor.
+  void _followMicLevel() {
+    _micLevel.value = 0;
+    _micLevelSub?.cancel();
+    _micLevelSub = MicLevel.current.levels.listen(
+      (level) => _micLevel.value = level,
+      onError: (Object _) {}, // a mic that fails means a quiet field, not a crash
+    );
+  }
+
+  void _stopFollowingMicLevel() {
+    _micLevelSub?.cancel();
+    _micLevelSub = null;
+    _micLevel.value = 0;
+  }
+
   /// One utterance, then the recognized words run through the same pipeline
   /// as typing them — the "command based" assistant, spoken. Devices without
   /// a speech service answer honestly instead of pretending to listen.
@@ -682,7 +724,9 @@ class _AssistantViewState extends State<AssistantView> {
       return;
     }
     setState(() => _listening = true);
+    _followMicLevel();
     final heard = await speech.listen();
+    _stopFollowingMicLevel();
     if (!mounted) return;
     setState(() => _listening = false);
     final text = heard?.trim() ?? '';
@@ -1833,6 +1877,8 @@ class _AssistantViewState extends State<AssistantView> {
           child: NexusPresence(
             state: _coreState,
             contextLine: _presenceLine,
+            energy: _micLevel,
+            speaking: _speaking,
             trailing: [
               IconButton(
                 tooltip: 'What I still misunderstand',

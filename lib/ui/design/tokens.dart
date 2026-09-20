@@ -314,6 +314,29 @@ abstract final class NexusMotion {
       MediaQuery.maybeDisableAnimationsOf(context) == true ? Duration.zero : d;
 }
 
+/// The Core's material: the particle field's design values.
+///
+/// Only what a designer would change lives here. The physics that move the
+/// dots (springs, damping, wave shape) live with the simulation, next to the
+/// maths that uses them, so neither file has to explain the other's numbers.
+abstract final class NexusParticle {
+  /// How many dots the field has. Enough to read as a cloud of fine particles
+  /// at 44dp on a 2.6x screen, few enough that the whole field is a handful of
+  /// batched draw calls per frame.
+  static const int count = 140;
+
+  /// Base dot diameter, in logical pixels. Fine on purpose: this is dust, not
+  /// confetti.
+  static const double dot = 1.9;
+
+  /// The halo behind a resting field — barely there.
+  static const double restGlow = 0.10;
+
+  /// The halo while Nexus is working. Still restrained: it lights the Core, it
+  /// does not light the room.
+  static const double activeGlow = 0.22;
+}
+
 /// The type scale. Four sizes carry the whole app: a page title, a row title,
 /// body copy, and a caption. A new size is a design decision, not a style.
 abstract final class NexusType {

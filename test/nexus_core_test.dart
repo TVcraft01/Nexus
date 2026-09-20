@@ -38,15 +38,25 @@ Future<void> _pump(WidgetTester tester, NexusCoreState state) async {
   await tester.pump();
 }
 
-/// Pumps long frames until the framework's own entrance animations are done.
+/// Pumps at a realistic frame rate until nothing in the tree is animating.
 ///
 /// Necessary before counting tickers: a freshly built MaterialApp and Scaffold
-/// schedule a couple of their own, and they settle within a few seconds. What
+/// schedule a couple of their own, and they settle within a few frames. What
 /// is left after settling is the core's own motion, which is the thing under
 /// test — measured rather than assumed.
-Future<void> _settle(WidgetTester tester) async {
-  for (var i = 0; i < 20; i++) {
-    await tester.pump(const Duration(seconds: 1));
+///
+/// The frames are 16 ms, not one second, on purpose: the particle field's
+/// clock is real time, and a single second-long frame is a stalled phone, not
+/// twenty frames of animation. Pumping long frames here would test the stall
+/// path (where the field deliberately lets its clock lag) instead of the
+/// settling the user actually sees.
+Future<void> _settle(WidgetTester tester, {int maxSeconds = 12}) async {
+  for (
+    var i = 0;
+    i < maxSeconds * 60 && tester.binding.transientCallbackCount > 0;
+    i++
+  ) {
+    await tester.pump(const Duration(milliseconds: 16));
   }
 }
 
@@ -168,11 +178,29 @@ void main() {
       await _pump(tester, NexusCoreState.idle);
       await _settle(tester);
       expect(tester.binding.transientCallbackCount, 0);
+    });
 
-      // And a state that only reports holds still too.
+    testWidgets('a failure moves briefly, then stops on its own', (
+      tester,
+    ) async {
+      // A failure is the one reporting state with motion of its own: the field
+      // destabilises and settles. It has to actually move — and it has to stop
+      // by itself, because a Core that keeps a ticker alive forever after one
+      // error would be a battery bug dressed as an animation.
       await _pump(tester, NexusCoreState.error);
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(
+        tester.binding.transientCallbackCount,
+        1,
+        reason: 'the field has to be seen to destabilise',
+      );
+
       await _settle(tester);
-      expect(tester.binding.transientCallbackCount, 0);
+      expect(
+        tester.binding.transientCallbackCount,
+        0,
+        reason: 'a failure is a moment, not a spinner',
+      );
     });
 
     testWidgets('it stays a status, not a hero', (tester) async {
