@@ -4,6 +4,7 @@
 // platform split the phone and clipboard backends use. The recognized text
 // is just an ask: it runs through the exact same pipeline as typing.
 import 'dart:async' show StreamSubscription;
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart'
     show
@@ -106,7 +107,14 @@ class SpeechPlayback {
       override?.call() ?? (_instance ??= SpeechPlayback());
 
   /// Whether this device can report utterance start and stop.
-  bool get available => defaultTargetPlatform == TargetPlatform.android;
+  ///
+  /// Real Android, not "Android according to the framework": a widget test on
+  /// a Linux host reports itself as Android, and there is no engine behind
+  /// that claim. Subscribing there raises a services error (the channel has no
+  /// implementation to activate), which the test framework counts as a failure
+  /// rather than something a stream's own error handler can absorb.
+  bool get available =>
+      defaultTargetPlatform == TargetPlatform.android && Platform.isAndroid;
 
   final ValueNotifier<bool> _speaking = ValueNotifier<bool>(false);
 

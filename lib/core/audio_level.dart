@@ -11,6 +11,7 @@
 // Everywhere else there is no level, and [available] says so. A platform
 // without it gets a Core that still shows "listening" honestly (the microphone
 // really is open) but never pretends to react to loudness it cannot measure.
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart'
@@ -28,7 +29,13 @@ class MicLevel {
   static MicLevel get current => override?.call() ?? const MicLevel();
 
   /// Whether this device can measure loudness at all.
-  bool get available => defaultTargetPlatform == TargetPlatform.android;
+  ///
+  /// Real Android, not "Android according to the framework": a widget test on
+  /// a Linux host reports itself as Android, and there is no recogniser behind
+  /// that claim — subscribing would raise a services error instead of a quiet
+  /// field. The same rule as [SpeechPlayback.available], for the same reason.
+  bool get available =>
+      defaultTargetPlatform == TargetPlatform.android && Platform.isAndroid;
 
   /// Loudness while the microphone is open: 0 is a quiet room, 1 is a voice
   /// close to the phone. The stream ends when the caller stops listening (it

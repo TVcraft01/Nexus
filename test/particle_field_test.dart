@@ -14,6 +14,7 @@
 //     difference between a nice animation and a battery complaint.
 //  4. The two real signals drive it: microphone loudness and speech start/stop.
 //     No signal, no reaction — and never a fake one.
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -407,6 +408,21 @@ void main() {
       // shouting is a wave that looks broken.
       expect(MicLevel.normalizeLevel(2), greaterThan(0.2));
       expect(MicLevel.normalizeLevel(10), greaterThan(0.8));
+    });
+
+    test('a widget-test host is not a phone, so no channels are opened', () {
+      // Flutter's own default in tests is TargetPlatform.android — and a Linux
+      // test host is not an Android device. Believing the framework would make
+      // the seams subscribe to platform channels that have no implementation,
+      // which surfaces as a services error that fails whichever test happens
+      // to be running (this exact failure came out of CI). `Platform.isAndroid`
+      // is the part that tells the truth, so both seams must consult it.
+      expect(defaultTargetPlatform, TargetPlatform.android);
+      expect(Platform.isAndroid, isFalse, reason: 'a host is not a phone');
+      expect(SpeechPlayback.current.available, isFalse,
+          reason: 'no TTS channel on a host, so nothing may subscribe');
+      expect(MicLevel.current.available, isFalse,
+          reason: 'no recogniser on a host');
     });
 
     test('without a level signal, the field is told nothing', () {
