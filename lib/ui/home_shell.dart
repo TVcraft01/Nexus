@@ -283,7 +283,17 @@ class _HomeShellState extends State<HomeShell> {
                 onDismiss: () => setState(() => _update = null),
               ),
             Expanded(
-              child: IndexedStack(index: _index, children: views),
+              // TickerMode, not just IndexedStack: a hidden tab keeps its
+              // state (so nothing reloads when you come back) but stops
+              // animating — the Core's particle field, and anything else that
+              // moves, must not spend a phone's battery off screen.
+              child: IndexedStack(
+                index: _index,
+                children: [
+                  for (var i = 0; i < views.length; i++)
+                    TickerMode(enabled: i == _index, child: views[i]),
+                ],
+              ),
             ),
           ],
         );

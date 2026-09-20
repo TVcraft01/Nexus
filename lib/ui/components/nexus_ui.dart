@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../nexus_core.dart';
@@ -623,12 +624,20 @@ class NexusPresence extends StatelessWidget {
     this.contextLine,
     this.trailing = const [],
     this.coreSize = 44,
+    this.energy,
+    this.speaking,
   });
 
   final NexusCoreState state;
   final String? contextLine;
   final List<Widget> trailing;
   final double coreSize;
+
+  /// Real signals the Core's particle field answers to: microphone loudness
+  /// while listening, and whether speech is actually coming out. Both optional
+  /// — a screen with neither still gets the right constellation.
+  final ValueListenable<double>? energy;
+  final ValueListenable<bool>? speaking;
 
   @override
   Widget build(BuildContext context) {
@@ -637,7 +646,12 @@ class NexusPresence extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: NexusSpace.md),
       child: Row(
         children: [
-          NexusCore(state: state, size: coreSize),
+          NexusCore(
+            state: state,
+            size: coreSize,
+            energy: energy,
+            speaking: speaking,
+          ),
           const SizedBox(width: NexusSpace.md),
           Expanded(
             child: Column(
