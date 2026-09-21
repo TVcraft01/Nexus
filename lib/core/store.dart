@@ -112,15 +112,47 @@ class NexusStore {
     _agentSection()['defaults'] = Map<String, dynamic>.of(value);
   }
 
+  /// The stored facts exactly as they arrived. An entry is either plain text
+  /// or an object carrying its own provenance (`{"text": …}`, the shape the
+  /// memory model writes), and this build must read both: a fact another
+  /// build stored is still the user's fact, and it must not be able to take
+  /// the screen down on the way in.
+  List<Object?> get _storedFacts {
+    final raw = (_data['agent'] as Map<String, dynamic>?)?['facts'];
+    return raw is List ? raw.cast<Object?>() : const <Object?>[];
+  }
+
+  /// The words of one stored fact, or null when the entry cannot be read.
+  static String? _factText(Object? raw) {
+    if (raw is String) return raw;
+    if (raw is Map && raw['text'] is String) return raw['text'] as String;
+    return null;
+  }
+
   /// Things the user told the assistant about their world ("my wifi
   /// password is nexus"), kept as plain text so recall can search them by
   /// keyword. Survives restarts, like taught phrases.
-  List<String> get agentFacts => List<String>.from(
-    (_data['agent'] as Map<String, dynamic>?)?['facts'] as List? ?? const [],
-  );
+  List<String> get agentFacts => [
+    for (final raw in _storedFacts)
+      if (_factText(raw) case final String text) text,
+  ];
 
   set agentFacts(List<String> value) {
-    _agentSection()['facts'] = List<String>.of(value);
+    // Writing back leaves every entry this build did not create in the shape
+    // it arrived in: provenance that another build recorded is not this
+    // build's to flatten into bare text. Facts written here are plain text.
+    final unclaimed = <String, List<Object?>>{};
+    for (final raw in _storedFacts) {
+      final text = _factText(raw);
+      if (text != null) (unclaimed[text] ??= []).add(raw);
+    }
+    _agentSection()['facts'] = [
+      for (final text in value)
+        if ((unclaimed[text] ?? const <Object?>[]).isNotEmpty)
+          unclaimed[text]!.removeAt(0)
+        else
+          text,
+    ];
   }
 
   /// The user's name as synced from a paired device. The live profile lives

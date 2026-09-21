@@ -4,6 +4,7 @@
 // These drive the shipped controller with a fake only at the device edge, so
 // what is asserted is the real derivation the screen renders.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -129,6 +130,53 @@ void main() {
 
     expect(c.suggestions, isNot(contains('copy hello to my phone')));
     expect(c.suggestions, contains('what time is it'));
+
+    c.dispose();
+  });
+
+  test('a fact another build stored opens the screen instead of an error box',
+      () async {
+    // The verbatim contents of the `agent` section of the state file on the
+    // real phone this was found on: a fact carrying its own provenance, in the
+    // shape the memory model writes. Reading that list as bare strings threw
+    // inside this constructor, and the whole home screen became an error box.
+    final dir = Directory.systemTemp.createTempSync('v2_foreign_store');
+    addTearDown(() => dir.delete(recursive: true));
+    final path = '${dir.path}/s.json';
+    File(path).writeAsStringSync(jsonEncode({
+      'agent': {
+        'facts': [
+          {
+            'text': 'my spare key is under the blue flower pot on the balcony',
+            'stamp': {
+              'origin': 'explicit',
+              'source': "TVcraft01' phone",
+              'learnedAt': '2026-09-20T10:03:22.050322',
+            },
+          },
+        ],
+      },
+    }));
+
+    final store = NexusStore(explicitPath: path)..autoUpdate = false;
+    await store.load();
+    final mesh = MeshService(
+      identity:
+          DeviceInfo(id: 'test-phone', name: 'Test Phone', platform: 'android'),
+      store: store,
+    );
+    addTearDown(mesh.stop);
+
+    // Constructing the controller is what the home shell does on the first
+    // frame; the fact has to survive it, in the user's words.
+    late NexusAssistantController c;
+    expect(() => c = NexusAssistantController(mesh: mesh, executor: _FakeExecutor(
+      (request) async => const ActionResult(true, 'ok'),
+    )), returnsNormally);
+    expect(c.stateLine, 'Ready \u2014 ask me anything');
+    expect(store.agentFacts, [
+      'my spare key is under the blue flower pot on the balcony',
+    ]);
 
     c.dispose();
   });
