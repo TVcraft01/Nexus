@@ -20,11 +20,19 @@ class ActionResult {
   /// executor formats into the answer. Null when the action has no payload.
   final Map<String, dynamic>? data;
 
+  /// Whether the action stopped because it needs something only the user can
+  /// give it — a contact, a query, a duration, a destination. A request for a
+  /// missing detail is a question, not a broken feature, and the assistant
+  /// reports it as one instead of colouring itself red for the user's own
+  /// half-finished sentence.
+  final bool needsDetail;
+
   const ActionResult(
     this.ok,
     this.message, {
     this.candidates = const [],
     this.data,
+    this.needsDetail = false,
   });
 }
 
@@ -195,7 +203,11 @@ class DesktopDeviceActionBackend implements DeviceActionBackend {
   Future<ActionResult> _webSearch(Map<String, dynamic> args) async {
     final query = args['query']?.toString() ?? '';
     if (query.isEmpty) {
-      return const ActionResult(false, 'What should I search for?');
+      return const ActionResult(
+        false,
+        'What should I search for?',
+        needsDetail: true,
+      );
     }
     final url =
         'https://www.google.com/search?q=${Uri.encodeQueryComponent(query)}';

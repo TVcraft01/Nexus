@@ -28,6 +28,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.view.KeyEvent
@@ -103,6 +104,13 @@ class MainActivity : FlutterActivity() {
     // Voice output: the system TextToSpeech engine says the assistant's
     // reply aloud. No runtime permission needed.
     private val SPEECH_OUT_CHANNEL = "dev.nexus.nexus/speech_out"
+
+    // Whether sound is coming out right now: the engine itself reports
+    // utterance start and stop, which is the difference between "a reply was
+    // queued" and "a voice is playing". The assistant's globe answers to it.
+    private val SPEECH_STATE_CHANNEL = "dev.nexus.nexus/speech_state"
+    private var speechStateSink: EventChannel.EventSink? = null
+    private var speechSpeaking = false
 
     // On-device tiny model: the phone's everyday brain. Real inference
     // (llama.cpp / MediaPipe LLM) plugs in here; until then both calls
@@ -237,6 +245,21 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+
+        // Whether sound is coming out right now. On listen the current state
+        // is sent immediately, so a subscriber that arrives mid-utterance is
+        // not left believing the room is silent.
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, SPEECH_STATE_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    speechStateSink = events
+                    events?.success(speechSpeaking)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    speechStateSink = null
+                }
+            })
 
         // On-device tiny model: answers everyday questions inside the app,
         // fully offline. Honest null until real inference is integrated —
@@ -1124,6 +1147,31 @@ class MainActivity : FlutterActivity() {
         startSpeech(result)
     }
 
+    /// Forwards the engine's own utterance start/stop to Dart. This is the
+    /// difference between knowing an utterance was queued and knowing a voice
+    /// is playing: the speak call below resolves at queue time, so without
+    /// this listener the app could only guess.
+    private fun attachSpeechState(engine: TextToSpeech) {
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = postSpeechState(true)
+            override fun onDone(utteranceId: String?) = postSpeechState(false)
+
+            @Deprecated("older callback, still delivered by some engines")
+            override fun onError(utteranceId: String?) = postSpeechState(false)
+
+            override fun onStop(utteranceId: String?, interrupted: Boolean) =
+                postSpeechState(false)
+        })
+    }
+
+    /// Publishes one utterance state change on the main thread — the engine
+    /// calls back on its own thread, and EventSink is not thread-safe.
+    private fun postSpeechState(speaking: Boolean) {
+        speechSpeaking = speaking
+        val sink = speechStateSink ?: return
+        runOnUiThread { sink.success(speaking) }
+    }
+
     /// Voice output: says [text] through the system text-to-speech engine.
     /// The engine is created once, asynchronously — the first reply may
     /// resolve a few moments late, which is fine (the reply stays on the
@@ -1158,6 +1206,7 @@ class MainActivity : FlutterActivity() {
         if (tts != null) return // init underway — its callback speaks the latest
         ttsInitPending = true
         tts = TextToSpeech(this) { status ->
+            tts?.let { attachSpeechState(it) }
             val r = pendingTtsResult
             val t = pendingTtsText
             pendingTtsResult = null

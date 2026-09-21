@@ -20,6 +20,43 @@ class NexusV2Colors {
   static const destructive = Color(0xFFFF7474);
 }
 
+/// The spacing scale every Nexus v2 screen shares.
+///
+/// One scale, so a new surface lands on the same rhythm as the ones beside it
+/// instead of inventing its own padding. [page] is the horizontal margin a
+/// screen's content sits on.
+class NexusV2Space {
+  const NexusV2Space._();
+
+  static const double xxs = 2;
+  static const double xs = 4;
+  static const double sm = 8;
+  static const double md = 12;
+  static const double lg = 16;
+  static const double xl = 24;
+  static const double page = 20;
+}
+
+/// Widths that keep a wide window readable: the conversation centers in
+/// [readableColumn] instead of stretching across the screen, and one bubble
+/// never grows past [bubble].
+class NexusV2Layout {
+  const NexusV2Layout._();
+
+  static const double readableColumn = 520;
+  static const double bubble = 440;
+}
+
+/// Corner radii, named by what they wrap rather than by how big they are.
+class NexusV2Radius {
+  const NexusV2Radius._();
+
+  static const double bubble = 18;
+  static const double card = 16;
+  static const double control = 12;
+  static const double composer = 22;
+}
+
 ThemeData buildNexusV2Theme({Brightness brightness = Brightness.dark}) {
   if (brightness == Brightness.light) {
     final scheme = ColorScheme.light(

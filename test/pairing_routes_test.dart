@@ -11,7 +11,7 @@ void main() {
     final dir = await Directory.systemTemp.createTemp('nexus_routes_test');
     final store = NexusStore(explicitPath: '${dir.path}/state.json')..port = 0;
     final mesh = MeshService(
-      identity: const DeviceInfo(
+      identity: DeviceInfo(
         id: 'test-device',
         name: 'Test device',
         platform: 'linux',

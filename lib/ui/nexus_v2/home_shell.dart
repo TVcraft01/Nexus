@@ -18,6 +18,58 @@ import 'files_view.dart';
 import 'nexus_orb.dart';
 import 'settings_view.dart';
 
+/// One navigation entry, in one list.
+///
+/// The phone's bottom bar and the desktop rail are two layouts of the same
+/// thing: same order, same names, same icons, same words for the user. Only
+/// the layout differs — a phone is not a shrunken desktop, and the desktop is
+/// not a stretched phone.
+class NexusV2Destination {
+  const NexusV2Destination({
+    required this.label,
+    required this.icon,
+    required this.selectedIcon,
+  });
+
+  final String label;
+  final IconData icon;
+  final IconData selectedIcon;
+}
+
+const List<NexusV2Destination> kNexusV2Destinations = [
+  NexusV2Destination(
+    label: 'Devices',
+    icon: Icons.devices_outlined,
+    selectedIcon: Icons.devices_rounded,
+  ),
+  NexusV2Destination(
+    label: 'Files',
+    icon: Icons.folder_outlined,
+    selectedIcon: Icons.folder_rounded,
+  ),
+  // The Assistant is the tab that *is* Nexus, so it gets a conversation glyph
+  // rather than a filled sparkle: the sparkle claimed the row even when
+  // another destination was selected, and this is the one part of the app you
+  // talk to rather than operate.
+  NexusV2Destination(
+    label: 'Assistant',
+    icon: Icons.chat_bubble_outline_rounded,
+    selectedIcon: Icons.chat_bubble_rounded,
+  ),
+  NexusV2Destination(
+    label: 'Settings',
+    icon: Icons.settings_outlined,
+    selectedIcon: Icons.settings_rounded,
+  ),
+];
+
+/// Where a fresh start lands: the assistant, on both layouts.
+///
+/// A person opening Nexus is opening their assistant; the device list is
+/// something they visit. Landing on Devices made the app read as a control
+/// panel with an AI tab.
+const int kNexusV2AssistantIndex = 2;
+
 class NexusV2HomeShell extends StatefulWidget {
   final MeshService mesh;
   const NexusV2HomeShell({super.key, required this.mesh});
@@ -27,7 +79,7 @@ class NexusV2HomeShell extends StatefulWidget {
 }
 
 class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
-  int _index = 0;
+  int _index = kNexusV2AssistantIndex;
   UpdateInfo? _update;
   bool _checking = false;
   String? _updateError;
@@ -75,22 +127,22 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
         _ => false,
       };
 
-  Widget _assistant() => NexusAssistantPresence(
-        brain: _brain,
-        child: NexusV2AssistantView(mesh: widget.mesh, brain: _brain),
-      );
-
   @override
   Widget build(BuildContext context) {
     final views = [
       NexusV2DevicesView(mesh: widget.mesh),
       NexusV2FilesView(mesh: widget.mesh),
-      _assistant(),
+      NexusV2AssistantView(mesh: widget.mesh, brain: _brain),
       NexusV2SettingsView(
         mesh: widget.mesh,
         onCheckForUpdate: () => _checkForUpdate(force: true),
       ),
     ];
+
+    // The keyboard owns the bottom edge while it is open: the navigation bar
+    // steps aside so the composer sits directly above the keys, in the thumb
+    // zone the user is already looking at.
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -134,13 +186,23 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
                                     ),
                                   ),
                                 )
-                              : const NexusOrb(size: 34),
+                              // The rail's globe is the app's mark, not a status
+                              // readout: it names Nexus rather than reporting
+                              // what Nexus is doing, and the assistant screen
+                              // is where the state lives.
+                              : const NexusOrb(
+                                  state: NexusOrbState.idle,
+                                  size: 34,
+                                  semanticLabel: 'Nexus',
+                                ),
                         ),
-                        destinations: const [
-                          NavigationRailDestination(icon: Icon(Icons.devices_outlined), selectedIcon: Icon(Icons.devices_rounded), label: Text('Devices')),
-                          NavigationRailDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder_rounded), label: Text('Files')),
-                          NavigationRailDestination(icon: Icon(Icons.auto_awesome_outlined), selectedIcon: Icon(Icons.auto_awesome_rounded), label: Text('Assistant')),
-                          NavigationRailDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings_rounded), label: Text('Settings')),
+                        destinations: [
+                          for (final destination in kNexusV2Destinations)
+                            NavigationRailDestination(
+                              icon: Icon(destination.icon),
+                              selectedIcon: Icon(destination.selectedIcon),
+                              label: Text(destination.label),
+                            ),
                         ],
                       ),
                     if (rail) const VerticalDivider(width: 1),
@@ -157,16 +219,19 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
               ),
             ],
           ),
-          bottomNavigationBar: rail
+          bottomNavigationBar: rail || keyboardOpen
               ? null
               : NavigationBar(
                   selectedIndex: _index,
                   onDestinationSelected: (value) => setState(() => _index = value),
-                  destinations: const [
-                    NavigationDestination(icon: Icon(Icons.devices_outlined), selectedIcon: Icon(Icons.devices_rounded), label: 'Devices'),
-                    NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder_rounded), label: 'Files'),
-                    NavigationDestination(icon: Icon(Icons.auto_awesome_outlined), selectedIcon: Icon(Icons.auto_awesome_rounded), label: 'Assistant'),
-                    NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings_rounded), label: 'Settings'),
+                  destinations: [
+                    for (final destination in kNexusV2Destinations)
+                      NavigationDestination(
+                        icon: Icon(destination.icon),
+                        selectedIcon: Icon(destination.selectedIcon),
+                        label: destination.label,
+                        tooltip: destination.label,
+                      ),
                   ],
                 ),
         );
@@ -195,39 +260,6 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
     } catch (_) {
       if (mounted) setState(() => _updateError = 'The update could not be applied.');
     }
-  }
-}
-
-class NexusAssistantPresence extends StatelessWidget {
-  final LocalBrain? brain;
-  final Widget child;
-
-  const NexusAssistantPresence({super.key, required this.brain, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    final compact = MediaQuery.sizeOf(context).width < 560;
-    final available = brain != null;
-    return Column(
-      children: [
-        Padding(
-          padding: EdgeInsets.only(top: compact ? 2 : 6),
-          child: Column(
-            children: [
-              NexusOrb(size: compact ? 64 : 78),
-              const SizedBox(height: 4),
-              Text(
-                available ? 'Ready' : 'Assistant',
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-              ),
-            ],
-          ),
-        ),
-        Expanded(child: child),
-      ],
-    );
   }
 }
 
