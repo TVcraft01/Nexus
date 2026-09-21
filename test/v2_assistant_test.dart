@@ -40,16 +40,17 @@ class _FakeExecutor implements DeviceExecutor {
 }
 
 class _FakeSpeechInput extends SpeechInput {
-  _FakeSpeechInput({this.heard, this.pending});
+  _FakeSpeechInput(this.pending);
 
-  final String? heard;
-  final Completer<String?>? pending;
+  /// Completed by the test when the user stops talking; null means they gave
+  /// up, which is how the microphone's cancel path is exercised.
+  final Completer<String?> pending;
 
   @override
   bool get available => true;
 
   @override
-  Future<String?> listen() async => pending?.future ?? heard;
+  Future<String?> listen() => pending.future;
 }
 
 class _RecordingSpeechOutput extends SpeechOutput {
@@ -345,7 +346,7 @@ void main() {
 
   testWidgets('voice in, reply out, and the globe says which',
       (tester) async {
-    final input = _FakeSpeechInput(pending: Completer<String?>());
+    final input = _FakeSpeechInput(Completer<String?>());
     final output = _RecordingSpeechOutput();
     final playback = _FakePlayback();
     SpeechInput.override = () => input;
@@ -363,7 +364,7 @@ void main() {
     expect(find.bySemanticsLabel('Nexus — Listening'), findsOneWidget);
     expect(find.textContaining('Listening — say it'), findsOneWidget);
 
-    input.pending!.complete('what time is it');
+    input.pending.complete('what time is it');
     await _settle(tester);
 
     // The utterance ran through the same pipeline as typing, and the reply to
