@@ -169,43 +169,110 @@ void main() {
     final harness = _AssistantHarness.create();
     await _pumpAssistant(tester, mesh: harness.mesh);
 
-    // The four permanent prompts are gone, and so is the stack of titles:
-    // one lead line, and the composer is the way in.
-    expect(find.text('What can you do?'), findsNothing);
-    expect(find.text('What’s on my calendar?'), findsNothing);
-    expect(find.text('Find my other devices'), findsNothing);
-    expect(find.text('Remember this for me'), findsNothing);
+    // The four prompts the brief removed are gone in every casing, from the
+    // screen and from the chips that replaced the buttons.
+    String flat(String text) =>
+        text.toLowerCase().replaceAll('’', "'").trim();
+    final shown = tester
+        .widgetList<Text>(find.byType(Text))
+        .map((c) => flat(c.data ?? c.textSpan?.toPlainText() ?? ''))
+        .toList();
+    for (final removed in const [
+      'what can you do',
+      "what's on my calendar",
+      'find my other devices',
+      'remember this for me',
+    ]) {
+      expect(
+        shown.where((text) => text.contains(removed)),
+        isEmpty,
+        reason: 'the brief removed this prompt: "$removed"',
+      );
+    }
     expect(find.text('Ready when you are.'), findsNothing);
     expect(
       find.textContaining('Tell me what you need'),
       findsOneWidget,
     );
 
-    // Any suggestion shown must really run: the same interpreter the composer
-    // uses has to parse it, or it is never displayed.
+    // At most two, never a wall of them.
     final chips = tester
         .widgetList<ActionChip>(find.byType(ActionChip))
         .map((chip) => (chip.label as Text).data!)
         .toList();
     expect(chips, isNotEmpty);
     expect(chips.length, lessThanOrEqualTo(2));
-    final interpreter = CommandService(
-      devices: () => const [],
-      local: AgentDeviceSnapshot(
-        id: 'test-phone',
-        name: 'Test Phone',
-        online: true,
-        capabilities: defaultCapabilitiesFor('android'),
-      ),
-    );
-    for (final chip in chips) {
-      expect(
-        interpreter.parsesAsCommand(chip),
-        isTrue,
-        reason: 'a suggestion that cannot run must never be offered: "$chip"',
-      );
-    }
 
+    await harness.mesh.stop();
+  });
+
+  testWidgets('every suggestion offered is carried out, not just understood',
+      (tester) async {
+    // Enumerated from a fresh screen, then each one tapped on its own fresh
+    // screen: a chip is only offered if the shipped path really does something
+    // with it, so no tap may end at an approval nothing can grant or at a
+    // "not available yet".
+    final probe = _AssistantHarness.create();
+    await _pumpAssistant(tester, mesh: probe.mesh);
+    final chips = tester
+        .widgetList<ActionChip>(find.byType(ActionChip))
+        .map((chip) => (chip.label as Text).data!)
+        .toList();
+    await probe.mesh.stop();
+    expect(chips, isNotEmpty);
+
+    for (final chip in chips) {
+      // A blank tree first: pumping the same widget shape twice would update
+      // the existing State instead of starting a new screen, and the previous
+      // chip's thread would still be there.
+      await tester.pumpWidget(const SizedBox.shrink());
+      final harness = _AssistantHarness.create();
+      await _pumpAssistant(tester, mesh: harness.mesh);
+      await tester.tap(find.widgetWithText(ActionChip, chip));
+      await _settle(tester);
+
+      final shown = tester
+          .widgetList<Text>(find.byType(Text))
+          .map((c) => (c.data ?? c.textSpan?.toPlainText() ?? '').toLowerCase())
+          .toList();
+      for (final leak in const [
+        'approval',
+        'not available yet',
+        "i don't understand",
+      ]) {
+        expect(shown.where((t) => t.contains(leak)), isEmpty,
+            reason: 'the chip "$chip" did not really run');
+      }
+      // The ask and its reply are both in the thread now.
+      expect(find.text(chip), findsOneWidget);
+      await harness.mesh.stop();
+    }
+  });
+
+  testWidgets('a routine that cannot really run is never offered',
+      (tester) async {
+    // "copy hello to my phone" is a real command that parses — and still ends
+    // at a local gate nothing can open, so it must not become a chip.
+    QueryLog.readAllOverride = () async => [
+          '{"kind":"ask","input":"copy hello to my phone",'
+              '"route":"clipboard.write","status":"succeeded"}',
+          '{"kind":"ask","input":"copy hello to my phone",'
+              '"route":"clipboard.write","status":"succeeded"}',
+        ];
+    final harness = _AssistantHarness.create();
+    await _pumpAssistant(tester, mesh: harness.mesh);
+    await _settle(tester); // the post-frame habit read
+
+    // Parsing is not the reason it is held back: it really is a command.
+    final interpreter = CommandService(devices: () => const []);
+    expect(interpreter.parsesAsCommand('copy hello to my phone'), isTrue);
+
+    expect(
+      find.widgetWithText(ActionChip, 'copy hello to my phone'),
+      findsNothing,
+    );
+    // The usable starters are still offered, so the list is not just empty.
+    expect(find.widgetWithText(ActionChip, 'what time is it'), findsOneWidget);
     await harness.mesh.stop();
   });
 
@@ -217,11 +284,20 @@ void main() {
           '{"kind":"ask","input":"take a screenshot","route":"screenshot",'
               '"status":"succeeded"}',
         ];
+    final executor = _FakeExecutor(
+      (request) async => const ActionResult(true, 'Screenshot saved.'),
+    );
     final harness = _AssistantHarness.create();
-    await _pumpAssistant(tester, mesh: harness.mesh);
+    await _pumpAssistant(tester, mesh: harness.mesh, executor: executor);
     await _settle(tester); // the post-frame habit read
 
     expect(find.widgetWithText(ActionChip, 'take a screenshot'), findsOneWidget);
+
+    // Offered because it really runs: the tap goes through the platform.
+    await tester.tap(find.widgetWithText(ActionChip, 'take a screenshot'));
+    await _settle(tester);
+    expect(executor.seen.single.action, AgentActions.screenshot);
+    expect(find.text('Screenshot saved.'), findsOneWidget);
     await harness.mesh.stop();
   });
 

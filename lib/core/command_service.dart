@@ -104,6 +104,52 @@ class CommandService {
         InterpretOutcome.unknown;
   }
 
+  /// Whether the shipped path can really carry [input] out, as opposed to
+  /// merely understanding it.
+  ///
+  /// Parsing is not ability: "copy hello to my phone" parses and still ends at
+  /// a local approval gate nothing in this build can open, so offering it as a
+  /// suggestion would be a dead end dressed as a chip. The phrase has to reach
+  /// something this path really does — an answer that needs no device, an
+  /// action this device runs itself, or a plan for a peer. A question or a
+  /// blocked action is not.
+  ///
+  /// Nothing is executed and nothing is remembered: the walk is the same one a
+  /// typed ask takes, with its effects switched off.
+  bool carriesOut(String input) {
+    final text = input.trim();
+    if (text.isEmpty) return false;
+    final normalized = CommandInterpreter.normalizePhrase(text);
+    final taught = _learned[normalized];
+    final outcome = taught != null
+        ? _dispatchInput(taught, AgentApproval.required, 'preview', dryRun: true)
+        : _preview(normalized);
+    if (outcome == null || outcome.status != AgentResultStatus.succeeded) {
+      return false;
+    }
+    return switch (outcome.dispatch) {
+      AgentActionPlan() => true,
+      AgentDeviceList() => true,
+      AgentMessage(:final action) =>
+        action == null || locallyExecutable.contains(action),
+      _ => false,
+    };
+  }
+
+  /// The dispatch the interpreter's reading of [normalized] would produce,
+  /// without producing it: null when nothing recognizes the phrase.
+  AgentDispatchResult? _preview(String normalized) {
+    final interpreted = _interpreter.interpret(normalized);
+    if (interpreted.outcome != InterpretOutcome.matched) return null;
+    return _dispatchParsed(
+      interpreted.command!,
+      AgentApproval.required,
+      'preview',
+      rawInput: normalized,
+      dryRun: true,
+    );
+  }
+
   /// Drops a pending clarification. Called when the user moves on and types
   /// a new command instead of answering — the question must vanish from the
   /// service's memory so it can never swallow a later input.
@@ -407,8 +453,9 @@ class CommandService {
   AgentDispatchResult _dispatchInput(
     String input,
     AgentApproval approval,
-    String requestId,
-  ) {
+    String requestId, {
+    bool dryRun = false,
+  }) {
     final interpreted = _interpreter.interpret(input.toLowerCase());
     if (interpreted.outcome != InterpretOutcome.matched) {
       return const AgentDispatchResult(status: AgentResultStatus.unavailable);
@@ -418,6 +465,7 @@ class CommandService {
       approval,
       requestId,
       rawInput: input,
+      dryRun: dryRun,
     );
   }
 
@@ -429,6 +477,7 @@ class CommandService {
     AgentApproval approval,
     String requestId, {
     String? rawInput,
+    bool dryRun = false,
   }) {
     final action = command.action;
     if (action == AgentActions.deviceList) {
@@ -475,7 +524,13 @@ class CommandService {
     // would only fail here — offer to have the paired device do it instead.
     if (action == AgentActions.callPlace ||
         action == AgentActions.messageSend) {
-      return _contactAction(command, approval, requestId, rawInput);
+      return _contactAction(
+        command,
+        approval,
+        requestId,
+        rawInput,
+        dryRun: dryRun,
+      );
     }
     if (action == AgentActions.emailSend) {
       // Email runs through the same message+action path as texts, but the
@@ -566,8 +621,9 @@ class CommandService {
     ParsedCommand command,
     AgentApproval approval,
     String requestId,
-    String? rawInput,
-  ) {
+    String? rawInput, {
+    bool dryRun = false,
+  }) {
     // Resolve learned "did you mean" aliases first: the user said "call
     // alx", confirmed Alex once, and the fact "alx means alex" now routes
     // straight to Alex — no question on the next try. ("remember that tv
@@ -613,6 +669,7 @@ class CommandService {
       approval,
       requestId,
       rawInput,
+      dryRun: dryRun,
     );
   }
 
@@ -626,8 +683,9 @@ class CommandService {
     ParsedCommand command,
     AgentApproval approval,
     String requestId,
-    String? rawInput,
-  ) {
+    String? rawInput, {
+    bool dryRun = false,
+  }) {
     final args = Map<String, dynamic>.of(command.arguments);
     String? hint;
     // A device named in the command wins; otherwise fall back to the one
@@ -651,11 +709,14 @@ class CommandService {
         );
       }
       // Remember the choice so future commands of the same kind go straight
-      // there — in this session AND after a restart (via [defaults]).
-      _pendingDeviceChoice[command.action] = target.id;
-      if (_defaults['device:${command.action}'] != target.id) {
-        _defaults['device:${command.action}'] = target.id;
-        onMemoryChanged?.call();
+      // there — in this session AND after a restart (via [defaults]). A
+      // preview must not: it is a question, not a choice the user made.
+      if (!dryRun) {
+        _pendingDeviceChoice[command.action] = target.id;
+        if (_defaults['device:${command.action}'] != target.id) {
+          _defaults['device:${command.action}'] = target.id;
+          onMemoryChanged?.call();
+        }
       }
       return _devicePlan(
         command: ParsedCommand(
@@ -696,10 +757,12 @@ class CommandService {
         ? 'Answer "yes" or name another device. I\'ll remember which one for next time.'
         : 'Name one: ${candidates.map((d) => d.name).join(', ')}.';
     // A single candidate is remembered inside the pending value so a plain
-    // "yes" answer can resolve to it.
-    _pendingContext['device:${command.action}'] = candidates.length == 1
-        ? '${rawInput ?? ''}\u0001${candidates.single.id}'
-        : (rawInput ?? '');
+    // "yes" answer can resolve to it. A preview leaves no question open.
+    if (!dryRun) {
+      _pendingContext['device:${command.action}'] = candidates.length == 1
+          ? '${rawInput ?? ''}\u0001${candidates.single.id}'
+          : (rawInput ?? '');
+    }
     return AgentDispatchResult(
       status: AgentResultStatus.needsInfo,
       dispatch: AgentClarification(

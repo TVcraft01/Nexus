@@ -819,4 +819,95 @@ void main() {
       expect(msg.arguments?['contact'], 'tvcraft01');
     });
   });
+
+  group('carriesOut asks whether the path can really do it', () {
+    CommandService phone({void Function()? onMemoryChanged}) => CommandService(
+          devices: () => const [],
+          local: const AgentDeviceSnapshot(
+            id: 'phone',
+            name: 'My Phone',
+            online: true,
+            capabilities: [DeviceCapability(AgentActions.screenshot)],
+          ),
+          locallyExecutable: const {AgentActions.screenshot},
+          onMemoryChanged: onMemoryChanged,
+        );
+
+    test('an answer that needs no device is offerable', () {
+      for (final phrase in const [
+        'what time is it',
+        'what is 12 times 8',
+        'show my devices',
+      ]) {
+        expect(phone().carriesOut(phrase), isTrue, reason: phrase);
+      }
+    });
+
+    test('an action this device really runs is offerable', () {
+      expect(phone().carriesOut('take a screenshot'), isTrue);
+    });
+
+    test('a phrase that only parses is not offerable', () {
+      final service = phone();
+      // It is a real command — which is exactly why understanding it is not
+      // enough to put it on screen as a suggestion.
+      expect(service.parsesAsCommand('copy hello to my phone'), isTrue);
+      expect(service.carriesOut('copy hello to my phone'), isFalse);
+      // No plan, no answer: the path stops at a gate nothing can open.
+      expect(
+        service.execute('copy hello to my phone').status,
+        AgentResultStatus.required,
+      );
+    });
+
+    test('an unknown phrase is not offerable', () {
+      expect(phone().carriesOut('flibbertigibbet the moon'), isFalse);
+      expect(phone().carriesOut('   '), isFalse);
+    });
+
+    test('a phrase that would only ask is not offered', () {
+      // No duration: the path can only ask for one, so a chip for it would do
+      // nothing but produce a question.
+      expect(phone().carriesOut('set a timer'), isFalse);
+    });
+
+    test('an action nothing here runs is not offerable', () {
+      // "take a screenshot" is a real answer-shaped request, but on a device
+      // whose list does not include it there is nothing to carry out.
+      final bare = CommandService(devices: () => const []);
+      expect(bare.carriesOut('take a screenshot'), isFalse);
+      expect(phone().carriesOut('take a screenshot'), isTrue);
+    });
+
+    test('asking leaves nothing remembered and no question open', () {
+      var changes = 0;
+      final onPc = CommandService(
+        devices: () => const [
+          AgentDeviceSnapshot(
+            id: 'pc',
+            name: 'PC',
+            online: true,
+            capabilities: [DeviceCapability(AgentActions.callPlace)],
+          ),
+        ],
+        local: const AgentDeviceSnapshot(
+          id: 'phone',
+          name: 'My Phone',
+          online: true,
+        ),
+        onMemoryChanged: () => changes++,
+      );
+      onPc.adoptFact('mom is 0611223344');
+      changes = 0;
+
+      // A peer that can dial it: offerable, because the request would go there.
+      expect(onPc.carriesOut('call mom on PC'), isTrue);
+      expect(changes, 0, reason: 'a preview must not write memory');
+      expect(onPc.defaultsSnapshot, isEmpty);
+      // And "yes" is not the answer to a question nobody was asked.
+      final stray = onPc.execute('yes');
+      expect(stray.status, AgentResultStatus.needsInfo);
+      expect((stray.dispatch! as AgentClarification).key, 'teach:yes');
+    });
+  });
 }

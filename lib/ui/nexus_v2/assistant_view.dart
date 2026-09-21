@@ -104,11 +104,10 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
 
   /// The phrases Nexus may offer on a device it knows nothing about yet.
   ///
-  /// Deliberately conversation-sized and platform-neutral — help, the time,
-  /// the weather — and every candidate is checked against the real interpreter
-  /// before it is displayed, so a chip can never be a dead end.
+  /// Deliberately conversation-sized and platform-neutral, and each one is
+  /// checked against the ability check below, so a starter is only ever
+  /// something the shipped path really answers.
   static const _starterPhrases = [
-    'what can you do',
     'what time is it',
     'what is the weather',
   ];
@@ -138,11 +137,6 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
   /// The entries already read out loud, by identity, so a spoken exchange is
   /// spoken exactly once even when the thread is rebuilt around it.
   final Set<ConversationEntry> _spokenEntries = {};
-
-  /// The ask waiting for the user's Allow, verbatim, so allowing re-runs what
-  /// they actually asked for rather than a paraphrase of it.
-  String? _pendingApproval;
-  AgentRequest? _pendingRequest;
 
   /// An unresolved contact: what Nexus was asked to do and the real near
   /// matches the platform found. A question with real choices, never a guess.
@@ -272,22 +266,23 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
   /// What Nexus may offer right now, and only what is true.
   ///
   /// First the user's own routines — phrases they really ask twice or more —
-  /// and otherwise a couple of conversation-sized starters. Every candidate
-  /// goes through the same interpreter the composer uses, so a chip that would
-  /// not run is never shown at all.
+  /// and otherwise a couple of conversation-sized starters. Every candidate has
+  /// to pass [CommandService.carriesOut], the same walk the composer takes: a
+  /// phrase that only parses, and would end at a gate nothing can open, is
+  /// never offered as a chip.
   List<String> _suggestions() {
     final out = <String>[];
     for (final habit in _habits ?? const <Habit>[]) {
       if (habit.count < 2) continue;
       if (out.contains(habit.phrase)) continue;
-      if (!_service.parsesAsCommand(habit.phrase)) continue;
+      if (!_service.carriesOut(habit.phrase)) continue;
       out.add(habit.phrase);
       if (out.length == 2) return out;
     }
     for (final phrase in _starterPhrases) {
       if (out.length == 2) break;
       if (out.contains(phrase)) continue;
-      if (!_service.parsesAsCommand(phrase)) continue;
+      if (!_service.carriesOut(phrase)) continue;
       out.add(phrase);
     }
     return out;
@@ -333,7 +328,6 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
     HapticFeedback.selectionClick();
     _input.clear();
     _lastAsk = text;
-    final approved = _pendingApproval == text;
     // An open question: the next input answers it — unless it is itself a
     // command. The user moving on must never be learned as the meaning of a
     // phrase that was never about it.
@@ -341,17 +335,17 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
     final answers = pending != null && !_service.parsesAsCommand(text);
     if (pending != null && !answers) _service.cancelPending(pending);
     setState(() {
-      _pendingApproval = null;
-      _pendingRequest = null;
       _confirm = null;
       _retry = null;
       _thinking = true;
     });
 
+    // Nothing in this build can grant a local approval, so asking for one
+    // would only ever produce a card with no way forward; the actions this
+    // phone runs are declared executable up front instead.
     final result = _service.execute(
       text,
       requestId: 'v2-${DateTime.now().microsecondsSinceEpoch}',
-      approval: approved ? AgentApproval.approved : AgentApproval.required,
       answerTo: answers ? pending : null,
     );
     _conversation.appendResult(result, asUser: text, spoken: voice);
@@ -366,18 +360,6 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
   Future<void> _handle(AgentDispatchResult result, {required bool voice}) async {
     switch (result.dispatch) {
       case final AgentActionPlan plan:
-        if (plan.request.approval == AgentApproval.required) {
-          // A plan is a promise to act, so it is never carried out without a
-          // yes: the bar names the action and the device it will run on.
-          if (mounted) {
-            setState(() {
-              _thinking = false;
-              _pendingApproval = _lastAsk;
-              _pendingRequest = plan.request;
-            });
-          }
-          return;
-        }
         await _dispatchPlan(plan, spoken: voice);
       case final AgentMessage message when message.action != null:
         if (!_selfRunActions.contains(message.action)) return;
@@ -605,27 +587,6 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
     );
   }
 
-  Future<void> _approvePending() async {
-    if (_pendingApproval == null) return;
-    HapticFeedback.lightImpact();
-    _input.text = _pendingApproval!;
-    await _submit();
-  }
-
-  void _dismissApproval() {
-    setState(() {
-      _pendingApproval = null;
-      _pendingRequest = null;
-    });
-    _conversation.appendResult(
-      const AgentDispatchResult(
-        status: AgentResultStatus.denied,
-        message: 'Okay — I did not do that.',
-      ),
-      replaceLast: true,
-    );
-  }
-
   /// One utterance, then the recognized words run through the same pipeline as
   /// typing them — the assistant, spoken. Every ending says something real: a
   /// device with no speech service explains itself instead of pretending to
@@ -681,8 +642,6 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
     if (pending != null) _service.cancelPending(pending);
     _conversation.clear();
     setState(() {
-      _pendingApproval = null;
-      _pendingRequest = null;
       _confirm = null;
       _retry = null;
       _input.clear();
@@ -706,6 +665,9 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
   /// that was only a question or a refusal.
   static String _statusWords(AgentResultStatus status) => switch (status) {
         AgentResultStatus.succeeded => 'Done',
+        // Core always sets its own message for this one ("Local approval is
+        // required."), so this line is only the fallback that keeps the table
+        // exhaustive — no control the user could press is missing with it.
         AgentResultStatus.required => 'Waiting for your approval',
         AgentResultStatus.denied => 'You said no — nothing happened',
         AgentResultStatus.unavailable => 'That did not work',
@@ -838,7 +800,6 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
                 ),
         ),
         if (_confirm != null) _confirmCard(theme),
-        if (_pendingApproval != null) _approvalBar(theme),
         SafeArea(top: false, child: _composer(theme)),
       ],
     );
@@ -1106,53 +1067,6 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
                   TextButton(
                     onPressed: _dismissConfirm,
                     child: const Text('Not now'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Approval names the action and the device, so "Allow" is never a blind
-  /// yes. Denying is a choice, so the card says so instead of going quiet.
-  Widget _approvalBar(ThemeData theme) {
-    final request = _pendingRequest;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        NexusV2Space.page,
-        0,
-        NexusV2Space.page,
-        NexusV2Space.sm,
-      ),
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(NexusV2Space.lg),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Approve this?', style: theme.textTheme.titleMedium),
-              if (request != null) ...[
-                const SizedBox(height: NexusV2Space.xs),
-                Text(
-                  '${_describeRequest(request)} · ${_deviceName(request.target)}',
-                  style: theme.textTheme.bodySmall,
-                ),
-              ],
-              const SizedBox(height: NexusV2Space.md),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: _dismissApproval,
-                    child: const Text('Not now'),
-                  ),
-                  const SizedBox(width: NexusV2Space.sm),
-                  FilledButton(
-                    onPressed: () => unawaited(_approvePending()),
-                    child: const Text('Allow'),
                   ),
                 ],
               ),
