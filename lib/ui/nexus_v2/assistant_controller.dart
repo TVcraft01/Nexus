@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart' show ChangeNotifier, ValueListenable;
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 
 import '../../core/agent_contract.dart';
 import '../../core/brain.dart';
@@ -70,6 +71,15 @@ class NexusAssistantController extends ChangeNotifier {
     mesh.onLearnedPhraseReceived = _service.adoptLearned;
     mesh.onFactReceived = _service.adoptFact;
     mesh.onDefaultReceived = _service.adoptDefault;
+    // The screen needs the profile and its own habits, and every widget that
+    // renders this state (the assistant, the desktop panel) needs them at the
+    // same moment — so the controller loads them itself rather than leaving the
+    // order to whoever happens to build first. The habits wait for the first
+    // frame, so the first paint is never held up by the query log.
+    unawaited(loadProfile());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(loadHabits());
+    });
   }
 
   final MeshService mesh;
@@ -189,6 +199,10 @@ class NexusAssistantController extends ChangeNotifier {
     );
   }
 
+  /// Why nothing answers when nothing answers: one sentence, shared with any
+  /// surface that has to say it (the presence line, the desktop panel).
+  static const String offlineLine = 'No paired device is reachable right now';
+
   /// What Nexus is doing, in words — the same truth the globe shows in motion,
   /// read off the same state. Nothing here is inferred from a timer.
   String get stateLine => switch (orbState) {
@@ -197,7 +211,7 @@ class NexusAssistantController extends ChangeNotifier {
         NexusOrbState.working => 'Working on it',
         NexusOrbState.speaking => 'Speaking',
         NexusOrbState.error => 'That last one did not work',
-        NexusOrbState.offline => 'No paired device is reachable right now',
+        NexusOrbState.offline => offlineLine,
         NexusOrbState.idle => 'Ready — ask me anything',
       };
 
@@ -255,6 +269,7 @@ class NexusAssistantController extends ChangeNotifier {
     return out;
   }
 
+  /// Who is using Nexus here, and how the assistant is named.
   Future<void> loadProfile() async {
     final profile = await _profile.read();
     if (_disposed) return;

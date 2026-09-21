@@ -19,6 +19,7 @@ import 'package:nexus/core/speech.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/ui/device_executor.dart';
+import 'package:nexus/ui/nexus_v2/assistant_controller.dart';
 import 'package:nexus/ui/nexus_v2/assistant_view.dart';
 import 'package:nexus/ui/nexus_v2/design_system.dart';
 import 'package:nexus/ui/nexus_v2/nexus_orb.dart';
@@ -119,15 +120,14 @@ Future<void> _pumpAssistant(
     tester.view.resetDevicePixelRatio();
     tester.view.resetPadding();
   });
+  // The screen renders the controller it is given; the test owns it, the way
+  // the shell owns it in the app.
+  final controller = NexusAssistantController(mesh: mesh, executor: executor);
+  addTearDown(controller.dispose);
   await tester.pumpWidget(
     MaterialApp(
       theme: buildNexusV2Theme(),
-      home: Scaffold(
-        body: NexusV2AssistantView(
-          mesh: mesh,
-          executor: executor,
-        ),
-      ),
+      home: Scaffold(body: NexusV2AssistantView(controller: controller)),
     ),
   );
   await tester.pump(); // profile load

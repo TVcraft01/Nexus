@@ -12,7 +12,9 @@ import '../../core/tiny_brain.dart';
 import '../../core/version.dart';
 import '../../mesh/mesh_service.dart';
 import '../../mesh/updater.dart';
+import 'assistant_controller.dart';
 import 'assistant_view.dart';
+import 'desktop_panel.dart';
 import 'devices_view.dart';
 import 'files_view.dart';
 import 'nexus_orb.dart';
@@ -70,6 +72,14 @@ const List<NexusV2Destination> kNexusV2Destinations = [
 /// panel with an AI tab.
 const int kNexusV2AssistantIndex = 2;
 
+/// The width at which a window is a desktop: a rail replaces the bottom bar.
+const double kNexusV2RailFrom = 720;
+
+/// The width at which there is room for an extended rail *and* the assistant's
+/// status panel together — 210 + 520 + 288 leaves room to spare, so the extra
+/// surface never squeezes the conversation's readable band.
+const double kNexusV2PanelFrom = 1080;
+
 class NexusV2HomeShell extends StatefulWidget {
   final MeshService mesh;
   const NexusV2HomeShell({super.key, required this.mesh});
@@ -85,6 +95,17 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
   String? _updateError;
   late final LocalBrain? _brain;
 
+  /// The assistant's state, owned here rather than by the assistant screen:
+  /// the desktop layout reads the same instance for its status panel, so both
+  /// widgets report one state rather than two copies of it.
+  late final NexusAssistantController _assistant;
+
+  @override
+  void dispose() {
+    _assistant.dispose();
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -96,6 +117,7 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
     if (_brain case final LocalBrain strong when strong is! DistributedBrain) {
       widget.mesh.brain = strong;
     }
+    _assistant = NexusAssistantController(mesh: widget.mesh, brain: _brain);
     if (widget.mesh.store.autoUpdate) unawaited(_checkForUpdate());
   }
 
@@ -132,7 +154,7 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
     final views = [
       NexusV2DevicesView(mesh: widget.mesh),
       NexusV2FilesView(mesh: widget.mesh),
-      NexusV2AssistantView(mesh: widget.mesh, brain: _brain),
+      NexusV2AssistantView(controller: _assistant),
       NexusV2SettingsView(
         mesh: widget.mesh,
         onCheckForUpdate: () => _checkForUpdate(force: true),
@@ -146,8 +168,8 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final rail = _desktop && constraints.maxWidth >= 720;
-        final extended = rail && constraints.maxWidth >= 1080;
+        final rail = _desktop && constraints.maxWidth >= kNexusV2RailFrom;
+        final wide = rail && constraints.maxWidth >= kNexusV2PanelFrom;
         return Scaffold(
           body: Column(
             children: [
@@ -169,12 +191,12 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
                       NavigationRail(
                         selectedIndex: _index,
                         onDestinationSelected: (value) => setState(() => _index = value),
-                        extended: extended,
+                        extended: wide,
                         minWidth: 72,
                         minExtendedWidth: 210,
                         leading: Padding(
                           padding: const EdgeInsets.fromLTRB(8, 14, 8, 18),
-                          child: extended
+                          child: wide
                               ? const Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
@@ -214,6 +236,19 @@ class _NexusV2HomeShellState extends State<NexusV2HomeShell> {
                         child: KeyedSubtree(key: ValueKey(_index), child: views[_index]),
                       ),
                     ),
+                    // A wide window gets a second surface instead of a wider
+                    // one: the assistant's link state and last action, beside
+                    // the conversation rather than on top of it.
+                    if (wide) ...[
+                      const VerticalDivider(width: 1),
+                      SizedBox(
+                        width: NexusV2DesktopPanel.width,
+                        child: NexusV2DesktopPanel(
+                          controller: _assistant,
+                          mesh: widget.mesh,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

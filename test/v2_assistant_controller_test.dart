@@ -29,6 +29,11 @@ class _FakeExecutor implements DeviceExecutor {
 }
 
 void main() {
+  // The controller schedules its habit read for after the first frame — it is
+  // UI-layer code — so the binding has to exist even for tests that drive it
+  // directly rather than through a widget.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     QueryLog.readAllOverride = () async => const [];

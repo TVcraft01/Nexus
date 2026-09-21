@@ -4,10 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../../core/agent_contract.dart';
-import '../../core/brain.dart';
 import '../../core/conversation_engine.dart';
-import '../../mesh/mesh_service.dart';
-import '../device_executor.dart';
 import 'assistant_controller.dart';
 import 'design_system.dart';
 import 'nexus_orb.dart';
@@ -23,55 +20,27 @@ import 'nexus_orb.dart';
 /// thread and the brain exchange, [DeviceExecutor] runs what this device can
 /// really run, and the mesh carries the rest. This file invents nothing — it
 /// renders what the controller says, and its only state is the text field.
+///
+/// The controller is handed in rather than created here, because the desktop
+/// layout shows the same state (its link and last-action panel) beside this
+/// screen: one controller, one owner, whichever widgets read it.
 class NexusV2AssistantView extends StatefulWidget {
-  const NexusV2AssistantView({
-    super.key,
-    required this.mesh,
-    this.brain,
-    this.executor,
-  });
+  const NexusV2AssistantView({super.key, required this.controller});
 
-  final MeshService mesh;
-
-  /// The optional local brain. When present, a phrase the interpreter does not
-  /// know gets a real conversational reply; when it is absent (or proven
-  /// offline) the interpreter's own question stays on the card instead.
-  final LocalBrain? brain;
-
-  /// The real device executor by default. Injectable for the same reason the
-  /// brain is: the one path a widget test cannot otherwise drive is an action
-  /// that fails by throwing, and that path decides whether the globe can be
-  /// stranded claiming Nexus is working.
-  final DeviceExecutor? executor;
+  final NexusAssistantController controller;
 
   @override
   State<NexusV2AssistantView> createState() => _NexusV2AssistantViewState();
 }
 
 class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
-  late final NexusAssistantController _controller;
   final _input = TextEditingController();
   final _focus = FocusNode();
 
-  @override
-  void initState() {
-    super.initState();
-    _controller = NexusAssistantController(
-      mesh: widget.mesh,
-      brain: widget.brain,
-      executor: widget.executor,
-    );
-    unawaited(_controller.loadProfile());
-    // The habits are read straight after the first frame, so the first paint is
-    // never held up by a query log the user cannot see yet.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_controller.loadHabits());
-    });
-  }
+  NexusAssistantController get _controller => widget.controller;
 
   @override
   void dispose() {
-    _controller.dispose();
     _input.dispose();
     _focus.dispose();
     super.dispose();
