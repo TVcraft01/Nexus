@@ -497,6 +497,42 @@ void main() {
       tester.getRect(find.text('what time is it')).width,
       lessThan(NexusV2Layout.bubble),
     );
+    // The composer belongs to that same column rather than stretching under a
+    // narrow transcript, so the field stays inside the band.
+    final bandLeft = 1280 / 2 - NexusV2Layout.readableColumn / 2;
+    final field = tester.getRect(find.byType(TextField));
+    expect(field.left, greaterThanOrEqualTo(bandLeft + NexusV2Space.lg));
+    expect(
+      field.right,
+      lessThanOrEqualTo(1280 - bandLeft - NexusV2Space.lg),
+    );
+    expect(tester.takeException(), isNull);
+    await harness.mesh.stop();
+  });
+
+  testWidgets('the question card keeps the band on a wide window too',
+      (tester) async {
+    final executor = _FakeExecutor((request) async => const ActionResult(
+          false,
+          'No contact named "alx" on this device.',
+          candidates: ['Alex', 'Alicia'],
+        ));
+    final harness = _AssistantHarness.create();
+    await _pumpAssistant(
+      tester,
+      mesh: harness.mesh,
+      executor: executor,
+      width: 1280,
+      height: 800,
+    );
+
+    await _ask(tester, 'call alx');
+
+    final card = tester.getRect(
+      find.widgetWithText(Card, 'Which one did you mean?'),
+    );
+    expect(card.width, NexusV2Layout.readableColumn - NexusV2Space.page * 2);
+    expect(card.center.dx, closeTo(1280 / 2, 1));
     expect(tester.takeException(), isNull);
     await harness.mesh.stop();
   });

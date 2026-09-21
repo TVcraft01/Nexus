@@ -97,40 +97,47 @@ class _NexusV2AssistantViewState extends State<NexusV2AssistantView> {
             Expanded(
               child: entries.isEmpty
                   ? _emptyState(theme)
-                  // The thread keeps to a readable band: on a wide window it
-                  // centers rather than running a line across the whole screen.
-                  : Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(
-                          maxWidth: NexusV2Layout.readableColumn,
+                  : _band(
+                      // reverse: the chat pattern — the newest exchange pins
+                      // to the bottom by itself, so nothing has to scroll it.
+                      ListView.builder(
+                        reverse: true,
+                        padding: const EdgeInsets.fromLTRB(
+                          NexusV2Space.page,
+                          NexusV2Space.sm,
+                          NexusV2Space.page,
+                          NexusV2Space.md,
                         ),
-                        // reverse: the chat pattern — the newest exchange pins
-                        // to the bottom by itself, so nothing has to scroll it.
-                        child: ListView.builder(
-                          reverse: true,
-                          padding: const EdgeInsets.fromLTRB(
-                            NexusV2Space.page,
-                            NexusV2Space.sm,
-                            NexusV2Space.page,
-                            NexusV2Space.md,
-                          ),
-                          itemCount: entries.length,
-                          itemBuilder: (context, index) => _entry(
-                            entries[entries.length - 1 - index],
-                            theme,
-                            isLast: index == 0,
-                          ),
+                        itemCount: entries.length,
+                        itemBuilder: (context, index) => _entry(
+                          entries[entries.length - 1 - index],
+                          theme,
+                          isLast: index == 0,
                         ),
                       ),
                     ),
             ),
-            if (_controller.confirm != null) _confirmCard(theme),
-            SafeArea(top: false, child: _composer(theme)),
+            if (_controller.confirm != null) _band(_confirmCard(theme)),
+            SafeArea(top: false, child: _band(_composer(theme))),
           ],
         );
       },
     );
   }
+
+  /// The conversation's readable band, and the only owner of its width.
+  ///
+  /// A wide window is not a wide phone: the thread, the confirm card and the
+  /// composer keep this width and center in it, so the conversation reads as
+  /// one column rather than a narrow transcript under a full-width bar. On a
+  /// window narrower than the band (any phone) nothing changes — the band is
+  /// a maximum, and each part keeps the padding it already had.
+  Widget _band(Widget child) => Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: NexusV2Layout.readableColumn),
+          child: SizedBox(width: double.infinity, child: child),
+        ),
+      );
 
   /// The whole introduction: the globe, who Nexus is, and what it is doing.
   /// One row, one line — the conversation below is the content.
