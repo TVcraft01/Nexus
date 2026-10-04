@@ -41,7 +41,11 @@ endif()
 # of modifying this function.
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_14)
-  target_compile_options(${TARGET} PRIVATE -Wall -Werror)
+  # Keep -Werror, but do not fail the build on deprecation warnings. Newer
+  # toolchains (clang 22) deprecate libappindicator symbols that the tray
+  # plugin still uses; that is a plugin-toolchain mismatch, not our bug.
+  target_compile_options(${TARGET} PRIVATE -Wall -Werror
+    -Wno-error=deprecated-declarations)
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
 endfunction()
