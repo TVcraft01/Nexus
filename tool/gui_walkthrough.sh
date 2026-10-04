@@ -2,8 +2,9 @@
 # Unattended two-window GUI walkthrough for the file-fetch vertical slice.
 #
 # This is the GUI twin of tool/rehearsal.sh. Where that script drives two
-# `flutter test` VMs (no windows), this one launches TWO REAL DESKTOP BUILDS
-# with distinct NEXUS_DATA_DIR values and drives them the way a person would:
+# `flutter test` VMs (no windows), this one launches real desktop builds with
+# distinct NEXUS_DATA_DIR values — both here, or just the requester against a
+# remote server — and drives them the way a person would:
 # real clicks and real keystrokes into the real widgets, the real pairing
 # sheet, and the real command bar. Nothing is stubbed — both sides are the
 # production app binary, and no step is handed to a human.
@@ -20,6 +21,16 @@
 # invocation, because a background process started here is gone as soon as
 # the invocation returns.
 #
+# Two launch modes share everything after pairing. By default the script runs
+# BOTH sides on this machine: a local server whose code it reads, and a
+# requester that discovery finds it by. With --peer-host it becomes a
+# REQUESTER-ONLY run against a Nexus the operator already runs on another box
+# — the real two-machine case — pairing through the sheet's manual "Enter a
+# code" tab, because the remote's code lives on the remote's screen and cannot
+# be read here. The walk stays linear: the mode shows up in exactly the three
+# places the two sides differ — launch, where the code comes from, and how the
+# requester pairs.
+#
 # Usage:
 #   tool/gui_walkthrough.sh                 # build if needed, then run
 #   tool/gui_walkthrough.sh --no-build      # reuse an existing bundle
@@ -27,11 +38,17 @@
 #   tool/gui_walkthrough.sh --negative      # one fetch that must FAIL: the
 #                                           # app says it cannot find the
 #                                           # name, and nothing lands on disk
+#   tool/gui_walkthrough.sh --no-build \
+#     --peer-host <A-ip> --peer-port <A-port> --peer-code <XXXX-XXXX>
+#                                           # requester-only run against a
+#                                           # server on another box; see
+#                                           # docs/DEMO.md "Two machines"
 #
 # --negative reuses the same build, launch, pair and seam; only the fetch step
-# differs, so it never disturbs the default happy path.
+# differs, so it never disturbs the default happy path. --peer-host switches
+# only launch/code/pair; fetch and verify are byte-for-byte the same.
 #
-# Cleanup kills only the two instances this run launched — their PIDs are
+# Cleanup kills only the instance(s) this run launched — their PIDs are
 # recorded as they start, and a PID is killed only while it still carries this
 # run's data dir. A developer's own open Nexus is never touched unless
 # --kill-orphans is given.
@@ -48,14 +65,41 @@ cd "$(dirname "$0")/.."
 BUILD=1
 KILL_ORPHANS=0
 NEGATIVE=0
-for arg in "$@"; do
-  case "$arg" in
-    --no-build)     BUILD=0 ;;
-    --kill-orphans) KILL_ORPHANS=1 ;;
-    --negative)     NEGATIVE=1 ;;
-    *) echo "unknown option: $arg" >&2; exit 2 ;;
+REMOTE=0
+PEER_HOST=""; PEER_PORT=""; PEER_CODE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-build)     BUILD=0; shift ;;
+    --kill-orphans) KILL_ORPHANS=1; shift ;;
+    --negative)     NEGATIVE=1; shift ;;
+    --peer-host)    [ $# -ge 2 ] || { echo "--peer-host needs an address" >&2; exit 2; }; PEER_HOST="$2"; shift 2 ;;
+    --peer-port)    [ $# -ge 2 ] || { echo "--peer-port needs a number" >&2; exit 2; };  PEER_PORT="$2"; shift 2 ;;
+    --peer-code)    [ $# -ge 2 ] || { echo "--peer-code needs a code" >&2; exit 2; };    PEER_CODE="$2"; shift 2 ;;
+    --peer-host=*)  PEER_HOST="${1#*=}"; shift ;;
+    --peer-port=*)  PEER_PORT="${1#*=}"; shift ;;
+    --peer-code=*)  PEER_CODE="${1#*=}"; shift ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# A requester-only run needs all three: the remote Nexus's address and port,
+# and the code its screen shows (read out of band — this script cannot OCR
+# another machine). Validate here so a typo fails before anything launches.
+if [ -n "$PEER_HOST$PEER_PORT$PEER_CODE" ]; then
+  [ -n "$PEER_HOST" ] && [ -n "$PEER_PORT" ] && [ -n "$PEER_CODE" ] \
+    || { echo "give --peer-host, --peer-port and --peer-code together" >&2; exit 2; }
+  case "$PEER_PORT" in
+    ''|*[!0-9]*) echo "--peer-port must be a number" >&2; exit 2 ;;
+  esac
+  if [ "$PEER_PORT" -lt 1 ] || [ "$PEER_PORT" -gt 65535 ]; then
+    echo "--peer-port must be 1-65535" >&2; exit 2
+  fi
+  case "$PEER_CODE" in
+    [A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]) ;;
+    *) echo "--peer-code must look like XXXX-XXXX" >&2; exit 2 ;;
+  esac
+  REMOTE=1
+fi
 
 UI=tool/ui_driver.py
 STEP_TIMEOUT="${NEXUS_GUI_TIMEOUT:-90}"
@@ -104,7 +148,7 @@ fail() {
   # One diagnostic frame, written only on failure. Best effort on purpose: a
   # window that is already gone must not hide the real failure.
   ui shot "$WORK/fail-$STEP.png" >/dev/null 2>&1 || true
-  say "evidence: $WORK (both logs, fail-$STEP.png)"
+  say "evidence: $WORK (logs, fail-$STEP.png)"
   exit 1
 }
 
@@ -151,6 +195,15 @@ geom() {
 }
 
 focus() { ui focus "$1" >/dev/null 2>&1 || true; }
+
+# Delete whatever a focused field already holds. The pairing sheet's Port
+# field arrives prefilled with THIS device's port, and the app never selects
+# it for us; a port is at most five digits, so a fixed BackSpace sweep clears
+# it before the peer's is typed.
+clear_field() {
+  local n="${1:-10}" i
+  for (( i = 0; i < n; i++ )); do ui key BackSpace >/dev/null 2>&1 || true; done
+}
 
 # Click the on-screen text `phrase` in window `pid`; extra flags (--x-max,
 # --y-min, --y-max, --dy) narrow where it may land.
@@ -236,7 +289,10 @@ for spec in "${FIXTURES[@]}"; do
   python3 -c 'import sys
 open(sys.argv[1], "wb").write(bytes((i * 37 + 11) % 256 for i in range(int(sys.argv[2]))))' \
     "$src" "$bytes"
-  # Never let a leftover file make the app rename its save ("name (1).ext").
+  # In requester-only mode these local files are not served — the remote serves
+  # its own — they exist only so verify can recompute the expected sha256; the
+  # remote must hold the same bytes. Never let a leftover file make the app
+  # rename its save ("name (1).ext").
   rm -f "$DL_DIR/$name"
   say "  $(sha256sum "$src" | awk '{print $1}')  $bytes  $name"
 done
@@ -254,7 +310,7 @@ EOF
 done
 say "seeded a finished profile in each instance's own XDG_DATA_HOME"
 
-# --- launch two real instances ---------------------------------------------
+# --- launch the instance(s) ------------------------------------------------
 step "launch"
 # Only when asked: a developer may have their own Nexus open, and the default
 # walk must not close it.
@@ -263,16 +319,23 @@ if [ "$KILL_ORPHANS" = 1 ]; then
   pkill -x nexus 2>/dev/null || true
   sleep 1
 fi
-setsid nohup env NEXUS_DATA_DIR="$SERVER_DIR" XDG_DATA_HOME="$SERVER_DATA" \
-  "$BUNDLE" >"$WORK/server.log" 2>&1 &
-echo "$!" >"$WORK/pids"
-setsid nohup env NEXUS_DATA_DIR="$REQUESTER_DIR" XDG_DATA_HOME="$REQUESTER_DATA" \
-  "$BUNDLE" >"$WORK/requester.log" 2>&1 &
-echo "$!" >>"$WORK/pids"
+if [ "$REMOTE" = 1 ]; then
+  say "  requester-only: pairing to a Nexus the operator runs at $PEER_HOST:$PEER_PORT"
+  setsid nohup env NEXUS_DATA_DIR="$REQUESTER_DIR" XDG_DATA_HOME="$REQUESTER_DATA" \
+    "$BUNDLE" >"$WORK/requester.log" 2>&1 &
+  echo "$!" >"$WORK/pids"
+else
+  setsid nohup env NEXUS_DATA_DIR="$SERVER_DIR" XDG_DATA_HOME="$SERVER_DATA" \
+    "$BUNDLE" >"$WORK/server.log" 2>&1 &
+  echo "$!" >"$WORK/pids"
+  setsid nohup env NEXUS_DATA_DIR="$REQUESTER_DIR" XDG_DATA_HOME="$REQUESTER_DATA" \
+    "$BUNDLE" >"$WORK/requester.log" 2>&1 &
+  echo "$!" >>"$WORK/pids"
+fi
 
-# Wait for both instances to exist AND to have a window on screen. Matching by
-# each one's own data dir means a developer's Nexus, or a stale one, is neither
-# counted nor mismatched.
+# Wait for the instance(s) to exist AND to have a window on screen. Matching
+# by each one's own data dir means a developer's Nexus, or a stale one, is
+# neither counted nor mismatched. A requester-only run has no local server.
 deadline=$(( $(date +%s) + STEP_TIMEOUT ))
 SPID=""; RPID=""
 while :; do
@@ -283,75 +346,105 @@ while :; do
       *"NEXUS_DATA_DIR=$REQUESTER_DIR"*) RPID="$p" ;;
     esac
   done
-  if [ -n "$SPID" ] && [ -n "$RPID" ] \
-     && [ -n "$(ui region "$SPID" 2>/dev/null)" ] \
-     && [ -n "$(ui region "$RPID" 2>/dev/null)" ]; then
-    break
+  ready=1
+  [ -n "$RPID" ] && [ -n "$(ui region "$RPID" 2>/dev/null)" ] || ready=0
+  if [ "$REMOTE" = 0 ]; then
+    [ -n "$SPID" ] && [ -n "$(ui region "$SPID" 2>/dev/null)" ] || ready=0
   fi
+  [ "$ready" = 1 ] && break
   [ "$(date +%s)" -lt "$deadline" ] \
-    || fail "did not see both Nexus windows (server=${SPID:-none} requester=${RPID:-none})"
+    || fail "did not see the Nexus window(s) (server=${SPID:-none} requester=${RPID:-none})"
   sleep 0.5
 done
 printf '%s\n%s\n' "$SPID" "$RPID" >>"$WORK/pids"
-say "server pid $SPID, requester pid $RPID"
+say "requester pid $RPID${SPID:+; server pid $SPID}"
 
 # --- deterministic window placement ----------------------------------------
 # Both windows are floated and sized by the compositor, so everything after
 # this addresses them by their own origin instead of guessing at the layout.
 step "placement"
 place() { ui place "$1" "$2" "$3" >/dev/null 2>&1 || true; }
-place "$SPID" 8 8
+[ -n "$SPID" ] && place "$SPID" 8 8
 place "$RPID" 900 8
-for pid in "$SPID" "$RPID"; do
+for pid in $SPID $RPID; do
   g=$(geom "$pid") || fail "window $pid vanished during placement"
   say "  $g  (pid $pid)"
 done
 
-# --- the server shows a code ------------------------------------------------
-step "server-code"
-focus "$SPID"
-click_text "$SPID" Devices --x-max 120        # the rail's Devices destination
-click_text "$SPID" "Show my code on another device"
-click_text "$SPID" "More ways to connect"
-click_text "$SPID" "Show my code instead"
+# --- where the pairing code comes from -------------------------------------
+# Local mode: the server window shows a code, and its own "Copy code" button is
+# the exact source — read it from the clipboard rather than trusting OCR with a
+# secret. Requester-only: that code is on the remote's screen, so the operator
+# passes it in; nothing here can read another box.
+if [ "$REMOTE" = 1 ]; then
+  CODE="$PEER_CODE"
+  say "  requester-only: using the operator-supplied pairing code"
+else
+  step "server-code"
+  focus "$SPID"
+  click_text "$SPID" Devices --x-max 120        # the rail's Devices destination
+  click_text "$SPID" "Show my code on another device"
+  click_text "$SPID" "More ways to connect"
+  click_text "$SPID" "Show my code instead"
 
-# The app's own "Copy code" button is the exact source: read the code it puts
-# on the clipboard rather than trusting OCR with a secret.
-CODE=""
-wl-copy --clear 2>/dev/null || true
-sleep 0.3
-click_text "$SPID" "Copy code"
-sleep 0.5
-CODE=$(timeout 5 wl-paste 2>/dev/null | tr -d '\n' | head -c 40)
-case "$CODE" in
-  [A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]) ;;
-  *) fail "could not read the pairing code from the clipboard (got '${CODE:-empty}')" ;;
-esac
-say "pairing code $CODE"
+  CODE=""
+  wl-copy --clear 2>/dev/null || true
+  sleep 0.3
+  click_text "$SPID" "Copy code"
+  sleep 0.5
+  CODE=$(timeout 5 wl-paste 2>/dev/null | tr -d '\n' | head -c 40)
+  case "$CODE" in
+    [A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]) ;;
+    *) fail "could not read the pairing code from the clipboard (got '${CODE:-empty}')" ;;
+  esac
+  say "pairing code $CODE"
+fi
 
 # --- the requester enters it ------------------------------------------------
+# Pair with the device discovery already found: that row's Pair button
+# prefills the address and port, so the code is the only thing left to type.
+pair_local() {
+  click_text "$RPID" Pair --y-min 420
+  # The field can take a beat to paint after the row's Pair click; wait for it
+  # rather than clicking at nothing.
+  click_text_wait "$RPID" Code --y-max 420 --dy 22
+  sleep 0.4
+  ui type "$CODE" || fail "could not type the pairing code"
+}
+
+# Pair with a server on another box, which discovery here cannot prefill: type
+# the operator's code, the remote's address, and the remote's port into the
+# sheet's manual "Enter a code" tab.
+pair_remote() {
+  click_text_wait "$RPID" "Enter a code from the other device"
+  click_text_wait "$RPID" Code --dy 22
+  ui type "$PEER_CODE" || fail "could not type the peer's pairing code"
+  click_text_wait "$RPID" Address --dy 22
+  ui type "$PEER_HOST" || fail "could not type the peer's address"
+  click_text_wait "$RPID" Port --dy 22
+  clear_field 10   # the field arrives holding THIS device's port
+  ui type "$PEER_PORT" || fail "could not type the peer's port"
+}
+
 step "pair"
 focus "$RPID"
 click_text "$RPID" Devices --x-max 120
 click_text "$RPID" "Add device"
 click_text "$RPID" "More ways to connect"
-# Pair with the device discovery already found: that row's Pair button
-# prefills the address and port, so the code is the only thing left to type.
-click_text "$RPID" Pair --y-min 420
-# The field can take a beat to paint after the row's Pair click; wait for it
-# rather than clicking at nothing.
-click_text_wait "$RPID" Code --y-max 420 --dy 22
-sleep 0.4
-ui type "$CODE"   || fail "could not type the pairing code"
+if [ "$REMOTE" = 1 ]; then pair_remote; else pair_local; fi
 # Every field in the sheet submits the same form on Enter.
-ui key Return     || fail "could not submit the pairing code"
+ui key Return || fail "could not submit the pairing"
 
-# --- both sides agree the pairing happened ----------------------------------
+# --- the pairing happened --------------------------------------------------
 step "online"
 wait_log "$WORK/requester.log" 'pairWith -> ok' "the requester to pair"
-wait_log "$WORK/server.log" 'code matched' "the server to accept the pairing"
 say "  $(grep -h 'pairWith -> ok' "$WORK/requester.log" | tail -1)"
-say "  $(grep -h 'code matched' "$WORK/server.log" | tail -1)"
+# Only the local server has a log here; a remote server's "code matched" is
+# recorded on the other machine.
+if [ "$REMOTE" = 0 ]; then
+  wait_log "$WORK/server.log" 'code matched' "the server to accept the pairing"
+  say "  $(grep -h 'code matched' "$WORK/server.log" | tail -1)"
+fi
 # The pairing sheet pops itself on success (lib/ui/pair_sheet.dart: `_pair`
 # calls Navigator.pop when the result is ok), but the rail sits behind the
 # sheet's scrim until the route animation finishes. Wait for the rail to be
@@ -428,7 +521,7 @@ if [ "$NEGATIVE" = 1 ]; then
   say ""
   say "== result =="
   say "NEGATIVE PASS — the app said it could not find $NEG_NAME and nothing landed in $DL_DIR"
-  say "evidence: $WORK (both logs, 99_result.png, wording above)"
+  say "evidence: $WORK (logs, 99_result.png, wording above)"
   exit 0
 fi
 
@@ -472,7 +565,7 @@ say ""
 say "== result =="
 if [ "$pass" = 1 ]; then
   say "PASS — every file landed byte-identical in $DL_DIR"
-  say "evidence: $WORK (both logs, 99_result.png, sizes and sha256 above)"
+  say "evidence: $WORK (logs, 99_result.png, sizes and sha256 above)"
   exit 0
 fi
 say "FAIL — see $WORK for logs"

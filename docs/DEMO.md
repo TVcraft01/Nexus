@@ -95,10 +95,39 @@ It pairs the same two instances, asks for a name the server does not have
 wording (`<device> has no file named doesnotexist.pdf.`), and fails unless
 nothing landed in `~/Downloads`.
 
+### Two machines (requester-only)
+
+The walk above runs both sides on one box. To point a requester here at a
+Nexus already running on another machine on the LAN, pass the remote's mesh
+address and port plus the pairing code its own **Devices → Show my code**
+screen is showing:
+
+```bash
+# On box A: run Nexus, and put report.pdf and big.bin in its home dir — the
+#           same deterministic fixtures this script generates on one box.
+# On box B:
+./tool/gui_walkthrough.sh --no-build \
+  --peer-host <A-ip> --peer-port <A-port> --peer-code <XXXX-XXXX>
+```
+
+Box B then launches **only** its requester window, opens
+**Devices → Add device → More ways to connect → Enter a code from the other
+device**, types the code, A's address, and A's port, and fetches the two
+files, verifying both by size and sha256. There is no local server: the code
+comes from A's screen (this script cannot read another machine), and A must
+hold the fixtures in its served home directory.
+
+> **Status: unexercised.** No second machine was reachable when this was
+> written, so the two-box path has never produced a recorded PASS. Only its
+> argument validation and its requester-only launch have been run locally. The
+> one-machine walk and `--negative` above remain the exercised evidence — do
+> not read this section as a recorded success.
+
 **What the automated walk-through does not cover:** a physical Android
-phone, a real LAN (two machines over Wi-Fi rather than loopback), and
-Windows/macOS hosts. Both windows are Linux desktop instances on one
-machine.
+phone, and Windows/macOS hosts. The one-machine walk runs both windows as
+Linux desktop instances; `--peer-host` now drives a requester-only run against
+a Nexus on another machine, but that path is documented and unexercised (see
+[Two machines](#two-machines-requester-only)).
 
 **Bug found and fixed by this walkthrough.** A fresh profile that paired a
 device *before* finishing first-run setup ended up with the composer hidden
@@ -114,11 +143,12 @@ pull whose local write fails — is covered by `test/mesh_test.dart` ("a failed
 local save is named as storage, not blamed on the network"), and the
 not-found path through the real UI by `./tool/gui_walkthrough.sh --negative`.
 
-**What this does *not* cover:** the physical phone. Both windows are Linux
-desktop instances on one machine over loopback; an Android build, a real
-phone over Wi-Fi, and a Windows/macOS host remain untested. The
-[two-process rehearsal](#two-process-rehearsal) above is the CI-runnable
-check; the manual steps 1–5 below are what was walked here.
+**What this does *not* cover:** the physical phone, and still a recorded
+two-machine run — `--peer-host` exists but has never been exercised against a
+second host. The one-machine walk uses Linux desktop instances over loopback;
+an Android build, a real phone over Wi-Fi, and a Windows/macOS host remain
+untested. The [two-process rehearsal](#two-process-rehearsal) above is the
+CI-runnable check; the manual steps 1–5 below are what was walked here.
 
 ---
 
@@ -364,9 +394,10 @@ The whole vertical is covered by tests, including the wire path:
 - `tool/gui_walkthrough.sh` — the same path through the **real desktop UI**:
   two real windows, real clicks and typing, both files verified by size and
   sha256 before it prints `PASS`. `--negative` drives one fetch that must
-  fail (the app's own not-found wording, nothing saved). Needs a live
-  Wayland/Hyprland session, so it is not the CI check; `tool/rehearsal.sh`
-  is.
+  fail (the app's own not-found wording, nothing saved); `--peer-host` runs
+  requester-only against a server on another machine (documented, not yet
+  exercised). Needs a live Wayland/Hyprland session, so it is not the CI
+  check; `tool/rehearsal.sh` is.
 
 Run the suite with:
 
