@@ -1,0 +1,46 @@
+Nexus GUI file-fetch walkthrough — recorded evidence
+====================================================
+
+What: tool/gui_walkthrough.sh drives two REAL desktop instances (separate
+NEXUS_DATA_DIR + XDG_DATA_HOME), pairs them by clicking and typing into the
+real widgets, and verifies each fetched file by size and sha256.
+
+Where: Omarchy (Arch-based, Hyprland 0.56.2, Wayland), Flutter 3.47.5 /
+Dart 3.13.4, commit 8a70ca2 plus the file-fetch working tree. Two Linux
+desktop instances on one machine (loopback) — not a phone and not two hosts.
+
+Full run dirs are regenerable: ./tool/gui_walkthrough.sh writes one under
+/tmp/nexus_gui/<timestamp>/ (logs, 99_result.png, sizes/sha256). The run
+below is /tmp/nexus_gui/20261004-203220.
+
+Happy path — ./tool/gui_walkthrough.sh
+--------------------------------------
+== verify ==
+  OK  report.pdf  4096 bytes  sha256 4e441a3533bb2c10cd5649981d395744213e09a336746b5a3458fee4057205ec
+  OK  big.bin  30000000 bytes  sha256 cc9a93186f5f1cd340275b2778ed7bde4901d335bdbfaf3c49fa7c6b4003111a
+
+== result ==
+PASS — every file landed byte-identical in /home/tvcraft01/Downloads
+
+Pairing, from the run's own logs:
+
+  $ grep -h 'pairWith -> ok' /tmp/nexus_gui/20261004-203220/requester.log
+  NEXUS mesh: pairWith -> ok
+
+  $ grep -h 'code matched' /tmp/nexus_gui/20261004-203220/server.log
+  NEXUS mesh: pair-request <- fl7geu2xpix1r473y7djke6sksff1obw (code matched)
+
+Negative path — ./tool/gui_walkthrough.sh --negative
+----------------------------------------------------
+The app's not-found wording is read from lib/core/answers.dart
+(FileFetchWords.notFound -> '<device> has no file named <filename>.'); the
+run asserts the wording and the requested stem, and that nothing landed.
+
+  == fetch doesnotexist.pdf (negative) ==
+    requester shows “has no file named doesnotexist …”
+
+  == verify (nothing landed) ==
+    absent  /home/tvcraft01/Downloads/doesnotexist.pdf (as expected)
+
+  == result ==
+  NEGATIVE PASS — the app said it could not find doesnotexist.pdf and nothing landed in /home/tvcraft01/Downloads
