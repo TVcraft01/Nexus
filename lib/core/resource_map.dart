@@ -78,6 +78,18 @@ Set<String> deviceKindWords(DeviceKind kind) => switch (kind) {
   DeviceKind.other => const {},
 };
 
+/// The kinds a noun names — "my pc" and "the laptop" both mean a computer,
+/// "my phone" means a phone — or empty when it names no kind. One owner for
+/// the noun-to-kind rule the find/ring answers and the file fetch both follow,
+/// so a new kind word reaches every caller at once.
+Set<DeviceKind> deviceKindsNamed(String noun) {
+  final key = noun.trim().toLowerCase();
+  return {
+    for (final kind in DeviceKind.values)
+      if (deviceKindWords(kind).contains(key)) kind,
+  };
+}
+
 /// One device as a resource: what it is, whether it is in reach, and what it
 /// is believed able to do — with how that belief was formed.
 class DeviceResource {

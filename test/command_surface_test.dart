@@ -611,15 +611,18 @@ void main() {
     });
 
     test('a topic it has nothing for says so, and advertises nothing', () {
-      final text = answerFor('what can you do with files');
-      expect(text, contains('I don\'t have anything listed for "files" yet.'));
+      // "rockets" names no capability or section — the point of the fixture is
+      // a topic with genuinely nothing behind it, so it must not be a word a
+      // later capability grows into.
+      final text = answerFor('what can you do with rockets');
+      expect(text, contains('I don\'t have anything listed for "rockets" yet.'));
       expect(text, contains('Or just ask me for it'));
       for (final area in kHelpAreas) {
         expect(text, contains(area.name), reason: area.name);
       }
       // Nothing invented: the only phrase in the answer is the word asked
       // about, handed straight back.
-      expect(offered(text), ['files']);
+      expect(offered(text), ['rockets']);
     });
 
     test('it says what needs another device instead of pretending', () {

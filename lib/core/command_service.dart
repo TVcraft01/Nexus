@@ -909,6 +909,13 @@ class CommandService {
         requestId: requestId,
       );
     }
+    // File fetch: unlike a call or text, the requesting device does the work
+    // — it pulls the file over the mesh. So the service resolves which paired
+    // device the name means and hands the UI the plan to run locally; an
+    // unpaired name is answered honestly rather than sent nowhere.
+    if (action == AgentActions.fileFetch) {
+      return _fileFetch(command);
+    }
     // Contact actions: answered here on the device that can run them, and
     // honestly taught when nothing anywhere can. But when THIS device can't
     // execute a call or text and a paired device can, echoing the action
@@ -1385,6 +1392,58 @@ class CommandService {
       target: command.target,
       arguments: args,
     );
+  }
+
+  /// Answers a `file.fetch`: resolves the named device and returns the
+  /// confirmation plus the arguments the UI's fetch needs (which peer, which
+  /// file). Keeps the device resolution in one place — the same registry and
+  /// the same kind rule the find/ring answers use.
+  AgentDispatchResult _fileFetch(ParsedCommand command) {
+    // The interpreter only emits `file.fetch` with both arguments (a missing
+    // device comes back as its own needsInfo), so this reads them directly.
+    final filename = (command.arguments['filename'] as String? ?? '').trim();
+    final named = (command.arguments['deviceName'] as String? ?? '').trim();
+    final source = _resolveFileSource(named);
+    if (source == null) {
+      return AgentDispatchResult(
+        status: AgentResultStatus.unavailable,
+        message: 'I don\'t see a paired device named "$named".',
+      );
+    }
+    return AgentDispatchResult(
+      status: AgentResultStatus.succeeded,
+      dispatch: AgentMessage(
+        FileFetchWords.fetching(filename, source.name),
+        action: AgentActions.fileFetch,
+        arguments: {
+          'peerId': source.id,
+          'peerName': source.name,
+          'filename': filename,
+        },
+      ),
+    );
+  }
+
+  /// The paired device a file-fetch name means: an exact id or name first,
+  /// then a kind ("my pc", "my phone") against the platform each device
+  /// reported — a device called "Work Laptop" is still a computer. An online
+  /// match wins over an offline one; nothing matching is null rather than a
+  /// guess.
+  AgentDeviceSnapshot? _resolveFileSource(String name) {
+    final key = name.trim().toLowerCase();
+    if (key.isEmpty) return null;
+    // Only paired devices are sources: fetching a file from the device you are
+    // already on is not a thing, so this device is never in the running.
+    final peers = devices();
+    final exact = _resolve(key, peers);
+    if (exact != null) return exact;
+    final kinds = deviceKindsNamed(key);
+    if (kinds.isEmpty) return null;
+    final matches = peers
+        .where((d) => kinds.contains(deviceKindOf(d.platform)))
+        .toList();
+    if (matches.isEmpty) return null;
+    return matches.firstWhere((d) => d.online, orElse: () => matches.first);
   }
 
   AgentDeviceSnapshot? _resolve(

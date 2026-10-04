@@ -129,10 +129,7 @@ List<AgentDeviceSnapshot> _devicesMatching(AnswerContext ctx, String noun) {
   // it. So the kind resolves against real data instead of against a device's
   // name happening to contain the word: a phone called "Pixel 8" is still a
   // phone, and asking for it should find it.
-  final kinds = {
-    for (final kind in DeviceKind.values)
-      if (deviceKindWords(kind).contains(key)) kind,
-  };
+  final kinds = deviceKindsNamed(key);
   if (kinds.isEmpty) return const [];
   return ctx
       .devices()
@@ -891,6 +888,39 @@ String? _needsDeviceNote(Capability capability, DeviceKind localKind) {
   if (elsewhere.isEmpty) return null;
   // "a phone", not "phone": the line has to read as a sentence.
   return 'needs ${elsewhere.map((k) => 'a ${_kindWord(k)}').join(' or ')}';
+}
+
+/// The file-fetch vertical's words, in one place: the confirmation the
+/// assistant speaks when it understood the request, and the outcomes the
+/// transfer reports when it runs. They live here with every other answer so
+/// the catalog and the fetch cannot drift into saying two different things
+/// about the same request.
+abstract final class FileFetchWords {
+  /// Said when the file was understood and the pull has begun.
+  static String fetching(String filename, String device) =>
+      'Getting $filename from $device…';
+
+  /// The success line, naming where it landed so the user can find it.
+  static String saved(String filename, String device, String path) =>
+      'Saved $filename from $device to $path.';
+
+  /// The device did not answer — offline, unpaired at the far end, or gone.
+  static String unreachable(String device) => "I couldn't reach $device.";
+
+  /// The device answered and has no file by that name in its served folders.
+  static String notFound(String filename, String device) =>
+      '$device has no file named $filename.';
+
+  /// The file was located but the transfer itself failed.
+  static String downloadFailed(String filename, String device) =>
+      "I found $filename on $device but couldn't download it.";
+
+  /// The file arrived and could not be written on this device — disk,
+  /// permissions, or a missing folder. A different problem from a transfer
+  /// that never landed, and it says so instead of blaming the network.
+  static String saveFailed(String filename, String device) =>
+      "I found $filename on $device but couldn't save it here — check this "
+      "device's storage or permissions.";
 }
 
 /// Locally executable intents that need no device: greeting, time, math.

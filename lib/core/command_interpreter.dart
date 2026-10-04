@@ -2152,6 +2152,47 @@ class CommandInterpreter {
       );
     }
 
+    // --- File fetch from a paired device: "get report.pdf from my pc". A
+    // local-only transfer over the mesh — the PC locates the file and streams
+    // it back. The object must look like a file (it carries an extension), so
+    // the clipboard's "copy <text>" below and the send family keep every
+    // sentence that is not asking for a file. Two shapes: with the source
+    // device named, the request is complete; without it, the only missing
+    // detail is which device to ask, and Nexus asks for it.
+    const fileFetchVerbs = 'get|fetch|send me|copy';
+    final fileFromDevice = RegExp(
+      '^($fileFetchVerbs) (?:the |a )?'
+      r'([\w][\w .\-]*\.[a-z0-9]{1,8}) from (?:my |the |your )?(.+)$',
+    ).firstMatch(norm);
+    if (fileFromDevice != null) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.fileFetch,
+          target: 'remote',
+          arguments: {
+            'filename': fileFromDevice.group(2)!.trim(),
+            'deviceName': fileFromDevice.group(3)!.trim(),
+          },
+        ),
+      );
+    }
+    final fileNoDevice = RegExp(
+      '^($fileFetchVerbs) (?:the |a )?'
+      r'([\w][\w .\-]*\.[a-z0-9]{1,8})$',
+    ).firstMatch(norm);
+    if (fileNoDevice != null) {
+      final filename = fileNoDevice.group(2)!.trim();
+      return InterpretResult.needsInfo(
+        'file.fetch.deviceName',
+        'Which device should I get $filename from?',
+        ParsedCommand(
+          action: AgentActions.fileFetch,
+          target: 'remote',
+          arguments: {'filename': filename},
+        ),
+      );
+    }
+
     // --- Clipboard: "copy <text>" or "send <text> to <device>". Only the
     // "copy" verb and device-targeted sends land here — a bare "send papi
     // salut" is a message to a person, never a clipboard write.

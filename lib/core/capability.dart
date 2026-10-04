@@ -146,6 +146,13 @@ const List<Capability> kCapabilities = [
   Capability(AgentActions.clipboardWrite, 'Clipboard',
       helpGroup: 'Clipboard & Devices',
       helpPhrases: ['copy hello to my devices']),
+  // The MVP file-fetch slice: a paired device locates a named file and
+  // streams it back over the existing mesh. Both ends can run it (a phone
+  // asks, a desktop serves), so it is offered wherever an executor backs it.
+  Capability(AgentActions.fileFetch, 'Fetch file',
+      example: 'get report.pdf from my pc',
+      platforms: _anyDevice,
+      helpGroup: 'Clipboard & Devices'),
   Capability(AgentActions.webSearch, 'Search',
       example: 'search for cats',
       everyday: true,

@@ -13,6 +13,7 @@ import 'package:nexus/core/version.dart';
 import 'package:nexus/mesh/gateway.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/mesh/serial_bridge.dart';
+import 'package:nexus/ui/device_executor.dart';
 
 /// A clipboard that lives in memory — no platform channels needed in tests.
 class FakeClipboard implements ClipboardBackend {
@@ -1751,6 +1752,178 @@ void main() {
     expect(meshB.store.profileAssistantName, 'Atlas');
     expect(meshB.store.profileUserName, isNull);
   });
+
+  test(
+    'file.fetch end to end: a real peer serves report.pdf and the phone saves it',
+    () async {
+      // The whole vertical over two real mesh endpoints on loopback: A (the
+      // "PC") serves report.pdf; B (the "phone") parses "get report.pdf from
+      // my pc", resolves A, and runs the fetch through its real MeshService —
+      // the very adapter the app injects. This is the claim the fake-mesh
+      // tests could not make: that the core seam really speaks to a peer.
+      final rootA = Directory('${tmp.path}/servedA')..createSync();
+      final downloads = Directory('${tmp.path}/downloads')..createSync();
+      final sourceBytes = List<int>.generate(2048, (i) => (i * 7) % 256);
+      File('${rootA.path}/report.pdf').writeAsBytesSync(sourceBytes);
+
+      await meshA.stop();
+      meshA = MeshService(
+        identity: DeviceInfo(
+          id: 'device-a',
+          name: 'Test Linux PC',
+          platform: 'linux',
+        ),
+        store: storeA,
+        clipboard: clipA,
+        fileRoot: rootA.path,
+        onlineWindow: const Duration(seconds: 3),
+        visibleWindow: const Duration(seconds: 3),
+        heartbeatInterval: const Duration(seconds: 2),
+        connectTimeout: const Duration(milliseconds: 300),
+      );
+      await meshA.start();
+      await meshB.start();
+
+      final session = meshA.beginPairing();
+      final paired = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(paired.ok, isTrue, reason: paired.error);
+
+      // What the app's service sees: A as a paired computer, B as this phone.
+      const pc = AgentDeviceSnapshot(
+        id: 'device-a',
+        name: 'Test Linux PC',
+        online: true,
+        platform: 'linux',
+      );
+      const phone = AgentDeviceSnapshot(
+        id: 'device-b',
+        name: 'Test Phone',
+        online: true,
+        platform: 'android',
+      );
+      final service = CommandService(devices: () => const [pc], local: phone);
+
+      // 1. Parse + resolve: the sentence becomes a fetch aimed at A.
+      final result = service.execute('get report.pdf from my pc');
+      expect(
+        result.status,
+        AgentResultStatus.succeeded,
+        reason: result.message,
+      );
+      final message = result.dispatch! as AgentMessage;
+      expect(message.action, AgentActions.fileFetch);
+      expect(message.arguments!['peerId'], 'device-a');
+      expect(message.arguments!['filename'], 'report.pdf');
+
+      // 2. Run: B's real MeshService is the transport the executor uses.
+      final executor = DeviceExecutor(
+        fileMesh: meshB,
+        fileDownloadsDir: downloads.path,
+      );
+      final outcome = await executor.run(
+        AgentRequest(
+          requestId: 'e2e',
+          target: meshB.identity.id,
+          action: AgentActions.fileFetch,
+          arguments: message.arguments!,
+        ),
+      );
+
+      expect(outcome.ok, isTrue, reason: outcome.message);
+      final savedPath = '${downloads.path}${Platform.pathSeparator}report.pdf';
+      expect(outcome.message, contains(savedPath));
+      final saved = File(savedPath);
+      expect(saved.existsSync(), isTrue, reason: meshB.lastFileError);
+      // The proof: the bytes that left A are the bytes on B's disk.
+      expect(saved.readAsBytesSync(), sourceBytes);
+    },
+  );
+
+  test(
+    'file.fetch: a failed local save is named as storage, not blamed on the '
+    'network (real pull, unwritable destination)',
+    () async {
+      // The failure-path twin of the end-to-end test above. A real MeshService
+      // pull finds the file on A, streams it, and then B's disk write fails:
+      // the save path's parent folder does not exist, so `File.open` throws
+      // exactly as it would on a full, read-only, or permission-denied disk.
+      // The requester must name the disk, not the download. This is the case
+      // core/file_fetch.dart's local-save classification exists for, and
+      // until now only a fake mesh had ever produced it.
+      final rootA = Directory('${tmp.path}/servedA')..createSync();
+      File(
+        '${rootA.path}/report.pdf',
+      ).writeAsBytesSync(List<int>.generate(64, (i) => (i * 3) % 256));
+
+      await meshA.stop();
+      meshA = MeshService(
+        identity: DeviceInfo(
+          id: 'device-a',
+          name: 'Test Linux PC',
+          platform: 'linux',
+        ),
+        store: storeA,
+        clipboard: clipA,
+        fileRoot: rootA.path,
+        onlineWindow: const Duration(seconds: 3),
+        visibleWindow: const Duration(seconds: 3),
+        heartbeatInterval: const Duration(seconds: 2),
+        connectTimeout: const Duration(milliseconds: 300),
+      );
+      await meshA.start();
+      await meshB.start();
+
+      final session = meshA.beginPairing();
+      final paired = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(paired.ok, isTrue, reason: paired.error);
+
+      // A destination whose parent folder is missing: the write cannot be
+      // created, so the failure is local to this device, not the transfer.
+      final unwritableDir =
+          '${tmp.path}/missing-parent${Platform.pathSeparator}downloads';
+
+      final executor = DeviceExecutor(
+        fileMesh: meshB,
+        fileDownloadsDir: unwritableDir,
+      );
+      final outcome = await executor.run(
+        AgentRequest(
+          requestId: 'fetch-fail',
+          target: meshB.identity.id,
+          action: AgentActions.fileFetch,
+          arguments: const {
+            'peerId': 'device-a',
+            'peerName': 'Test Linux PC',
+            'filename': 'report.pdf',
+          },
+        ),
+      );
+
+      expect(outcome.ok, isFalse, reason: outcome.message);
+      // The real mesh reported the write failure in its own words...
+      expect(
+        meshB.lastFileError,
+        contains('Could not save the file'),
+        reason: 'the disk write, not the transfer, is what failed',
+      );
+      // ...and the requester repeats that: storage, not the network.
+      expect(outcome.message, contains("couldn't save it here"));
+      expect(outcome.message, isNot(contains("couldn't download it")));
+      // Nothing was written where the user would look.
+      expect(
+        File('$unwritableDir${Platform.pathSeparator}report.pdf').existsSync(),
+        isFalse,
+      );
+    },
+  );
 }
 
 /// Polls until [cond] is true (with a timeout), so tests don't depend on

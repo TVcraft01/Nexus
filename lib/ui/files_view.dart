@@ -2,10 +2,10 @@ import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../mesh/mesh_service.dart';
 import 'components/nexus_ui.dart' show platformIcon;
+import 'downloads_dir.dart';
 import 'nexus_header.dart';
 import 'theme.dart';
 
@@ -121,19 +121,6 @@ class _FilesViewState extends State<FilesView> {
     _load();
   }
 
-  Future<String> _downloadsDir() async {
-    try {
-      final dir = await getDownloadsDirectory();
-      if (dir != null) return dir.path;
-    } catch (_) {}
-    final home =
-        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
-    if (home != null && home.isNotEmpty) {
-      return '$home${Platform.pathSeparator}Downloads';
-    }
-    final docs = await getApplicationDocumentsDirectory();
-    return docs.path;
-  }
 
   Future<void> _download(FileEntry entry) async {
     final device = _device;
@@ -143,15 +130,7 @@ class _FilesViewState extends State<FilesView> {
       _progress[entry.path] = 0;
     });
 
-    var savePath =
-        '${await _downloadsDir()}${Platform.pathSeparator}${entry.name}';
-    var n = 1;
-    while (File(savePath).existsSync()) {
-      savePath =
-          '${await _downloadsDir()}${Platform.pathSeparator}'
-          '${entry.name.replaceFirst(RegExp(r'(\.[^.]*)?$'), ' ($n)\$1')}';
-      n++;
-    }
+    final savePath = await downloadsFilePath(entry.name);
 
     final file = await widget.mesh.pullRemoteFile(
       device,

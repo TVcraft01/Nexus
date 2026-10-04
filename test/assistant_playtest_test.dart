@@ -1072,10 +1072,12 @@ void main() {
         expect(find.textContaining('"next"'), findsOneWidget);
 
         // A part it has nothing for says so instead of inventing one.
-        await ask(tester, 'what can you do with files');
+        // "rockets" names no capability or section and is not a word a
+        // later capability is expected to grow into.
+        await ask(tester, 'what can you do with rockets');
         await tester.pump(const Duration(milliseconds: 400));
         expect(
-          find.textContaining('I don\'t have anything listed for "files" yet'),
+          find.textContaining('I don\'t have anything listed for "rockets" yet'),
           findsOneWidget,
         );
         expect(find.textContaining('Everyday tasks'), findsWidgets);

@@ -16,6 +16,7 @@ import '../core/brain.dart';
 import '../core/command_interpreter.dart';
 import '../core/relay_client.dart';
 import '../core/crypto.dart';
+import '../core/file_fetch.dart';
 import '../core/identity.dart';
 import '../core/memory.dart';
 import '../core/network_info.dart';
@@ -223,7 +224,7 @@ class _RealClipboard implements ClipboardBackend {
 /// direct, verified message from it over TCP within the last 25 seconds.
 /// Discovery announcements are never enough — they only make a device
 /// *visible*, and the UI says so.
-class MeshService extends ChangeNotifier {
+class MeshService extends ChangeNotifier implements FileFetchMesh {
   final DeviceInfo identity;
   final NexusStore store;
   final ClipboardBackend clipboard;
@@ -273,7 +274,10 @@ class MeshService extends ChangeNotifier {
   ClipEntry? lastIncomingClip;
 
   /// Why the last file request failed ("could not reach", "access denied",
-  /// timeouts). Read by the Files UI to show an honest error.
+  /// timeouts). Read by the Files UI to show an honest error, and by the
+  /// file-fetch seam ([FileFetchMesh]) to tell a local save failure apart
+  /// from a transfer one.
+  @override
   String? lastFileError;
 
   final Map<String, Completer<List<FileEntry>?>> _pendingLists =
@@ -2824,6 +2828,40 @@ class MeshService extends ChangeNotifier {
       _failPull(req, 'Could not reach ${peer.name}.');
     }
     return pull.done.future;
+  }
+
+  // --- File-fetch seam (core/file_fetch.dart) ------------------------------
+  // The assistant's `file.fetch` runs on the requesting device and pulls
+  // through these two primitives, so the transfer is exactly the one the
+  // Files tab already uses — same peer, same encryption, same chunking. The
+  // adapter only maps core's vocabulary onto this class's; no new transport.
+
+  @override
+  Future<List<RemoteFile>?> filesOnDevice(String peerId, String dir) async {
+    final peer = _paired[peerId];
+    if (peer == null) return null;
+    final entries = await listRemoteFiles(peer, dir);
+    if (entries == null) return null;
+    return [
+      for (final entry in entries)
+        RemoteFile(
+          name: entry.name,
+          path: entry.path,
+          isDir: entry.isDir,
+        ),
+    ];
+  }
+
+  @override
+  Future<String?> fetchFileFromDevice(
+    String peerId,
+    String remotePath, {
+    required String savePath,
+  }) async {
+    final peer = _paired[peerId];
+    if (peer == null) return null;
+    final file = await pullRemoteFile(peer, remotePath, savePath: savePath);
+    return file?.path;
   }
 
   /// Reads one exact byte range [offset, offset+length) from a file on

@@ -85,6 +85,11 @@ abstract final class AgentActions {
   // --- Cross-device (mesh) ---
   static const findDevice = 'device.find';
   static const ringDevice = 'device.ring';
+
+  /// Fetch a named file from a paired device over the local mesh. The
+  /// request travels phone -> PC; the PC locates the file and streams it
+  /// back. No cloud, no model — a deterministic, local-only transfer.
+  static const fileFetch = 'file.fetch';
 }
 
 /// "play hotline bling on spotify": the known music players the assistant

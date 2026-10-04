@@ -20,10 +20,12 @@ import '../core/app_defaults.dart';
 import '../core/command_interpreter.dart';
 import '../core/profile.dart';
 import '../core/device_actions.dart';
+import '../core/file_fetch.dart';
 import '../core/live.dart';
 import '../core/phone_actions.dart';
 import '../core/timezones.dart';
 import '../core/weather.dart';
+import 'downloads_dir.dart';
 
 /// Executes device-local actions for the assistant on THIS platform.
 class DeviceExecutor {
@@ -37,7 +39,11 @@ class DeviceExecutor {
     ZoneTimeFetcher? zoneTimeFetcher,
     AppDefaultsStore? defaultsStore,
     ProfileStore? profileStore,
-  }) : _deviceBackend = deviceBackend ?? deviceActionBackend(),
+    FileFetchMesh? fileMesh,
+    String? fileDownloadsDir,
+  }) : _fileMesh = fileMesh,
+       _fileDownloadsDir = fileDownloadsDir,
+       _deviceBackend = deviceBackend ?? deviceActionBackend(),
        _phoneBackend = phoneBackend ?? RealPhoneActionBackend(),
        _weatherFetcher = weatherFetcher ?? fetchWeather,
        _areaDetector = areaDetector ?? detectArea,
@@ -46,6 +52,13 @@ class DeviceExecutor {
        _zoneTimeFetcher = zoneTimeFetcher ?? fetchZoneTime,
        _defaults = defaultsStore ?? SharedPrefsAppDefaultsStore(),
        _profile = profileStore ?? SharedPrefsProfileStore();
+
+  final FileFetchMesh? _fileMesh;
+
+  /// The folder fetched files land in. Null in the product — the platform's
+  /// Downloads folder is resolved at run time; tests inject a temp dir so
+  /// they never touch the user's real files.
+  final String? _fileDownloadsDir;
 
   final DeviceActionBackend _deviceBackend;
   final PhoneActionBackend _phoneBackend;
@@ -79,6 +92,12 @@ class DeviceExecutor {
     }
     if (request.action == AgentActions.noteCreate) {
       return _appendNote(prepared['text']?.toString() ?? '');
+    }
+    // A file fetch is a local action: this device pulls the file over the
+    // mesh the view handed in. Without a mesh (a test with no transport)
+    // there is nothing to fetch, and it says so rather than pretending.
+    if (request.action == AgentActions.fileFetch) {
+      return _fetchFile(prepared);
     }
     if (request.action == AgentActions.webSearch) {
       return _openWebSearch(prepared['query']?.toString() ?? '');
@@ -1163,6 +1182,34 @@ class DeviceExecutor {
         'Could not save the note on this device.',
       );
     }
+  }
+
+  /// Pulls one named file from a paired device over the mesh and saves it in
+  /// the user's Downloads folder. The words of both outcomes come from
+  /// [FileFetchWords] via the orchestrator, so the assistant says the same
+  /// thing here as the catalog promised when it understood the request.
+  Future<ActionResult> _fetchFile(Map<String, dynamic> args) async {
+    final mesh = _fileMesh;
+    final peerId = args['peerId']?.toString() ?? '';
+    final peerName = args['peerName']?.toString() ?? '';
+    final filename = args['filename']?.toString() ?? '';
+    if (mesh == null || peerId.isEmpty || filename.isEmpty) {
+      return const ActionResult(false, "I couldn't fetch that file.");
+    }
+    // Never overwrite a file the user already has: the same rule, and the
+    // same helper, the Files tab download uses.
+    final savePath = await downloadsFilePath(
+      filename,
+      inDirectory: _fileDownloadsDir,
+    );
+    final result = await fetchFile(
+      mesh: mesh,
+      peerId: peerId,
+      peerName: peerName.isEmpty ? 'that device' : peerName,
+      filename: filename,
+      savePath: savePath,
+    );
+    return ActionResult(result.ok, result.message);
   }
 
   /// Opens a web search in the default browser.

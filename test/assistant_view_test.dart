@@ -79,6 +79,50 @@ class _SlowExecutor extends DeviceExecutor {
   void finish(ActionResult result) => _outcome.complete(result);
 }
 
+/// A mesh that reports one paired PC without opening any sockets — enough for
+/// the assistant to resolve "my pc" and hand the fetch to an injected
+/// executor. Only the two members the device list is built from are faked.
+class _PairedPcMesh extends MeshService {
+  _PairedPcMesh({required super.store})
+    : super(
+        identity: DeviceInfo(
+          id: 'this-phone',
+          name: 'Test Phone',
+          platform: 'android',
+        ),
+      );
+
+  static final _pc = PairedDevice(
+    id: 'pc1',
+    name: 'My PC',
+    platform: 'linux',
+    address: '127.0.0.1',
+    port: 1,
+    pairingSecret: 'test-secret',
+  );
+
+  @override
+  List<PairedDevice> get pairedDevices => [_pc];
+
+  @override
+  bool isOnline(String id) => id == _pc.id;
+}
+
+/// An executor whose file fetch the test finishes by hand — so the in-flight
+/// view can be asserted before the transfer lands.
+class _GatedFileExecutor extends DeviceExecutor {
+  final _outcome = Completer<ActionResult>();
+  AgentRequest? lastRequest;
+
+  @override
+  Future<ActionResult> run(AgentRequest request) {
+    lastRequest = request;
+    return _outcome.future;
+  }
+
+  void finish(ActionResult result) => _outcome.complete(result);
+}
+
 void main() {
   brainWidgetTests();
 
@@ -1178,4 +1222,73 @@ void brainWidgetTests() {
     }
   });
 
+  testWidgets(
+    'file fetch: the thread shows it working, then where it was saved',
+    (tester) async {
+      // The person's view of the fetch, for this command specifically: the
+      // confirmation line while the transfer is pending, then the saved line
+      // with the destination. The executor is gated so the in-flight window
+      // can be held open and asserted, exactly as it appears to a user.
+      final store = NexusStore(
+        explicitPath:
+            '${Directory.systemTemp.createTempSync('avt-fetch').path}/s.json',
+      )..clipboardSync = true;
+      final mesh = _PairedPcMesh(store: store);
+      final executor = _GatedFileExecutor();
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildNexusTheme(),
+            home: Scaffold(
+              body: AssistantView(mesh: mesh, executor: executor),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        await tester.enterText(
+          find.byType(TextField),
+          'get report.pdf from my pc',
+        );
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pump();
+
+        // In flight: the confirmation line and the Working chip.
+        expect(
+          find.textContaining('Getting report.pdf from My PC'),
+          findsOneWidget,
+        );
+        expect(find.text('Working'), findsOneWidget);
+        expect(find.text('Done'), findsNothing);
+
+        // The executor was asked to fetch exactly that file from that device.
+        expect(executor.lastRequest!.action, AgentActions.fileFetch);
+        expect(executor.lastRequest!.arguments['peerId'], 'pc1');
+        expect(executor.lastRequest!.arguments['filename'], 'report.pdf');
+
+        // The transfer lands: the same card becomes the saved line.
+        executor.finish(
+          const ActionResult(
+            true,
+            'Saved report.pdf from My PC to /tmp/report.pdf.',
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Done'), findsOneWidget);
+        expect(find.text('Working'), findsNothing);
+        expect(
+          find.textContaining(
+            'Saved report.pdf from My PC to /tmp/report.pdf',
+          ),
+          findsOneWidget,
+        );
+      } finally {
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
 }

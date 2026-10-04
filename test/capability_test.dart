@@ -77,6 +77,7 @@ const _allActionIds = <String>[
   AgentActions.memoryQuestion,
   AgentActions.findDevice,
   AgentActions.ringDevice,
+  AgentActions.fileFetch,
 ];
 
 /// The exact capability set this device used to hand-write for a phone.
@@ -116,6 +117,7 @@ const _phoneActions = <String>{
   AgentActions.calendarAdd,
   AgentActions.calendarRead,
   AgentActions.darkModeSet,
+  AgentActions.fileFetch,
 };
 
 /// The exact capability set this device used to hand-write for a desktop.
@@ -140,6 +142,7 @@ const _desktopActions = <String>{
   AgentActions.mediaNext,
   AgentActions.mediaPrev,
   AgentActions.emailSend,
+  AgentActions.fileFetch,
 };
 
 void main() {

@@ -135,7 +135,8 @@ class _AssistantViewState extends State<AssistantView> {
 
   /// Runs actions on this platform (apps, calls, texts, media…); the view
   /// only decides when to run them.
-  late final DeviceExecutor _executor = widget.executor ?? DeviceExecutor();
+  late final DeviceExecutor _executor =
+      widget.executor ?? DeviceExecutor(fileMesh: widget.mesh);
 
   /// The user's profile: names and first-run state, persisted per device.
   final ProfileStore _profile = SharedPrefsProfileStore();
@@ -522,6 +523,9 @@ class _AssistantViewState extends State<AssistantView> {
     AgentActions.appDefault,
     AgentActions.profileSet,
     AgentActions.profileGet,
+    // The fetch runs here — this device pulls the file over the mesh — so it
+    // is one of the actions this device executes end to end.
+    AgentActions.fileFetch,
   };
 
   /// Shows a dispatch result — and starts self-run actions right away.
@@ -2020,6 +2024,10 @@ class _AssistantViewState extends State<AssistantView> {
 
   Widget _buildResult() {
     if (_conversation.isEmpty && _incoming() == null) {
+      // Setup must be completable before the composer appears: the composer is
+      // hidden while onboarding is active, so skipping the setup view once a
+      // device has been paired would hide the only way to finish it.
+      if (_onboardingActive) return _welcomeView();
       // The greeting belongs to a device that has never talked to Nexus.
       // Once a thread has existed, an empty thread is an invitation, not a
       // hello — and clearing a conversation must never feel like being reset

@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/app_defaults.dart';
 import 'package:nexus/core/device_actions.dart';
+import 'package:nexus/core/file_fetch.dart';
 import 'package:nexus/core/profile.dart';
 import 'package:nexus/core/live.dart';
 import 'package:nexus/core/phone_actions.dart';
@@ -114,6 +117,31 @@ class _FakePhoneBackend implements PhoneActionBackend {
         launched: app != null && app.isNotEmpty,
         message: app == null ? 'No app.' : 'Opened $app.',
       );
+}
+
+/// A file-fetch transport that serves one in-memory tree and writes the
+/// pulled bytes to disk, so the executor's save path can be checked for real.
+class _FakeFileMesh implements FileFetchMesh {
+  _FakeFileMesh(this.entries, this.bytes);
+  final Map<String, List<RemoteFile>> entries;
+  final Map<String, List<int>> bytes;
+
+  @override
+  String? lastFileError;
+
+  @override
+  Future<List<RemoteFile>?> filesOnDevice(String peerId, String dir) async =>
+      entries[dir] ?? const [];
+
+  @override
+  Future<String?> fetchFileFromDevice(
+    String peerId,
+    String remotePath, {
+    required String savePath,
+  }) async {
+    await File(savePath).writeAsBytes(bytes[remotePath] ?? const <int>[]);
+    return savePath;
+  }
 }
 
 void main() {
@@ -1009,6 +1037,56 @@ void main() {
       expect(out.ok, isFalse);
       expect(out.needsDetail, isFalse);
       expect(out.message, isNot(contains('?')));
+    });
+  });
+
+  group('file fetch', () {
+    test('a file.fetch request pulls the file into the save dir', () async {
+      final tmp = await Directory.systemTemp.createTemp('exec_fetch');
+      addTearDown(() async {
+        if (tmp.existsSync()) await tmp.delete(recursive: true);
+      });
+      final mesh = _FakeFileMesh(
+        {
+          '': [const RemoteFile(name: 'report.pdf', path: '/pc/report.pdf')],
+        },
+        {
+          '/pc/report.pdf': const [1, 2, 3, 4],
+        },
+      );
+      final exec = DeviceExecutor(
+        deviceBackend: device,
+        phoneBackend: phone,
+        fileMesh: mesh,
+        fileDownloadsDir: tmp.path,
+      );
+      final out = await exec.run(
+        req(AgentActions.fileFetch, {
+          'peerId': 'pc1',
+          'peerName': 'My PC',
+          'filename': 'report.pdf',
+        }),
+      );
+      expect(out.ok, isTrue);
+      expect(out.message, contains('Saved report.pdf from My PC'));
+      expect(
+        await File(
+          '${tmp.path}${Platform.pathSeparator}report.pdf',
+        ).readAsBytes(),
+        const [1, 2, 3, 4],
+      );
+    });
+
+    test('a fetch with no transport is answered honestly, not crashed', () async {
+      final out = await executor.run(
+        req(AgentActions.fileFetch, {
+          'peerId': 'pc1',
+          'peerName': 'My PC',
+          'filename': 'report.pdf',
+        }),
+      );
+      expect(out.ok, isFalse);
+      expect(out.message, "I couldn't fetch that file.");
     });
   });
 }
