@@ -53,6 +53,14 @@
 # run's data dir. A developer's own open Nexus is never touched unless
 # --kill-orphans is given.
 #
+# The run is hermetic to the user's filesystem. Each instance's profile lives in
+# its own XDG_DATA_HOME, and two app overrides the script sets —
+# NEXUS_SERVED_ROOT and NEXUS_DOWNLOADS_DIR — point the served folder and the
+# save folder at dirs under $WORK, so fixtures are never served from, and
+# fetched files never land in, the developer's real home or ~/Downloads.
+# cleanup removes only paths under $WORK. Both overrides default to the app's
+# normal behavior when unset.
+#
 # NEXUS_GUI_TIMEOUT bounds ONE step, in seconds (default 90) — not one long
 # wait at the end. The first step to fail is named and the script exits
 # non-zero.
@@ -106,8 +114,16 @@ STEP_TIMEOUT="${NEXUS_GUI_TIMEOUT:-90}"
 STAMP=$(date +%Y%m%d-%H%M%S)
 BUNDLE=build/linux/x64/debug/bundle/nexus
 WORK="/tmp/nexus_gui/$STAMP"
-HOME_DIR="${HOME:?HOME must be set}"
-DL_DIR="$HOME_DIR/Downloads"
+# Nothing this run reads or writes lives outside $WORK. Two startup overrides
+# the app honors — NEXUS_SERVED_ROOT and NEXUS_DOWNLOADS_DIR — point the served
+# folder and the save folder at this run's own dirs, so fixtures are served
+# from here and fetched files land here. Without them the server would serve
+# the real home dir and the requester would save into the real ~/Downloads;
+# with them, cleanup only ever removes paths under $WORK. Both vars default to
+# the old behavior when unset (see docs/DEMO.md "Environment overrides").
+SERVER_SERVED="$WORK/served"
+REQUESTER_SERVED="$WORK/requester-served"
+DL_DIR="$WORK/downloads"
 SERVER_DIR="$WORK/server"
 REQUESTER_DIR="$WORK/requester"
 # Each instance gets its own XDG_DATA_HOME, so the profile it reads and writes
@@ -120,11 +136,12 @@ REQUESTER_DATA="$WORK/data-requester"
 # kept is the final 99_result.png. On a failure the run also keeps ONE
 # fail-$STEP.png (whole screen) — a flaky step is hard to explain from logs
 # alone — which is the one piece of the pruned diagnostics deliberately
-# restored. The driver's working frame still lives in scratch, not here.
-SCRATCH="${TMPDIR:-/tmp}/nexus-ui-$STAMP"
+# restored. The driver's working frame lives under $WORK/ui and is removed by
+# cleanup, so it is never kept as evidence.
+SCRATCH="$WORK/ui"
 export NEXUS_UI_WORK="$SCRATCH"
 
-# name:bytes — the server serves these from its home dir; the requester types
+# name:bytes — the server serves these from its served root; the requester types
 # "get <name> from my pc" for each. Deterministic bytes so the expected sha256
 # is reproducible run to run. big.bin is the size docs/DEMO.md quotes.
 FIXTURES=("report.pdf:4096" "big.bin:30000000")
@@ -153,18 +170,14 @@ fail() {
 }
 
 # --- cleanup ----------------------------------------------------------------
-# Runs on every exit. Removes the fixtures this run copied into the served
-# home dir (a 30 MB big.bin in $HOME is a real mess), then kills only the
-# instances it launched: the PIDs it recorded, and only while each still
-# carries this run's data dir (so a reused PID is never killed).
+# Runs on every exit. Removes only what this run wrote under $WORK — the served
+# fixtures, the fetched files and the driver's scratch frame — so it can never
+# remove a file in the user's real home or ~/Downloads. The run's logs and
+# screenshots stay in $WORK as evidence. Then it kills only the instances it
+# launched: the PIDs it recorded, and only while each still carries this run's
+# data dir (so a reused PID is never killed).
 cleanup() {
-  for spec in "${FIXTURES[@]}"; do
-    rm -f "$HOME_DIR/${spec%%:*}" "$DL_DIR/${spec%%:*}"
-  done
-  # A negative file should never exist; remove it anyway so an interrupted run
-  # cannot leave a stray doesnotexist.pdf behind.
-  rm -f "$DL_DIR/$NEG_NAME"
-  rm -rf "$SCRATCH"
+  rm -rf "$SERVER_SERVED" "$REQUESTER_SERVED" "$DL_DIR" "$SCRATCH"
   [ "${NEXUS_GUI_KEEP:-}" = 1 ] && return 0
   [ -f "$WORK/pids" ] || return 0
   for p in $(sort -u "$WORK/pids" 2>/dev/null); do
@@ -176,7 +189,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$WORK" "$SERVER_DIR" "$REQUESTER_DIR" "$DL_DIR"
+mkdir -p "$WORK" "$SERVER_DIR" "$REQUESTER_DIR" "$DL_DIR" \
+         "$SERVER_SERVED" "$REQUESTER_SERVED"
 
 # --- driver seam ------------------------------------------------------------
 # Everything that touches the compositor, the screen or the input devices goes
@@ -205,14 +219,6 @@ clear_field() {
   for (( i = 0; i < n; i++ )); do ui key BackSpace >/dev/null 2>&1 || true; done
 }
 
-# Click the on-screen text `phrase` in window `pid`; extra flags (--x-max,
-# --y-min, --y-max, --dy) narrow where it may land.
-click_text() { # pid phrase [filters...]
-  local pid="$1" phrase="$2"; shift 2
-  ui click-text "$phrase" --pid "$pid" "$@" >/dev/null \
-    || fail "no clickable text \"$phrase\" in window $pid"
-}
-
 # Wait for `phrase` to appear on screen in window `pid`, bounded by
 # STEP_TIMEOUT.
 wait_text() { # pid phrase [filters...]
@@ -223,9 +229,10 @@ wait_text() { # pid phrase [filters...]
 
 # Click `phrase` only once it is actually on screen. OCR can miss a control
 # that is present but not yet painted — the pairing sheet's `Code` field just
-# after the Pair click is the observed case — so a single-shot click_text is a
-# race. Wait for the phrase, click it, and retry up to N times, all within the
-# step's own timeout.
+# after the Pair click, and the rail's `Devices` destination just after a slow
+# launch, are the observed cases — so a bare click is a race. Every rail and
+# sheet tap goes through here: wait for the phrase, click it, and retry up to N
+# times, all within the step's own timeout.
 CLICK_ATTEMPTS="${NEXUS_CLICK_ATTEMPTS:-3}"
 click_text_wait() { # pid phrase [filters...]
   local pid="$1" phrase="$2"; shift 2
@@ -285,7 +292,7 @@ fi
 step "fixtures"
 for spec in "${FIXTURES[@]}"; do
   name="${spec%%:*}"; bytes="${spec##*:}"
-  src="$HOME_DIR/$name"
+  src="$SERVER_SERVED/$name"
   python3 -c 'import sys
 open(sys.argv[1], "wb").write(bytes((i * 37 + 11) % 256 for i in range(int(sys.argv[2]))))' \
     "$src" "$bytes"
@@ -322,13 +329,16 @@ fi
 if [ "$REMOTE" = 1 ]; then
   say "  requester-only: pairing to a Nexus the operator runs at $PEER_HOST:$PEER_PORT"
   setsid nohup env NEXUS_DATA_DIR="$REQUESTER_DIR" XDG_DATA_HOME="$REQUESTER_DATA" \
+    NEXUS_SERVED_ROOT="$REQUESTER_SERVED" NEXUS_DOWNLOADS_DIR="$DL_DIR" \
     "$BUNDLE" >"$WORK/requester.log" 2>&1 &
   echo "$!" >"$WORK/pids"
 else
   setsid nohup env NEXUS_DATA_DIR="$SERVER_DIR" XDG_DATA_HOME="$SERVER_DATA" \
+    NEXUS_SERVED_ROOT="$SERVER_SERVED" NEXUS_DOWNLOADS_DIR="$DL_DIR" \
     "$BUNDLE" >"$WORK/server.log" 2>&1 &
   echo "$!" >"$WORK/pids"
   setsid nohup env NEXUS_DATA_DIR="$REQUESTER_DIR" XDG_DATA_HOME="$REQUESTER_DATA" \
+    NEXUS_SERVED_ROOT="$REQUESTER_SERVED" NEXUS_DOWNLOADS_DIR="$DL_DIR" \
     "$BUNDLE" >"$WORK/requester.log" 2>&1 &
   echo "$!" >>"$WORK/pids"
 fi
@@ -382,15 +392,15 @@ if [ "$REMOTE" = 1 ]; then
 else
   step "server-code"
   focus "$SPID"
-  click_text "$SPID" Devices --x-max 120        # the rail's Devices destination
-  click_text "$SPID" "Show my code on another device"
-  click_text "$SPID" "More ways to connect"
-  click_text "$SPID" "Show my code instead"
+  click_text_wait "$SPID" Devices --x-max 120        # the rail's Devices destination
+  click_text_wait "$SPID" "Show my code on another device"
+  click_text_wait "$SPID" "More ways to connect"
+  click_text_wait "$SPID" "Show my code instead"
 
   CODE=""
   wl-copy --clear 2>/dev/null || true
   sleep 0.3
-  click_text "$SPID" "Copy code"
+  click_text_wait "$SPID" "Copy code"
   sleep 0.5
   CODE=$(timeout 5 wl-paste 2>/dev/null | tr -d '\n' | head -c 40)
   case "$CODE" in
@@ -404,7 +414,7 @@ fi
 # Pair with the device discovery already found: that row's Pair button
 # prefills the address and port, so the code is the only thing left to type.
 pair_local() {
-  click_text "$RPID" Pair --y-min 420
+  click_text_wait "$RPID" Pair --y-min 420
   # The field can take a beat to paint after the row's Pair click; wait for it
   # rather than clicking at nothing.
   click_text_wait "$RPID" Code --y-max 420 --dy 22
@@ -428,9 +438,9 @@ pair_remote() {
 
 step "pair"
 focus "$RPID"
-click_text "$RPID" Devices --x-max 120
-click_text "$RPID" "Add device"
-click_text "$RPID" "More ways to connect"
+click_text_wait "$RPID" Devices --x-max 120
+click_text_wait "$RPID" "Add device"
+click_text_wait "$RPID" "More ways to connect"
 if [ "$REMOTE" = 1 ]; then pair_remote; else pair_local; fi
 # Every field in the sheet submits the same form on Enter.
 ui key Return || fail "could not submit the pairing"
@@ -459,7 +469,7 @@ say "  requester shows the server Online"
 ask_for() { # name
   local name="$1"
   focus "$RPID"
-  click_text "$RPID" Assistant --x-max 120
+  click_text_wait "$RPID" Assistant --x-max 120
   sleep 0.6
   click_composer
   sleep 0.5
@@ -539,7 +549,7 @@ say "  big.bin landed"
 step "verify"
 verify_one() {
   local name="$1" bytes="$2"
-  local src="$HOME_DIR/$name" dst="$DL_DIR/$name"
+  local src="$SERVER_SERVED/$name" dst="$DL_DIR/$name"
   local want got got_bytes
   want=$(sha256sum "$src" | awk '{print $1}')
   [ -f "$dst" ] || { say "  MISSING  $dst"; return 1; }

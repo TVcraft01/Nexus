@@ -45,8 +45,11 @@ test, and not two threads: two `flutter test` VMs.
 command.** `tool/gui_walkthrough.sh` builds the bundle (unless `--no-build`
 reuses one), launches two real desktop windows with separate
 `NEXUS_DATA_DIR` **and** separate `XDG_DATA_HOME` — so each instance's
-profile lives inside the run's own evidence directory and the developer's
-real profile is never read or written — pairs them by driving the real
+profile lives inside the run's own evidence directory, and it points the
+served folder and the save folder there too with `NEXUS_SERVED_ROOT` and
+`NEXUS_DOWNLOADS_DIR` (see [Environment overrides](#environment-overrides))
+— so the developer's real profile, home directory and `~/Downloads` are never
+read or written — pairs them by driving the real
 widgets (real clicks, real typing), submits the two commands below into the
 assistant, and verifies both saved files by size and sha256 before printing
 `PASS`:
@@ -65,6 +68,12 @@ PASS — every file landed byte-identical in /home/tvcraft01/Downloads
   OK  report.pdf   4096 bytes       sha256 4e441a35…7205ec
   OK  big.bin      30000000 bytes   sha256 cc9a9318…03111a
 ```
+
+That block is the dated run in the checked-in transcript, recorded before the
+harness became hermetic — it landed its files in the real `~/Downloads`. The
+current harness sets `NEXUS_SERVED_ROOT` and `NEXUS_DOWNLOADS_DIR`, so the same
+`PASS` line now names its own run directory, e.g.
+`/tmp/nexus_gui/<stamp>/downloads`.
 
 In that run the requester paired with the server (`pairWith -> ok`,
 `pair-request … (code matched)`), its Devices tab showed the server
@@ -93,7 +102,25 @@ run:
 It pairs the same two instances, asks for a name the server does not have
 (`get doesnotexist.pdf from my pc`), waits for the app's own not-found
 wording (`<device> has no file named doesnotexist.pdf.`), and fails unless
-nothing landed in `~/Downloads`.
+nothing landed in the run's own download directory.
+
+### Environment overrides
+
+The walkthrough keeps everything inside its own run directory by setting two
+startup overrides the app honors. Both default to the app's normal behavior
+when unset — a hand-run Nexus still serves the home directory and saves to the
+real Downloads folder:
+
+| variable | effect | default when unset |
+|---|---|---|
+| `NEXUS_SERVED_ROOT` | the folder the device serves to paired peers (the Files tab and a fetch both read it) | the home directory (`$HOME` / `USERPROFILE`), or Android shared storage |
+| `NEXUS_DOWNLOADS_DIR` | the folder a fetched or downloaded file is written into | the platform Downloads folder, else `$HOME/Downloads`, else the app documents folder |
+
+The walkthrough sets both per instance, so `report.pdf`/`big.bin` are served
+from `/tmp/nexus_gui/<stamp>/served` and fetched into
+`/tmp/nexus_gui/<stamp>/downloads` — never into the developer's real
+`~/Downloads`. Its `cleanup` therefore removes only paths under the run
+directory.
 
 ### Two machines (requester-only)
 
@@ -330,8 +357,9 @@ neutralises system commands for them.
   working on the desktop.
 - **Served root = home directory.** The PC serves its home dir (`$HOME`, or
   `USERPROFILE` on Windows); a file that is not there (or within 3 levels of
-  subfolders) produces `"… has no file named …"`. `fileRoot` is a test-only
-  override — the app always serves home.
+  subfolders) produces `"… has no file named …"`. `fileRoot` (test-only) and
+  the `NEXUS_SERVED_ROOT` environment variable override this — the app serves
+  home when neither is set.
 - **Firewall.** The two ends talk over TCP on the mesh port; a host firewall
   that drops inbound on that port stops pairing. Allow the app on your LAN.
 - **The pairing code expires in 5 minutes.** Generate it last and enter it

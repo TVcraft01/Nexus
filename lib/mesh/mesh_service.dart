@@ -1797,9 +1797,13 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
   /// The folder this device serves. Desktop: the home directory. Android:
   /// the real shared storage when the user granted "All files access" (so the
   /// PC file manager sees every photo, download and music file), otherwise
-  /// the app's own external dir. Tests inject their own root.
+  /// the app's own external dir. Tests inject their own root; a non-empty
+  /// `NEXUS_SERVED_ROOT` env var overrides the default too, so an unattended
+  /// harness can serve a scratch directory instead of the real home.
   Future<String> _servedRoot() async {
     if (fileRoot != null) return fileRoot!;
+    final override = Platform.environment['NEXUS_SERVED_ROOT'];
+    if (override != null && override.isNotEmpty) return override;
     if (Platform.isAndroid) {
       if (await hasAllFilesAccess()) {
         final shared = await androidSharedRoot();

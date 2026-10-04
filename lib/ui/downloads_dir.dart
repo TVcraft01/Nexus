@@ -9,7 +9,14 @@ import 'package:path_provider/path_provider.dart'
 /// One owner for the rule the Files tab and the assistant's fetch both follow,
 /// so a file fetched by asking and one downloaded by hand arrive in the same
 /// place.
+///
+/// `NEXUS_DOWNLOADS_DIR`, when set, wins over all of the above. It exists so an
+/// unattended harness can keep a run's fetched files inside its own directory
+/// instead of the developer's real Downloads folder; unset, behavior is
+/// unchanged.
 Future<String> downloadsDirectory() async {
+  final override = Platform.environment['NEXUS_DOWNLOADS_DIR'];
+  if (override != null && override.isNotEmpty) return override;
   try {
     final dir = await getDownloadsDirectory();
     if (dir != null) return dir.path;
