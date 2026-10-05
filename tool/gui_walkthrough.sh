@@ -183,6 +183,17 @@ fail() {
   exit 1
 }
 
+# Kept screenshot + result banner, shared by the happy and negative paths.
+finish() { # $1 result line, $2 evidence suffix, $3 exit code
+  ui shot "$WORK/99_result.png" --pid "$RPID" \
+    || fail "could not take the final screenshot"
+  say ""
+  say "== result =="
+  say "$1"
+  say "evidence: $WORK ($2)"
+  exit "$3"
+}
+
 # --- cleanup ----------------------------------------------------------------
 # Runs on every exit. Removes only what this run wrote under $WORK — the served
 # fixtures, the fetched files and the driver's scratch frame — so it can never
@@ -469,30 +480,24 @@ if [ "$LOOPBACK" = 1 ]; then
 fi
 
 # --- the requester enters it ------------------------------------------------
-# Pair with the device discovery already found: that row's Pair button
-# prefills the address and port, so the code is the only thing left to type.
-pair_local() {
-  click_nav "$RPID" Pair "Finish pairing" --y-min 420
-  # The field can take a beat to paint after the row's Pair click; wait for it
-  # rather than clicking at nothing.
-  click_text_wait "$RPID" Code --y-max 420 --dy 22
-  sleep 0.4
+# One pairing walk for both modes. A manual pair (a server we cannot read)
+# opens the sheet's "Enter a code" tab and types the peer's address and port;
+# the discovered-device mode taps the nearby row, whose `Pair` prefills both.
+pair_requester() {
+  local manual=0
+  if [ "$REMOTE" = 1 ] || [ "$LOOPBACK" = 1 ]; then manual=1; fi
+  if [ "$manual" = 1 ]; then
+    click_nav "$RPID" "Enter a code from the other device" "Finish pairing"
+    click_text_wait "$RPID" Code --dy 22
+  else
+    click_nav "$RPID" Pair "Finish pairing" --y-min 420
+    click_text_wait "$RPID" Code --y-max 420 --dy 22
+    sleep 0.4
+  fi
   ui type "$CODE" || fail "could not type the pairing code"
-}
-
-# Pair with a server on another box, which discovery here cannot prefill: type
-# the operator's code, the remote's address, and the remote's port into the
-# sheet's manual "Enter a code" tab.
-pair_remote() {
-  click_nav "$RPID" "Enter a code from the other device" "Finish pairing"
-  click_text_wait "$RPID" Code --dy 22
-  ui type "$PEER_CODE" || fail "could not type the peer's pairing code"
+  [ "$manual" = 1 ] || return 0
   click_text_wait "$RPID" Address --dy 22
   ui type "$PEER_HOST" || fail "could not type the peer's address"
-  # The Port field is the address field's next sibling. Its own label sits
-  # inside the empty field (no hint floats it), so clicking the label does not
-  # reliably land in the input; move focus there from the address field instead
-  # of guessing at the label's position.
   ui key Tab || fail "could not move focus to the port field"
   ui type "$PEER_PORT" || fail "could not type the peer's port"
 }
@@ -502,7 +507,7 @@ focus "$RPID"
 click_nav "$RPID" Devices "Add device" --x-max 120
 click_nav "$RPID" "Add device" "More ways to connect"
 click_nav "$RPID" "More ways to connect" "Enter a code from the other device"
-if [ "$REMOTE" = 1 ] || [ "$LOOPBACK" = 1 ]; then pair_remote; else pair_local; fi
+pair_requester
 # Every field in the sheet submits the same form on Enter.
 ui key Return || fail "could not submit the pairing"
 
@@ -588,24 +593,18 @@ if [ "$NEGATIVE" = 1 ]; then
     fail "$NEG_NAME should not have landed, but $DL_DIR/$NEG_NAME exists"
   fi
   say "  absent  $DL_DIR/$NEG_NAME (as expected)"
-  ui shot "$WORK/99_result.png" --pid "$RPID" \
-    || fail "could not take the final screenshot"
-  say ""
-  say "== result =="
-  say "NEGATIVE PASS — the app said it could not find $NEG_NAME and nothing landed in $DL_DIR"
-  say "evidence: $WORK (logs, 99_result.png, wording above)"
-  exit 0
+  finish "NEGATIVE PASS — the app said it could not find $NEG_NAME and nothing landed in $DL_DIR" \
+    "logs, 99_result.png, wording above" 0
 fi
 
-step "fetch report.pdf"
-ask_for report.pdf
-wait_file report.pdf 4096
-say "  report.pdf landed"
-
-step "fetch big.bin"
-ask_for big.bin
-wait_file big.bin 30000000
-say "  big.bin landed"
+# Ask for each fixture the way a person would, then wait for its bytes.
+for spec in "${FIXTURES[@]}"; do
+  name="${spec%%:*}"; bytes="${spec##*:}"
+  step "fetch $name"
+  ask_for "$name"
+  wait_file "$name" "$bytes"
+  say "  $name landed"
+done
 
 # --- verify -----------------------------------------------------------------
 step "verify"
@@ -625,20 +624,13 @@ verify_one() {
   return 1
 }
 
-ui shot "$WORK/99_result.png" --pid "$RPID" \
-  || fail "could not take the final screenshot"
-
 pass=1
 for spec in "${FIXTURES[@]}"; do
   verify_one "${spec%%:*}" "${spec##*:}" || pass=0
 done
 
-say ""
-say "== result =="
 if [ "$pass" = 1 ]; then
-  say "PASS — every file landed byte-identical in $DL_DIR"
-  say "evidence: $WORK (logs, 99_result.png, sizes and sha256 above)"
-  exit 0
+  finish "PASS — every file landed byte-identical in $DL_DIR" \
+    "logs, 99_result.png, sizes and sha256 above" 0
 fi
-say "FAIL — see $WORK for logs"
-exit 1
+finish "FAIL — see $WORK for logs" "logs" 1
