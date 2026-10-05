@@ -260,6 +260,43 @@ click_text_wait() { # pid phrase [filters...]
   fail "no clickable text \"$phrase\" in window $pid after $CLICK_ATTEMPTS attempts"
 }
 
+# Navigate: tap `tap`, then require `dest` to be on screen before reporting
+# success. click_text_wait only proves the tap's target was readable when it
+# was clicked — a rail or sheet tap can land without changing the view (the
+# observed server-code case: `Devices` clicked, the window stayed on
+# Assistant, so the next phrase never appeared), and a landed-but-ineffective
+# tap looks identical to a good one. After each tap, wait for the destination
+# to be read on two consecutive polls; retry the tap up to CLICK_ATTEMPTS
+# times, all within the step's own timeout. `tap`'s filters narrow where it
+# may land; the destination has none.
+click_nav() { # pid tap dest [tap filters...]
+  local pid="$1" tap="$2" dest="$3"; shift 3
+  local deadline=$(( $(date +%s) + STEP_TIMEOUT ))
+  local attempt left per sub dleft
+  for (( attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++ )); do
+    left=$(( deadline - $(date +%s) ))
+    [ "$left" -gt 0 ] || break
+    # Split what is left across the attempts that remain, so the destination's
+    # wait never outruns the step budget.
+    per=$(( left / (CLICK_ATTEMPTS - attempt + 1) ))
+    [ "$per" -ge 1 ] || per=1
+    sub=$(( $(date +%s) + per ))
+    # Tap only if it is still on screen; a previous tap may already have
+    # navigated and removed it.
+    if ui wait-text "$tap" --pid "$pid" --timeout "$per" --reads 2 "$@" >/dev/null 2>&1; then
+      ui click-text "$tap" --pid "$pid" "$@" >/dev/null 2>&1 || true
+    fi
+    dleft=$(( sub - $(date +%s) ))
+    [ "$dleft" -ge 1 ] || dleft=1
+    if ui wait-text "$dest" --pid "$pid" --timeout "$dleft" --reads 2 >/dev/null 2>&1; then
+      return 0
+    fi
+    say "  \"$tap\" did not reach \"$dest\" yet (attempt $attempt/$CLICK_ATTEMPTS)"
+    sleep 0.5
+  done
+  fail "\"$tap\" never reached \"$dest\" in window $pid within ${STEP_TIMEOUT}s"
+}
+
 # Wait for a line to appear in a log, bounded by STEP_TIMEOUT.
 wait_log() {
   local file="$1" pattern="$2" what="$3"
@@ -398,10 +435,10 @@ if [ "$REMOTE" = 1 ]; then
 else
   step "server-code"
   focus "$SPID"
-  click_text_wait "$SPID" Devices --x-max 120        # the rail's Devices destination
-  click_text_wait "$SPID" "Show my code on another device"
-  click_text_wait "$SPID" "More ways to connect"
-  click_text_wait "$SPID" "Show my code instead"
+  click_nav "$SPID" Devices "Show my code on another device" --x-max 120  # the rail's Devices destination
+  click_nav "$SPID" "Show my code on another device" "More ways to connect"
+  click_nav "$SPID" "More ways to connect" "Show my code instead"
+  click_nav "$SPID" "Show my code instead" "Copy code"
 
   CODE=""
   wl-copy --clear 2>/dev/null || true
@@ -435,7 +472,7 @@ fi
 # Pair with the device discovery already found: that row's Pair button
 # prefills the address and port, so the code is the only thing left to type.
 pair_local() {
-  click_text_wait "$RPID" Pair --y-min 420
+  click_nav "$RPID" Pair "Finish pairing" --y-min 420
   # The field can take a beat to paint after the row's Pair click; wait for it
   # rather than clicking at nothing.
   click_text_wait "$RPID" Code --y-max 420 --dy 22
@@ -447,7 +484,7 @@ pair_local() {
 # the operator's code, the remote's address, and the remote's port into the
 # sheet's manual "Enter a code" tab.
 pair_remote() {
-  click_text_wait "$RPID" "Enter a code from the other device"
+  click_nav "$RPID" "Enter a code from the other device" "Finish pairing"
   click_text_wait "$RPID" Code --dy 22
   ui type "$PEER_CODE" || fail "could not type the peer's pairing code"
   click_text_wait "$RPID" Address --dy 22
@@ -462,9 +499,9 @@ pair_remote() {
 
 step "pair"
 focus "$RPID"
-click_text_wait "$RPID" Devices --x-max 120
-click_text_wait "$RPID" "Add device"
-click_text_wait "$RPID" "More ways to connect"
+click_nav "$RPID" Devices "Add device" --x-max 120
+click_nav "$RPID" "Add device" "More ways to connect"
+click_nav "$RPID" "More ways to connect" "Enter a code from the other device"
 if [ "$REMOTE" = 1 ] || [ "$LOOPBACK" = 1 ]; then pair_remote; else pair_local; fi
 # Every field in the sheet submits the same form on Enter.
 ui key Return || fail "could not submit the pairing"
