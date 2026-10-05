@@ -144,17 +144,37 @@ files, verifying both by size and sha256. There is no local server: the code
 comes from A's screen (this script cannot read another machine), and A must
 hold the fixtures in its served home directory.
 
-> **Status: unexercised.** No second machine was reachable when this was
-> written, so the two-box path has never produced a recorded PASS. Only its
-> argument validation and its requester-only launch have been run locally. The
-> one-machine walk and `--negative` above remain the exercised evidence — do
-> not read this section as a recorded success.
+> **Status: the code path is exercised; a real second host is not.** No second
+> physical machine was reachable here, so a two-box LAN run has never produced
+> a recorded PASS. The requester-only pair path itself — typing the code,
+> address and port into that same sheet — is exercised on one machine by
+> `--peer-loopback` below, recorded in
+> [`docs/evidence/gui_walkthrough_loopback_20261005.txt`](evidence/gui_walkthrough_loopback_20261005.txt).
+> What remains unexercised is only the transport to a *different* host on a
+> real LAN; do not read this section as a recorded two-host success.
+
+#### One-machine smoke of the requester-only path
+
+`--peer-loopback` runs the requester-only code path on this box: it launches a
+local server, reads that server's pairing code from its window and its mesh
+port from its log the way a person would, then drives the requester through the
+same manual **Enter a code** tab against the loopback alias `127.0.0.2` (a
+different address from discovery's `127.0.0.1`, so the typed-address path is
+what actually runs):
+
+```bash
+./tool/gui_walkthrough.sh --no-build --peer-loopback
+```
+
+It is a smoke of the code path, **not** a real LAN test — the peer is a second
+process on the same machine reached over loopback.
 
 **What the automated walk-through does not cover:** a physical Android
 phone, and Windows/macOS hosts. The one-machine walk runs both windows as
-Linux desktop instances; `--peer-host` now drives a requester-only run against
-a Nexus on another machine, but that path is documented and unexercised (see
-[Two machines](#two-machines-requester-only)).
+Linux desktop instances; `--peer-host` drives a requester-only run against a
+Nexus on another machine, and `--peer-loopback` exercises that same code path
+on one machine — but a run against a real second host is still unexercised
+(see [Two machines](#two-machines-requester-only)).
 
 **Bug found and fixed by this walkthrough.** A fresh profile that paired a
 device *before* finishing first-run setup ended up with the composer hidden
@@ -170,11 +190,11 @@ pull whose local write fails — is covered by `test/mesh_test.dart` ("a failed
 local save is named as storage, not blamed on the network"), and the
 not-found path through the real UI by `./tool/gui_walkthrough.sh --negative`.
 
-**What this does *not* cover:** the physical phone, and still a recorded
-two-machine run — `--peer-host` exists but has never been exercised against a
-second host. The one-machine walk uses Linux desktop instances over loopback;
-an Android build, a real phone over Wi-Fi, and a Windows/macOS host remain
-untested. The [two-process rehearsal](#two-process-rehearsal) above is the
+**What this does *not* cover:** the physical phone, and still a recorded run
+against a real second host — the requester-only path is exercised by
+`--peer-loopback`, but only over loopback, never across two machines. The
+one-machine walk uses Linux desktop instances over loopback; an Android build,
+a real phone over Wi-Fi, and a Windows/macOS host remain untested. The [two-process rehearsal](#two-process-rehearsal) above is the
 CI-runnable check; the manual steps 1–5 below are what was walked here.
 
 ---
@@ -423,8 +443,9 @@ The whole vertical is covered by tests, including the wire path:
   two real windows, real clicks and typing, both files verified by size and
   sha256 before it prints `PASS`. `--negative` drives one fetch that must
   fail (the app's own not-found wording, nothing saved); `--peer-host` runs
-  requester-only against a server on another machine (documented, not yet
-  exercised). Needs a live Wayland/Hyprland session, so it is not the CI
+  requester-only against a server on another machine, and `--peer-loopback`
+  exercises that same requester-only path on one machine (the two-host LAN run
+  remains unexercised). Needs a live Wayland/Hyprland session, so it is not the CI
   check; `tool/rehearsal.sh` is.
 
 Run the suite with:

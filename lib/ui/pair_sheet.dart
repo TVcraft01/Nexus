@@ -131,8 +131,12 @@ class _PairSheetState extends State<_PairSheet> {
     _addressController = TextEditingController(
       text: widget.nearby?.address ?? '',
     );
+    // Only a device we already found has a known peer port to prefill. Opening
+    // the manual "Enter a code" tab with no nearby device must leave the port
+    // empty: pre-filling this device's own port reads as "use this", and the
+    // form then rejects it (or dials ourselves) when the user submits.
     _portController = TextEditingController(
-      text: '${widget.nearby?.port ?? widget.mesh.port}',
+      text: widget.nearby == null ? '' : '${widget.nearby!.port}',
     );
     if (widget.nearby != null) _prefill(widget.nearby);
     // Add our LAN IP to the QR as soon as we know it, so the other device can

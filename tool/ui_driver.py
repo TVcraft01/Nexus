@@ -15,7 +15,8 @@ Contract (import, or the same names as CLI subcommands):
     place_window(pid, x, y)                float + size a window at a corner
     click(x, y)                            move the pointer and left-click
     click_text(text, *, pid/region, ...)   click where `text` is on screen
-    wait_text(text, timeout, *, pid, ...)  poll until `text` is on screen
+    wait_text(text, timeout, *, pid, ..., reads)  poll until `text` is on screen
+                                                 stable for `reads` polls
     type_text(s)                           type a string into the focused field
     press_key(name)                        press one key ("Return", …)
     screenshot(path, region=None)          save a PNG of a region (all screen if none)
@@ -391,17 +392,29 @@ def wait_text(
     x_max: int | None = None,
     y_min: int | None = None,
     y_max: int | None = None,
+    reads: int = 1,
 ) -> bool:
     """Poll until `text` is on screen; False after `timeout` seconds.
 
     The region is re-resolved from `pid` on every poll so a window that moves
     mid-wait is still read at its current origin.
+
+    `reads` > 1 requires that many consecutive polls to see the text before it
+    is reported present. A control can be captured mid-paint — visible in one
+    frame, re-rendered in the next — so a single hit is no proof it is ready to
+    receive a click. Any poll that misses resets the streak, so the hit must be
+    stable across the full sequence.
     """
     deadline = time.time() + timeout
+    streak = 0
     while True:
         resolved = _resolve_region(pid, region)
         if _find(resolved, text, x_max, y_min, y_max) is not None:
-            return True
+            streak += 1
+            if streak >= reads:
+                return True
+        else:
+            streak = 0
         if time.time() >= deadline:
             return False
         time.sleep(1)
@@ -417,7 +430,7 @@ def _flags(rest: list[str]) -> tuple[dict, list[str]]:
     i = 0
     while i < len(rest):
         flag = rest[i]
-        if flag in ("--pid", "--x-max", "--y-min", "--y-max", "--dy"):
+        if flag in ("--pid", "--x-max", "--y-min", "--y-max", "--dy", "--reads"):
             opts[flag] = int(rest[i + 1])
             i += 2
             continue
@@ -446,7 +459,7 @@ def _text_command(cmd: str, rest: list[str]) -> int:
         print(f"NOT-FOUND {phrase}", file=sys.stderr)
         return 3
     timeout = float(opts.get("--timeout", 90))
-    if wait_text(text, timeout, **kw):
+    if wait_text(text, timeout, reads=int(opts.get("--reads", 1)), **kw):
         return 0
     print(f"NOT-FOUND {phrase}", file=sys.stderr)
     return 3

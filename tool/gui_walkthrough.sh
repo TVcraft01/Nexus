@@ -43,6 +43,12 @@
 #                                           # requester-only run against a
 #                                           # server on another box; see
 #                                           # docs/DEMO.md "Two machines"
+#   tool/gui_walkthrough.sh --peer-loopback # one-machine smoke of that same
+#                                           # requester-only pair path: launch
+#                                           # a local server, then pair the
+#                                           # requester to 127.0.0.2 by typing
+#                                           # code + address + port. Proves the
+#                                           # code path, NOT a real LAN run.
 #
 # --negative reuses the same build, launch, pair and seam; only the fetch step
 # differs, so it never disturbs the default happy path. --peer-host switches
@@ -74,12 +80,14 @@ BUILD=1
 KILL_ORPHANS=0
 NEGATIVE=0
 REMOTE=0
+LOOPBACK=0
 PEER_HOST=""; PEER_PORT=""; PEER_CODE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-build)     BUILD=0; shift ;;
     --kill-orphans) KILL_ORPHANS=1; shift ;;
     --negative)     NEGATIVE=1; shift ;;
+    --peer-loopback) LOOPBACK=1; shift ;;
     --peer-host)    [ $# -ge 2 ] || { echo "--peer-host needs an address" >&2; exit 2; }; PEER_HOST="$2"; shift 2 ;;
     --peer-port)    [ $# -ge 2 ] || { echo "--peer-port needs a number" >&2; exit 2; };  PEER_PORT="$2"; shift 2 ;;
     --peer-code)    [ $# -ge 2 ] || { echo "--peer-code needs a code" >&2; exit 2; };    PEER_CODE="$2"; shift 2 ;;
@@ -107,6 +115,12 @@ if [ -n "$PEER_HOST$PEER_PORT$PEER_CODE" ]; then
     *) echo "--peer-code must look like XXXX-XXXX" >&2; exit 2 ;;
   esac
   REMOTE=1
+fi
+
+# A loopback smoke launches its own server, so it takes no peer flags; a real
+# requester-only run takes all three. Refuse a mix rather than guess.
+if [ "$LOOPBACK" = 1 ] && [ -n "$PEER_HOST$PEER_PORT$PEER_CODE" ]; then
+  echo "--peer-loopback runs its own server; drop the --peer-* flags" >&2; exit 2
 fi
 
 UI=tool/ui_driver.py
@@ -210,15 +224,6 @@ geom() {
 
 focus() { ui focus "$1" >/dev/null 2>&1 || true; }
 
-# Delete whatever a focused field already holds. The pairing sheet's Port
-# field arrives prefilled with THIS device's port, and the app never selects
-# it for us; a port is at most five digits, so a fixed BackSpace sweep clears
-# it before the peer's is typed.
-clear_field() {
-  local n="${1:-10}" i
-  for (( i = 0; i < n; i++ )); do ui key BackSpace >/dev/null 2>&1 || true; done
-}
-
 # Wait for `phrase` to appear on screen in window `pid`, bounded by
 # STEP_TIMEOUT.
 wait_text() { # pid phrase [filters...]
@@ -231,9 +236,10 @@ wait_text() { # pid phrase [filters...]
 # that is present but not yet painted — the pairing sheet's `Code` field just
 # after the Pair click, and the rail's `Devices` destination just after a slow
 # launch, are the observed cases — so a bare click is a race. Every rail and
-# sheet tap goes through here: wait for the phrase, click it, and retry up to N
-# times, all within the step's own timeout.
-CLICK_ATTEMPTS="${NEXUS_CLICK_ATTEMPTS:-3}"
+# sheet tap goes through here: wait for the phrase to be read on two
+# consecutive polls (a single hit can catch it mid-paint), click it, and retry
+# up to N times, all within the step's own timeout.
+CLICK_ATTEMPTS="${NEXUS_CLICK_ATTEMPTS:-5}"
 click_text_wait() { # pid phrase [filters...]
   local pid="$1" phrase="$2"; shift 2
   local deadline=$(( $(date +%s) + STEP_TIMEOUT ))
@@ -244,7 +250,7 @@ click_text_wait() { # pid phrase [filters...]
     # Split what is left across the attempts that remain.
     per=$(( left / (CLICK_ATTEMPTS - attempt + 1) ))
     [ "$per" -ge 1 ] || per=1
-    if ui wait-text "$phrase" --pid "$pid" --timeout "$per" "$@" >/dev/null 2>&1 \
+    if ui wait-text "$phrase" --pid "$pid" --timeout "$per" --reads 2 "$@" >/dev/null 2>&1 \
        && ui click-text "$phrase" --pid "$pid" "$@" >/dev/null 2>&1; then
       return 0
     fi
@@ -410,6 +416,21 @@ else
   say "pairing code $CODE"
 fi
 
+# A loopback smoke drives the requester-only pair path against a server this
+# same run launched. It reaches it on the 127.0.0.0/8 alias 127.0.0.2 — a
+# different address from discovery's 127.0.0.1 — so the manual typed-address
+# path is what actually runs. The server's port comes from its own log and its
+# code from its own window, exactly as a person would read them. This proves
+# the requester-only code path on one machine; it is NOT a real LAN test.
+if [ "$LOOPBACK" = 1 ]; then
+  PEER_HOST=127.0.0.2
+  PEER_CODE="$CODE"
+  wait_log "$WORK/server.log" 'mesh: listening on [0-9.]+:[0-9]+' "the server's mesh port"
+  PEER_PORT=$(grep -oE 'mesh: listening on [0-9.]+:[0-9]+' "$WORK/server.log" | tail -1 | sed 's/.*://')
+  [ -n "$PEER_PORT" ] || fail "could not read the server's mesh port from $WORK/server.log"
+  say "  loopback smoke: requester pairs to $PEER_HOST:$PEER_PORT by typing code + address + port"
+fi
+
 # --- the requester enters it ------------------------------------------------
 # Pair with the device discovery already found: that row's Pair button
 # prefills the address and port, so the code is the only thing left to type.
@@ -431,8 +452,11 @@ pair_remote() {
   ui type "$PEER_CODE" || fail "could not type the peer's pairing code"
   click_text_wait "$RPID" Address --dy 22
   ui type "$PEER_HOST" || fail "could not type the peer's address"
-  click_text_wait "$RPID" Port --dy 22
-  clear_field 10   # the field arrives holding THIS device's port
+  # The Port field is the address field's next sibling. Its own label sits
+  # inside the empty field (no hint floats it), so clicking the label does not
+  # reliably land in the input; move focus there from the address field instead
+  # of guessing at the label's position.
+  ui key Tab || fail "could not move focus to the port field"
   ui type "$PEER_PORT" || fail "could not type the peer's port"
 }
 
@@ -441,7 +465,7 @@ focus "$RPID"
 click_text_wait "$RPID" Devices --x-max 120
 click_text_wait "$RPID" "Add device"
 click_text_wait "$RPID" "More ways to connect"
-if [ "$REMOTE" = 1 ]; then pair_remote; else pair_local; fi
+if [ "$REMOTE" = 1 ] || [ "$LOOPBACK" = 1 ]; then pair_remote; else pair_local; fi
 # Every field in the sheet submits the same form on Enter.
 ui key Return || fail "could not submit the pairing"
 
@@ -477,13 +501,14 @@ ask_for() { # name
   ui key Return                  || fail "could not send the request"
 }
 
-# The composer is the page's last row. Wait for its own placeholder before
-# clicking — the page is still settling right after the rail switch, so a
-# single click races the transition. If OCR cannot read the dim hint at all,
-# the last row of the window is where the field always sits.
+# The composer is the page's last row. Wait for its own placeholder on two
+# consecutive polls before clicking — the page is still settling right after
+# the rail switch, so a single read (or a single click) races the transition.
+# If OCR cannot read the dim hint at all, the last row of the window is where
+# the field always sits.
 click_composer() {
   local x y w h
-  if ui wait-text "Ask anything" --pid "$RPID" --y-min 700 --timeout "$STEP_TIMEOUT" >/dev/null 2>&1 \
+  if ui wait-text "Ask anything" --pid "$RPID" --y-min 700 --timeout "$STEP_TIMEOUT" --reads 2 >/dev/null 2>&1 \
      && ui click-text "Ask anything" --pid "$RPID" --y-min 700 >/dev/null 2>&1; then
     return 0
   fi

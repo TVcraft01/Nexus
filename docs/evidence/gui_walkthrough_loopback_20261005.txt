@@ -1,0 +1,42 @@
+Nexus requester-only walkthrough — loopback-alias smoke evidence
+================================================================
+
+What: tool/gui_walkthrough.sh --peer-loopback drives the REQUESTER-ONLY pair
+path on one machine. It launches a local server under the run's own directory,
+reads that server's pairing code from its window and its mesh port from its
+log, then drives the requester through the sheet's manual "Enter a code" tab
+(Devices -> Add device -> More ways to connect -> Enter a code from the other
+device), typing the code, the address and the port. The requester reaches the
+server on the loopback alias 127.0.0.2 — a different address from discovery's
+127.0.0.1 — so it is the typed-address path that actually runs.
+
+This proves the requester-only CODE PATH (the manual pairing flow plus the
+fetch and sha256 verify) works end to end. It is NOT a real LAN test: the peer
+is a second process on the same machine over loopback, not a second host. A
+two-box run against a physical machine on the LAN remains unexercised.
+
+Where: Omarchy (Arch-based, Hyprland 0.56.2, Wayland), Flutter 3.47.5 /
+Dart 3.13.4. Run dir: /tmp/nexus_gui/20261005-022323. The server bound mesh
+port 34175; the requester paired to 127.0.0.2:34175 with the server's own code.
+
+Command: ./tool/gui_walkthrough.sh --no-build --peer-loopback
+
+== result ==
+PASS — every file landed byte-identical in /tmp/nexus_gui/20261005-022323/downloads
+  OK  report.pdf  4096 bytes  sha256 4e441a3533bb2c10cd5649981d395744213e09a336746b5a3458fee4057205ec
+  OK  big.bin  30000000 bytes  sha256 cc9a93186f5f1cd340275b2778ed7bde4901d335bdbfaf3c49fa7c6b4003111a
+
+The fetched bytes are the served fixtures' deterministic sha256 (from
+$WORK/served), not any decoy — the address typed was 127.0.0.2 and the port
+34175, both read from the local server.
+
+Pairing, from the run's own logs:
+
+  $ grep -h 'pairWith -> ok' /tmp/nexus_gui/20261005-022323/requester.log
+  NEXUS mesh: pairWith -> ok
+
+  $ grep -h 'code matched' /tmp/nexus_gui/20261005-022323/server.log
+  NEXUS mesh: pair-request <- r7x6c2s85cc8yug71tdybylt0z33d6by (code matched)
+
+This run is the exercised evidence for the requester-only pair path. It does
+not stand in for a real two-machine LAN run.
