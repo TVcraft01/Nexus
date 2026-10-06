@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../core/identity.dart';
-import 'multicast_lock.dart';
 
 /// A device seen on the local network via [DiscoveryService].
 class DiscoveredDevice {
@@ -164,10 +163,10 @@ class DiscoveryService {
     _started = true;
 
     // Android's Wi-Fi firmware filters multicast frames unless the app holds
-    // a WifiManager.MulticastLock — joining the group is not enough on its
-    // own. Desktop platforms refuse the call, which is fine: the lock is an
-    // Android-only requirement.
-    await MulticastLock.acquire();
+    // a WifiManager.MulticastLock. That lock is now owned by the mesh's
+    // foreground service (NexusSyncService), which MeshService.start() starts
+    // alongside this one, so discovery no longer takes it here — and it no
+    // longer goes deaf when the activity dies.
 
     await _bind();
     _broadcastTimer = Timer.periodic(const Duration(seconds: 3), (_) => unawaited(_announce()));
@@ -353,6 +352,7 @@ class DiscoveryService {
     _reboundTimer = null;
     _socket?.close();
     _socket = null;
-    await MulticastLock.release();
+    // The multicast lock is released by the foreground service when the mesh
+    // stops, not here (see start()).
   }
 }

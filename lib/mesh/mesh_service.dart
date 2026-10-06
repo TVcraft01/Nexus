@@ -27,6 +27,7 @@ import '../core/store.dart';
 import '../core/version.dart';
 import 'discovery.dart';
 import 'serial_bridge.dart';
+import 'sync_service.dart';
 
 /// A device that has been paired with us. "Paired" means we share a secret
 /// (the pairing code) and can talk to each other encrypted.
@@ -936,6 +937,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
     store.pruneStaleNeighbors(); // ghosts from an earlier session must not come back
     _loadPaired();
     await _bindServer();
+    // Keep the mesh usable with the window closed: Android runs it inside a
+    // foreground service that owns the multicast lock and the notification.
+    // A no-op off Android (and harmless if the platform refuses).
+    await SyncService.start();
     _startDiscovery();
     _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) => _heartbeat());
     _clipboardTimer = Timer.periodic(
@@ -3788,6 +3793,9 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
     _neighborSaveTimer?.cancel();
     _neighborSaveTimer = null;
     await _discovery?.stop();
+    // With the mesh gone the foreground service has nothing left to keep
+    // alive; stopping it releases the multicast lock and the notification.
+    await SyncService.stop();
     _server?.close();
     for (final socket in _outbound.values.toList()) {
       try {

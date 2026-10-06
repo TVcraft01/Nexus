@@ -15,7 +15,6 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
-import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -61,10 +60,11 @@ class MainActivity : FlutterActivity() {
     // Android's Wi-Fi firmware filters multicast and broadcast frames before
     // they ever reach the app, so Nexus can only *hear* a nearby device while
     // it holds a WifiManager.MulticastLock (CHANGE_WIFI_MULTICAST_STATE in
-    // the manifest is the permission to take it). The mesh is meant to be
-    // always-on, so the lock is held for the activity's life and released in
-    // onDestroy. Answering false when the platform refuses lets Dart report
-    // the failure instead of showing an empty Nearby list.
+    // the manifest is the permission to take it). That lock now lives in the
+    // mesh's foreground service (NexusSyncService), not the activity: held
+    // here it died in onDestroy, so backgrounded discovery went deaf the
+    // moment the user left the app. NETWORK_CHANNEL below only starts and
+    // stops that service.
 
     // "call mom" from the assistant: resolving a contact needs READ_CONTACTS
     // and placing the call needs CALL_PHONE — both requested at runtime on
@@ -127,6 +127,12 @@ class MainActivity : FlutterActivity() {
     private var pendingCalendarResult: MethodChannel.Result? = null
     private var pendingCalendarWhen: String? = null
 
+    // The mesh's foreground service posts an ongoing notification. Android 13+
+    // hides it until POST_NOTIFICATIONS is granted, so the "always connected"
+    // notice the service promises is silently missing. This tags that ask;
+    // no result is held, because the service runs either way.
+    private val REQUEST_NOTIFICATION_PERMISSION = 42608
+
     // In-app music: "play hotline bling" streams Deezer's 30-second preview
     // right inside Nexus (free API, no key). One player, owned by the
     // assistant; released when the track ends, a new one starts, or the
@@ -150,36 +156,7 @@ class MainActivity : FlutterActivity() {
     private var pendingTtsText: String? = null
     private var pendingTtsResult: MethodChannel.Result? = null
 
-    /// Takes the Wi-Fi multicast lock once. Returns whether it is held, so
-    /// Dart can tell "listening for nearby devices" apart from "cannot hear
-    /// anyone on this device" instead of showing an empty list either way.
-    private fun acquireMulticastLock(): Boolean {
-        if (multicastLock?.isHeld == true) return true
-        return try {
-            val wifi = applicationContext.getSystemService(WifiManager::class.java)
-            val lock = wifi.createMulticastLock("nexus-discovery")
-            lock.setReferenceCounted(true)
-            lock.acquire()
-            multicastLock = lock
-            Log.i(TAG, "multicast lock acquired — nearby discovery can receive")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "multicast lock refused", e)
-            false
-        }
-    }
-
-    private fun releaseMulticastLock() {
-        try {
-            if (multicastLock?.isHeld == true) multicastLock?.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "multicast lock release failed: ${e.message}")
-        }
-        multicastLock = null
-    }
-
     override fun onDestroy() {
-        releaseMulticastLock()
         // The in-app preview must die with the activity — otherwise the
         // audio keeps playing after Nexus is closed, and reopening stacks a
         // second player over the ghost.
@@ -197,8 +174,6 @@ class MainActivity : FlutterActivity() {
     }
 
     private lateinit var usbSerial: UsbSerialBridge
-
-    private var multicastLock: WifiManager.MulticastLock? = null
 
     // Forwards one-time nexus://pair provisioning intents to Dart while the
     // app is already running, so automatic cable pairing completes on warm
@@ -279,15 +254,23 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-        // Nearby discovery: the Wi-Fi multicast lock. Without it Android
-        // silently drops the announcements other Nexus devices broadcast, so
-        // the app looks connected and hears nothing.
+        // The mesh's background life: start/stop NexusSyncService, which keeps
+        // the process alive behind a persistent notification and owns the Wi-Fi
+        // multicast lock — without it Android silently drops the announcements
+        // other Nexus devices broadcast, so the app looks connected and hears
+        // nothing. Dart drives this from MeshService.start()/stop().
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NETWORK_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "acquireMulticast" -> result.success(acquireMulticastLock())
-                    "releaseMulticast" -> {
-                        releaseMulticastLock()
+                    "startSyncService" -> {
+                        NexusSyncService.start(this)
+                        // Android 13+ hides the service's ongoing notification
+                        // until POST_NOTIFICATIONS is granted; ask so it shows.
+                        askToShowSyncNotification()
+                        result.success(true)
+                    }
+                    "stopSyncService" -> {
+                        NexusSyncService.stop(this)
                         result.success(true)
                     }
                     else -> result.notImplemented()
@@ -442,6 +425,24 @@ class MainActivity : FlutterActivity() {
         return if (launchInstaller(path)) "launched" else "error"
     }
 
+    /// The foreground sync service runs whether or not notifications are
+    /// allowed, but Android 13+ hides its ongoing notification until
+    /// POST_NOTIFICATIONS is granted — the one thing the user asked to see.
+    /// Ask once when the service starts; a denial simply leaves the notice
+    /// hidden and the service running. No-op below Android 13, where the
+    /// permission does not exist.
+    private fun askToShowSyncNotification() {
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!needsNotificationPermission(Build.VERSION.SDK_INT, granted)) return
+        requestPermissions(
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            REQUEST_NOTIFICATION_PERMISSION,
+        )
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -550,6 +551,17 @@ class MainActivity : FlutterActivity() {
                 return
             }
             finishCalendarEvents(result, whenAsked ?: "today")
+        }
+        if (requestCode == REQUEST_NOTIFICATION_PERMISSION) {
+            // The service put its ongoing notice up before this answer, while
+            // Android 13+ was still hiding it. Re-post now that it is allowed
+            // — and only if the service is actually running, so answering a
+            // stale dialog can never start a service the mesh no longer wants.
+            if (granted(Manifest.permission.POST_NOTIFICATIONS) &&
+                NexusSyncService.running
+            ) {
+                NexusSyncService.start(this)
+            }
         }
     }
 
@@ -1890,3 +1902,9 @@ fun rankedContactMatches(candidates: List<String>, query: String, limit: Int = 3
         .take(limit)
         .toList()
 }
+
+/// Whether Android is hiding our notifications until POST_NOTIFICATIONS is
+/// granted: Android 13+ only, and only while it has not been granted yet.
+/// Pure, so the boundary is pinned by a JVM test without a device.
+fun needsNotificationPermission(sdkInt: Int, alreadyGranted: Boolean): Boolean =
+    sdkInt >= Build.VERSION_CODES.TIRAMISU && !alreadyGranted
