@@ -135,15 +135,29 @@ class _AssistantViewState extends State<AssistantView> {
 
   /// Runs actions on this platform (apps, calls, texts, media…); the view
   /// only decides when to run them.
-  late final DeviceExecutor _executor =
-      widget.executor ??
-      DeviceExecutor(
-        fileMesh: widget.mesh,
-        // Android only, and only while "All files access" is off: a fetch
-        // stops to offer the toggle instead of silently saving somewhere the
-        // Files app hides. Declining is fine — the fetch runs either way.
-        fileAccessPrompt: _askForFileAccess,
-      );
+  late final DeviceExecutor _executor = _executorWithProgress();
+
+  /// The executor plus this view as its live-progress reporter — attached to
+  /// an injected executor too, so the wiring a widget test drives is exactly
+  /// the wiring the app uses.
+  DeviceExecutor _executorWithProgress() {
+    final executor =
+        widget.executor ??
+        DeviceExecutor(
+          fileMesh: widget.mesh,
+          // Android only, and only while "All files access" is off: a fetch
+          // stops to offer the toggle instead of silently saving somewhere the
+          // Files app hides. Declining is fine — the fetch runs either way.
+          fileAccessPrompt: _askForFileAccess,
+        );
+    executor.fileFetchProgress = _noteFetchProgress;
+    return executor;
+  }
+
+  /// The live line for an in-flight fetch, or null when none is running. It
+  /// replaces the generic "working" chip while a pull is actually moving
+  /// bytes, so a big file shows it is arriving instead of looking stuck.
+  String? _fetchProgress;
 
   /// The user's profile: names and first-run state, persisted per device.
   final ProfileStore _profile = SharedPrefsProfileStore();
@@ -182,6 +196,14 @@ class _AssistantViewState extends State<AssistantView> {
     if (openSettings == true) {
       await MeshService.openAllFilesAccessSettings();
     }
+  }
+
+  /// Records one progress report from a running fetch. The executor hands
+  /// over a finished line (see [FileFetchWords.progress]) so the view stays a
+  /// renderer: nothing here knows about chunks, bytes or the mesh.
+  void _noteFetchProgress(String label) {
+    if (!mounted || label == _fetchProgress) return;
+    setState(() => _fetchProgress = label);
   }
 
   @override
@@ -698,8 +720,14 @@ class _AssistantViewState extends State<AssistantView> {
     } finally {
       // In `finally` on purpose: the core reads `_sending` as "an action is
       // being carried out", so when the await ends — however it ends — the
-      // claim ends with it.
-      if (mounted) setState(() => _sending = false);
+      // claim ends with it. The live line goes with it: a finished fetch must
+      // not leave its last percentage standing in for the result.
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _fetchProgress = null;
+        });
+      }
     }
   }
 
@@ -2239,7 +2267,7 @@ class _AssistantViewState extends State<AssistantView> {
         children: [
           if (isLast) ...[
             entry.pending
-                ? _workingChip()
+                ? _workingChip(_fetchProgress)
                 : _statusChip(result.status, result.message),
             const SizedBox(height: 12),
           ],
@@ -2415,7 +2443,10 @@ class _AssistantViewState extends State<AssistantView> {
   /// result to report — only the fact that work is in flight. The word comes
   /// from [NexusCoreState.working] so the card and the core say the same thing
   /// at the same moment, and no chip can claim a result before one exists.
-  Widget _workingChip() {
+  /// The chip a still-running action wears. [label] is the live line a fetch
+  /// reports while it moves bytes; without one it says the core's own word
+  /// for work in flight, which is what every other action says.
+  Widget _workingChip([String? label]) {
     return Row(
       children: [
         Container(
@@ -2425,7 +2456,7 @@ class _AssistantViewState extends State<AssistantView> {
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(
-            NexusCoreState.working.label,
+            label ?? NexusCoreState.working.label,
             style: const TextStyle(
               color: NexusColors.accent,
               fontSize: 12,

@@ -46,10 +46,16 @@ abstract class FileFetchMesh {
 
   /// Streams [remotePath] on [peerId] into [savePath]. Returns the path it
   /// was saved to, or null when the transfer or the write failed.
+  ///
+  /// [onProgress] is called as chunks land, with the bytes so far and the
+  /// peer's total (0 when it never said) — enough for the caller to show a
+  /// live line during a long pull without knowing anything about the
+  /// transport.
   Future<String?> fetchFileFromDevice(
     String peerId,
     String remotePath, {
     required String savePath,
+    void Function(int received, int total)? onProgress,
   });
 }
 
@@ -76,6 +82,7 @@ Future<FileFetchResult> fetchFile({
   required String peerName,
   required String filename,
   required String savePath,
+  void Function(int received, int total)? onProgress,
 }) async {
   final wanted = filename.trim().toLowerCase();
   final queue = <(String dir, int depth)>[('', 0)];
@@ -113,6 +120,7 @@ Future<FileFetchResult> fetchFile({
     peerId,
     found.path,
     savePath: savePath,
+    onProgress: onProgress,
   );
   if (saved == null) {
     // The file was found, so the failure is either the transfer or the local

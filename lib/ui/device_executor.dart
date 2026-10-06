@@ -16,6 +16,7 @@ import 'package:url_launcher/url_launcher.dart'
     show canLaunchUrl, launchUrl, LaunchMode;
 
 import '../core/agent_contract.dart';
+import '../core/answers.dart';
 import '../core/app_defaults.dart';
 import '../core/command_interpreter.dart';
 import '../core/profile.dart';
@@ -61,6 +62,11 @@ class DeviceExecutor {
        _profile = profileStore ?? SharedPrefsProfileStore();
 
   final FileFetchMesh? _fileMesh;
+
+  /// Live progress for a fetch, as a ready-to-show line — the view attaches
+  /// this so the executor itself never touches the UI. Null means nobody is
+  /// watching (tests, headless runs) and the pull reports nothing.
+  void Function(String label)? fileFetchProgress;
 
   /// The folder fetched files land in. Null in the product — the platform's
   /// Downloads folder is resolved at run time; tests inject a temp dir so
@@ -1226,12 +1232,18 @@ class DeviceExecutor {
     // same helper, the Files tab download uses.
     final root = await _downloadRoot(override: _fileDownloadsDir);
     final savePath = await downloadsFilePath(filename, inDirectory: root.path);
+    final device = peerName.isEmpty ? 'that device' : peerName;
     final result = await fetchFile(
       mesh: mesh,
       peerId: peerId,
-      peerName: peerName.isEmpty ? 'that device' : peerName,
+      peerName: device,
       filename: filename,
       savePath: savePath,
+      // A long pull says how far along it is while it runs; the words are the
+      // fetch vocabulary's, so the live line reads like the rest of the flow.
+      onProgress: (received, total) => fileFetchProgress?.call(
+        FileFetchWords.progress(filename, device, received, total),
+      ),
     );
     // Android without "All files access" saves into the app's own folder,
     // which the Files app hides. The result already names the path; say why it

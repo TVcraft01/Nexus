@@ -138,13 +138,21 @@ class _FakeFileMesh implements FileFetchMesh {
   Future<List<RemoteFile>?> filesOnDevice(String peerId, String dir) async =>
       entries[dir] ?? const [];
 
+  /// The (received, total) pairs a pull reports, so the executor's live
+  /// progress can be driven with real byte counts.
+  List<(int, int)> reports = const [];
+
   @override
   Future<String?> fetchFileFromDevice(
     String peerId,
     String remotePath, {
     required String savePath,
+    void Function(int received, int total)? onProgress,
   }) async {
     onFetch?.call(remotePath);
+    for (final (received, total) in reports) {
+      onProgress?.call(received, total);
+    }
     await File(savePath).writeAsBytes(bytes[remotePath] ?? const <int>[]);
     return savePath;
   }
@@ -1220,6 +1228,57 @@ void main() {
       );
       expect(asked, 0);
       expect(out.ok, isTrue);
+    });
+
+    test('a running fetch reports its bytes as a line the view can show',
+        () async {
+      final tmp = await Directory.systemTemp.createTemp('exec_progress');
+      addTearDown(() async {
+        if (tmp.existsSync()) await tmp.delete(recursive: true);
+      });
+      final mesh = _FakeFileMesh(
+        {
+          '': [const RemoteFile(name: 'big.bin', path: '/pc/big.bin')],
+        },
+        {
+          '/pc/big.bin': const [4],
+        },
+      )..reports = const [(0, 31457280), (15728640, 31457280), (31457280, 31457280)];
+      final exec = DeviceExecutor(
+        deviceBackend: device,
+        phoneBackend: phone,
+        fileMesh: mesh,
+        fileDownloadsDir: tmp.path,
+      );
+      final lines = <String>[];
+      exec.fileFetchProgress = lines.add;
+
+      final out = await exec.run(
+        req(AgentActions.fileFetch, {
+          'peerId': 'pc1',
+          'peerName': 'My PC',
+          'filename': 'big.bin',
+        }),
+      );
+
+      expect(out.ok, isTrue);
+      // The label is the fetch vocabulary's, named after the device the user
+      // asked — not a bare percentage with no file attached to it.
+      expect(lines, [
+        'Getting big.bin from My PC… 0% (0 B of 30 MB)',
+        'Getting big.bin from My PC… 50% (15 MB of 30 MB)',
+        'Getting big.bin from My PC… 100% (30 MB of 30 MB)',
+      ]);
+      // Nobody watching means no work: the next fetch attaches nothing and
+      // still lands its bytes.
+      exec.fileFetchProgress = null;
+      expect((await exec.run(
+        req(AgentActions.fileFetch, {
+          'peerId': 'pc1',
+          'peerName': 'My PC',
+          'filename': 'big.bin',
+        }),
+      )).ok, isTrue);
     });
   });
 }

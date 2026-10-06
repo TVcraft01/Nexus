@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
+import 'package:nexus/core/answers.dart';
 import 'package:nexus/core/command_service.dart';
 import 'package:nexus/core/file_fetch.dart';
 
@@ -17,13 +18,17 @@ import 'package:nexus/core/file_fetch.dart';
 /// bytes to the requested save path — the same effect the real pull has, minus
 /// the socket.
 class _FakeMesh implements FileFetchMesh {
-  _FakeMesh({this.tree = const {}, this.bytes = const {}});
+  _FakeMesh({this.tree = const {}, this.bytes = const {}, this.reports = const []});
 
   /// Directory path -> its entries. The root is the empty-string key.
   final Map<String, List<RemoteFile>> tree;
 
   /// Remote file path -> its bytes.
   final Map<String, List<int>> bytes;
+
+  /// The (received, total) pairs the pull reports before it finishes, so a
+  /// test can script a transfer that is halfway through.
+  final List<(int, int)> reports;
 
   bool reachable = true;
   bool pullFails = false;
@@ -43,9 +48,13 @@ class _FakeMesh implements FileFetchMesh {
     String peerId,
     String remotePath, {
     required String savePath,
+    void Function(int received, int total)? onProgress,
   }) async {
     if (pullFails) return null;
     pulledFrom = remotePath;
+    for (final (received, total) in reports) {
+      onProgress?.call(received, total);
+    }
     await File(savePath).writeAsBytes(bytes[remotePath] ?? const <int>[]);
     return savePath;
   }
@@ -117,6 +126,49 @@ void main() {
 
       expect(result.ok, isTrue);
       expect(mesh.pulledFrom, '/home/u/docs/report.pdf');
+    });
+
+    test('a pull reports its bytes while it runs, so a long fetch can say so', () async {
+      final mesh = _FakeMesh(
+        tree: {
+          '': [const RemoteFile(name: 'report.pdf', path: '/home/u/report.pdf')],
+        },
+        bytes: {
+          '/home/u/report.pdf': const [1, 2, 3],
+        },
+        // A 4 KB transfer, reported the way the mesh reports one: as it goes.
+        reports: const [(0, 4096), (2048, 4096), (4096, 4096)],
+      );
+      final seen = <String>[];
+
+      final result = await fetchFile(
+        mesh: mesh,
+        peerId: 'pc1',
+        peerName: 'My PC',
+        filename: 'report.pdf',
+        savePath: save('report.pdf'),
+        onProgress: (received, total) => seen.add(
+          FileFetchWords.progress('report.pdf', 'My PC', received, total),
+        ),
+      );
+
+      expect(result.ok, isTrue);
+      expect(seen, [
+        'Getting report.pdf from My PC… 0% (0 B of 4.0 KB)',
+        'Getting report.pdf from My PC… 50% (2.0 KB of 4.0 KB)',
+        'Getting report.pdf from My PC… 100% (4.0 KB of 4.0 KB)',
+      ]);
+    });
+
+    test('a peer that never said how big the file is gets bytes, not a fake percent', () async {
+      expect(
+        FileFetchWords.progress('report.pdf', 'My PC', 512, 0),
+        'Getting report.pdf from My PC… 512 B',
+      );
+      expect(
+        FileFetchWords.progress('video.mov', 'My PC', 31457280, 62914560),
+        'Getting video.mov from My PC… 50% (30 MB of 60 MB)',
+      );
     });
 
     test('a device with no such file says so', () async {

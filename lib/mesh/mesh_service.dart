@@ -2819,10 +2819,16 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
     String peerId,
     String remotePath, {
     required String savePath,
+    void Function(int received, int total)? onProgress,
   }) async {
     final peer = _paired[peerId];
     if (peer == null) return null;
-    final file = await pullRemoteFile(peer, remotePath, savePath: savePath);
+    final file = await pullRemoteFile(
+      peer,
+      remotePath,
+      savePath: savePath,
+      onProgress: onProgress,
+    );
     return file?.path;
   }
 

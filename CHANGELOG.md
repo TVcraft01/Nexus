@@ -9,6 +9,14 @@ earlier work is not listed. The format follows
 
 ### Added
 
+- **A long download no longer looks stuck.** While the assistant is pulling a
+  file it now says how far along it is — `Getting big.bin from My PC… 50% (15 MB
+  of 30 MB)` — so you can tell a slow transfer from a stalled one. A device that
+  never told Nexus how big the file is gets the bytes received and no invented
+  percentage.
+- **Your phone keeps receiving while the app is in the background.** On Android
+  the mesh now runs inside a foreground service with an ongoing notification, so
+  a request from your PC does not stop the moment you leave Nexus on the phone.
 - **Ask your PC for a file by name.** On a device paired with your PC you can
   type a plain sentence like `get report.pdf from my pc` and the file is sent
   over your own local network and saved to your Downloads folder. Nothing goes
@@ -25,6 +33,13 @@ earlier work is not listed. The format follows
 
 ### Fixed
 
+- **On Android, a fetched file lands where you can actually find it.** Files
+  used to be saved into Nexus's own app folder, which the Files app hides, so a
+  download that worked looked like it had never arrived. They now go to your
+  shared **Downloads** folder, and when Android has not granted Nexus access to
+  it yet the app offers that permission at the moment you fetch something —
+  declining is fine, the file still arrives, and the result tells you where it
+  went.
 - **Typing a pairing code no longer fills in the wrong port.** When you opened
   the pairing sheet and chose "Enter a code" yourself, the Port box used to come
   pre-filled with the port of another device it had noticed nearby, which made
@@ -47,6 +62,9 @@ earlier work is not listed. The format follows
 
 - Only proven on one machine, over a loopback connection. A real two-computer
   LAN run, an Android phone, and Windows or macOS are all still untested.
+- The Android pieces below the fetch itself — the background service, its
+  notification, and the permission offer — are built, packaged, and covered by
+  tests, but none of them has been run on a real phone yet.
 - Each walkthrough run opens two windows (a server and a requester); the bulk
   validation loop opens sixteen. The default command opens two.
 

@@ -809,6 +809,21 @@ void main() {
       expect(File(bigSaved!.path).lengthSync(), 700 * 1024);
       expect(lastProgress, 1.0);
 
+      // The fetch seam — what "get <file> from my pc" actually runs on —
+      // carries that same progress, so the assistant can show a pull moving
+      // instead of a chip that just says work is in flight.
+      final seamReports = <(int, int)>[];
+      final seamSaved = await meshB.fetchFileFromDevice(
+        peerA.id,
+        bigEntry.path,
+        savePath: '${tmp.path}/dl_seam.bin',
+        onProgress: (received, total) => seamReports.add((received, total)),
+      );
+      expect(seamSaved, isNotNull, reason: meshB.lastFileError);
+      expect(File(seamSaved!).lengthSync(), 700 * 1024);
+      expect(seamReports, isNotEmpty);
+      expect(seamReports.last, (700 * 1024, 700 * 1024));
+
       // A zero-byte file still completes with an empty result.
       final empty = rootEntries.firstWhere((e) => e.name == 'empty.bin');
       final emptySaved = await meshB.pullRemoteFile(

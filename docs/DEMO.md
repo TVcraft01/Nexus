@@ -235,6 +235,19 @@ Or build once and install the APK:
 
 ```bash
 flutter build apk --release
+# → build/app/outputs/flutter-apk/app-release.apk
+#   dev.nexus.nexus (matches the installed app, so an over-install keeps your
+#   pairing). The release build is signed by android/app/nexus-release.jks.
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+```
+
+The build needs a JDK on `PATH` (`JAVA_HOME`) and `ANDROID_HOME` pointing at an
+SDK with platform 36 and build-tools 36; `flutter doctor` says which piece is
+missing. To check what actually landed in the package:
+
+```bash
+aapt2 dump badging build/app/outputs/flutter-apk/app-release.apk      # id, version, SDKs
+aapt2 dump permissions build/app/outputs/flutter-apk/app-release.apk  # what it may ask for
 ```
 
 ---

@@ -900,6 +900,38 @@ abstract final class FileFetchWords {
   static String fetching(String filename, String device) =>
       'Getting $filename from $device…';
 
+  /// The live line while the pull is in flight: the same sentence as
+  /// [fetching], with how much has arrived, so a large file never looks
+  /// stuck. A peer that never reported a total gets the bytes alone rather
+  /// than a percentage nobody measured.
+  static String progress(
+    String filename,
+    String device,
+    int received,
+    int total,
+  ) {
+    final got = _fetchSize(received);
+    if (total <= 0) return '${fetching(filename, device)} $got';
+    final percent = (received * 100 / total).floor().clamp(0, 100);
+    return '${fetching(filename, device)} $percent% ($got of ${_fetchSize(total)})';
+  }
+
+  /// Bytes as a person reads them: no decimal once the number is big enough
+  /// that it would be noise — "1.4 MB" and "30 MB", never "30.0 MB".
+  static String _fetchSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    var value = bytes / 1024;
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit++;
+    }
+    return value >= 10
+        ? '${value.round()} ${units[unit]}'
+        : '${value.toStringAsFixed(1)} ${units[unit]}';
+  }
+
   /// The success line, naming where it landed so the user can find it.
   static String saved(String filename, String device, String path) =>
       'Saved $filename from $device to $path.';
