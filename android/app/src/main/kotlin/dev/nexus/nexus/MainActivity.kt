@@ -1882,6 +1882,12 @@ fun contactMatchKey(s: String): String {
 /// The closest matches for [query], best first (same tiers as above),
 /// deduplicated and capped at [limit] — what the assistant offers when the
 /// best guess is wrong or missing.
+///
+/// These are *offers*, not dials. The loose tiers match what the user typed at
+/// a word start — "tvcraft" offers "Alicia TVcraft01 work", and "tom" offers
+/// the longer name "Tommy" — while a substring buried inside a word never
+/// matches: "tom" never offers "Atom". Only [contactMatchKey]-exact wording is
+/// dialled without asking (see lookupContacts).
 fun rankedContactMatches(candidates: List<String>, query: String, limit: Int = 3): List<String> {
     val q = query.trim()
     if (q.isEmpty() || limit <= 0) return emptyList()
@@ -1890,6 +1896,8 @@ fun rankedContactMatches(candidates: List<String>, query: String, limit: Int = 3
         candidates.asSequence().filter { it == q },
         candidates.asSequence().filter { it.lowercase() == lower },
         candidates.asSequence().filter { contactMatchKey(it) == lower },
+        // A longer name starting with the whole query ("tom" -> "Tommy"):
+        // offered so the user can confirm, never dialled on its own.
         candidates.asSequence().filter { contactMatchKey(it).startsWith(lower) },
         candidates.asSequence().filter {
             // Word-boundary contains: "call tom" must offer Tom, never Atom —

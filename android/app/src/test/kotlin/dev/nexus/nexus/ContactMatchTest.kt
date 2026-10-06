@@ -76,8 +76,35 @@ class ContactMatchTest {
 
   @Test
   fun `substring inside another word never matches - tom vs atom`() {
-    assertNull(pickBestContactMatch(listOf("Atom", "Tommy"), "tom"))
+    // "tom" buried inside a word is not a word the user said: no dial, no
+    // offer, no candidate. (Was previously asserted against a candidate list
+    // that also held "Tommy", whose *word-start* prefix legitimately offers;
+    // see the tommy test below.)
+    assertNull(pickBestContactMatch(listOf("Atom", "Phantom"), "tom"))
     assertEquals("Tom", pickBestContactMatch(listOf("Atom", "Tom", "Tommy"), "tom"))
+  }
+
+  @Test
+  fun `mid-word substring never ranks even as an offer`() {
+    // Guards the failure mode this tier exists for: if any loose tier ever
+    // loosens again into a plain `contains`, "tom" starts offering the name
+    // "Atom" and this goes red.
+    assertTrue(rankedContactMatches(listOf("Atom", "Phantom", "Atomic"), "tom", limit = 5).isEmpty())
+    assertTrue(rankedContactMatches(listOf("Phantom"), "tom", limit = 5).isEmpty())
+    // Also mid-word deep inside a longer name, where a plain `contains` would
+    // happily match: "way" lives in "Highway Auto" but is not a word there.
+    assertTrue(rankedContactMatches(listOf("Highway Auto"), "way", limit = 5).isEmpty())
+    assertEquals("Wayne's Auto", pickBestContactMatch(listOf("Highway Auto", "Wayne's Auto"), "way"))
+  }
+
+  @Test
+  fun `word-start prefix offers the longer name instead of dialing it - tom vs tommy`() {
+    // The mirror of the tvcraft01 rule: a name that *begins* with the full
+    // query is offered so the assistant can ask "who did you mean?" — it is
+    // not a name the user said, so it must not outrank the exact one.
+    assertEquals("Tommy", pickBestContactMatch(listOf("Atom", "Tommy"), "tom"))
+    assertEquals("Tom", pickBestContactMatch(listOf("Atom", "Tom", "Tommy"), "tom"))
+    assertEquals("Tom", pickBestContactMatch(listOf("Tommy", "Tom"), "tom"))
   }
 
   @Test
