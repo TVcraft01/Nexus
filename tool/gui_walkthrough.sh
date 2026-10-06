@@ -21,6 +21,14 @@
 # invocation, because a background process started here is gone as soon as
 # the invocation returns.
 #
+# One invocation runs the walk ONCE and opens exactly two windows — a server
+# and a requester (a requester-only run opens one). It never repeats, and a
+# retried step re-reads and re-clicks rather than relaunching the app. Bulk
+# validation is therefore "run this command N times", which opens two windows
+# per run — e.g. an eight-run loop opens sixteen. If the screen is opening
+# Nexus over and over, that is a loop calling this script, not this script
+# looping.
+#
 # Two launch modes share everything after pairing. By default the script runs
 # BOTH sides on this machine: a local server whose code it reads, and a
 # requester that discovery finds it by. With --peer-host it becomes a

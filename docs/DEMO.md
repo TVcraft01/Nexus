@@ -16,6 +16,8 @@ No cloud, no accounts, no AI model — the sentence is matched by a local
 rule, the file is served by the peer, and the bytes only ever cross your
 local network.
 
+See [CHANGELOG.md](../CHANGELOG.md) for what changed in each release.
+
 **What you need:** a Linux/Windows machine (the "PC") and an Android phone,
 both on the same Wi-Fi/LAN. Or, as a fallback, two Linux instances on one
 machine (see [One-machine fallback](#one-machine-fallback)).
@@ -57,6 +59,13 @@ assistant, and verifies both saved files by size and sha256 before printing
 ```bash
 ./tool/gui_walkthrough.sh
 ```
+
+One invocation runs the walk **once** and opens exactly two windows (a server
+and a requester; a requester-only run opens one). It does not repeat, and a
+retried step re-reads and re-clicks rather than relaunching the app. Bulk
+validation is therefore opt-in: it means running the command again, and each
+run opens two windows — an eight-run loop opens sixteen. If Nexus keeps
+opening on screen, it is a loop calling this script, not this script looping.
 
 A recorded run is checked in at
 [`docs/evidence/gui_walkthrough_20261004.txt`](evidence/gui_walkthrough_20261004.txt);
@@ -446,7 +455,8 @@ The whole vertical is covered by tests, including the wire path:
   requester-only against a server on another machine, and `--peer-loopback`
   exercises that same requester-only path on one machine (the two-host LAN run
   remains unexercised). Needs a live Wayland/Hyprland session, so it is not the CI
-  check; `tool/rehearsal.sh` is.
+  check; `tool/rehearsal.sh` is. It runs once per invocation and opens two
+  windows; running it repeatedly for bulk validation is opt-in.
 
 Run the suite with:
 
