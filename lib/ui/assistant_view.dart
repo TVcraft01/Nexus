@@ -136,7 +136,14 @@ class _AssistantViewState extends State<AssistantView> {
   /// Runs actions on this platform (apps, calls, texts, media…); the view
   /// only decides when to run them.
   late final DeviceExecutor _executor =
-      widget.executor ?? DeviceExecutor(fileMesh: widget.mesh);
+      widget.executor ??
+      DeviceExecutor(
+        fileMesh: widget.mesh,
+        // Android only, and only while "All files access" is off: a fetch
+        // stops to offer the toggle instead of silently saving somewhere the
+        // Files app hides. Declining is fine — the fetch runs either way.
+        fileAccessPrompt: _askForFileAccess,
+      );
 
   /// The user's profile: names and first-run state, persisted per device.
   final ProfileStore _profile = SharedPrefsProfileStore();
@@ -147,6 +154,35 @@ class _AssistantViewState extends State<AssistantView> {
   final TextEditingController _onboardName = TextEditingController();
   final TextEditingController _onboardAssistant = TextEditingController();
   final Map<String, bool?> _onboardPerms = {}; // action -> granted/denied/null
+
+  /// The in-flow "All files access" ask, shown when a fetch is about to save
+  /// into Nexus's own folder on Android — the one the Files app hides. Either
+  /// answer lets the fetch continue; "Open settings" just jumps to the toggle.
+  Future<void> _askForFileAccess() async {
+    if (!mounted) return;
+    final openSettings = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save to Downloads?'),
+        content: const Text(
+          'Nexus needs file access to save downloads to your Downloads folder.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Open settings'),
+          ),
+        ],
+      ),
+    );
+    if (openSettings == true) {
+      await MeshService.openAllFilesAccessSettings();
+    }
+  }
 
   @override
   void initState() {

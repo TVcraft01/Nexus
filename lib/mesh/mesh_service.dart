@@ -7,9 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart'
     show ChangeNotifier, TargetPlatform, debugPrint, defaultTargetPlatform;
 import 'package:flutter/services.dart'
-    show Clipboard, ClipboardData, MethodChannel;
-import 'package:path_provider/path_provider.dart'
-    show getApplicationDocumentsDirectory, getExternalStorageDirectory;
+    show Clipboard, ClipboardData;
 
 import '../core/agent_contract.dart';
 import '../core/brain.dart';
@@ -24,14 +22,11 @@ import '../core/pair_payload.dart';
 import '../core/protocol.dart';
 import '../core/query_log.dart';
 import '../core/serial_transport.dart';
+import '../core/storage_roots.dart' as storage;
 import '../core/store.dart';
 import '../core/version.dart';
 import 'discovery.dart';
 import 'serial_bridge.dart';
-
-/// Local channel to the Android side (see MainActivity): "All files access"
-/// state and the real shared-storage root, which the mesh serves to peers.
-const _storageChannel = MethodChannel('dev.nexus.nexus/storage');
 
 /// A device that has been paired with us. "Paired" means we share a secret
 /// (the pairing code) and can talk to each other encrypted.
@@ -1800,64 +1795,22 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
   /// the app's own external dir. Tests inject their own root; a non-empty
   /// `NEXUS_SERVED_ROOT` env var overrides the default too, so an unattended
   /// harness can serve a scratch directory instead of the real home.
-  Future<String> _servedRoot() async {
-    if (fileRoot != null) return fileRoot!;
-    final override = Platform.environment['NEXUS_SERVED_ROOT'];
-    if (override != null && override.isNotEmpty) return override;
-    if (Platform.isAndroid) {
-      if (await hasAllFilesAccess()) {
-        final shared = await androidSharedRoot();
-        if (shared != null && shared.isNotEmpty) return shared;
-      }
-      try {
-        final external = await getExternalStorageDirectory();
-        if (external != null) return external.path;
-      } catch (_) {
-        // No external storage (emulator, weird device) — fall back below.
-      }
-      final dir = await getApplicationDocumentsDirectory();
-      return dir.path;
-    }
-    final home = Platform.environment['HOME'];
-    if (home != null && home.isNotEmpty) return home;
-    final profile = Platform.environment['USERPROFILE'];
-    if (profile != null && profile.isNotEmpty) return profile;
-    final dir = await getApplicationDocumentsDirectory();
-    return dir.path;
-  }
+  Future<String> _servedRoot() async =>
+      (await storage.serveRoot(override: fileRoot)).path;
 
   /// On Android, whether the app may read the whole shared storage (the
-  /// "All files access" toggle). Always true on other platforms.
-  static Future<bool> hasAllFilesAccess() async {
-    if (!Platform.isAndroid) return true;
-    try {
-      return await _storageChannel.invokeMethod<bool>('allFilesAccess') ??
-          false;
-    } catch (_) {
-      return false;
-    }
-  }
+  /// "All files access" toggle). Always true on other platforms. Owned by
+  /// [StorageRoots]; kept here because the settings screen already asks the
+  /// mesh.
+  static Future<bool> hasAllFilesAccess() => storage.allFilesAccess();
 
   /// On Android, the real shared storage root (e.g. /storage/emulated/0) —
   /// only readable once [hasAllFilesAccess] is granted.
-  static Future<String?> androidSharedRoot() async {
-    if (!Platform.isAndroid) return null;
-    try {
-      return await _storageChannel.invokeMethod<String>('sharedRoot');
-    } catch (_) {
-      return null;
-    }
-  }
+  static Future<String?> androidSharedRoot() => storage.sharedStorageRoot();
 
   /// Opens the system "All files access" settings screen for this app.
-  static Future<void> openAllFilesAccessSettings() async {
-    if (!Platform.isAndroid) return;
-    try {
-      await _storageChannel.invokeMethod<void>('openAllFilesAccessSettings');
-    } catch (_) {
-      // Channel unavailable (tests) — nothing to open.
-    }
-  }
+  static Future<void> openAllFilesAccessSettings() =>
+      storage.openAllFilesAccessSettings();
 
   /// Maps a peer-supplied path onto the served root, collapsing `.`/`..` and
   /// refusing anything that escapes the root. Returns null = access denied.

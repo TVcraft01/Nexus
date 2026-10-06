@@ -25,6 +25,7 @@ import '../core/live.dart';
 import '../core/phone_actions.dart';
 import '../core/timezones.dart';
 import '../core/weather.dart';
+import '../core/storage_roots.dart';
 import 'downloads_dir.dart';
 
 /// Executes device-local actions for the assistant on THIS platform.
@@ -41,8 +42,14 @@ class DeviceExecutor {
     ProfileStore? profileStore,
     FileFetchMesh? fileMesh,
     String? fileDownloadsDir,
+    Future<StorageRoot> Function({String? override})? fileDownloadRoot,
+    Future<bool> Function()? fileAccessGranted,
+    Future<void> Function()? fileAccessPrompt,
   }) : _fileMesh = fileMesh,
        _fileDownloadsDir = fileDownloadsDir,
+       _downloadRoot = fileDownloadRoot ?? downloadRoot,
+       _fileAccessGranted = fileAccessGranted ?? allFilesAccess,
+       _promptFileAccess = fileAccessPrompt,
        _deviceBackend = deviceBackend ?? deviceActionBackend(),
        _phoneBackend = phoneBackend ?? RealPhoneActionBackend(),
        _weatherFetcher = weatherFetcher ?? fetchWeather,
@@ -59,6 +66,20 @@ class DeviceExecutor {
   /// Downloads folder is resolved at run time; tests inject a temp dir so
   /// they never touch the user's real files.
   final String? _fileDownloadsDir;
+
+  /// Resolves the folder a fetched file lands in. Injectable so a test can
+  /// pose as an Android phone whose save folder is the app-scoped one (the
+  /// Files app hides it) without a device; defaults to [downloadRoot].
+  final Future<StorageRoot> Function({String? override}) _downloadRoot;
+
+  /// Reads Android's "All files access" toggle. Always true off Android;
+  /// injectable so a test can pose as a phone with the toggle off.
+  final Future<bool> Function() _fileAccessGranted;
+
+  /// Shows the in-flow "All files access" ask when a fetch needs it. Null
+  /// when no UI is wired (tests, headless runs): the fetch then runs without
+  /// asking, exactly as it does after the user declines.
+  final Future<void> Function()? _promptFileAccess;
 
   final DeviceActionBackend _deviceBackend;
   final PhoneActionBackend _phoneBackend;
@@ -1196,12 +1217,15 @@ class DeviceExecutor {
     if (mesh == null || peerId.isEmpty || filename.isEmpty) {
       return const ActionResult(false, "I couldn't fetch that file.");
     }
+    // Android without "All files access" saves into the app's own external
+    // folder, which the Files app hides. Stop first and offer the toggle, in
+    // flow, before a byte moves — the user decides, and either answer lets
+    // the fetch continue.
+    await _prepareFileAccess();
     // Never overwrite a file the user already has: the same rule, and the
     // same helper, the Files tab download uses.
-    final savePath = await downloadsFilePath(
-      filename,
-      inDirectory: _fileDownloadsDir,
-    );
+    final root = await _downloadRoot(override: _fileDownloadsDir);
+    final savePath = await downloadsFilePath(filename, inDirectory: root.path);
     final result = await fetchFile(
       mesh: mesh,
       peerId: peerId,
@@ -1209,7 +1233,28 @@ class DeviceExecutor {
       filename: filename,
       savePath: savePath,
     );
-    return ActionResult(result.ok, result.message);
+    // Android without "All files access" saves into the app's own folder,
+    // which the Files app hides. The result already names the path; say why it
+    // is not where the user will look, so a successful fetch never reads as
+    // "nothing happened".
+    final message = result.ok && root.appScoped
+        ? '${result.message} $appScopedDownloadNote'
+        : result.message;
+    return ActionResult(result.ok, message);
+  }
+
+  /// Offers Android's "All files access" once, in flow, when a fetch would
+  /// otherwise save somewhere the Files app hides. Silently does nothing when
+  /// no prompt is wired, off Android, or when access is already granted;
+  /// declining simply lets the fetch proceed into the app-scoped folder.
+  Future<void> _prepareFileAccess() async {
+    final prompt = _promptFileAccess;
+    if (prompt == null) return; // No UI wired (tests, headless runs).
+    // Only Android has the toggle, and only while it is off is there
+    // anything to ask for.
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    if (await _fileAccessGranted()) return;
+    await prompt();
   }
 
   /// Opens a web search in the default browser.

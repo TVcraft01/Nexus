@@ -9,6 +9,7 @@ import 'package:nexus/core/file_fetch.dart';
 import 'package:nexus/core/profile.dart';
 import 'package:nexus/core/live.dart';
 import 'package:nexus/core/phone_actions.dart';
+import 'package:nexus/core/storage_roots.dart';
 import 'package:nexus/ui/device_executor.dart';
 
 /// Captures every backend call so tests assert routing without a widget tree.
@@ -126,6 +127,10 @@ class _FakeFileMesh implements FileFetchMesh {
   final Map<String, List<RemoteFile>> entries;
   final Map<String, List<int>> bytes;
 
+  /// Called at the start of every pull, so a test can prove when the transfer
+  /// happened relative to anything else the fetch flow did.
+  void Function(String remotePath)? onFetch;
+
   @override
   String? lastFileError;
 
@@ -139,6 +144,7 @@ class _FakeFileMesh implements FileFetchMesh {
     String remotePath, {
     required String savePath,
   }) async {
+    onFetch?.call(remotePath);
     await File(savePath).writeAsBytes(bytes[remotePath] ?? const <int>[]);
     return savePath;
   }
@@ -1087,6 +1093,133 @@ void main() {
       );
       expect(out.ok, isFalse);
       expect(out.message, "I couldn't fetch that file.");
+    });
+
+    test(
+      'a fetch on Android with all-files access off asks first, then still '
+      'saves — into the app-scoped folder, and says so',
+      () async {
+        final tmp = await Directory.systemTemp.createTemp('exec_prompt');
+        addTearDown(() async {
+          if (tmp.existsSync()) await tmp.delete(recursive: true);
+        });
+        final mesh = _FakeFileMesh(
+          {
+            '': [const RemoteFile(name: 'report.pdf', path: '/pc/report.pdf')],
+          },
+          {
+            '/pc/report.pdf': const [9, 8, 7],
+          },
+        );
+        final events = <String>[];
+        mesh.onFetch = (path) => events.add('transfer:$path');
+        final exec = DeviceExecutor(
+          deviceBackend: device,
+          phoneBackend: phone,
+          fileMesh: mesh,
+          // The folder an Android device without the toggle resolves to: the
+          // app's own external folder, which the Files app hides.
+          fileDownloadRoot: ({String? override}) async {
+            events.add('save-dir');
+            return StorageRoot(tmp.path, appScoped: true);
+          },
+          fileAccessGranted: () async => false,
+          // Answered "Not now": the dialog closes and the fetch must go on.
+          fileAccessPrompt: () async => events.add('ask'),
+        );
+        final out = await exec.run(
+          req(AgentActions.fileFetch, {
+            'peerId': 'pc1',
+            'peerName': 'My PC',
+            'filename': 'report.pdf',
+          }),
+        );
+        // The ask came before the save folder was chosen, and long before a
+        // byte moved — the prompt is genuinely in flow, not after the fact.
+        expect(events, ['ask', 'save-dir', 'transfer:/pc/report.pdf']);
+        expect(out.ok, isTrue);
+        expect(out.message, contains('Saved report.pdf from My PC'));
+        // A decline is not a dead end: the file landed, in the app folder,
+        // and the result says why it is not where the user will look.
+        expect(out.message, contains(appScopedDownloadNote));
+        expect(
+          await File(
+            '${tmp.path}${Platform.pathSeparator}report.pdf',
+          ).readAsBytes(),
+          const [9, 8, 7],
+        );
+      },
+    );
+
+    test('a fetch on Android with all-files access never asks', () async {
+      final tmp = await Directory.systemTemp.createTemp('exec_granted');
+      addTearDown(() async {
+        if (tmp.existsSync()) await tmp.delete(recursive: true);
+      });
+      final mesh = _FakeFileMesh(
+        {
+          '': [const RemoteFile(name: 'report.pdf', path: '/pc/report.pdf')],
+        },
+        {
+          '/pc/report.pdf': const [1],
+        },
+      );
+      var asked = 0;
+      final exec = DeviceExecutor(
+        deviceBackend: device,
+        phoneBackend: phone,
+        fileMesh: mesh,
+        // The shared Downloads folder: visible, so there is nothing to ask.
+        fileDownloadRoot: ({String? override}) async => StorageRoot(tmp.path),
+        fileAccessGranted: () async => true,
+        fileAccessPrompt: () async => asked++,
+      );
+      final out = await exec.run(
+        req(AgentActions.fileFetch, {
+          'peerId': 'pc1',
+          'peerName': 'My PC',
+          'filename': 'report.pdf',
+        }),
+      );
+      expect(asked, 0);
+      expect(out.ok, isTrue);
+      expect(out.message, isNot(contains(appScopedDownloadNote)));
+    });
+
+    test('a fetch off Android never asks for all-files access', () async {
+      // The toggle reads false here on purpose: without an Android platform
+      // there is no settings screen to open, so nothing may be asked.
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      final tmp = await Directory.systemTemp.createTemp('exec_desktop');
+      addTearDown(() async {
+        if (tmp.existsSync()) await tmp.delete(recursive: true);
+      });
+      final mesh = _FakeFileMesh(
+        {
+          '': [const RemoteFile(name: 'report.pdf', path: '/pc/report.pdf')],
+        },
+        {
+          '/pc/report.pdf': const [2],
+        },
+      );
+      var asked = 0;
+      final exec = DeviceExecutor(
+        deviceBackend: device,
+        phoneBackend: phone,
+        fileMesh: mesh,
+        fileDownloadsDir: tmp.path,
+        fileAccessGranted: () async => false,
+        fileAccessPrompt: () async => asked++,
+      );
+      final out = await exec.run(
+        req(AgentActions.fileFetch, {
+          'peerId': 'pc1',
+          'peerName': 'My PC',
+          'filename': 'report.pdf',
+        }),
+      );
+      expect(asked, 0);
+      expect(out.ok, isTrue);
     });
   });
 }
