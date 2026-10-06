@@ -49,6 +49,8 @@
 #                                           # requester to 127.0.0.2 by typing
 #                                           # code + address + port. Proves the
 #                                           # code path, NOT a real LAN run.
+#   tool/gui_walkthrough.sh --workspace 97  # drive on this Hyprland workspace
+#                                           # (default 97); see "Isolation"
 #
 # --negative reuses the same build, launch, pair and seam; only the fetch step
 # differs, so it never disturbs the default happy path. --peer-host switches
@@ -67,6 +69,28 @@
 # cleanup removes only paths under $WORK. Both overrides default to the app's
 # normal behavior when unset.
 #
+# Isolation: both windows are driven on a dedicated Hyprland workspace
+# (default 97, override with --workspace or NEXUS_GUI_WORKSPACE). Another app
+# left full-screen on the desktop's default workspace can tile over the
+# harness's windows and make its clicks land on the wrong window — the one
+# flake a retry cannot repair, because the target genuinely is not where it is
+# being read. On its own workspace the harness is clear of that: each window is
+# placed, the compositor's own view is re-read until the placement took, and
+# every step re-asserts the target window before it clicks. The desktop is put
+# back on its original workspace when the run ends.
+#
+# Visibility is judged per output. grim crops from the compositor's composite of
+# what is on screen, and a window is in it only when the workspace its OWN
+# monitor is showing is the one the window lives on — not the globally focused
+# monitor. On a two-output box the focused monitor can sit on workspace 1 while
+# the harness's window is fully visible on workspace 97 of the other output, so
+# the driver asks the window's own monitor, never `hyprctl activeworkspace`
+# (comparing against the focused monitor made every read look like it needed a
+# switch and logged ~190 spurious re-shows a run). A busy app can still take a
+# monitor's workspace back mid-step, so before each capture the driver
+# re-asserts the target's workspace and confirms the switch took before
+# reading; repairs.log counts how often that was actually needed.
+#
 # NEXUS_GUI_TIMEOUT bounds ONE step, in seconds (default 90) — not one long
 # wait at the end. The first step to fail is named and the script exits
 # non-zero.
@@ -82,12 +106,15 @@ NEGATIVE=0
 REMOTE=0
 LOOPBACK=0
 PEER_HOST=""; PEER_PORT=""; PEER_CODE=""
+WS_OPT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-build)     BUILD=0; shift ;;
     --kill-orphans) KILL_ORPHANS=1; shift ;;
     --negative)     NEGATIVE=1; shift ;;
     --peer-loopback) LOOPBACK=1; shift ;;
+    --workspace)    [ $# -ge 2 ] || { echo "--workspace needs a name" >&2; exit 2; }; WS_OPT="$2"; shift 2 ;;
+    --workspace=*)  WS_OPT="${1#*=}"; shift ;;
     --peer-host)    [ $# -ge 2 ] || { echo "--peer-host needs an address" >&2; exit 2; }; PEER_HOST="$2"; shift 2 ;;
     --peer-port)    [ $# -ge 2 ] || { echo "--peer-port needs a number" >&2; exit 2; };  PEER_PORT="$2"; shift 2 ;;
     --peer-code)    [ $# -ge 2 ] || { echo "--peer-code needs a code" >&2; exit 2; };    PEER_CODE="$2"; shift 2 ;;
@@ -125,6 +152,10 @@ fi
 
 UI=tool/ui_driver.py
 STEP_TIMEOUT="${NEXUS_GUI_TIMEOUT:-90}"
+# A dedicated Hyprland workspace, so a full-screen app left on the desktop's
+# default workspace cannot tile over the two windows we drive. Override with
+# --workspace or NEXUS_GUI_WORKSPACE.
+WS="${WS_OPT:-${NEXUS_GUI_WORKSPACE:-97}}"
 STAMP=$(date +%Y%m%d-%H%M%S)
 BUNDLE=build/linux/x64/debug/bundle/nexus
 WORK="/tmp/nexus_gui/$STAMP"
@@ -154,6 +185,13 @@ REQUESTER_DATA="$WORK/data-requester"
 # cleanup, so it is never kept as evidence.
 SCRATCH="$WORK/ui"
 export NEXUS_UI_WORK="$SCRATCH"
+# Every time a window had to be re-placed, re-focused or had its workspace
+# re-shown, the driver appends a line here — kept even on a pass, so a run can
+# say whether the isolation held without any repair or actually needed it.
+export NEXUS_UI_LOG="$WORK/repairs.log"
+# The workspace the desktop was showing before we started, so cleanup can put
+# the view back where it found it. Read before anything moves.
+ORIG_WS=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.name // empty' 2>/dev/null)
 
 # name:bytes — the server serves these from its served root; the requester types
 # "get <name> from my pc" for each. Deterministic bytes so the expected sha256
@@ -177,7 +215,11 @@ fail() {
   say ""
   say "FAIL: step '$STEP' — $*"
   # One diagnostic frame, written only on failure. Best effort on purpose: a
-  # window that is already gone must not hide the real failure.
+  # window that is already gone must not hide the real failure. grim captures
+  # whatever workspace is *visible*, so put our own back on screen first —
+  # otherwise the frame can show a bystander app that stole the view mid-step
+  # and prove nothing about the window that actually failed.
+  [ -n "${WS:-}" ] && ui switch-workspace "$WS" >/dev/null 2>&1 || true
   ui shot "$WORK/fail-$STEP.png" >/dev/null 2>&1 || true
   say "evidence: $WORK (logs, fail-$STEP.png)"
   exit 1
@@ -188,6 +230,11 @@ finish() { # $1 result line, $2 evidence suffix, $3 exit code
   ui shot "$WORK/99_result.png" --pid "$RPID" \
     || fail "could not take the final screenshot"
   say ""
+  if [ -s "$WORK/repairs.log" ]; then
+    say "isolation: $(wc -l <"$WORK/repairs.log") window repair/re-show event(s) — see repairs.log"
+  else
+    say "isolation: the two windows held their workspace and rectangle throughout"
+  fi
   say "== result =="
   say "$1"
   say "evidence: $WORK ($2)"
@@ -203,6 +250,10 @@ finish() { # $1 result line, $2 evidence suffix, $3 exit code
 # data dir (so a reused PID is never killed).
 cleanup() {
   rm -rf "$SERVER_SERVED" "$REQUESTER_SERVED" "$DL_DIR" "$SCRATCH"
+  # Put the desktop back on the workspace it was showing before the walk.
+  if [ -n "${ORIG_WS:-}" ] && [ "$ORIG_WS" != "$WS" ]; then
+    ui switch-workspace "$ORIG_WS" >/dev/null 2>&1 || true
+  fi
   [ "${NEXUS_GUI_KEEP:-}" = 1 ] && return 0
   [ -f "$WORK/pids" ] || return 0
   for p in $(sort -u "$WORK/pids" 2>/dev/null); do
@@ -235,10 +286,33 @@ geom() {
 
 focus() { ui focus "$1" >/dev/null 2>&1 || true; }
 
+# Put a window on the dedicated workspace at its known rectangle, then RE-READ
+# the compositor until it agrees: `ui place` checks the workspace name, the
+# floating flag and the exact at/size, repairing only what is still wrong, and
+# retries up to `attempts` times. A dispatch that returned "ok" is not proof
+# it took, so nothing downstream trusts one.
+ensure_win() { # pid x y [attempts]
+  ui place "$1" "$2" "$3" --width 880 --height 1000 --workspace "$WS" \
+    --attempts "${4:-${NEXUS_PLACE_ATTEMPTS:-5}}" >/dev/null 2>&1
+}
+
+# Re-assert whichever window a step is about to read or click: on the dedicated
+# workspace, at its own rectangle, and focused. A window can drift (a lost move
+# at launch, a compositor resize) or the desktop can end up on another
+# workspace; either makes a click land somewhere unintended. Cheap and
+# idempotent when nothing moved. Called before every read/click.
+re_assert() { # pid
+  case "$1" in
+    "$SPID") [ -n "$SPID" ] && ensure_win "$SPID" 8 8 3 ;;
+    "$RPID") [ -n "$RPID" ] && ensure_win "$RPID" 900 8 3 ;;
+  esac
+}
+
 # Wait for `phrase` to appear on screen in window `pid`, bounded by
 # STEP_TIMEOUT.
 wait_text() { # pid phrase [filters...]
   local pid="$1" phrase="$2"; shift 2
+  re_assert "$pid"
   ui wait-text "$phrase" --pid "$pid" --timeout "$STEP_TIMEOUT" "$@" >/dev/null \
     || fail "waited ${STEP_TIMEOUT}s for \"$phrase\" on screen in window $pid"
 }
@@ -253,6 +327,7 @@ wait_text() { # pid phrase [filters...]
 CLICK_ATTEMPTS="${NEXUS_CLICK_ATTEMPTS:-5}"
 click_text_wait() { # pid phrase [filters...]
   local pid="$1" phrase="$2"; shift 2
+  re_assert "$pid"
   local deadline=$(( $(date +%s) + STEP_TIMEOUT ))
   local attempt left per
   for (( attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++ )); do
@@ -282,6 +357,7 @@ click_text_wait() { # pid phrase [filters...]
 # may land; the destination has none.
 click_nav() { # pid tap dest [tap filters...]
   local pid="$1" tap="$2" dest="$3"; shift 3
+  re_assert "$pid"
   local deadline=$(( $(date +%s) + STEP_TIMEOUT ))
   local attempt left per sub dleft
   for (( attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++ )); do
@@ -373,6 +449,9 @@ say "seeded a finished profile in each instance's own XDG_DATA_HOME"
 
 # --- launch the instance(s) ------------------------------------------------
 step "launch"
+# Launch on the dedicated workspace so the new windows open there instead of
+# tiling over whatever the desktop was showing. Placement verifies it after.
+ui switch-workspace "$WS" >/dev/null 2>&1 || true
 # Only when asked: a developer may have their own Nexus open, and the default
 # walk must not close it.
 if [ "$KILL_ORPHANS" = 1 ]; then
@@ -423,17 +502,34 @@ done
 printf '%s\n%s\n' "$SPID" "$RPID" >>"$WORK/pids"
 say "requester pid $RPID${SPID:+; server pid $SPID}"
 
-# --- deterministic window placement ----------------------------------------
-# Both windows are floated and sized by the compositor, so everything after
-# this addresses them by their own origin instead of guessing at the layout.
+# --- deterministic window placement, on a dedicated workspace --------------
+# Both windows are floated, sized and moved onto a workspace of this run's own
+# so a full-screen app on the desktop cannot tile over them mid-walk. The move
+# is then verified against the compositor's own view — not assumed — because a
+# dispatch can report "ok" and still not take (the observed launch flake left a
+# window at 995,20 after asking for 8,8). ensure_win retries until each window
+# reports the workspace, floating flag and rect we asked for.
 step "placement"
-place() { ui place "$1" "$2" "$3" >/dev/null 2>&1 || true; }
-[ -n "$SPID" ] && place "$SPID" 8 8
-place "$RPID" 900 8
-for pid in $SPID $RPID; do
-  g=$(geom "$pid") || fail "window $pid vanished during placement"
-  say "  $g  (pid $pid)"
-done
+ui switch-workspace "$WS" >/dev/null 2>&1 || true
+[ -n "$SPID" ] && ensure_win "$SPID" 8 8 || true
+ensure_win "$RPID" 900 8 || true
+check_placed() { # pid x y
+  local st
+  st=$(ui state "$1" 2>/dev/null) || fail "window $1 vanished during placement"
+  say "  $st  (pid $1)"
+  case "$st" in
+    *"workspace=$WS floating=1 fullscreen=0 at=$2,$3 size=880x1000"*) return 0 ;;
+  esac
+  fail "window $1 did not take the placement on workspace $WS ($st)"
+}
+[ -n "$SPID" ] && check_placed "$SPID" 8 8
+check_placed "$RPID" 900 8
+say "  dedicated workspace $WS (desktop was on ${ORIG_WS:-?})"
+# Everything logged in repairs.log after this line is a *drift* repair — the
+# window moved, lost focus or the desktop wandered off mid-walk. What came
+# before is this run putting the two windows in place once.
+printf '%s ---- placement verified; drift repairs below (if any) ----\n' \
+  "$(date +%H:%M:%S)" >>"$WORK/repairs.log"
 
 # --- where the pairing code comes from -------------------------------------
 # Local mode: the server window shows a code, and its own "Copy code" button is
@@ -451,12 +547,23 @@ else
   click_nav "$SPID" "More ways to connect" "Show my code instead"
   click_nav "$SPID" "Show my code instead" "Copy code"
 
+  # The app's own "Copy code" button is the source of truth for the secret, so
+  # read it from the clipboard rather than trusting OCR with it. Copying is a
+  # click followed by a paste, and the two can drop if the visible workspace is
+  # switched between them — another app steals the view mid-step — so retry the
+  # copy until the clipboard actually holds a code, not just click once.
   CODE=""
-  wl-copy --clear 2>/dev/null || true
-  sleep 0.3
-  click_text_wait "$SPID" "Copy code"
-  sleep 0.5
-  CODE=$(timeout 5 wl-paste 2>/dev/null | tr -d '\n' | head -c 40)
+  for (( attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++ )); do
+    wl-copy --clear 2>/dev/null || true
+    sleep 0.3
+    click_text_wait "$SPID" "Copy code"
+    sleep 0.5
+    CODE=$(timeout 5 wl-paste 2>/dev/null | tr -d '\n' | head -c 40)
+    case "$CODE" in
+      [A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]) break ;;
+    esac
+    say "  clipboard still empty (attempt $attempt/$CLICK_ATTEMPTS)"
+  done
   case "$CODE" in
     [A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]) ;;
     *) fail "could not read the pairing code from the clipboard (got '${CODE:-empty}')" ;;
@@ -534,6 +641,7 @@ say "  requester shows the server Online"
 # destination brings that page back after the Devices detour.
 ask_for() { # name
   local name="$1"
+  re_assert "$RPID"
   focus "$RPID"
   click_text_wait "$RPID" Assistant --x-max 120
   sleep 0.6
@@ -550,6 +658,7 @@ ask_for() { # name
 # the field always sits.
 click_composer() {
   local x y w h
+  re_assert "$RPID"
   if ui wait-text "Ask anything" --pid "$RPID" --y-min 700 --timeout "$STEP_TIMEOUT" --reads 2 >/dev/null 2>&1 \
      && ui click-text "Ask anything" --pid "$RPID" --y-min 700 >/dev/null 2>&1; then
     return 0
