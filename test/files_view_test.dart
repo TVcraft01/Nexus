@@ -79,6 +79,14 @@ FileEntry _folder(String name) => FileEntry(
   modified: DateTime(2026, 3, 14),
 );
 
+FileEntry _file(String name) => FileEntry(
+  name: name,
+  path: '/home/neo/$name',
+  size: 2048,
+  isDir: false,
+  modified: DateTime(2026, 3, 14),
+);
+
 Future<void> _pumpFiles(WidgetTester tester, MeshService mesh) async {
   // The tab is a child of HomeShell's Scaffold, which is what supplies the
   // Material the chips and buttons paint on.
@@ -198,6 +206,51 @@ void main() {
       find.text('Docs'),
       findsOneWidget,
       reason: 'up lands in the folder that holds it',
+    );
+  });
+
+  testWidgets('a listing is hairline rows on the page, not a card each', (
+    tester,
+  ) async {
+    await _pumpFiles(
+      tester,
+      _FakeMesh(
+        [_device('TVcraft01')],
+        listings: {
+          '': [_folder('Docs'), _file('notes.txt')],
+        },
+      ),
+    );
+
+    expect(find.text('Docs'), findsOneWidget);
+    expect(find.text('notes.txt'), findsOneWidget);
+
+    // The assertions the empty state cannot make: rows exist and are still
+    // rows. A `Card findsNothing` over an empty listing would prove nothing.
+    expect(
+      find.byType(Card),
+      findsNothing,
+      reason: 'a row is a row on the page, not a rounded card each',
+    );
+    // One hairline under the toolbar, one between the two rows.
+    expect(find.byType(Divider), findsNWidgets(2));
+    final palette = NexusPalette.of(tester.element(find.byType(FilesView)));
+    for (final divider in tester.widgetList<Divider>(find.byType(Divider))) {
+      expect(
+        divider.color,
+        palette.separator,
+        reason: 'a hairline is the separator token, not a literal',
+      );
+    }
+
+    // The row controls are per-row and still a pair each — the toolbar stays
+    // the only place with a prominent action.
+    expect(find.widgetWithText(FilledButton, 'Send file…'), findsOneWidget);
+    expect(find.byTooltip('File actions'), findsNWidgets(2));
+    expect(
+      find.byTooltip('Download'),
+      findsOneWidget,
+      reason: 'only a file gets a download button; a folder is opened',
     );
   });
 
