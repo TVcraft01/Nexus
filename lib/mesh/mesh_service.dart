@@ -25,7 +25,10 @@ import '../core/serial_transport.dart';
 import '../core/storage_roots.dart' as storage;
 import '../core/store.dart';
 import '../core/version.dart';
+import 'connection_supervisor.dart';
+import 'connectivity_monitor.dart';
 import 'discovery.dart';
+import 'mesh_transport.dart';
 import 'serial_bridge.dart';
 import 'sync_service.dart';
 
@@ -220,7 +223,7 @@ class _RealClipboard implements ClipboardBackend {
 /// direct, verified message from it over TCP within the last 25 seconds.
 /// Discovery announcements are never enough — they only make a device
 /// *visible*, and the UI says so.
-class MeshService extends ChangeNotifier implements FileFetchMesh {
+class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport {
   final DeviceInfo identity;
   final NexusStore store;
   final ClipboardBackend clipboard;
@@ -930,6 +933,45 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
   /// How many paired devices are verified-online right now.
   int get onlineCount => _paired.keys.where(isOnline).length;
 
+  // --- Transport seam (mesh/mesh_transport.dart) ---------------------------
+  // The connection supervisor talks to the mesh only through these members,
+  // so its retry policy never touches a socket, and a second transport (a
+  // BLE presence channel, a relay) can be handed to it with no change there.
+  // Same shape as the file-fetch seam above: the mesh adapts itself to a
+  // narrow interface over primitives it already has — no second transport is
+  // built here.
+
+  /// The peers a link could be kept alive to: paired devices, never a device
+  /// that is merely visible and would need the user to pair first.
+  @override
+  List<TransportPeer> peers() => [
+    for (final peer in _paired.values)
+      TransportPeer(id: peer.id, name: peer.name),
+  ];
+
+  /// When [peerId] last proved it was there — the last time we could attribute
+  /// traffic to it rather than merely write to it. Deliberately not
+  /// [lastSeenAt]: that one also moves when *we* send, so it stays fresh while
+  /// a dead link is being dialled, and a supervisor watching it would never
+  /// notice a silent drop. This is `_verified`, which only moves for a frame
+  /// the peer actually sent over its authenticated connection.
+  @override
+  DateTime? lastHeardAt(String peerId) => _verified[peerId];
+
+  /// Runs one presence exchange now instead of at the next heartbeat tick:
+  /// pings every peer that could answer, which also re-dials any route that
+  /// died. This is the mesh's existing heartbeat on demand, so it is the
+  /// supervisor's retry and its network-change fast path. Idempotent: a call
+  /// while one exchange is running does nothing.
+  @override
+  Future<void> beat() => _heartbeat();
+
+  /// Keeps every paired link alive across sleep, roam and radio changes.
+  /// Started and stopped with the mesh — which is what the Android foreground
+  /// service keeps running, so it reconnects with the window closed.
+  ConnectionSupervisor? _supervisor;
+  ConnectionSupervisor? get supervisor => _supervisor;
+
   Future<void> start() async {
     if (_started) return;
     _started = true;
@@ -948,6 +990,24 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
       (_) => _checkClipboard(),
     );
     unawaited(_heartbeat());
+    // Keep the paired links alive: noticing silence, retrying with backoff and
+    // reacting to a network change are the supervisor's job (see
+    // mesh/connection_supervisor.dart). It starts with the mesh, so on Android
+    // it lives inside the foreground service. One supervisor for the mesh's
+    // lifetime, forwarding its changes through the mesh's own notifier — the
+    // channel the UI already rebuilds on, so a drop the supervisor notices in
+    // seconds reaches the device row that shows it without waiting for the
+    // mesh's next unrelated notification.
+    var supervisor = _supervisor;
+    if (supervisor == null) {
+      supervisor = ConnectionSupervisor(
+        transport: this,
+        networkChanges: ConnectivityMonitor.changes,
+      );
+      supervisor.addListener(notifyListeners);
+      _supervisor = supervisor;
+    }
+    await supervisor.start();
     // Listen for cable nodes (ESP32, …) from the start so a board plugged
     // in shows up in Devices without opening the pairing page first. On
     // Android this lists USB devices immediately; the permission prompt only
@@ -3792,6 +3852,8 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
 
   Future<void> stop() async {
     _started = false;
+    // Nothing may be redialled after the mesh has gone.
+    await _supervisor?.stop();
     _heartbeatTimer?.cancel();
     _clipboardTimer?.cancel();
     // A pending smart-sync must not fire after the mesh is stopped.
@@ -3809,6 +3871,16 @@ class MeshService extends ChangeNotifier implements FileFetchMesh {
       } catch (_) {}
     }
     _outbound.clear();
+    // Accepted connections too. A mesh that has stopped must not keep
+    // answering presence on a socket the other device opened: the peer would
+    // go on seeing a healthy link to a device that is gone, and its connection
+    // supervisor — which watches exactly that — would never notice the drop.
+    for (final socket in _inboundPeer.keys.toList()) {
+      try {
+        socket.destroy();
+      } catch (_) {}
+    }
+    _inboundPeer.clear();
     if (_neighborsDirty) {
       _neighborsDirty = false;
       _queueSave();

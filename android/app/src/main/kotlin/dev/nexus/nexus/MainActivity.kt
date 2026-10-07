@@ -3,6 +3,7 @@ package dev.nexus.nexus
 import android.Manifest
 import android.app.ActivityManager
 import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
@@ -14,6 +15,8 @@ import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
@@ -56,6 +59,11 @@ class MainActivity : FlutterActivity() {
     private val DEVICE_CHANNEL = "dev.nexus.nexus/device"
     private val PROVISION_CHANNEL = "dev.nexus.nexus/provisioning"
     private val NETWORK_CHANNEL = "dev.nexus.nexus/network"
+    private val NETWORK_EVENTS_CHANNEL = "dev.nexus.nexus/network_events"
+
+    // The ConnectivityManager callback forwarding network transitions to
+    // Dart, held so "cancel" can let it go.
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     // Android's Wi-Fi firmware filters multicast and broadcast frames before
     // they ever reach the app, so Nexus can only *hear* a nearby device while
@@ -277,6 +285,31 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // The network changing underneath the mesh: Wi-Fi coming back after
+        // sleep, Wi-Fi handing over to cellular, the radio dropping. Dart's
+        // connection supervisor reacts by reconnecting at once instead of
+        // waiting out a backoff that was measured against a network which is
+        // already back. Push, not poll — "listen" asks once, then every
+        // transition is forwarded. No new permission: ACCESS_NETWORK_STATE
+        // is already declared for the mesh's own discovery.
+        val networkEvents = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            NETWORK_EVENTS_CHANNEL,
+        )
+        networkEvents.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "listen" -> {
+                    watchNetwork(networkEvents)
+                    result.success(true)
+                }
+                "cancel" -> {
+                    unwatchNetwork()
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
         // On-device tiny model: answers everyday questions inside the app,
         // fully offline. Honest null until real inference is integrated —
         // the distributed brain then escalates over the mesh.
@@ -367,6 +400,50 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 Log.w(TAG, "provisioning channel not ready: ${e.message}")
             }
+        }
+    }
+
+    /// Starts forwarding network transitions to Dart. Only transitions are
+    /// forwarded — a network that appears or is lost — because that is what
+    /// invalidates a reconnect backoff; a capabilities change is not a new
+    /// route and would just be chatter on a socket already carrying traffic.
+    ///
+    /// The callback delivers on a binder thread, so the channel call is posted
+    /// to the main looper: a platform channel may only be used from there.
+    private fun watchNetwork(channel: MethodChannel) {
+        if (networkCallback != null) return
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE)
+            as? ConnectivityManager ?: return
+        val main = Handler(Looper.getMainLooper())
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                main.post { channel.invokeMethod("networkChanged", "available") }
+            }
+
+            override fun onLost(network: Network) {
+                main.post { channel.invokeMethod("networkChanged", "lost") }
+            }
+        }
+        try {
+            manager.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (e: Exception) {
+            // No callback available (an OEM build without the API, a
+            // permission revoked by policy). The mesh keeps running; it just
+            // learns about a dead link from the heartbeat's timeout instead.
+            Log.w(TAG, "network callback unavailable: ${e.message}")
+        }
+    }
+
+    /// Stops forwarding network transitions — Dart has stopped listening.
+    private fun unwatchNetwork() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        try {
+            (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+                ?.unregisterNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "network callback not unregistered: ${e.message}")
         }
     }
 

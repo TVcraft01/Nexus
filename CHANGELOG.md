@@ -1,9 +1,46 @@
 # Changelog
 
 Notable changes to Nexus, newest first. This is the project's first changelog —
-it was added during the file-fetch sprint, so the entries below start there and
-earlier work is not listed. The format follows
+it was added during the file-fetch sprint, so the oldest entry below is that
+sprint and earlier work is not listed. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased] — automatic reconnect
+
+### Added
+
+- **Devices now show a Reconnecting status and recover automatically after
+  sleep, WiFi changes, or short outages. No cloud, no action needed.**
+- **A device Nexus is trying to reach says so, and how long the wait is.**
+  While the connection supervisor retries a paired device that dropped, its
+  row reads `Reconnecting · next try in 4s` (or plain `Reconnecting…` when it
+  has no scheduled wait to show) instead of the `Offline · last seen …` every
+  absent device used to show. The device's detail sheet shows the same three
+  states in its own words, and the line above the list counts a device being
+  retried as not reachable right now.
+
+### Fixed
+
+- **A device that died silently used to look healthy forever.** The mesh's
+  "last seen" timestamp advanced whenever Nexus *sent* something, so a peer
+  that had gone away without saying goodbye kept looking fresh, and nothing
+  watching it could notice the drop. Nexus now watches the last contact the
+  peer itself proved.
+- **A device that had stopped kept answering.** A mesh that had shut down left
+  the connection the other device had opened still answering presence, so the
+  peer went on believing the link was healthy and never started reconnecting.
+  Those connections are now closed with the mesh.
+
+### Known limits
+
+- Reconnecting needs the device to be awake to help. OS suspend, airplane mode
+  and radios-off all mean no route exists until the device wakes, and a link
+  that cannot be made — an uninstalled or unpaired peer, a blocked port — does
+  not come back on its own.
+- Proven on one Linux box over loopback. The Android network-change signal is
+  covered by tests against a fake, not on a phone: a real phone through sleep,
+  a WiFi-to-cellular handover or a radio drop is still untested, and so is the
+  background service meant to keep Nexus reconnecting with the window closed.
 
 ## [Unreleased] — file-fetch sprint
 

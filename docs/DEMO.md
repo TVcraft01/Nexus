@@ -359,6 +359,101 @@ completes.
 
 ---
 
+## Connection behavior
+
+Nexus does **not** promise "never disconnects". What it promises is that a
+device you have already paired comes back **by itself** — no tapping, no
+re-pairing, no cloud — usually within a minute of the peer returning. The
+numbers below come from `lib/mesh/connection_supervisor.dart` and are asserted
+by `test/connection_supervisor_test.dart`, including a real two-mesh test
+where a peer goes away and is re-established with nothing touching the app.
+
+### What the supervisor does
+
+- **Heartbeat — every 3 s.** While a peer is healthy, one small presence
+  frame each way, so silence can mean something.
+- **Silence means a drop — after 9 s.** Three missed beats, so a single lost
+  frame is not a drop. The mesh's own presence window is 25 s wide, so the
+  supervisor deliberately calls a dead link first.
+- **Retry with backoff — 2 s → 60 s.** 2 s, 4 s, 8 s, 16 s, 32 s, then 60 s
+  and 60 s forever: a device that is off costs one ping a minute, and a
+  device that comes back is still redialled within the minute.
+- **A network change retries at once.** WiFi back after sleep, WiFi handing
+  over to cellular, the radio dropping and returning — the waits were measured
+  against a network that no longer exists, so they are thrown away and the
+  peer is dialled immediately instead of waiting out a 60 s backoff.
+- **"Heard from" means the peer proved it was there**, never "we sent it
+  something". A write into a dead route succeeds locally often enough that
+  send-side freshness would keep a dead link looking healthy forever.
+- **The supervisor runs with the mesh** — the mesh's own `start()` creates it
+  — and on Android that same call starts the `dataSync` foreground service
+  (`NexusSyncService`) that keeps the process, and therefore the mesh, alive
+  with the window closed.
+
+### What you see on screen
+
+Devices → a paired device's row has three connection states:
+
+- **Online** — `Online`: a verified contact inside the mesh's 25 s window.
+- **Reconnecting** — `Reconnecting · next try in 4s`, or plain
+  `Reconnecting…` when there is no scheduled wait to show. The number is the
+  wait the supervisor is actually on, so it grows with the curve above rather
+  than promising a fast answer that is not coming. It is redrawn as the screen
+  updates (the supervisor and the mesh both announce their state changes), not
+  by a per-second clock. The device's detail sheet shows the same three states
+  in its own words, and the line above the list counts a device being retried
+  as not reachable right now — so the strip and the row never contradict each
+  other.
+- **Offline** — `Offline · last seen 3m ago` (or `never`): no verified
+  contact, and the supervisor is not retrying this peer.
+
+`Nearby` is unchanged and is a different thing: the device is *visible* — its
+announcements are being heard — but it has not proved a connection.
+
+The states are decided in `lib/ui/devices_view.dart`; the retry they show is
+the real `ConnectionSupervisor` the mesh runs, forwarded through the mesh's
+own notifier.
+
+### What breaks it
+
+Auto-reconnect cannot create a link that cannot exist. It does not help when:
+
+- **the OS suspends the app** — Android deep suspend/Doze: nothing runs until
+  the device wakes;
+- **airplane mode is on, or the radios are off** — there is no route;
+- **the peer was uninstalled or unpaired**, or is on another network — a link
+  that cannot be made is not a link that comes back;
+- **a host firewall drops inbound on the mesh port** (see
+  [Gotchas observed](#gotchas-observed)).
+
+### Two bugs that had to be fixed
+
+Both were load-bearing for the promise — a retry curve that noticed nothing,
+and a peer that could not tell the other side had stopped:
+
+- **Send-side freshness masked dead routes.** The mesh's "last seen"
+  timestamp advanced when *we* sent a ping, so a peer that had silently gone
+  away kept looking fresh and no supervisor watching it could ever notice.
+  The supervisor now watches the last contact the peer itself proved.
+- **Ghost sockets after the mesh stopped.** A mesh that had shut down kept
+  answering presence on the connection the *other* device had opened, so the
+  peer went on seeing a healthy link to a device that was gone — and the
+  reconnect could never start, because nothing ever looked dropped. Accepted
+  connections are now destroyed with the mesh.
+
+> **Honesty note:** every number above is from the code and from tests that run
+> headless on **one Linux box over loopback** — the retry curve is driven by an
+> injected clock and hand-driven ticks rather than by waiting, and the two-mesh
+> reconnect test uses short real windows over that loopback. Nothing here has
+> run on a phone: the Android network-change signal (`ConnectivityManager` →
+> the `dev.nexus.nexus/network_events` channel, no new permission) is
+> unit-tested against a fake stream, and the `dataSync` foreground service that
+> is meant to keep the mesh ticking with the window closed is built and
+> exercised in Dart but has never kept a real phone reconnecting. A real phone
+> through deep suspend, a WiFi→cellular handover or a radio drop is untested.
+
+---
+
 ## Two-process rehearsal
 
 The automated end-to-end test in `test/mesh_test.dart` runs both mesh

@@ -27,10 +27,11 @@ import 'package:flutter/material.dart';
 ///    can know it handed text to the engine but never that sound is coming
 ///    out. It becomes a real state the day the channel reports utterance
 ///    start and stop.
-///  * **connecting** — the mesh reports reachability after the fact
-///    (`isOnline` answers about now), never a connection in progress. There
-///    is no signal that means "trying right now", so there is nothing
-///    truthful to show.
+///  * **connecting** — this core speaks about *this* device's own activity,
+///    and a peer's link being dialled is not one of them: the mesh reports
+///    reachability after the fact (`isOnline` answers about now). The link the
+///    connection supervisor is retrying is a fact about a paired device, so it
+///    is shown on that device's row in Devices — not here.
 ///
 /// Adding either without its signal would be the exact fake state this core
 /// exists to avoid.

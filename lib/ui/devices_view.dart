@@ -3,6 +3,7 @@ import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../core/capability.dart';
 import '../core/network_info.dart' show isTailscaleIp;
+import '../mesh/connection_supervisor.dart';
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/serial_bridge.dart';
@@ -13,6 +14,30 @@ import 'theme.dart';
 // The platform glyph and label live with the rest of the shared presentation
 // layer; re-exported so this file's callers keep one import for both.
 export 'components/nexus_ui.dart' show platformIcon, platformLabel;
+
+/// The connection supervisor's live verdict that this paired link is down and
+/// being retried *right now*, or null when it has nothing to say: the
+/// supervisor is not running, or this peer was never watched. Null means the
+/// mesh's own windows decide, exactly as they did before this state existed.
+///
+/// Deliberately narrower than "not up": a link that is down with no attempt
+/// recorded is not being reconnected, so it is not called reconnecting.
+PeerLink? _retryingLink(MeshService mesh, String id) {
+  final link = mesh.supervisor?.links.where((l) => l.id == id).firstOrNull;
+  return link != null && !link.up && link.attempts > 0 ? link : null;
+}
+
+/// "Reconnecting…", with the wait the supervisor is on when it knows one — the
+/// countdown is the retry curve, so it grows as the backoff doubles instead of
+/// repeating a promising number.
+String _reconnectingLabel(PeerLink link) {
+  final next = link.nextAttemptAt;
+  if (next == null) return 'Reconnecting…';
+  final seconds = next.difference(DateTime.now()).inSeconds;
+  return seconds >= 1
+      ? 'Reconnecting · next try in ${seconds}s'
+      : 'Reconnecting…';
+}
 
 /// "3m ago", "2h ago" — or "never" when there is no record of the device.
 String _timeAgo(DateTime? t) {
@@ -160,7 +185,12 @@ class _Reachability extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = NexusPalette.of(context);
     final total = mesh.pairedDevices.length;
-    final online = mesh.onlineCount;
+    // A peer the supervisor is retrying is not "reachable right now", even
+    // while the mesh's own 25 s window still counts it — otherwise the strip
+    // and the row beneath it would contradict each other on the same screen.
+    final online = mesh.pairedDevices
+        .where((d) => mesh.isOnline(d.id) && _retryingLink(mesh, d.id) == null)
+        .length;
 
     // With nothing paired the empty state below already says what to do, in
     // its own words — the phone showed both on one screen, saying the same
@@ -230,15 +260,21 @@ class _PairedRow extends StatelessWidget {
     final online = mesh.isOnline(device.id);
     final visible = mesh.isVisible(device.id);
     final lastSeen = mesh.lastSeenAt(device.id);
+    final retry = _retryingLink(mesh, device.id);
 
-    final (NexusStatusLevel level, String status) = online
-        ? (NexusStatusLevel.online, 'Online')
-        : visible
-            ? (NexusStatusLevel.nearby, 'Nearby')
-            : (
-                NexusStatusLevel.offline,
-                'Offline · last seen ${_timeAgo(lastSeen)}',
-              );
+    // The supervisor's retry is the most current thing known about this link,
+    // so it outranks the mesh's own 25 s window: showing it at once is the
+    // whole reason the supervisor exists.
+    final (NexusStatusLevel level, String status) = retry != null
+        ? (NexusStatusLevel.working, _reconnectingLabel(retry))
+        : online
+            ? (NexusStatusLevel.online, 'Online')
+            : visible
+                ? (NexusStatusLevel.nearby, 'Nearby')
+                : (
+                    NexusStatusLevel.offline,
+                    'Offline · last seen ${_timeAgo(lastSeen)}',
+                  );
 
     return NexusRow(
       minHeight: NexusSize.row,
@@ -339,15 +375,20 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
     final online = mesh.isOnline(device.id);
     final visible = mesh.isVisible(device.id);
     final lastSeen = mesh.lastSeenAt(device.id);
+    final retry = _retryingLink(mesh, device.id);
 
-    final (NexusStatusLevel level, String status) = online
-        ? (NexusStatusLevel.online, 'Online · reachable now')
-        : visible
-            ? (NexusStatusLevel.nearby, 'Nearby but not reachable')
-            : (
-                NexusStatusLevel.offline,
-                'Offline · last seen ${_timeAgo(lastSeen)}',
-              );
+    // Same three states as the row it was opened from, so the sheet never
+    // contradicts the row that led here.
+    final (NexusStatusLevel level, String status) = retry != null
+        ? (NexusStatusLevel.working, _reconnectingLabel(retry))
+        : online
+            ? (NexusStatusLevel.online, 'Online · reachable now')
+            : visible
+                ? (NexusStatusLevel.nearby, 'Nearby but not reachable')
+                : (
+                    NexusStatusLevel.offline,
+                    'Offline · last seen ${_timeAgo(lastSeen)}',
+                  );
 
     final capabilities = _runnableCapabilityLabels(device.platform);
 
