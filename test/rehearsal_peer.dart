@@ -17,6 +17,24 @@ import 'package:nexus/mesh/mesh_service.dart';
 const _dir = '/tmp/nexus_rehearsal';
 const _port = 53400;
 
+/// Opens the peer's store: read what is already there, then point it at
+/// [_port].
+///
+/// The order is the whole point. `save()` writes the map the store holds, and
+/// a store that has never loaded holds only defaults — so saving *before*
+/// loading overwrites the file and forgets every device this peer was paired
+/// with. That is what happened on the 2026-10-07 device run: the peer was
+/// restarted to prove the phone reconnects, came back paired with nobody, and
+/// never dialled the phone, which read as a reconnect bug in the product and
+/// was not one. Guards: test/rehearsal_peer_store_test.dart.
+Future<NexusStore> openPeerStore(String path) async {
+  final store = NexusStore(explicitPath: path);
+  await store.load();
+  store.port = _port;
+  await store.save();
+  return store;
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -32,9 +50,7 @@ void main() {
     final bytes = List<int>.generate(4096, (i) => (i * 7) % 256);
     File('${served.path}/report.pdf').writeAsBytesSync(bytes);
 
-    final store = NexusStore(explicitPath: '${home.path}/peer_store.json')
-      ..port = _port;
-    await store.save();
+    final store = await openPeerStore('${home.path}/peer_store.json');
 
     final mesh = MeshService(
       identity: DeviceInfo(
