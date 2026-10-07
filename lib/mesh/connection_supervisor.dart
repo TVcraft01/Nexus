@@ -52,9 +52,27 @@
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ChangeNotifier;
+import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
 
 import 'mesh_transport.dart';
+
+/// Tag every observability line in this file carries, and the tag the Kotlin
+/// side logs a network transition under ([MainActivity.watchNetwork]).
+///
+/// It exists so one command reads the whole story on one clock — the transition
+/// that reset the schedule, and every attempt after it with its number and its
+/// wait:
+///
+/// ```
+/// adb logcat -v epoch | grep NexusSupervisor
+/// ```
+///
+/// which then correlates 1:1 with a `/proc/net/tcp` `SYN_SENT` poller. Before
+/// this, nothing on the device recorded when the callback ran or when a retry
+/// was scheduled, so the connectivity fast path could only be inferred from
+/// dial timing (see docs/evidence/step7_device_reconnect_20261007.md). The
+/// lines are observations only: they change no scheduling.
+const String supervisorLogTag = 'NexusSupervisor';
 
 /// What the supervisor believes about one peer right now. Read-only snapshot
 /// for anything that has to show "online" or "reconnecting".
@@ -204,6 +222,10 @@ class ConnectionSupervisor extends ChangeNotifier {
   /// silent delay this class exists to remove.
   Future<void> onNetworkChanged() async {
     if (!_running) return;
+    debugPrint(
+      '$supervisorLogTag: network changed - resetting ${_links.length} '
+      'wait(s) and retrying now',
+    );
     for (final state in _links.values) {
       state.attempts = 0;
       state.nextAttemptAt = null;
@@ -249,6 +271,10 @@ class ConnectionSupervisor extends ChangeNotifier {
           if (!state.up) {
             state.up = true;
             changed = true;
+            debugPrint(
+              '$supervisorLogTag: peer ${peer.id} is up again '
+              '(${silence.inSeconds}s of silence before it answered)',
+            );
           }
           if (state.attempts != 0 || state.nextAttemptAt != null) {
             state.attempts = 0;
@@ -281,10 +307,15 @@ class ConnectionSupervisor extends ChangeNotifier {
         // the answer arrives as a frame that moves [MeshTransport.lastHeardAt]
         // — not as anything beat() could return.
         state.attempts += 1;
-        state.nextAttemptAt = now.add(backoffFor(state.attempts));
+        final wait = backoffFor(state.attempts);
+        state.nextAttemptAt = now.add(wait);
         state.lastBeatAt = now;
         changed = true;
         beat = true;
+        debugPrint(
+          '$supervisorLogTag: peer ${peer.id} attempt ${state.attempts} out, '
+          'next in ${wait.inSeconds}s',
+        );
       }
     } finally {
       _ticking = false;

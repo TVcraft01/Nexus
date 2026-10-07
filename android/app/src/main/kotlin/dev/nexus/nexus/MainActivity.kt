@@ -61,6 +61,19 @@ class MainActivity : FlutterActivity() {
     private val NETWORK_CHANNEL = "dev.nexus.nexus/network"
     private val NETWORK_EVENTS_CHANNEL = "dev.nexus.nexus/network_events"
 
+    // Tag for the reconnect-observability lines below. Deliberately the same
+    // name the Dart side prefixes its supervisor lines with (see
+    // lib/mesh/connection_supervisor.dart, `supervisorLogTag`), so one command
+    // reads the whole story on one clock:
+    //
+    //     adb logcat -v epoch | grep NexusSupervisor
+    //
+    // Before this, nothing on the device recorded when a network transition
+    // happened, so whether the connectivity fast path fired could only be
+    // inferred from dial timing — see
+    // docs/evidence/step7_device_reconnect_20261007.md.
+    private val SUPERVISOR_TAG = "NexusSupervisor"
+
     // The ConnectivityManager callback forwarding network transitions to
     // Dart, held so "cancel" can let it go.
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -417,10 +430,22 @@ class MainActivity : FlutterActivity() {
         val main = Handler(Looper.getMainLooper())
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                // The observation the fast-path measurement was missing: the
+                // moment the transition was seen, with the network that took
+                // over. Logged before the channel call so the line carries the
+                // callback's own timing, not the main looper's.
+                Log.i(
+                    SUPERVISOR_TAG,
+                    "networkChanged available $network${activeNetworkDescription(manager)}",
+                )
                 main.post { channel.invokeMethod("networkChanged", "available") }
             }
 
             override fun onLost(network: Network) {
+                Log.i(
+                    SUPERVISOR_TAG,
+                    "networkChanged lost $network${activeNetworkDescription(manager)}",
+                )
                 main.post { channel.invokeMethod("networkChanged", "lost") }
             }
         }
@@ -433,6 +458,24 @@ class MainActivity : FlutterActivity() {
             // learns about a dead link from the heartbeat's timeout instead.
             Log.w(TAG, "network callback unavailable: ${e.message}")
         }
+    }
+
+    /// The default network as Android sees it *at the moment of a callback*,
+    /// for the log lines above: which network now carries traffic, over which
+    /// transports, on which interface.
+    ///
+    /// It logs each object's own description rather than picking fields out of
+    /// it: those descriptions already carry the transports and the interface
+    /// name, they need no API-level guard (`LinkProperties.interfaceName` is
+    /// API 30 and this app ships to API 24), and a radio transition is not the
+    /// place to do real work. Best-effort: a null answer is still useful.
+    private fun activeNetworkDescription(manager: ConnectivityManager): String = try {
+        val active = manager.activeNetwork
+        val caps = active?.let { manager.getNetworkCapabilities(it) }
+        val link = active?.let { manager.getLinkProperties(it) }
+        " (active=$active caps=$caps link=$link)"
+    } catch (e: Exception) {
+        " (active=?)"
     }
 
     /// Stops forwarding network transitions — Dart has stopped listening.
