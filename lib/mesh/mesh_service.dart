@@ -25,6 +25,7 @@ import '../core/serial_transport.dart';
 import '../core/storage_roots.dart' as storage;
 import '../core/store.dart';
 import '../core/version.dart';
+import '../core/watchdog_latch.dart';
 import 'connection_supervisor.dart';
 import 'connectivity_monitor.dart';
 import 'discovery.dart';
@@ -237,12 +238,21 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     this.heartbeatInterval = const Duration(seconds: 8),
     this.nearbyWindow = const Duration(seconds: 60),
     this.connectTimeout = const Duration(seconds: 5),
+    this.latchWatchdog = const Duration(seconds: 90),
     this.fileRoot,
   }) : clipboard = clipboard ?? _RealClipboard();
 
   /// How long to wait per address before falling back to the next one.
   /// Configurable so tests can exercise address fallback quickly.
   final Duration connectTimeout;
+
+  /// How long a presence exchange or a clipboard flush may stay "in flight"
+  /// before its latch lets go by itself (see [WatchdogLatch]). Must exceed the
+  /// slowest healthy pass — walking every address a peer has at
+  /// [connectTimeout] each is the slow one — and stay under the supervisor's
+  /// own retry cadence, so a stuck exchange swallows at most one retry.
+  /// Configurable so a test can watch the latch expire without waiting 90 s.
+  final Duration latchWatchdog;
 
   /// The folder this device serves to paired devices (the "Files" tab browses
   /// it). Defaults to the home directory on desktop; tests pass a temp dir.
@@ -315,8 +325,12 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   Timer? _heartbeatTimer;
   Timer? _clipboardTimer;
   bool _foreground = true;
-  bool _heartbeatRunning = false;
-  bool _clipboardSending = false;
+  // Both latches used to be plain booleans cleared in a `finally`. That is only
+  // sound while every await between the two can finish: a dial blocked inside
+  // the OS left the flag set and made the mesh stop dialling for the rest of
+  // the process's life. See lib/core/watchdog_latch.dart.
+  late final WatchdogLatch _heartbeatLatch = WatchdogLatch(latchWatchdog);
+  late final WatchdogLatch _clipboardLatch = WatchdogLatch(latchWatchdog);
   String? _lastClipboard;
   String? _pendingClipboard;
   final Set<String> _clipboardDeliveredTo = {};
@@ -3267,8 +3281,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   /// [_presenceSweep]). [beat] passes true — that call *is* the supervisor
   /// dialling, and it is the only thing that reaches a paired peer.
   Future<void> _heartbeat({bool includeSupervised = true}) async {
-    if (_heartbeatRunning) return;
-    _heartbeatRunning = true;
+    if (!_heartbeatLatch.acquire()) return;
     try {
       // Drop devices that stopped announcing, so we never keep pinging ghosts.
       final cutoff = DateTime.now().subtract(nearbyWindow);
@@ -3328,7 +3341,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
       }
       notifyListeners();
     } finally {
-      _heartbeatRunning = false;
+      _heartbeatLatch.release();
     }
   }
 
@@ -3769,8 +3782,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   }
 
   Future<int> _flushPendingClipboard() async {
-    if (_clipboardSending || _pendingClipboard == null) return 0;
-    _clipboardSending = true;
+    if (_pendingClipboard == null || !_clipboardLatch.acquire()) return 0;
     var sent = 0;
     try {
       final text = _pendingClipboard;
@@ -3827,7 +3839,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
       notifyListeners();
       return sent;
     } finally {
-      _clipboardSending = false;
+      _clipboardLatch.release();
     }
   }
 

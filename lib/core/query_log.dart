@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory;
 
 import '../mesh/mesh_service.dart';
+import 'watchdog_latch.dart';
 
 /// A temporary but honest record of everything the assistant is asked and
 /// how it answered, appended as JSON lines to shared storage so the raw
@@ -22,7 +23,10 @@ class QueryLog {
   File? _file;
   final List<String> _pending = [];
   Timer? _flushTimer;
-  bool _writing = false;
+  // The flush is a filesystem write. A write that never returns used to leave
+  // the flag set, and the log then went silent for the rest of the run — the
+  // one thing a bug log must not do (see watchdog_latch.dart).
+  final WatchdogLatch _writeLatch = WatchdogLatch(const Duration(seconds: 30));
 
   Future<File?> _resolve() async {
     final cached = _file;
@@ -149,8 +153,7 @@ class QueryLog {
   Future<void> _flush() async {
     _flushTimer?.cancel();
     _flushTimer = null;
-    if (_writing || _pending.isEmpty) return;
-    _writing = true;
+    if (_pending.isEmpty || !_writeLatch.acquire()) return;
     final batch = List<String>.of(_pending);
     _pending.clear();
     try {
@@ -163,7 +166,7 @@ class QueryLog {
     } catch (_) {
       // Never crash or nag for logging.
     }
-    _writing = false;
+    _writeLatch.release();
     if (_pending.isNotEmpty && _flushTimer == null) {
       _flushTimer = Timer(flushDelay, _flush);
     }

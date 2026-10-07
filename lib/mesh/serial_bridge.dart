@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../core/serial_protocol.dart';
 import '../core/serial_transport.dart';
+import '../core/watchdog_latch.dart';
 
 /// A microcontroller (ESP32, …) attached to this machine over a USB cable
 /// that has announced itself to the Nexus app.
@@ -101,7 +102,11 @@ class SerialBridge {
 
   final Map<String, SerialDevice> _devices = {};
   final Map<String, _OpenPort> _ports = {};
-  bool _scanning = false;
+  // A scan lists ports and opens them — serial I/O, which can block inside the
+  // driver. A plain boolean cleared in a `finally` would then make every later
+  // scan a no-op and hot-plugging silently dead (see watchdog_latch.dart).
+  // Comfortably longer than any healthy scan, which is a directory read.
+  final WatchdogLatch _scanLatch = WatchdogLatch(const Duration(seconds: 60));
 
   /// Re-lists the cable every few seconds so a board plugged in *after* the
   /// first scan (or replugged after being unplugged) shows up without the
@@ -178,8 +183,7 @@ class SerialBridge {
   }
 
   Future<void> _scanOnce() async {
-    if (_scanning) return;
-    _scanning = true;
+    if (!_scanLatch.acquire()) return;
     try {
       final ports = await transport.listPorts();
       for (final info in ports) {
@@ -189,7 +193,7 @@ class SerialBridge {
     } catch (e) {
       debugPrint('NEXUS serial: scan failed: $e');
     } finally {
-      _scanning = false;
+      _scanLatch.release();
     }
   }
 
