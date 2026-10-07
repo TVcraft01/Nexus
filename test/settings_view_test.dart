@@ -68,9 +68,13 @@ void main() {
 
       for (final label in _toggles) {
         final name = find.text(label);
-        expect(name, findsOneWidget, reason: '"$label" is on the screen');
-        await tester.ensureVisible(name);
+        // The screen scrolls and the list builds lazily, so a row below the
+        // fold is not in the tree at all until it is scrolled to — exactly
+        // what a user does before they can tap it. The walk stays in document
+        // order, so it only ever scrolls downward.
+        await tester.scrollUntilVisible(name, 120);
         await tester.pump();
+        expect(name, findsOneWidget, reason: '"$label" is on the screen');
 
         final row = find.ancestor(of: name, matching: find.byType(Row)).first;
         Switch current() => tester.widget<Switch>(

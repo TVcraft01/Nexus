@@ -20,7 +20,18 @@ import 'theme.dart';
 class SettingsView extends StatefulWidget {
   final MeshService mesh;
   final Future<UpdateCheck> Function()? onCheckForUpdate;
-  const SettingsView({super.key, required this.mesh, this.onCheckForUpdate});
+
+  /// Opens the assistant's "what I still misunderstand" review. Supplied by
+  /// the shell, which holds the one assistant whose service owns what this
+  /// device learned; null in a test that builds this view on its own.
+  final VoidCallback? onOpenDreamReview;
+
+  const SettingsView({
+    super.key,
+    required this.mesh,
+    this.onCheckForUpdate,
+    this.onOpenDreamReview,
+  });
 
   @override
   State<SettingsView> createState() => _SettingsViewState();
@@ -181,6 +192,18 @@ class _SettingsViewState extends State<SettingsView> {
               subtitle: 'Anything that changes another device waits for a yes '
                   'on that device.',
               leading: Icon(Icons.shield_outlined, size: 20, color: icon),
+            ),
+            NexusRow(
+              title: 'What I still misunderstand',
+              subtitle: 'Review the phrases Nexus gave up on and teach it what '
+                  'you meant.',
+              leading: Icon(
+                Icons.psychology_alt_outlined,
+                size: 20,
+                color: icon,
+              ),
+              chevron: true,
+              onTap: widget.onOpenDreamReview,
             ),
           ],
         ),

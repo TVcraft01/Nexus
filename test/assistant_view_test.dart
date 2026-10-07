@@ -16,6 +16,7 @@ import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/core/query_log.dart';
 import 'package:nexus/ui/assistant_view.dart';
+import 'package:nexus/ui/components/nexus_ui.dart' show NexusPresence;
 import 'package:nexus/ui/device_executor.dart';
 import 'package:nexus/ui/nexus_core.dart';
 import 'package:nexus/ui/theme.dart';
@@ -748,8 +749,11 @@ void brainWidgetTests() {
       expect(find.textContaining("It's "), findsOneWidget);
       expect(find.text('Hello! I am Nexus.'), findsNothing);
 
-      await tester.tap(find.byTooltip('New conversation'));
-      await tester.pump();
+      // The header's long-press menu, not a top-bar icon.
+      await tester.longPress(find.byType(NexusPresence));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('New conversation'));
+      await tester.pumpAndSettle();
 
       // The thread is gone, the composer is empty and ready...
       expect(find.textContaining("It's "), findsNothing);
@@ -1136,8 +1140,11 @@ void brainWidgetTests() {
       await tester.pump();
       expect(find.text('Question'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('New conversation'));
-      await tester.pump();
+      // The header's long-press menu, not a top-bar icon.
+      await tester.longPress(find.byType(NexusPresence));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('New conversation'));
+      await tester.pumpAndSettle();
       expect(find.text('Question'), findsNothing);
 
       // A command typed after the reset must run as itself. The abandoned

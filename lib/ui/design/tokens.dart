@@ -8,9 +8,13 @@ import 'package:flutter/material.dart';
 /// file, not a hunt through widgets.
 ///
 /// Colours come in two palettes. The dark one is what Nexus ships: deep
-/// slate, one quiet teal accent, nothing decorative. The light one exists so
+/// slate, one system-blue accent, nothing decorative. The light one exists so
 /// the same semantic names keep working when appearance support lands — it is
 /// data, not a second implementation.
+///
+/// The accent is a single colour, never a gradient and never a low-alpha
+/// wash across a surface: the mint-teal that shipped before read as an "AI
+/// product", and one confident blue reads as software someone shipped.
 
 /// The written-down dark values. Private on purpose: everything outside this
 /// library goes through [NexusPalette] or the legacy [NexusColors] aliases,
@@ -24,9 +28,9 @@ abstract final class _Dark {
   static const textPrimary = Color(0xFFE8ECF2);
   static const textSecondary = Color(0xFF8A94A6);
   static const textTertiary = Color(0xFF6B7686);
-  static const accent = Color(0xFF5EEAD4);
-  static const accentStrong = Color(0xFF2DD4BF);
-  static const onAccent = Color(0xFF06251F);
+  static const accent = Color(0xFF0A84FF);
+  static const accentStrong = Color(0xFF409CFF);
+  static const onAccent = Color(0xFFFFFFFF);
   static const success = Color(0xFF34D399);
   static const warning = Color(0xFFFBBF24);
   static const danger = Color(0xFFF87171);
@@ -43,8 +47,8 @@ abstract final class _Light {
   static const textPrimary = Color(0xFF111820);
   static const textSecondary = Color(0xFF5A6474);
   static const textTertiary = Color(0xFF6E7887);
-  static const accent = Color(0xFF0E7490);
-  static const accentStrong = Color(0xFF0B5F76);
+  static const accent = Color(0xFF007AFF);
+  static const accentStrong = Color(0xFF0062CC);
   static const onAccent = Color(0xFFFFFFFF);
   static const success = Color(0xFF0F7A4A);
   static const warning = Color(0xFF8A5300);
@@ -232,8 +236,8 @@ class NexusPalette extends ThemeExtension<NexusPalette> {
   }
 }
 
-/// Spacing scale, in logical pixels. Only these values: a 7 or a 13 in a
-/// layout is a bug, not a preference.
+/// Spacing scale, in logical pixels. An 8pt rhythm with a 4pt sub-step for
+/// icon/label micro-gaps; a 7 or a 13 in a layout is a bug, not a preference.
 abstract final class NexusSpace {
   static const double xxs = 2;
   static const double xs = 4;
@@ -245,21 +249,21 @@ abstract final class NexusSpace {
   static const double xxxl = 32;
   static const double huge = 40;
 
-  /// Horizontal gutter for phone pages.
-  static const double page = 20;
+  /// Horizontal gutter for phone pages — Apple's 16pt margin.
+  static const double page = 16;
 
   /// Vertical gap between two page sections.
-  static const double section = 28;
+  static const double section = 24;
 }
 
 /// Corner radii.
 abstract final class NexusRadius {
   static const double xs = 6;
   static const double sm = 10;
-  static const double md = 14;
-  static const double lg = 18;
+  static const double md = 12;
+  static const double lg = 16;
   static const double xl = 24;
-  static const Radius sheet = Radius.circular(22);
+  static const Radius sheet = Radius.circular(20);
 
   static const BorderRadius row = BorderRadius.all(Radius.circular(md));
   static const BorderRadius card = BorderRadius.all(Radius.circular(lg));
@@ -289,6 +293,29 @@ abstract final class NexusSize {
 
   /// The widest the desktop content column gets.
   static const double desktop = 980;
+}
+
+/// Elevation. Nexus carries depth with hairlines, not drop shadows: only the
+/// two things that genuinely float over the page get one.
+abstract final class NexusShadow {
+  /// A seated surface that still reads as above the page — the composer, a
+  /// floating banner.
+  static const List<BoxShadow> raised = [
+    BoxShadow(
+      color: Color(0x47000000),
+      blurRadius: 24,
+      offset: Offset(0, 8),
+    ),
+  ];
+
+  /// A modal sheet, which casts upward.
+  static const List<BoxShadow> sheet = [
+    BoxShadow(
+      color: Color(0x52000000),
+      blurRadius: 32,
+      offset: Offset(0, -8),
+    ),
+  ];
 }
 
 /// Motion. Motion means something is happening — it is never decoration.

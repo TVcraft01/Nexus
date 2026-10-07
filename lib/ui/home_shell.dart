@@ -75,6 +75,11 @@ class _HomeShellState extends State<HomeShell> {
   /// Nexus is and where to talk to it, not a device list they do not have yet.
   int _index = 0;
 
+  /// A handle on the assistant's state, so Settings' "What I still
+  /// misunderstand" row can open the review sheet the assistant owns — one
+  /// owner of what this device learned, not two that could disagree.
+  final _assistantKey = GlobalKey<AssistantViewState>();
+
   ClipEntry? _lastShown;
 
   /// The conversational brain, one per platform: desktops run a strong
@@ -127,6 +132,15 @@ class _HomeShellState extends State<HomeShell> {
       setState(() => _update = check.info);
     }
     return check;
+  }
+
+  /// Settings → Assistant: the review is an assistant concern, so the row
+  /// brings the assistant forward and then asks it to open the sheet.
+  void _openDreamReview() {
+    setState(() => _index = 0);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _assistantKey.currentState?.openDreamReview();
+    });
   }
 
   void _checkPeerUpdate() {
@@ -259,12 +273,17 @@ class _HomeShellState extends State<HomeShell> {
         }
 
         final views = [
-          AssistantView(mesh: widget.mesh, brain: _brain),
+          AssistantView(
+            key: _assistantKey,
+            mesh: widget.mesh,
+            brain: _brain,
+          ),
           DevicesView(mesh: widget.mesh),
           FilesView(mesh: widget.mesh),
           SettingsView(
             mesh: widget.mesh,
             onCheckForUpdate: _checkForUpdates,
+            onOpenDreamReview: _openDreamReview,
           ),
         ];
 

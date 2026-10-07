@@ -16,6 +16,7 @@ import 'package:nexus/core/speech.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/ui/assistant_view.dart';
+import 'package:nexus/ui/components/nexus_ui.dart' show NexusPresence;
 import 'package:nexus/ui/theme.dart';
 
 /// A recognizer that "hears" a fixed utterance (or nothing) — the test
@@ -399,8 +400,11 @@ void main() {
         await tester.pumpWidget(harness(mesh));
         await tester.pump();
 
-        // Open the dream review from the assistant header.
-        await tester.tap(find.byIcon(Icons.psychology_alt_outlined));
+        // Open the dream review from the conversation menu — a long press on
+        // the header. The top bar carries no icons any more.
+        await tester.longPress(find.byType(NexusPresence));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('What I still misunderstand'));
         await tester.pumpAndSettle();
         expect(find.text('What I still misunderstand'), findsOneWidget);
         expect(
@@ -443,7 +447,9 @@ void main() {
     try {
       await tester.pumpWidget(harness(mesh));
       await tester.pump();
-      await tester.tap(find.byIcon(Icons.psychology_alt_outlined));
+      await tester.longPress(find.byType(NexusPresence));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('What I still misunderstand'));
       await tester.pumpAndSettle();
       expect(find.text('Sweet dreams.'), findsOneWidget);
     } finally {
@@ -628,7 +634,9 @@ void main() {
       await tester.tap(find.byTooltip('Not now'));
       await tester.pump();
       expect(nudge, findsNothing);
-      await tester.tap(find.byIcon(Icons.psychology_alt_outlined));
+      await tester.longPress(find.byType(NexusPresence));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('What I still misunderstand'));
       await tester.pumpAndSettle();
       expect(find.text('What I still misunderstand'), findsOneWidget);
       await tester.tapAt(const Offset(10, 10)); // barrier above the sheet

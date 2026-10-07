@@ -52,10 +52,14 @@ class AssistantView extends StatefulWidget {
   });
 
   @override
-  State<AssistantView> createState() => _AssistantViewState();
+  State<AssistantView> createState() => AssistantViewState();
 }
 
-class _AssistantViewState extends State<AssistantView> {
+/// Public so the shell can hold a key to it: Settings' "What I still
+/// misunderstand" row opens a sheet this screen owns, and handing the sheet a
+/// second service is the one thing that would let the two disagree about what
+/// this device learned.
+class AssistantViewState extends State<AssistantView> {
   final _controller = TextEditingController();
   final _focus = FocusNode();
   String _lastInput = '';
@@ -1550,6 +1554,14 @@ class _AssistantViewState extends State<AssistantView> {
       .map((w) => w[0].toUpperCase() + w.substring(1))
       .join(' ');
 
+  /// Opens the dream review from outside this screen — the Settings row
+  /// "What I still misunderstand" reaches the same sheet the header menu
+  /// does, through the one service that owns what this device learned.
+  void openDreamReview() {
+    if (!mounted) return;
+    unawaited(_showDreamReview(context));
+  }
+
   /// Opens the dream review: phrases the assistant had to give up on,
   /// straight from its own log. Teaching one closes that gap forever.
   Future<void> _showDreamReview(BuildContext context) async {
@@ -1561,9 +1573,9 @@ class _AssistantViewState extends State<AssistantView> {
     );
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: NexusColors.bg,
+      backgroundColor: NexusPalette.of(context).bg,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        borderRadius: BorderRadius.vertical(top: NexusRadius.sheet),
       ),
       builder: (sheetContext) =>
           _DreamSheet(
@@ -1721,36 +1733,38 @@ class _AssistantViewState extends State<AssistantView> {
   Widget _reminderBanner() {
     final reminder = _reminderEngine.fired;
     if (reminder == null) return const SizedBox.shrink();
+    final palette = NexusPalette.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+      padding: const EdgeInsets.symmetric(horizontal: NexusSpace.page),
       child: Container(
         key: const ValueKey('reminder-banner'),
-        padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+        padding: const EdgeInsets.fromLTRB(
+          NexusSpace.lg,
+          NexusSpace.sm,
+          NexusSpace.xs,
+          NexusSpace.sm,
+        ),
         decoration: BoxDecoration(
-          color: NexusColors.accent.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: NexusColors.accent.withValues(alpha: 0.4),
-          ),
+          color: palette.surfaceElevated,
+          borderRadius: NexusRadius.card,
+          border: Border.all(color: palette.separator),
         ),
         child: Row(
           children: [
-            const Icon(Icons.alarm_rounded, size: 18, color: NexusColors.accent),
-            const SizedBox(width: 10),
+            Icon(Icons.alarm_rounded, size: 18, color: palette.accent),
+            const SizedBox(width: NexusSpace.md),
             Expanded(
               child: Text(
                 'Reminder: ${reminder.text}',
-                style: const TextStyle(
-                  color: NexusColors.text,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
               ),
             ),
             IconButton(
               tooltip: 'Done',
               icon: const Icon(Icons.check_rounded, size: 18),
-              color: NexusColors.ok,
+              color: palette.success,
               onPressed: _reminderEngine.acknowledge,
             ),
           ],
@@ -1775,49 +1789,50 @@ class _AssistantViewState extends State<AssistantView> {
   /// The specific beats the generic: when the dream found a fix, offer it
   /// instead of the plain "teach me?" nudge.
   Widget _dreamLearnCard(DreamLearn learn) {
+    final palette = NexusPalette.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 12, 0),
-      child: Material(
-        color: Colors.transparent,
-        child: Container(
-          key: const ValueKey('dream-learn-card'),
-          padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
-          decoration: BoxDecoration(
-            color: NexusColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: NexusColors.border),
-          ),
-          child: Row(
-            children: [
-              const Icon(
-                Icons.auto_awesome_rounded,
-                size: 16,
-                color: NexusColors.accent,
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.page,
+        NexusSpace.md,
+        NexusSpace.sm,
+        0,
+      ),
+      child: Container(
+        key: const ValueKey('dream-learn-card'),
+        padding: const EdgeInsets.fromLTRB(
+          NexusSpace.lg,
+          NexusSpace.sm,
+          NexusSpace.xs,
+          NexusSpace.sm,
+        ),
+        decoration: BoxDecoration(
+          color: palette.surface,
+          borderRadius: NexusRadius.card,
+          border: Border.all(color: palette.separator),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.auto_awesome_rounded, size: 18, color: palette.accent),
+            const SizedBox(width: NexusSpace.md),
+            Expanded(
+              child: Text(
+                'You tried "${learn.phrase}" a few times — I think you '
+                'meant "${learn.source}". Want me to remember that?',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'You tried "${learn.phrase}" a few times — I think you '
-                  'meant "${learn.source}". Want me to remember that?',
-                  style: const TextStyle(
-                    color: NexusColors.text,
-                    fontSize: 13,
-                  ),
-                ),
-              ),
-              TextButton(
-                key: const ValueKey('dream-learn-button'),
-                onPressed: () => _dreamLearn(learn),
-                child: const Text('Learn it'),
-              ),
-              IconButton(
-                tooltip: 'Not now',
-                icon: const Icon(Icons.close_rounded, size: 16),
-                color: NexusColors.muted,
-                onPressed: () => setState(() => _dreamDismissed = true),
-              ),
-            ],
-          ),
+            ),
+            TextButton(
+              key: const ValueKey('dream-learn-button'),
+              onPressed: () => _dreamLearn(learn),
+              child: const Text('Learn it'),
+            ),
+            IconButton(
+              tooltip: 'Not now',
+              icon: const Icon(Icons.close_rounded, size: 16),
+              color: palette.textSecondary,
+              onPressed: () => setState(() => _dreamDismissed = true),
+            ),
+          ],
         ),
       ),
     );
@@ -1833,45 +1848,53 @@ class _AssistantViewState extends State<AssistantView> {
     if (gaps == null || gaps.isEmpty) {
       return const SizedBox.shrink();
     }
+    final palette = NexusPalette.of(context);
     final message = gaps.length == 1
         ? 'I still don\'t understand "${gaps.first.phrase}" — teach me?'
         : 'I still don\'t get ${gaps.length} things you asked — teach me?';
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 12, 0),
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.page,
+        NexusSpace.md,
+        NexusSpace.sm,
+        0,
+      ),
       child: Material(
-        color: Colors.transparent,
+        color: palette.surface,
+        borderRadius: NexusRadius.card,
         child: InkWell(
           key: const ValueKey('dream-nudge'),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: NexusRadius.card,
           onTap: () => unawaited(_showDreamReview(context)),
           child: Container(
-            padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+            padding: const EdgeInsets.fromLTRB(
+              NexusSpace.lg,
+              NexusSpace.sm,
+              NexusSpace.xs,
+              NexusSpace.sm,
+            ),
             decoration: BoxDecoration(
-              color: NexusColors.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: NexusColors.border),
+              borderRadius: NexusRadius.card,
+              border: Border.all(color: palette.separator),
             ),
             child: Row(
               children: [
-                const Icon(
+                Icon(
                   Icons.auto_awesome_rounded,
-                  size: 16,
-                  color: NexusColors.accent,
+                  size: 18,
+                  color: palette.accent,
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: NexusSpace.md),
                 Expanded(
                   child: Text(
                     message,
-                    style: const TextStyle(
-                      color: NexusColors.text,
-                      fontSize: 13,
-                    ),
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
                 IconButton(
                   tooltip: 'Not now',
                   icon: const Icon(Icons.close_rounded, size: 16),
-                  color: NexusColors.muted,
+                  color: palette.textSecondary,
                   onPressed: () => setState(() => _dreamDismissed = true),
                 ),
               ],
@@ -1886,33 +1909,26 @@ class _AssistantViewState extends State<AssistantView> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // One header for every tab — plus the assistant's own dream review:
-        // what it failed to understand, mined from its log, fixable in place.
-        // Presence first: the Core, what it is doing, and the two quiet
-        // things you can do to it. The conversation is the point of this
-        // screen, so it gets the room and the header stays one row tall.
+        // The header is the orb, the name and one line of state — no icon
+        // buttons. Both actions it used to carry are still one gesture away:
+        // a long press on this row opens the conversation menu (New
+        // conversation, What I still misunderstand), and the review is also
+        // a row in Settings. The conversation is the point of this screen, so
+        // the header stays one row tall.
         Padding(
           padding: const EdgeInsets.fromLTRB(
             NexusSpace.page,
             NexusSpace.xl,
-            NexusSpace.sm,
+            NexusSpace.page,
             0,
           ),
-          child: NexusPresence(
-            state: _coreState,
-            contextLine: _presenceLine,
-            trailing: [
-              IconButton(
-                tooltip: 'What I still misunderstand',
-                icon: const Icon(Icons.psychology_alt_outlined),
-                onPressed: () => unawaited(_showDreamReview(context)),
-              ),
-              IconButton(
-                tooltip: 'New conversation',
-                icon: const Icon(Icons.add_comment_outlined),
-                onPressed: _startNewConversation,
-              ),
-            ],
+          child: InkWell(
+            onLongPress: () => unawaited(_showConversationMenu()),
+            borderRadius: NexusRadius.row,
+            child: NexusPresence(
+              state: _coreState,
+              contextLine: _presenceLine,
+            ),
           ),
         ),
         // Proactive nudge: gaps the dream log found, surfaced without being
@@ -1948,16 +1964,19 @@ class _AssistantViewState extends State<AssistantView> {
     final palette = NexusPalette.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(
-        NexusSpace.lg,
+        NexusSpace.page,
         NexusSpace.sm,
-        NexusSpace.lg,
+        NexusSpace.page,
         NexusSpace.sm,
       ),
       child: Container(
         decoration: BoxDecoration(
-          color: palette.surface,
+          // The one thing that floats over the thread: a seated composer, so
+          // it reads as a layer above the conversation, not a box drawn on it.
+          color: palette.surfaceSecondary,
           borderRadius: NexusRadius.card,
           border: Border.all(color: palette.separator),
+          boxShadow: NexusShadow.raised,
         ),
         child: Row(
           children: [
@@ -1977,10 +1996,10 @@ class _AssistantViewState extends State<AssistantView> {
                   focusedBorder: InputBorder.none,
                   contentPadding: const EdgeInsets.symmetric(
                     horizontal: NexusSpace.lg,
-                    vertical: NexusSpace.md,
+                    vertical: NexusSpace.lg,
                   ),
                 ),
-                style: TextStyle(color: palette.textPrimary, fontSize: 15),
+                style: Theme.of(context).textTheme.bodyLarge,
               ),
             ),
             IconButton(
@@ -2064,6 +2083,62 @@ class _AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// The conversation's secondary actions, in one place instead of two icon
+  /// buttons in the header: a long press on the header row opens this sheet.
+  /// Both entries call exactly the methods the old buttons did.
+  Future<void> _showConversationMenu() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: NexusRadius.sheet),
+      ),
+      builder: (sheetContext) {
+        final palette = NexusPalette.of(sheetContext);
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              NexusSpace.sm,
+              NexusSpace.md,
+              NexusSpace.sm,
+              NexusSpace.sm,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                NexusRow(
+                  title: 'New conversation',
+                  subtitle: 'Clear this thread and start again.',
+                  leading: Icon(
+                    Icons.add_comment_outlined,
+                    size: 20,
+                    color: palette.textSecondary,
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _startNewConversation();
+                  },
+                ),
+                NexusRow(
+                  title: 'What I still misunderstand',
+                  subtitle: 'Review and teach the phrases I gave up on.',
+                  leading: Icon(
+                    Icons.psychology_alt_outlined,
+                    size: 20,
+                    color: palette.textSecondary,
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    unawaited(_showDreamReview(context));
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   /// Clears the thread and gets out of the way, so the next thing the user
   /// types starts a conversation rather than continuing the one they just
   /// ended — a pending question is dropped from the service too, so it can
@@ -2126,6 +2201,7 @@ class _AssistantViewState extends State<AssistantView> {
   /// after installing Ollama or pulling a model), or the installed model.
   /// Only shown when a brain is attached.
   Widget _brainStatusLine() {
+    final palette = NexusPalette.of(context);
     final brain = widget.brain;
     // A mesh model ("mesh:…") means the brain lives on a paired device —
     // say so in words the phone user understands, and never tell them to
@@ -2141,19 +2217,19 @@ class _AssistantViewState extends State<AssistantView> {
     final (icon, color, text) = switch (_conversation.brainHealth) {
       BrainHealth.probing => (
         Icons.sync_rounded,
-        NexusColors.muted,
+        palette.textSecondary,
         'Looking for your local brain…',
       ),
       BrainHealth.offline => (
         Icons.memory_rounded,
-        NexusColors.warn,
+        palette.warning,
         viaMesh
             ? 'No brain reachable — pair your PC to share its brain (tap to retry)'
             : 'Local brain offline — install Ollama and pull a model (tap to retry)',
       ),
       BrainHealth.online => (
         Icons.auto_awesome_rounded,
-        NexusColors.ok,
+        palette.success,
         viaMesh
             ? 'Brain: your PC (via mesh)'
             : 'Local brain: ${_conversation.brainModel}',
@@ -2164,12 +2240,17 @@ class _AssistantViewState extends State<AssistantView> {
           ? null
           : () => unawaited(_conversation.probe(brain)),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+        padding: const EdgeInsets.fromLTRB(
+          NexusSpace.page,
+          NexusSpace.xs,
+          NexusSpace.page,
+          0,
+        ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(icon, size: 12, color: color),
-            const SizedBox(width: 6),
+            const SizedBox(width: NexusSpace.xs),
             Flexible(
               child: Text(
                 text,
@@ -3194,15 +3275,16 @@ class _DreamRowState extends State<_DreamRow> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: NexusSpace.md),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             '"${widget.phrase}"  ·  asked ${widget.count} '
             '${widget.count == 1 ? 'time' : 'times'}',
-            style: const TextStyle(color: NexusColors.text, fontSize: 13.5),
+            style: Theme.of(context).textTheme.bodyLarge,
           ),
           const SizedBox(height: 6),
           Row(
@@ -3236,10 +3318,12 @@ class _DreamRowState extends State<_DreamRow> {
           ),
           if (_error != null)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.only(top: NexusSpace.xs),
               child: Text(
                 _error!,
-                style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: palette.danger),
               ),
             ),
         ],
