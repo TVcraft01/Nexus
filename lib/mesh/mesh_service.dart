@@ -963,8 +963,37 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   /// died. This is the mesh's existing heartbeat on demand, so it is the
   /// supervisor's retry and its network-change fast path. Idempotent: a call
   /// while one exchange is running does nothing.
+  ///
+  /// Ownership, in one line: the supervisor owns *when* a paired peer is
+  /// dialled — every [heartbeatInterval] while the link is up, on its backoff
+  /// while it is down, at once on a network change — and this is the hand it
+  /// dials with. Nothing else retries a paired peer in the background (a send
+  /// the user actually asked for still dials on demand through [_sendEnc]), so
+  /// the countdown the UI shows is the schedule the wire follows.
   @override
   Future<void> beat() => _heartbeat();
+
+  /// The mesh's own periodic sweep: presence for everything no supervisor is
+  /// scheduling.
+  ///
+  /// A *paired* peer is the supervisor's to dial, so this sweep leaves those
+  /// alone (see [beat] and mesh/connection_supervisor.dart). It used not to,
+  /// and the wire was then dialled on a cadence the retry curve never chose:
+  /// on the 2026-10-07 device run the phone dialled a dead peer every ~30 s
+  /// no matter what the countdown said, which made a supervisor reconnect
+  /// indistinguishable from this sweep's next tick — the measurement could not
+  /// tell them apart because both were really happening.
+  ///
+  /// What is left is what the supervisor deliberately does not own: a device
+  /// that is merely *visible* nearby, which is not reachable at all until the
+  /// user pairs it. Ghosts are pruned here too, so a sweep with nothing to
+  /// dial still expires devices that stopped announcing.
+  ///
+  /// While no supervisor is running the sweep dials paired peers as well —
+  /// the moment between [start] and its supervisor's first tick, and any mesh
+  /// started without one — so this can never leave a mesh silent, it only
+  /// leaves the scheduling to whoever is scheduling.
+  Future<void> _presenceSweep() => _heartbeat(includeSupervised: false);
 
   /// Keeps every paired link alive across sleep, roam and radio changes.
   /// Started and stopped with the mesh — which is what the Android foreground
@@ -984,12 +1013,13 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     // A no-op off Android (and harmless if the platform refuses).
     await SyncService.start();
     _startDiscovery();
-    _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) => _heartbeat());
+    _heartbeatTimer =
+        Timer.periodic(heartbeatInterval, (_) => _presenceSweep());
     _clipboardTimer = Timer.periodic(
       const Duration(milliseconds: 1500),
       (_) => _checkClipboard(),
     );
-    unawaited(_heartbeat());
+    unawaited(_presenceSweep());
     // Keep the paired links alive: noticing silence, retrying with backoff and
     // reacting to a network change are the supervisor's job (see
     // mesh/connection_supervisor.dart). It starts with the mesh, so on Android
@@ -3232,7 +3262,11 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   // Presence heartbeat
   // ---------------------------------------------------------------------
 
-  Future<void> _heartbeat() async {
+  /// [includeSupervised] is false for the mesh's own sweep, which must never
+  /// dial a paired peer: those belong to the supervisor's schedule (see
+  /// [_presenceSweep]). [beat] passes true — that call *is* the supervisor
+  /// dialling, and it is the only thing that reaches a paired peer.
+  Future<void> _heartbeat({bool includeSupervised = true}) async {
     if (_heartbeatRunning) return;
     _heartbeatRunning = true;
     try {
@@ -3257,6 +3291,14 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         );
       }
       for (final peer in targets.values) {
+        // Not ours to dial: a paired peer's retries are the supervisor's, and
+        // it asks for one through [beat]. Skipping here is what keeps one
+        // schedule on the wire instead of two (see [_presenceSweep]).
+        if (!includeSupervised &&
+            _supervisor?.running == true &&
+            _paired.containsKey(peer.id)) {
+          continue;
+        }
         final msg = NexusMessage(
           type: NexusMessage.ping,
           from: identity.id,

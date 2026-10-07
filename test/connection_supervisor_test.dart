@@ -514,6 +514,107 @@ void main() {
       timeout: const Timeout(Duration(seconds: 90)),
     );
 
+    test(
+      'the mesh sweep leaves a peer the supervisor holds down to the supervisor',
+      () async {
+        final tmp = await Directory.systemTemp.createTemp('nexus_one_dialer');
+        addTearDown(() => tmp.delete(recursive: true));
+
+        // A real socket in place of the paired peer, so a dial is something
+        // countable: one accepted connection per dial. It answers nothing, so
+        // no presence is ever *verified* and the supervisor has to declare the
+        // link down — the state a retry schedule is for.
+        final peer = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        final dials = <DateTime>[];
+        peer.listen((socket) {
+          dials.add(DateTime.now());
+          socket.destroy();
+        });
+        addTearDown(peer.close);
+
+        final store = NexusStore(explicitPath: '${tmp.path}/state.json');
+        await store.load();
+        store.port = await loopbackPort();
+        // Paired before the mesh starts, so it is a link the supervisor
+        // watches from its very first tick.
+        store.upsertPaired({
+          'id': 'device-b',
+          'name': 'Test Phone',
+          'platform': 'android',
+          'localName': false,
+          'address': '127.0.0.1',
+          'addresses': <String>['127.0.0.1'],
+          'port': peer.port,
+          'pairingSecret': 'shared-secret',
+          'lastVerified': null,
+        });
+        await store.save();
+
+        final mesh = MeshService(
+          identity: DeviceInfo(
+            id: 'device-a',
+            name: 'Test Linux PC',
+            platform: 'linux',
+          ),
+          store: store,
+          clipboard: FakeClipboard(),
+          // A 100 ms sweep: if the mesh still dialled paired peers from here,
+          // it would do it many times over inside the window below.
+          heartbeatInterval: const Duration(milliseconds: 100),
+          connectTimeout: const Duration(milliseconds: 200),
+        );
+        await mesh.start();
+        addTearDown(mesh.stop);
+
+        // Something does dial a paired peer — the supervisor's own first
+        // tick — so the counts below are about who dials, not about a socket
+        // nothing ever reached.
+        expect(
+          await waitFor(() => dials.isNotEmpty, const Duration(seconds: 3)),
+          isTrue,
+          reason: 'the supervisor dials a paired peer',
+        );
+        final sup = mesh.supervisor!;
+        expect(
+          await waitFor(
+            () => sup.links.single.attempts > 0 && !sup.links.single.up,
+            const Duration(seconds: 8),
+          ),
+          isTrue,
+          reason: 'a peer that never answers past the timeout is down',
+        );
+
+        // The peer is down and the retry curve is at its first wait, so a few
+        // seconds of this window can hold at most the one attempt the
+        // supervisor owes. The mesh's own 100 ms sweep would put ~15 dials in
+        // it if it still dialled paired peers: the two are an order of
+        // magnitude apart on purpose, so this tolerates the supervisor's
+        // attempt landing here and still fails loudly on a second dialer.
+        final before = dials.length;
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+        expect(
+          dials.length - before,
+          lessThanOrEqualTo(2),
+          reason: 'the mesh sweep must not re-dial a peer the supervisor holds',
+        );
+
+        // The other half of the ownership rule: stop scheduling it and the
+        // sweep takes the peer back, so the quiet above came from the
+        // supervisor owning the peer and not from a sweep that never ran.
+        await sup.stop();
+        final afterStop = dials.length;
+        expect(
+          await waitFor(
+            () => dials.length > afterStop,
+            const Duration(seconds: 2),
+          ),
+          isTrue,
+          reason: 'with nobody scheduling it, the mesh sweep dials again',
+        );
+      },
+      timeout: const Timeout(Duration(seconds: 60)),
+    );
+
     test('the mesh itself is the WiFi transport', () async {
       final tmp = await Directory.systemTemp.createTemp('nexus_supervisor');
       final store = NexusStore(explicitPath: '${tmp.path}/state.json');

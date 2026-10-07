@@ -32,6 +32,19 @@
 // anywhere, and no supervisor can change that. The promise is *automatic*
 // reconnection — sub-minute and needs no user action — not permanent presence.
 //
+// Which side owns what, because it used to be split and that made the
+// countdown a lie. The supervisor owns *scheduling*: when a paired peer is
+// dialled — every [heartbeatInterval] while it is up, on the backoff curve
+// while it is down, at once on a network change. The mesh owns *reporting*:
+// whether a peer has proved it is there ([MeshTransport.lastHeardAt]) and the
+// one cheap way to dial now ([MeshTransport.beat]). The mesh's own periodic
+// sweep deliberately leaves paired peers alone while this supervisor is
+// running (`MeshService._presenceSweep`), so there is exactly one dialer per
+// peer and the retry schedule here is the one on the wire. Measured before
+// that change, on a real phone: dials every ~30 s regardless of the backoff
+// the UI was displaying, which is what made the connectivity-monitor fast
+// path impossible to prove — two dialers, one of them unaccounted for.
+//
 // The clock, the transport and the source of network changes are all
 // injected, so the retry curve, the network-change fast path and the
 // heartbeat timeout are proven by unit tests against fakes rather than by
