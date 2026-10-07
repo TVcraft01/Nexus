@@ -196,10 +196,10 @@ class ConnectionSupervisor extends ChangeNotifier {
     _subscription = networkChanges?.listen((_) {
       unawaited(onNetworkChanged());
     });
-    _timer = Timer.periodic(tickInterval, (_) => unawaited(tick()));
+    _timer = Timer.periodic(tickInterval, (_) => unawaited(tick(reason: 'timer')));
     // Look now rather than a tick from now: a mesh that starts next to a
     // device it has paired with should not spend its first second "offline".
-    await tick();
+    await tick(reason: 'start');
   }
 
   /// Stops watching and forgets the link state, so the next [start] judges
@@ -231,11 +231,18 @@ class ConnectionSupervisor extends ChangeNotifier {
       state.nextAttemptAt = null;
       state.lastBeatAt = null;
     }
-    await tick();
+    await tick(reason: 'network-change');
   }
 
   /// One pass over the links: notice silence, retry what is due.
-  Future<void> tick() async {
+  ///
+  /// [reason] only ever reaches the log line for a retry: it is what tells a
+  /// read of logcat whether this attempt was the schedule coming due (`timer`),
+  /// the connectivity callback throwing the waits away (`network-change`), or
+  /// the first look after [start]. Without it, a dial that the callback caused
+  /// and a dial the countdown caused look identical — which is exactly what,
+  /// with no logging at all, made the fast path unprovable on 2026-10-07.
+  Future<void> tick({String reason = 'tick'}) async {
     if (!_running || _ticking) return;
     _ticking = true;
     var changed = false;
@@ -300,6 +307,11 @@ class ConnectionSupervisor extends ChangeNotifier {
         if (state.up && (seen != null || state.attempts > 0)) {
           state.up = false;
           changed = true;
+          final why = silence == null
+              ? 'never heard from it'
+              : '${silence.inSeconds}s of silence, past the '
+                  '${heartbeatTimeout.inSeconds}s heartbeat timeout';
+          debugPrint('$supervisorLogTag: peer ${peer.id} is down - $why');
         }
         final due = state.nextAttemptAt;
         if (due != null && now.isBefore(due)) continue;
@@ -314,7 +326,7 @@ class ConnectionSupervisor extends ChangeNotifier {
         beat = true;
         debugPrint(
           '$supervisorLogTag: peer ${peer.id} attempt ${state.attempts} out, '
-          'next in ${wait.inSeconds}s',
+          'next in ${wait.inSeconds}s ($reason)',
         );
       }
     } finally {
