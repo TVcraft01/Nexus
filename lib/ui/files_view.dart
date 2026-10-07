@@ -4,9 +4,9 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../mesh/mesh_service.dart';
-import 'components/nexus_ui.dart' show platformIcon;
+import 'components/nexus_ui.dart'
+    show NexusEmptyState, NexusPageHeader, platformIcon;
 import 'downloads_dir.dart';
-import 'nexus_header.dart';
 import 'theme.dart';
 
 /// Browse files on any device in the mesh over the encrypted channel.
@@ -121,7 +121,6 @@ class _FilesViewState extends State<FilesView> {
     _load();
   }
 
-
   Future<void> _download(FileEntry entry) async {
     final device = _device;
     if (device == null || _downloading.contains(entry.path)) return;
@@ -165,14 +164,11 @@ class _FilesViewState extends State<FilesView> {
   Future<void> _delete(FileEntry entry) async {
     final device = _device;
     if (device == null || _deleting.contains(entry.path)) return;
+    final palette = NexusPalette.of(context);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: NexusColors.surface,
-        title: Text(
-          'Delete ${entry.name}?',
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-        ),
+        title: Text('Delete ${entry.name}?'),
         content: Text(
           entry.isDir
               ? 'It will be removed from ${device.name} — only if empty.'
@@ -186,8 +182,8 @@ class _FilesViewState extends State<FilesView> {
           ),
           FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: NexusColors.danger,
-              foregroundColor: Colors.white,
+              backgroundColor: palette.danger,
+              foregroundColor: palette.onDanger,
             ),
             onPressed: () => Navigator.pop(context, true),
             child: const Text('Delete'),
@@ -221,7 +217,6 @@ class _FilesViewState extends State<FilesView> {
     final name = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: NexusColors.surface,
         title: const Text('Rename'),
         content: TextField(
           controller: controller,
@@ -301,7 +296,6 @@ class _FilesViewState extends State<FilesView> {
     return showModalBottomSheet<_FileDestination>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: NexusColors.surface,
       builder: (_) => _DestinationPicker(mesh: widget.mesh, devices: devices),
     );
   }
@@ -368,18 +362,18 @@ class _FilesViewState extends State<FilesView> {
       );
       return;
     }
+    final palette = NexusPalette.of(context);
     final target = await showModalBottomSheet<PairedDevice>(
       context: context,
-      backgroundColor: NexusColors.surface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: NexusRadius.sheet),
       ),
       builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(NexusSpace.lg),
               child: Text(
                 'Send ${entry.name} to…',
                 style: Theme.of(sheetContext).textTheme.titleMedium,
@@ -393,8 +387,8 @@ class _FilesViewState extends State<FilesView> {
                   Icons.send_rounded,
                   size: 18,
                   color: widget.mesh.isOnline(p.id)
-                      ? NexusColors.ok
-                      : NexusColors.muted,
+                      ? palette.success
+                      : palette.textSecondary,
                 ),
                 onTap: () => Navigator.pop(sheetContext, p),
               ),
@@ -435,6 +429,7 @@ class _FilesViewState extends State<FilesView> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
     final devices = _selectableDevices();
     final device = _device;
     // The selected device was forgotten or vanished — fall back gracefully.
@@ -453,11 +448,16 @@ class _FilesViewState extends State<FilesView> {
     }
 
     // The header belongs to the tab, not to the file listing — show it even
-    // when there is nothing paired yet (the empty state below it).
-    final header = const Padding(
-      padding: EdgeInsets.fromLTRB(20, 24, 20, 0),
-      child: NexusHeader(
-        icon: Icons.folder_rounded,
+    // when there is nothing paired yet (the empty state below it). No icon
+    // tile: it carried no state, and a tile beside a title is decoration.
+    const header = Padding(
+      padding: EdgeInsets.fromLTRB(
+        NexusSpace.page,
+        NexusSpace.xxl,
+        NexusSpace.page,
+        0,
+      ),
+      child: NexusPageHeader(
         title: 'Files',
         subtitle:
             'Browse, download and send files on your devices — over LAN at '
@@ -466,10 +466,23 @@ class _FilesViewState extends State<FilesView> {
     );
 
     if (devices.isEmpty) {
-      return Column(
+      return const Column(
         children: [
           header,
-          Expanded(child: _EmptyFiles(mesh: widget.mesh)),
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: EdgeInsets.all(NexusSpace.page),
+                child: NexusEmptyState(
+                  icon: Icons.folder_rounded,
+                  title: 'No devices yet',
+                  message:
+                      'Pair a device and its home folder becomes browsable '
+                      'here — from LAN at home, or anywhere via Tailscale.',
+                ),
+              ),
+            ),
+          ),
         ],
       );
     }
@@ -478,17 +491,17 @@ class _FilesViewState extends State<FilesView> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         header,
-        const SizedBox(height: 14),
+        const SizedBox(height: NexusSpace.lg),
         // Device picker: one chip per paired device, online ones first.
         SizedBox(
-          height: 44,
+          height: NexusSize.minTouch,
           child: ListView(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.symmetric(horizontal: NexusSpace.page),
             children: [
               for (final d in devices)
                 Padding(
-                  padding: const EdgeInsets.only(right: 8),
+                  padding: const EdgeInsets.only(right: NexusSpace.sm),
                   child: ChoiceChip(
                     selected: device?.id == d.id,
                     onSelected: (_) => _selectDevice(d),
@@ -496,110 +509,122 @@ class _FilesViewState extends State<FilesView> {
                       platformIcon(d.platform),
                       size: 16,
                       color: widget.mesh.isOnline(d.id)
-                          ? NexusColors.ok
-                          : NexusColors.muted,
+                          ? palette.success
+                          : palette.textSecondary,
                     ),
                     label: Text(d.name, overflow: TextOverflow.ellipsis),
-                    labelStyle: const TextStyle(fontSize: 13),
-                    selectedColor: NexusColors.accent.withValues(alpha: 0.16),
-                    backgroundColor: NexusColors.surface,
+                    labelStyle: NexusType.caption,
+                    selectedColor: palette.accentTint(0.16),
+                    backgroundColor: palette.surface,
                     side: BorderSide(
                       color: device?.id == d.id
-                          ? NexusColors.accent
-                          : NexusColors.border,
+                          ? palette.accent
+                          : palette.separator,
                     ),
                   ),
                 ),
             ],
           ),
         ),
-        const SizedBox(height: 6),
-        // Path bar with navigation controls.
+        const SizedBox(height: NexusSpace.sm),
+        // One action, one menu. "Send file…" is the only control on this screen
+        // that creates something: it opens the picker and pushes a file to a
+        // paired device, and nothing else does that. Up, Home and Refresh are
+        // navigation and recovery, so they sit behind the menu rather than
+        // competing with it for the same row.
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
+          padding: const EdgeInsets.symmetric(horizontal: NexusSpace.page),
           child: Row(
             children: [
-              IconButton(
-                onPressed: _path.isEmpty || _loading ? null : _goUp,
-                tooltip: 'Up',
-                icon: const Icon(Icons.arrow_upward_rounded, size: 20),
-              ),
-              IconButton(
-                onPressed: _path.isEmpty || _loading
-                    ? null
-                    : () {
-                        setState(() {
-                          _path = '';
-                          _entries = null;
-                        });
-                        _load();
-                      },
-                tooltip: 'Home',
-                icon: const Icon(Icons.home_rounded, size: 20),
-              ),
-              const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   _path.isEmpty ? '${device?.name ?? ''} · Home' : _path,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: NexusColors.muted,
-                  ),
+                  style: Theme.of(context).textTheme.bodySmall,
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: FilledButton.tonalIcon(
-                  onPressed: _sending.isNotEmpty ? null : _pickAndSend,
-                  style: FilledButton.styleFrom(
-                    // Compact density pulled this under the 44dp touch
-                    // minimum; tight padding keeps the dense toolbar look
-                    // without shrinking the target.
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    minimumSize: const Size(0, 44),
-                  ),
-                  icon: const Icon(Icons.upload_file_rounded, size: 18),
-                  label: const Text('Send file…'),
-                ),
+              const SizedBox(width: NexusSpace.sm),
+              FilledButton.icon(
+                onPressed: _sending.isNotEmpty ? null : _pickAndSend,
+                icon: const Icon(Icons.upload_file_rounded, size: 18),
+                label: const Text('Send file…'),
               ),
-              IconButton(
-                onPressed: _loading ? null : _load,
-                tooltip: 'Refresh',
-                icon: const Icon(Icons.refresh_rounded, size: 20),
+              PopupMenuButton<String>(
+                tooltip: 'More',
+                onSelected: (action) {
+                  switch (action) {
+                    case 'up':
+                      _goUp();
+                    case 'home':
+                      setState(() {
+                        _path = '';
+                        _entries = null;
+                      });
+                      _load();
+                    case 'refresh':
+                      _load();
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'up',
+                    enabled: _path.isNotEmpty && !_loading,
+                    child: const Text('Up one level'),
+                  ),
+                  PopupMenuItem(
+                    value: 'home',
+                    enabled: _path.isNotEmpty && !_loading,
+                    child: const Text('Home'),
+                  ),
+                  PopupMenuItem(
+                    value: 'refresh',
+                    enabled: !_loading,
+                    child: const Text('Refresh'),
+                  ),
+                ],
+                // An explicit token, not the framework default: a
+                // PopupMenuButton icon does not inherit iconButtonTheme, and
+                // an unset colour renders plain white — louder than any other
+                // icon in the app.
+                icon: Icon(
+                  Icons.more_vert_rounded,
+                  color: palette.textSecondary,
+                ),
               ),
             ],
           ),
         ),
-        const Divider(height: 1),
+        const SizedBox(height: NexusSpace.sm),
+        Divider(height: 1, color: palette.separator),
         Expanded(child: _buildBody(context)),
       ],
     );
   }
 
   Widget _buildBody(BuildContext context) {
+    final palette = NexusPalette.of(context);
     if (_loading && _entries == null) {
       return const Center(child: CircularProgressIndicator(strokeWidth: 2.5));
     }
     if (_error != null) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(NexusSpace.page),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
+              Icon(
                 Icons.folder_off_rounded,
                 size: 40,
-                color: NexusColors.muted,
+                color: palette.textSecondary,
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: NexusSpace.sm),
               Text(
                 _error!,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: NexusSpace.lg),
               FilledButton.icon(
                 onPressed: _load,
                 icon: const Icon(Icons.refresh_rounded, size: 18),
@@ -619,12 +644,18 @@ class _FilesViewState extends State<FilesView> {
         ),
       );
     }
+    // Rows on the page, separated by hairlines — not a rounded card each.
     return RefreshIndicator(
       onRefresh: _load,
-      child: ListView.builder(
+      child: ListView.separated(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        padding: const EdgeInsets.only(bottom: NexusSpace.xxl),
         itemCount: entries.length,
+        separatorBuilder: (context, _) => Divider(
+          height: 1,
+          indent: NexusSpace.lg,
+          color: palette.separator,
+        ),
         itemBuilder: (context, i) => _EntryRow(
           entry: entries[i],
           progress: _progress[entries[i].path],
@@ -717,9 +748,15 @@ class _DestinationPickerState extends State<_DestinationPicker> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        padding: const EdgeInsets.fromLTRB(
+          NexusSpace.lg,
+          NexusSpace.md,
+          NexusSpace.lg,
+          NexusSpace.lg,
+        ),
         child: SizedBox(
           height: MediaQuery.sizeOf(context).height * .72,
           child: Column(
@@ -738,7 +775,7 @@ class _DestinationPickerState extends State<_DestinationPicker> {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                   ),
-                  FilledButton.tonalIcon(
+                  FilledButton.icon(
                     onPressed: () => Navigator.pop(
                       context,
                       _FileDestination(_device, _path),
@@ -748,15 +785,15 @@ class _DestinationPickerState extends State<_DestinationPicker> {
                   ),
                 ],
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: NexusSpace.xs),
               SizedBox(
-                height: 40,
+                height: NexusSize.minTouch,
                 child: ListView(
                   scrollDirection: Axis.horizontal,
                   children: [
                     for (final device in widget.devices)
                       Padding(
-                        padding: const EdgeInsets.only(right: 8),
+                        padding: const EdgeInsets.only(right: NexusSpace.sm),
                         child: ChoiceChip(
                           selected: device.id == _device.id,
                           label: Text(device.name),
@@ -767,13 +804,13 @@ class _DestinationPickerState extends State<_DestinationPicker> {
                   ],
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: NexusSpace.sm),
               Text(
                 _path.isEmpty ? '${_device.name} · Home' : _path,
                 style: Theme.of(context).textTheme.bodySmall,
                 overflow: TextOverflow.ellipsis,
               ),
-              const Divider(height: 20),
+              Divider(height: NexusSpace.xl, color: palette.separator),
               if (_loading)
                 const Expanded(
                   child: Center(
@@ -797,9 +834,9 @@ class _DestinationPickerState extends State<_DestinationPicker> {
                     itemBuilder: (context, index) {
                       final entry = _entries![index];
                       return ListTile(
-                        leading: const Icon(
+                        leading: Icon(
                           Icons.folder_rounded,
-                          color: NexusColors.accent,
+                          color: palette.accent,
                         ),
                         title: Text(entry.name),
                         trailing: const Icon(Icons.chevron_right_rounded),
@@ -843,13 +880,18 @@ class _EntryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+    final palette = NexusPalette.of(context);
+    return Material(
+      // Ink needs a surface to paint on, and the row itself stays transparent
+      // so the hairline between rows is the only edge it has.
+      color: Colors.transparent,
       child: InkWell(
         onTap: busy ? null : onTap,
-        borderRadius: BorderRadius.circular(16),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(
+            horizontal: NexusSpace.lg,
+            vertical: NexusSpace.md,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -860,9 +902,9 @@ class _EntryRow extends StatelessWidget {
                         ? Icons.folder_rounded
                         : Icons.insert_drive_file_rounded,
                     size: 20,
-                    color: entry.isDir ? NexusColors.accent : NexusColors.muted,
+                    color: entry.isDir ? palette.accent : palette.textSecondary,
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: NexusSpace.md),
                   Expanded(
                     child: Text(
                       entry.name,
@@ -886,14 +928,14 @@ class _EntryRow extends StatelessWidget {
                           CircularProgressIndicator(
                             strokeWidth: 2.5,
                             value: progress,
-                            color: NexusColors.accent,
-                            backgroundColor: NexusColors.surfaceHi,
+                            color: palette.accent,
+                            backgroundColor: palette.surfaceSecondary,
                           ),
                           Text(
                             '${(progress! * 100).round()}',
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 8,
-                              color: NexusColors.muted,
+                              color: palette.textSecondary,
                             ),
                           ),
                         ],
@@ -904,10 +946,10 @@ class _EntryRow extends StatelessWidget {
                       IconButton(
                         onPressed: onTap,
                         tooltip: 'Download',
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.download_rounded,
                           size: 20,
-                          color: NexusColors.accent,
+                          color: palette.accent,
                         ),
                       ),
                     PopupMenuButton<String>(
@@ -947,14 +989,18 @@ class _EntryRow extends StatelessWidget {
                           child: Text('Delete'),
                         ),
                       ],
-                      icon: const Icon(Icons.more_vert_rounded, size: 20),
+                      icon: Icon(
+                        Icons.more_vert_rounded,
+                        size: 20,
+                        color: palette.textSecondary,
+                      ),
                     ),
                   ],
                 ],
               ),
               if (entry.isDir)
                 Padding(
-                  padding: const EdgeInsets.only(left: 32),
+                  padding: const EdgeInsets.only(left: NexusSpace.xxxl),
                   child: Text(
                     'Folder',
                     style: Theme.of(context).textTheme.bodySmall,
@@ -962,7 +1008,7 @@ class _EntryRow extends StatelessWidget {
                 )
               else
                 Padding(
-                  padding: const EdgeInsets.only(left: 32),
+                  padding: const EdgeInsets.only(left: NexusSpace.xxxl),
                   child: Text(
                     '${_size(entry.size)} · ${_when(entry.modified)}',
                     style: Theme.of(context).textTheme.bodySmall,
@@ -995,38 +1041,3 @@ String _when(DateTime t) {
   return '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
 }
 
-class _EmptyFiles extends StatelessWidget {
-  final MeshService mesh;
-  const _EmptyFiles({required this.mesh});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.folder_rounded,
-              size: 44,
-              color: NexusColors.muted,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'No devices yet',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Pair a device and its home folder becomes browsable here — '
-              'from LAN at home, or anywhere via Tailscale.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
