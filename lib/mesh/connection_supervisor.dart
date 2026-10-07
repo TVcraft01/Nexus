@@ -217,6 +217,7 @@ class ConnectionSupervisor extends ChangeNotifier {
     if (!_running || _ticking) return;
     _ticking = true;
     var changed = false;
+    var beat = false;
     try {
       final now = _clock();
       final peers = transport.peers();
@@ -231,7 +232,6 @@ class ConnectionSupervisor extends ChangeNotifier {
 
       // One presence exchange covers every peer the transport knows, so the
       // pass decides *whether* to beat rather than beating per peer.
-      var beat = false;
       for (final peer in peers) {
         final state = _links.putIfAbsent(
           peer.id,
@@ -286,11 +286,23 @@ class ConnectionSupervisor extends ChangeNotifier {
         changed = true;
         beat = true;
       }
-      if (beat) await transport.beat();
     } finally {
       _ticking = false;
     }
     if (changed) notifyListeners();
+    // Dial *after* releasing the latch, and without waiting for the exchange.
+    // Nothing here needs its result: whether a beat worked is decided by a
+    // later tick, because the answer arrives as a frame that moves
+    // [MeshTransport.lastHeardAt], and `beat()` is idempotent while one
+    // exchange is still running. Waiting is what let a transport that never
+    // answers — one dial blocked inside the OS — stop the schedule for good:
+    // the latch above was held across the await, so every later tick returned
+    // at the guard on this method's first line, and because the mesh's own
+    // sweep leaves a supervised peer alone (`MeshService._presenceSweep`),
+    // nothing dialled that peer again. Observed shape on a real phone
+    // (2026-10-07): a live process, a foreground service still holding its
+    // notification, and not one dial for 51 minutes.
+    if (beat) unawaited(transport.beat());
   }
 
   bool _beatDue(_LinkState state, DateTime now) {

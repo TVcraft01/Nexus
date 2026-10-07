@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -99,6 +100,38 @@ class FakeCableTransport implements MeshTransport {
   /// supervisor doing anything.
   void peerTraffic() {
     if (pluggedIn) seen = clock.now;
+  }
+}
+
+/// A transport whose presence exchange can stop answering *without* ever
+/// completing: a dial blocked inside the OS. The supervisor cannot tell that
+/// apart from one that is merely slow, which is the whole difficulty.
+class HangingTransport implements MeshTransport {
+  HangingTransport({required this.clock, this.peerId = 'peer-1'});
+
+  final FakeClock clock;
+  final String peerId;
+
+  /// When true, [beat] returns a future that never completes.
+  bool hangs = false;
+
+  /// How many times the supervisor asked for an exchange, hung or not.
+  int beats = 0;
+
+  @override
+  List<TransportPeer> peers() => [
+    TransportPeer(id: peerId, name: 'Device $peerId'),
+  ];
+
+  /// Never heard from: the peer is down, which is the state a retry schedule
+  /// exists for.
+  @override
+  DateTime? lastHeardAt(String id) => null;
+
+  @override
+  Future<void> beat() {
+    beats += 1;
+    return hangs ? Completer<void>().future : Future<void>.value();
   }
 }
 
@@ -294,6 +327,52 @@ void main() {
       expect(supervisor.links.single.up, isFalse);
       expect(supervisor.links.single.attempts, 1);
       expect(transport.beats.last, clock.now);
+    });
+  });
+
+  group('a transport that stops answering', () {
+    test('a beat that never completes cannot stop the retry loop', () async {
+      // The shape measured on a real phone on 2026-10-07: the app's process
+      // alive (pid unchanged for hours), the Android foreground service still
+      // holding its notification, and not one dial for 51 minutes. This is the
+      // one way the supervisor's own schedule can stop: `tick()` held
+      // `_ticking` across `await transport.beat()`, so a beat that never
+      // returned made every later tick return at the guard on its first line —
+      // and because the mesh's sweep leaves a supervised peer alone
+      // (`MeshService._presenceSweep`), the peer was then dialled by nobody.
+      final hanging = HangingTransport(clock: clock);
+      final sup = ConnectionSupervisor(
+        transport: hanging,
+        clock: clock.call,
+        tickInterval: handDriven,
+      );
+      addTearDown(sup.stop);
+
+      // Starting must not wait on a dial either: the mesh awaits this (see
+      // MeshService.start), so a transport that blocks would hang the mesh's
+      // own start rather than merely stop a retry.
+      hanging.hangs = true;
+      await expectLater(
+        sup.start().timeout(const Duration(seconds: 2)),
+        completes,
+      );
+
+      final before = sup.links.single.attempts;
+      expect(before, greaterThan(0), reason: 'the peer never answers');
+
+      // Ten minutes of ticks. With the latch held across the beat, `attempts`
+      // stays exactly here and the reconnect never happens again — a frozen
+      // schedule is a reconnect that never happens.
+      await driveTicks(sup, clock, const Duration(minutes: 10));
+      expect(
+        sup.links.single.attempts,
+        greaterThan(before + 5),
+        reason: 'a beat that never completes must not freeze the schedule',
+      );
+      expect(sup.links.single.up, isFalse);
+      // It kept being asked, too: the schedule is what stopped, not the
+      // willingness to dial.
+      expect(hanging.beats, greaterThan(before + 5));
     });
   });
 
