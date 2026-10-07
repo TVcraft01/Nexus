@@ -276,8 +276,12 @@ Both now log under one tag, `NexusSupervisor`:
   timing rather than the main looper's. It logs each network object's own description, which
   already carries the transports and the interface name, so it needs no API-30 guard
   (`LinkProperties.interfaceName`) on a minSdk-24 app;
-- `ConnectionSupervisor` logs a network change with the waits it discarded, every retry with
-  its attempt number and the wait it chose, and a peer coming back up.
+- `ConnectionSupervisor` logs a network change with the waits it discarded, a peer being
+  declared down (with the silence that decided it), a peer coming back up, and every retry
+  with its attempt number, the wait it chose, **and why it happened** — `timer`,
+  `network-change` or `start` (`08a7399`). That last field is the point: an attempt the
+  callback caused and one the countdown caused look identical on the wire, which is what
+  made the fast path unprovable from dial timing alone.
 
 One command now reads the whole story on one clock:
 
@@ -345,11 +349,15 @@ bd4f887  fix(mesh): a beat that never answers cannot freeze the retry schedule
 
 19b6f88  chore(mesh): log the network transitions and the retries they reset
          android/…/MainActivity.kt (+43), lib/mesh/connection_supervisor.dart (+35/−2)
+
+08a7399  chore(mesh): say why a tick dialled in the supervisor's own log line
+         lib/mesh/connection_supervisor.dart (+17/−5)
 ```
 
-Pushed as **`cded0b7..c179789`** for the first pass and **`c179789..19b6f88`** for the
-second; `git rev-parse origin/main` = `19b6f886a680a2ea460d7624b8ce2a4fad9bfcec` at the time
-of writing (this report is committed after that).
+Pushed as **`cded0b7..c179789`** for the first pass, then **`c179789..19b6f88`** and
+**`19b6f88..08a7399`** for the second; `git rev-parse origin/main` =
+`08a7399c0fb45ad4060e6af7e4e07c6282d2e575` at the time of writing (this report's own update
+is committed after that).
 
 Uncommitted and untouched, exactly as they were before this mission:
 `TOMORROW.md`, `lib/core/conversation.dart`, `lib/core/protocol.dart`,
