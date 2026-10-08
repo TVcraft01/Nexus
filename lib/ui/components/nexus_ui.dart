@@ -1,6 +1,9 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart' show SpringSimulation;
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 
 import '../nexus_core.dart';
 import '../theme.dart';
@@ -21,6 +24,34 @@ IconData platformIcon(String platform) {
     default:
       return Icons.devices_other_rounded;
   }
+}
+
+/// What kind of file something is, in one glyph at one muted colour.
+///
+/// The Files screen lists other people's folders: a row's icon says what the
+/// thing *is* so the eye can skip it, and nothing more. One colour for every
+/// type — a rainbow of per-extension colours is the thing this replaces.
+IconData fileTypeIcon({required String name, required bool isDir}) {
+  if (isDir) return Icons.folder_rounded;
+  final dot = name.lastIndexOf('.');
+  final extension = dot < 0 || dot == name.length - 1
+      ? ''
+      : name.substring(dot + 1).toLowerCase();
+  return switch (extension) {
+    'png' || 'jpg' || 'jpeg' || 'gif' || 'webp' || 'heic' || 'svg' || 'bmp' =>
+      Icons.image_outlined,
+    'mp4' || 'mkv' || 'mov' || 'avi' || 'webm' => Icons.movie_outlined,
+    'mp3' || 'wav' || 'flac' || 'm4a' || 'ogg' => Icons.audiotrack_rounded,
+    'zip' || 'tar' || 'gz' || 'tgz' || 'bz2' || 'xz' || '7z' || 'rar' =>
+      Icons.folder_zip_outlined,
+    'pdf' || 'doc' || 'docx' || 'odt' || 'rtf' || 'txt' || 'md' || 'epub' =>
+      Icons.description_outlined,
+    'json' || 'xml' || 'yaml' || 'yml' || 'csv' || 'dart' || 'js' || 'ts' ||
+      'py' || 'sh' || 'kt' || 'java' || 'html' || 'css' =>
+      Icons.code_rounded,
+    'apk' => Icons.android_rounded,
+    _ => Icons.insert_drive_file_outlined,
+  };
 }
 
 /// What a platform is called in front of a user — never its id.
@@ -272,6 +303,180 @@ class NexusGroup extends StatelessWidget {
   }
 }
 
+/// A tappable surface that answers the finger the instant it lands.
+///
+/// The first rule of a fluid interface is response: the press must show on
+/// touch-**down**, not on release. A Material [InkWell] does react on down,
+/// but its ripple grows outward from the touch point, so the surface reads as
+/// catching up with the finger. This paints an instant tint instead, and moves
+/// the surface on a critically-damped spring — which means a press that is
+/// cancelled (dragged away, or taken over by a scroll) settles from wherever
+/// it got to, instead of snapping back through a fixed curve.
+class NexusPressable extends StatefulWidget {
+  const NexusPressable({
+    super.key,
+    required this.child,
+    this.onTap,
+    this.onLongPress,
+    this.borderRadius = NexusRadius.row,
+    this.pressedScale = 0.98,
+    this.tint,
+    this.enabled = true,
+    this.behavior = HitTestBehavior.opaque,
+  });
+
+  final Widget child;
+  final VoidCallback? onTap;
+
+  /// The second gesture, for an action that would clutter the surface.
+  final VoidCallback? onLongPress;
+
+  final BorderRadiusGeometry borderRadius;
+
+  /// How far the surface shrinks under the finger. Deliberately tiny: a row
+  /// is not a button, and a list that lurches on every touch is worse than one
+  /// that does nothing.
+  final double pressedScale;
+
+  /// The press colour. Defaults to a faint accent tint.
+  final Color? tint;
+
+  final bool enabled;
+  final HitTestBehavior behavior;
+
+  @override
+  State<NexusPressable> createState() => _NexusPressableState();
+}
+
+class _NexusPressableState extends State<NexusPressable>
+    with SingleTickerProviderStateMixin {
+  /// Unbounded on purpose: the scale is a live value a spring can be handed,
+  /// not a 0..1 progress bar.
+  late final AnimationController _scale = AnimationController.unbounded(
+    vsync: this,
+    value: 1,
+  );
+
+  bool _pressed = false;
+
+  /// The finger that is currently on this surface, and where it landed.
+  ///
+  /// The press is read from raw pointer events, not from the tap recogniser:
+  /// inside a scrollable the tap has to wait for the gesture arena to decide
+  /// it is not a drag (`kPressTimeout`, 100 ms) before `onTapDown` is called,
+  /// and a highlight that arrives a tenth of a second late is exactly the lag
+  /// the rule removes. The pointer stream is available in the same frame.
+  int? _pointer;
+  Offset? _downAt;
+
+  /// Whether the platform is refusing animations, read once per dependency
+  /// change and cached: a pointer that lands while this surface is being torn
+  /// down must not look up an inherited widget, which is not safe there.
+  bool _reducedMotion = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reducedMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+  }
+
+  @override
+  void dispose() {
+    _scale.dispose();
+    super.dispose();
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    if (!widget.enabled || _pointer != null) return;
+    _pointer = event.pointer;
+    _downAt = event.position;
+    _setPressed(true);
+  }
+
+  /// Once the finger has travelled past the touch slop the gesture is not a
+  /// press any more — it is a scroll, so the surface steps back out of the
+  /// way. A small threshold first, then commit: a press that flickers on the
+  /// smallest jitter reads as nervous.
+  void _onPointerMove(PointerMoveEvent event) {
+    if (event.pointer != _pointer || _downAt == null) return;
+    if ((event.position - _downAt!).distance > kTouchSlop) _endPress(event.pointer);
+  }
+
+  void _endPress(int pointer) {
+    if (_pointer != pointer) return;
+    _pointer = null;
+    _downAt = null;
+    _setPressed(false);
+  }
+
+  void _setPressed(bool pressed) {
+    if (_pressed == pressed) return;
+    // A pointer that has already left the tree (a page that popped under the
+    // finger) still reports its release here; there is nothing left to light.
+    if (!mounted || !context.mounted) return;
+    // The tint is synchronous: it is on screen in the frame the finger lands
+    // in, which is the whole point of the rule.
+    setState(() => _pressed = pressed);
+
+    final target = pressed ? widget.pressedScale : 1.0;
+    if (_reducedMotion) {
+      _scale.value = target;
+      return;
+    }
+    // From the current value *and* the current velocity: a press grabbed again
+    // mid-settle continues its motion rather than restarting it.
+    _scale.animateWith(
+      SpringSimulation(
+        NexusSpring.of(),
+        _scale.value,
+        target,
+        _scale.velocity,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    final tint = widget.tint ?? palette.accentTint(0.10);
+    return Listener(
+      behavior: widget.behavior,
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: (event) => _endPress(event.pointer),
+      onPointerCancel: (event) => _endPress(event.pointer),
+      child: GestureDetector(
+        behavior: widget.behavior,
+        // The recogniser still owns the press: when it is rejected (a scroll,
+        // a long press that won), the highlight ends with it.
+        onTapDown: widget.enabled ? (_) => _setPressed(true) : null,
+        onTapUp: widget.enabled ? (_) => _setPressed(false) : null,
+        onTapCancel: widget.enabled ? () => _setPressed(false) : null,
+        onTap: widget.enabled ? widget.onTap : null,
+        onLongPress: widget.enabled ? widget.onLongPress : null,
+        child: AnimatedBuilder(
+        animation: _scale,
+          builder: (context, child) =>
+              Transform.scale(scale: _scale.value, child: child),
+          child: AnimatedContainer(
+            // On press the tint is already there (zero duration); the fade
+            // only exists so the colour does not pop off the moment the finger
+            // lifts.
+            duration: _pressed
+                ? Duration.zero
+                : NexusMotion.scaled(context, NexusMotion.fast),
+            decoration: BoxDecoration(
+              color: _pressed ? tint : Colors.transparent,
+              borderRadius: widget.borderRadius,
+            ),
+            child: widget.child,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// One row in a [NexusGroup]. Uses the whole row as the target, keeps a
 /// minimum touch height, and announces title and subtitle as one label so a
 /// screen reader does not read them as two unrelated things.
@@ -283,10 +488,13 @@ class NexusRow extends StatelessWidget {
     this.leading,
     this.trailing,
     this.onTap,
+    this.onLongPress,
     this.chevron = false,
     this.destructive = false,
     this.minHeight = NexusSize.row,
     this.semanticLabel,
+    this.customActions = const {},
+    this.enabled = true,
   });
 
   final String title;
@@ -294,10 +502,25 @@ class NexusRow extends StatelessWidget {
   final Widget? leading;
   final Widget? trailing;
   final VoidCallback? onTap;
+
+  /// The row's second gesture. Only for the surfaces that would otherwise
+  /// carry a column of little buttons — a file, an item you manage in place.
+  final VoidCallback? onLongPress;
+
   final bool chevron;
   final bool destructive;
   final double minHeight;
   final String? semanticLabel;
+
+  /// Actions a long press opens, published as custom semantics actions too:
+  /// a screen reader cannot perform "press and hold", so the same four
+  /// actions must be reachable from the accessibility menu.
+  final Map<CustomSemanticsAction, VoidCallback> customActions;
+
+  /// A row that has an action but cannot take it right now — a file already
+  /// being downloaded. It keeps its shape and loses only its response, so the
+  /// row the user pressed is still the row they are looking at.
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -370,16 +593,19 @@ class NexusRow extends StatelessWidget {
     final semantics = semanticLabel ??
         (subtitle == null ? title : '$title. $subtitle');
 
-    if (onTap == null) {
+    if (onTap == null && onLongPress == null) {
       return Semantics(container: true, label: semantics, child: row);
     }
     return Semantics(
       container: true,
       button: true,
       label: semantics,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(onTap: onTap, child: row),
+      customSemanticsActions: customActions,
+      child: NexusPressable(
+        enabled: enabled,
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: row,
       ),
     );
   }

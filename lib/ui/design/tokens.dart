@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 /// Nexus design tokens — the one place a visual value is written down.
@@ -339,6 +341,46 @@ abstract final class NexusMotion {
   /// these collapse to zero and state changes land instantly.
   static Duration scaled(BuildContext context, Duration d) =>
       MediaQuery.maybeDisableAnimationsOf(context) == true ? Duration.zero : d;
+}
+
+/// Springs, written in Apple's two parameters instead of physics' three.
+///
+/// A spring has no duration: how long it takes to settle falls out of how
+/// bouncy it is and how fast it moves. Anything a finger can touch animates
+/// through here, because a spring can be grabbed and re-targeted mid-flight —
+/// a fixed curve cannot.
+///
+/// The defaults are the ones Apple ships: critically damped (no overshoot) at
+/// the response of a drawer. Bounce is reserved for a gesture that itself
+/// carried momentum — a flick — and never for something that merely appeared.
+abstract final class NexusSpring {
+  /// No overshoot. The default for every touchable surface.
+  static const double damped = 1.0;
+
+  /// A gesture that carried momentum: a throw, a flick, a sheet let go of.
+  static const double momentum = 0.8;
+
+  /// How quickly the value reaches its target, in seconds. This is not a
+  /// duration — it is the speed of the response.
+  static const Duration response = Duration(milliseconds: 350);
+
+  /// A spring from [damping] and [response].
+  ///
+  /// Apple describes the curve with a damping ratio and a response time;
+  /// Flutter wants mass, stiffness and a ratio. The two are the same curve:
+  /// stiffness is the angular frequency squared, ω = 2π / response.
+  static SpringDescription of({
+    double damping = damped,
+    Duration speed = response,
+  }) {
+    final seconds = speed.inMicroseconds / Duration.microsecondsPerSecond;
+    final omega = 2 * math.pi / seconds;
+    return SpringDescription.withDampingRatio(
+      mass: 1,
+      stiffness: omega * omega,
+      ratio: damping,
+    );
+  }
 }
 
 /// The type scale. Four sizes carry the whole app: a page title, a row title,
