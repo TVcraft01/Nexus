@@ -108,19 +108,16 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1.0;
-    // The dream nudge is where the smallest controls live, so the walk has to
-    // reach it: a log with a re-asked phrase that matches something taught.
     final store = NexusStore(
       explicitPath: '${Directory.systemTemp.createTempSync('a11y1').path}/s.json',
-    )..agentLearned = {'text mom': 'call tvcraft01'};
+    );
     final mesh = MeshService(
       identity: DeviceInfo(id: 'a11y1', name: 'A11y PC', platform: 'linux'),
       store: store,
     );
-    QueryLog.readAllOverride = () async => [
-      '{"ts":"t","kind":"ask","input":"tex mom","status":"needsInfo","route":"teach:tex mom","detail":""}',
-      '{"ts":"t","kind":"ask","input":"tex mom","status":"needsInfo","route":"teach:tex mom","detail":""}',
-    ];
+    // An empty log: the walk covers the assistant's own controls — the
+    // suggestion chips and the composer — with nothing proactive above them.
+    QueryLog.readAllOverride = () async => const [];
 
     try {
       await tester.pumpWidget(
@@ -132,11 +129,6 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      expect(
-        find.byKey(const ValueKey('dream-learn-card')),
-        findsOneWidget,
-        reason: 'the nudge has to be open for this to cover its controls',
-      );
       expectControlsAreUsable(tester, where: 'the assistant');
     } finally {
       QueryLog.readAllOverride = null;

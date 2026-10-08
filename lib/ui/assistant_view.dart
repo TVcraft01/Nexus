@@ -78,13 +78,6 @@ class AssistantViewState extends State<AssistantView> {
   String? _reply; // outcome shown on whichever plan card is open
   bool _sending = false;
 
-  /// Phrases from the dream log the assistant still fails on, loaded once
-  /// after the first frame. When non-empty (and not dismissed) the assistant
-  /// says so itself — its first proactive behavior, before being asked.
-  List<DreamInsight>? _dreamGaps;
-  List<DreamLearn>? _dreamLearns;
-  bool _dreamDismissed = false;
-
   /// The phrases this user asks most (their habits), mined from the same
   /// log pass. When a real routine exists (asked twice or more) the static
   /// suggestion chips make way for these — the assistant predicting.
@@ -328,10 +321,9 @@ class AssistantViewState extends State<AssistantView> {
       }),
     );
 
-    // The assistant's proactive behaviors: once the first frame is drawn,
-    // read its own log — to know what it still fails on (the dream nudge)
-    // and what you keep asking (personal predictions). Both before being
-    // asked.
+    // The assistant's one proactive behavior: once the first frame is
+    // drawn, read its own log to know what you keep asking (personal
+    // predictions), before being asked.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_refreshFromLog());
     });
@@ -1584,9 +1576,6 @@ class AssistantViewState extends State<AssistantView> {
             platform: _platform,
           ),
     );
-    // Teaching inside the sheet closes gaps — refresh so the nudge
-    // disappears without a restart when everything is understood.
-    await _refreshFromLog();
   }
 
   /// Loads the persisted profile once after the first frame: names feed
@@ -1677,49 +1666,28 @@ class AssistantViewState extends State<AssistantView> {
   }
 
   /// Reads the ask log once and updates the proactive surfaces from it: the
-  /// phrases the assistant still fails on (the dream nudge), the phrases
-  /// this user asks most (personal predictions), and the skills they
-  /// genuinely use (the skill loop). Called after the first frame, when the
-  /// dream review closes, and after every ask; [setState] only when the
-  /// picture changed, so idle starts cost one rebuild at most.
+  /// phrases this user asks most (personal predictions) and the skills they
+  /// genuinely use (the skill loop). Called after the first frame and after
+  /// every ask; [setState] only when the picture changed, so idle starts cost
+  /// one rebuild at most.
   Future<void> _refreshFromLog() async {
     final lines = await QueryLog.i.readAll();
     if (!mounted) return;
-    final gaps = const DreamPass().unknownPhrases(
-      lines,
-      exclude: {..._service.learnedSnapshot.keys},
-    );
-    // The dream also finds fixes on its own: a phrase the user kept
-    // re-asking that maps onto a phrase they have since taught.
-    final learns = const DreamPass().learnable(
-      lines,
-      learned: _service.learnedSnapshot,
-    );
     final habits = const Predictions().habits(lines);
     final skills = const SkillRanking().rank(lines);
     final oldSkills = _skills ?? const <SkillUse>[];
     final changed =
-        gaps.length != (_dreamGaps?.length ?? 0) ||
-        learns.length != (_dreamLearns?.length ?? 0) ||
         habits.length != (_habits?.length ?? 0) ||
         skills.length != oldSkills.length ||
         skills.indexed.any(
           (e) =>
               e.$2.id != oldSkills[e.$1].id || e.$2.uses != oldSkills[e.$1].uses,
         ) ||
-        gaps.any(
-          (g) => !(_dreamGaps ?? const []).any((o) => o.phrase == g.phrase),
-        ) ||
-        learns.any(
-          (l) => !(_dreamLearns ?? const []).any((o) => o.phrase == l.phrase),
-        ) ||
         habits.any(
           (h) => !(_habits ?? const []).any((o) => o.phrase == h.phrase),
         );
     if (!changed) return;
     setState(() {
-      _dreamGaps = gaps;
-      _dreamLearns = learns;
       _habits = habits;
       _skills = skills;
     });
@@ -1773,138 +1741,6 @@ class AssistantViewState extends State<AssistantView> {
     );
   }
 
-  /// A once-per-session nudge above the composer: the assistant noticed it
-  /// still fails on something you asked (its dream log) and offers to be
-  /// taught. Tapping opens the same review as the header button; the X
-  /// silences it for this session.
-  /// The dream's self-improvement in one tap: the user's own teaching,
-  /// applied to the variant they keep typing — validated, persisted, and
-  /// broadcast to every paired device by the service's normal teach funnel.
-  void _dreamLearn(DreamLearn learn) {
-    setState(() => _dreamDismissed = true);
-    _consume(_service.learn(learn.phrase, learn.meaning));
-    unawaited(_refreshFromLog());
-  }
-
-  /// The specific beats the generic: when the dream found a fix, offer it
-  /// instead of the plain "teach me?" nudge.
-  Widget _dreamLearnCard(DreamLearn learn) {
-    final palette = NexusPalette.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        NexusSpace.page,
-        NexusSpace.md,
-        NexusSpace.sm,
-        0,
-      ),
-      child: Container(
-        key: const ValueKey('dream-learn-card'),
-        padding: const EdgeInsets.fromLTRB(
-          NexusSpace.lg,
-          NexusSpace.sm,
-          NexusSpace.xs,
-          NexusSpace.sm,
-        ),
-        decoration: BoxDecoration(
-          color: palette.surface,
-          borderRadius: NexusRadius.card,
-          border: Border.all(color: palette.separator),
-        ),
-        child: Row(
-          children: [
-            Icon(Icons.auto_awesome_rounded, size: 18, color: palette.accent),
-            const SizedBox(width: NexusSpace.md),
-            Expanded(
-              child: Text(
-                'You tried "${learn.phrase}" a few times — I think you '
-                'meant "${learn.source}". Want me to remember that?',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
-            TextButton(
-              key: const ValueKey('dream-learn-button'),
-              onPressed: () => _dreamLearn(learn),
-              child: const Text('Learn it'),
-            ),
-            IconButton(
-              tooltip: 'Not now',
-              icon: const Icon(Icons.close_rounded, size: 16),
-              color: palette.textSecondary,
-              onPressed: () => setState(() => _dreamDismissed = true),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _dreamNudge() {
-    if (_dreamDismissed) return const SizedBox.shrink();
-    final learns = _dreamLearns;
-    if (learns != null && learns.isNotEmpty) {
-      return _dreamLearnCard(learns.first);
-    }
-    final gaps = _dreamGaps;
-    if (gaps == null || gaps.isEmpty) {
-      return const SizedBox.shrink();
-    }
-    final palette = NexusPalette.of(context);
-    final message = gaps.length == 1
-        ? 'I still don\'t understand "${gaps.first.phrase}" — teach me?'
-        : 'I still don\'t get ${gaps.length} things you asked — teach me?';
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        NexusSpace.page,
-        NexusSpace.md,
-        NexusSpace.sm,
-        0,
-      ),
-      child: Material(
-        color: palette.surface,
-        borderRadius: NexusRadius.card,
-        child: InkWell(
-          key: const ValueKey('dream-nudge'),
-          borderRadius: NexusRadius.card,
-          onTap: () => unawaited(_showDreamReview(context)),
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(
-              NexusSpace.lg,
-              NexusSpace.sm,
-              NexusSpace.xs,
-              NexusSpace.sm,
-            ),
-            decoration: BoxDecoration(
-              borderRadius: NexusRadius.card,
-              border: Border.all(color: palette.separator),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.auto_awesome_rounded,
-                  size: 18,
-                  color: palette.accent,
-                ),
-                const SizedBox(width: NexusSpace.md),
-                Expanded(
-                  child: Text(
-                    message,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Not now',
-                  icon: const Icon(Icons.close_rounded, size: 16),
-                  color: palette.textSecondary,
-                  onPressed: () => setState(() => _dreamDismissed = true),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -1931,9 +1767,6 @@ class AssistantViewState extends State<AssistantView> {
             ),
           ),
         ),
-        // Proactive nudge: gaps the dream log found, surfaced without being
-        // asked. Sits above the composer so it never hides a reply.
-        _dreamNudge(),
         // A reminder that fired, waiting for a "Done".
         _reminderBanner(),
         if (widget.brain != null) _brainStatusLine(),

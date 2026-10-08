@@ -460,67 +460,14 @@ void main() {
   });
 
   testWidgets(
-    'proactive dream nudge: startup gaps surface by themselves, and '
-    'teaching one clears the nudge',
+    'a log full of dead ends never nags: no teach-me card on startup, in '
+    'either variant, and the review stays a deliberate trip',
     (tester) async {
       final (store, mesh) = await boot();
-      // A phrase the assistant failed on twice, still untaught.
-      QueryLog.readAllOverride = () async => [
-        '{"ts":"t","kind":"ask","input":"turn on the lights","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
-        '{"ts":"t","kind":"ask","input":"turn on the lights","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
-      ];
-      try {
-        await tester.pumpWidget(harness(mesh));
-        await tester.pump(); // first frame
-        await tester.pump(); // post-frame log read resolves
-
-        // The assistant says so itself, before being asked — the nudge
-        // names the phrase it keeps missing.
-        final nudge = find.byKey(const ValueKey('dream-nudge'));
-        expect(nudge, findsOneWidget);
-        expect(
-          find.textContaining('"turn on the lights"'),
-          findsWidgets,
-          reason: 'the nudge should name the missed phrase',
-        );
-
-        // Tapping it opens the same dream review as the header button.
-        await tester.tap(nudge);
-        await tester.pumpAndSettle();
-        expect(find.text('What I still misunderstand'), findsOneWidget);
-
-        // Teach it inside the sheet; the row leaves the list.
-        await tester.enterText(
-          find.byKey(const ValueKey('dream-meaning')),
-          'show my devices',
-        );
-        await tester.tap(find.byIcon(Icons.check_rounded));
-        await tester.pumpAndSettle();
-        expect(
-          find.text('"turn on the lights"  ·  asked 1 time'),
-          findsNothing,
-        );
-
-        // Closing the sheet re-checks the log: no gaps left, nudge gone.
-        await tester.tapAt(const Offset(10, 10)); // barrier above the sheet
-        await tester.pumpAndSettle();
-        expect(find.byKey(const ValueKey('dream-nudge')), findsNothing);
-        expect(store.agentLearned['turn on the lights'], 'show my devices');
-      } finally {
-        QueryLog.readAllOverride = null;
-        QueryLog.i.resetForTest();
-        await mesh.stop();
-      }
-    },
-  );
-
-  testWidgets(
-    'dream-learn: a phrase the user keeps re-asking that matches one they '
-    'taught is offered as a one-tap fix',
-    (tester) async {
-      final (store, mesh) = await boot();
-      // The user taught "text mom" once; the log shows "tex mom" failing
-      // twice as a fresh ask — the dream should connect the dots itself.
+      // Both shapes the old nudge reacted to, at once: a phrase the
+      // assistant gave up on twice, and a re-asked variant of something the
+      // user has already taught. Neither may put anything on screen before
+      // the user asks for it.
       store.agentLearned = {'text mom': 'call tvcraft01'};
       QueryLog.readAllOverride = () async => [
         '{"ts":"t","kind":"ask","input":"tex mom","status":"needsInfo","route":"teach:tex mom","detail":""}',
@@ -530,28 +477,23 @@ void main() {
         await tester.pumpWidget(harness(mesh));
         await tester.pump(); // first frame
         await tester.pump(); // post-frame log read resolves
+        await tester.pumpAndSettle();
 
-        // The specific learn card appears above the composer — the fix,
-        // not a generic "teach me?".
-        final card = find.byKey(const ValueKey('dream-learn-card'));
-        expect(card, findsOneWidget);
-        expect(find.textContaining('"tex mom"'), findsWidgets);
-        expect(find.textContaining('"text mom"'), findsWidgets);
-
-        // One tap learns it through the real teach funnel — persisted,
-        // broadcast-eligible, echoed in the thread.
-        await tester.tap(find.byKey(const ValueKey('dream-learn-button')));
-        await tester.pump();
-        expect(store.agentLearned['tex mom'], 'call tvcraft01');
-        expect(find.textContaining('now means'), findsOneWidget);
+        expect(find.byKey(const ValueKey('dream-nudge')), findsNothing);
         expect(find.byKey(const ValueKey('dream-learn-card')), findsNothing);
+        expect(
+          find.textContaining('teach me', findRichText: true),
+          findsNothing,
+          reason: 'nothing may ask to be taught unless the user goes looking',
+        );
 
-        // And the lesson is real: typed straight into the composer, the
-        // phrase runs without a question — it reached the phone's contact
-        // on this device-less box only as far as the honest teach prompt
-        // would, so assert the routing instead: no "did you mean".
-        await ask(tester, 'tex mom');
-        expect(find.textContaining('Did you mean'), findsNothing);
+        // The review is still there, one deliberate gesture away: a long
+        // press on the header, then the row.
+        await tester.longPress(find.byType(NexusPresence));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('What I still misunderstand'));
+        await tester.pumpAndSettle();
+        expect(find.text('"tex mom"  ·  asked 2 times'), findsOneWidget);
       } finally {
         QueryLog.readAllOverride = null;
         QueryLog.i.resetForTest();
@@ -613,55 +555,6 @@ void main() {
       }
     },
   );
-
-  testWidgets('the nudge is once per session and honors a clean log', (
-    tester,
-  ) async {
-    final (store, mesh) = await boot();
-    QueryLog.readAllOverride = () async => [
-      '{"ts":"t","kind":"ask","input":"turn on the lights","status":"needsInfo","route":"teach:turn on the lights","detail":""}',
-    ];
-    try {
-      await tester.pumpWidget(harness(mesh));
-      await tester.pump();
-      await tester.pump();
-      final nudge = find.byKey(const ValueKey('dream-nudge'));
-      expect(nudge, findsOneWidget);
-
-      // Dismissing it silences the session. Opening the dream review from
-      // the header and closing it re-checks the log — the gaps are still
-      // there, yet the nudge must not come back.
-      await tester.tap(find.byTooltip('Not now'));
-      await tester.pump();
-      expect(nudge, findsNothing);
-      await tester.longPress(find.byType(NexusPresence));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('What I still misunderstand'));
-      await tester.pumpAndSettle();
-      expect(find.text('What I still misunderstand'), findsOneWidget);
-      await tester.tapAt(const Offset(10, 10)); // barrier above the sheet
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('dream-nudge')), findsNothing);
-    } finally {
-      QueryLog.readAllOverride = null;
-      QueryLog.i.resetForTest();
-      await mesh.stop();
-    }
-
-    // A clean log never nudges.
-    final (cleanStore, cleanMesh) = await boot();
-    QueryLog.readAllOverride = () async => const [];
-    try {
-      await tester.pumpWidget(harness(cleanMesh));
-      await tester.pump();
-      await tester.pump();
-      expect(find.byKey(const ValueKey('dream-nudge')), findsNothing);
-    } finally {
-      QueryLog.readAllOverride = null;
-      QueryLog.i.resetForTest();
-      await cleanMesh.stop();
-    }
-  });
 
   testWidgets('voice: the mic turns spoken words into the same command flow', (tester) async {
     final (store, mesh) = await boot();
