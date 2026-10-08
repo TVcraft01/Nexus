@@ -1015,7 +1015,7 @@ class _EntryRow extends StatelessWidget {
           ),
           Text(
             '${(progress! * 100).round()}',
-            style: TextStyle(fontSize: 8, color: palette.textSecondary),
+            style: NexusType.micro.copyWith(color: palette.textSecondary),
           ),
         ],
       ),

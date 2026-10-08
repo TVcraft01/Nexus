@@ -191,9 +191,7 @@ class NexusPageHeader extends StatelessWidget {
                   header: true,
                   child: Text(
                     title,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.headlineMedium?.copyWith(fontSize: 24),
+                    style: Theme.of(context).textTheme.headlineMedium,
                   ),
                 ),
                 if (subtitle != null) ...[

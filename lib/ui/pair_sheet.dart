@@ -509,8 +509,12 @@ class _PairSheetState extends State<_PairSheet> {
           Center(
             child: Text(
               valid ? _session.code : 'Code no longer usable',
-              style: TextStyle(
-                fontSize: valid ? 34 : 20,
+              // The two sizes come from the scale; the wide tracking is the
+              // code's own, because eight digits read as groups, not words.
+              style: NexusType.display.copyWith(
+                fontSize: valid
+                    ? NexusType.display.fontSize
+                    : NexusType.title.fontSize,
                 fontWeight: FontWeight.w800,
                 letterSpacing: valid ? 6 : 0,
                 color: valid ? NexusColors.text : NexusColors.muted,
@@ -518,7 +522,7 @@ class _PairSheetState extends State<_PairSheet> {
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: NexusSpace.sm),
           Text(
             'On the other device: add this one, enter the code above, and the two '
             'devices pair directly — no cloud, no account.',
@@ -575,17 +579,23 @@ class _PairSheetState extends State<_PairSheet> {
                   color: NexusColors.accent.withValues(alpha: 0.3),
                 ),
               ),
-              child: const Row(
+              child: Row(
                 children: [
-                  Icon(Icons.usb_rounded, size: 20, color: NexusColors.accent),
-                  SizedBox(width: 10),
+                  const Icon(
+                    Icons.usb_rounded,
+                    size: 20,
+                    color: NexusColors.accent,
+                  ),
+                  const SizedBox(width: NexusSpace.sm),
                   Expanded(
                     child: Text(
                       'Plug this phone into a PC running Nexus and the PC does '
                       'the work: it spots this phone over the cable, installs '
                       'or updates Nexus on it if needed, and opens a secure '
                       'tunnel — no Wi-Fi used for the pairing.',
-                      style: TextStyle(color: NexusColors.text, fontSize: 13),
+                      style: NexusType.caption.copyWith(
+                        color: NexusColors.text,
+                      ),
                     ),
                   ),
                 ],
@@ -648,17 +658,23 @@ class _PairSheetState extends State<_PairSheet> {
                 color: NexusColors.accent.withValues(alpha: 0.3),
               ),
             ),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(Icons.usb_rounded, size: 20, color: NexusColors.accent),
-                SizedBox(width: 10),
+                const Icon(
+                  Icons.usb_rounded,
+                  size: 20,
+                  color: NexusColors.accent,
+                ),
+                const SizedBox(width: NexusSpace.sm),
                 Expanded(
                   child: Text(
                     'Plug the device into this PC with a cable. This PC identifies '
                     'what is connected and sends the matching Nexus app — a phone '
                     'gets the Android app over the cable, a Raspberry Pi or other '
                     'Linux device gets a setup script.',
-                    style: TextStyle(color: NexusColors.text, fontSize: 13),
+                    style: NexusType.caption.copyWith(
+                      color: NexusColors.text,
+                    ),
                   ),
                 ),
               ],
@@ -733,8 +749,7 @@ class _PairSheetState extends State<_PairSheet> {
           TextField(
             controller: _codeController,
             textCapitalization: TextCapitalization.characters,
-            style: const TextStyle(
-              fontSize: 20,
+            style: NexusType.title.copyWith(
               fontWeight: FontWeight.w700,
               letterSpacing: 4,
               color: NexusColors.text,
@@ -798,9 +813,8 @@ class _PairSheetState extends State<_PairSheet> {
                   Expanded(
                     child: Text(
                       _error!,
-                      style: const TextStyle(
+                      style: NexusType.caption.copyWith(
                         color: NexusColors.danger,
-                        fontSize: 13,
                       ),
                     ),
                   ),

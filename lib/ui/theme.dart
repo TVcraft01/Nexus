@@ -86,49 +86,11 @@ ThemeData buildNexusTheme({Brightness brightness = Brightness.dark}) {
       minVerticalPadding: NexusSpace.md,
       shape: const RoundedRectangleBorder(borderRadius: NexusRadius.row),
     ),
-    navigationBarTheme: NavigationBarThemeData(
-      backgroundColor: palette.surface,
-      surfaceTintColor: Colors.transparent,
-      indicatorColor: palette.accentTint(0.16),
-      elevation: 0,
-      height: 64,
-      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-      iconTheme: WidgetStateProperty.resolveWith(
-        (states) => IconThemeData(
-          size: NexusSize.navIcon,
-          color: states.contains(WidgetState.selected)
-              ? palette.accent
-              : palette.textSecondary,
-        ),
-      ),
-      labelTextStyle: WidgetStateProperty.resolveWith(
-        (states) => TextStyle(
-          fontSize: 12,
-          fontWeight: states.contains(WidgetState.selected)
-              ? FontWeight.w700
-              : FontWeight.w500,
-          color: states.contains(WidgetState.selected)
-              ? palette.textPrimary
-              : palette.textSecondary,
-        ),
-      ),
-    ),
-    navigationRailTheme: NavigationRailThemeData(
-      backgroundColor: palette.surface,
-      indicatorColor: palette.accentTint(0.16),
-      selectedIconTheme: IconThemeData(color: palette.accent),
-      unselectedIconTheme: IconThemeData(color: palette.textSecondary),
-      selectedLabelTextStyle: TextStyle(
-        color: palette.textPrimary,
-        fontWeight: FontWeight.w700,
-        fontSize: 12.5,
-      ),
-      unselectedLabelTextStyle: TextStyle(
-        color: palette.textSecondary,
-        fontWeight: FontWeight.w500,
-        fontSize: 12.5,
-      ),
-    ),
+    // No navigationBarTheme or navigationRailTheme: the shell's navigation is
+    // a CupertinoTabBar on the phone and a sidebar on the desktop, and both
+    // read their colours and type from the tokens directly. A theme for a
+    // widget the app no longer builds is a second place to look when a colour
+    // is wrong.
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
         backgroundColor: palette.accent,

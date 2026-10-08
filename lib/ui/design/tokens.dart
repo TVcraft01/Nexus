@@ -254,8 +254,8 @@ abstract final class NexusSpace {
   /// Horizontal gutter for phone pages — Apple's 16pt margin.
   static const double page = 16;
 
-  /// Vertical gap between two page sections.
-  static const double section = 24;
+  /// Vertical gap between two page sections — Apple's 16pt between groups.
+  static const double section = 16;
 }
 
 /// Corner radii.
@@ -383,49 +383,90 @@ abstract final class NexusSpring {
   }
 }
 
-/// The type scale. Four sizes carry the whole app: a page title, a row title,
-/// body copy, and a caption. A new size is a design decision, not a style.
+/// The type scale: Apple's text styles, in the sizes and weights a phone
+/// actually uses, with the tracking each size needs.
+///
+/// Tracking is size-specific and is *not* one value for every size. Apple's
+/// rule (WWDC "The Details of UI Typography"): large display text wants
+/// negative tracking because letters read too far apart as they grow, body
+/// copy sits near zero, and small text wants slightly positive tracking to
+/// stay legible. The numbers below follow the SF Pro tracking curve — the
+/// per-point step is about -0.086 px in the text range (17pt ≈ -0.43,
+/// 16pt ≈ -0.31, 15pt ≈ -0.23, 13pt ≈ -0.08, 12pt = 0, 11pt ≈ +0.06) and
+/// flattens to about -0.02em once the face switches to Display at 20pt and
+/// up. So `display` and `title` are negative, `body` is nearly neutral, and
+/// `caption`/`overline` come back toward zero or positive. Line height moves
+/// the other way: tight (1.2) on large text, looser (1.4) on the small copy
+/// that is read in sentences.
+///
+/// Weights are chosen for the face that will render them: Roboto, which
+/// Android actually has, is lighter than SF at the same weight, so a row
+/// title takes `w500` where iOS would say "regular" — it lands at the same
+/// optical weight on the device.
 abstract final class NexusType {
+  /// Large Title. Sits inside the page and scrolls with it, the way an iOS
+  /// large title does.
   static const TextStyle display = TextStyle(
-    fontSize: 26,
+    fontSize: 34,
     fontWeight: FontWeight.w700,
-    letterSpacing: -0.5,
-    height: 1.15,
+    letterSpacing: -0.68,
+    height: 1.2,
   );
 
+  /// Title 3 / a sheet's title.
   static const TextStyle title = TextStyle(
-    fontSize: 17,
+    fontSize: 20,
     fontWeight: FontWeight.w600,
-    letterSpacing: -0.2,
+    letterSpacing: -0.40,
     height: 1.25,
   );
 
+  /// Body 17 — the title of a list row.
   static const TextStyle rowTitle = TextStyle(
+    fontSize: 17,
+    fontWeight: FontWeight.w500,
+    letterSpacing: -0.43,
+    height: 1.29,
+  );
+
+  /// Subheadline 15 — body copy that is read, not scanned.
+  static const TextStyle body = TextStyle(
     fontSize: 15,
+    letterSpacing: -0.23,
+    height: 1.33,
+  );
+
+  /// Footnote 13 — the second line of a row, a value, a caption.
+  static const TextStyle caption = TextStyle(
+    fontSize: 13,
+    letterSpacing: -0.08,
+    height: 1.38,
+  );
+
+  /// Uppercase group label above a section. Uppercase carries its own gap, so
+  /// this one is deliberately positive.
+  static const TextStyle overline = TextStyle(
+    fontSize: 12.5,
     fontWeight: FontWeight.w600,
+    letterSpacing: 0.62,
     height: 1.3,
   );
 
-  static const TextStyle body = TextStyle(
-    fontSize: 14,
-    height: 1.45,
-  );
-
-  static const TextStyle caption = TextStyle(
-    fontSize: 12.5,
-    height: 1.35,
-  );
-
-  /// Uppercase group label above a section.
-  static const TextStyle overline = TextStyle(
-    fontSize: 11.5,
-    fontWeight: FontWeight.w700,
-    letterSpacing: 0.8,
-  );
-
+  /// Headline 17 — a button's label.
   static const TextStyle button = TextStyle(
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: FontWeight.w600,
+    letterSpacing: -0.43,
+    height: 1.2,
+  );
+
+  /// The one size below the scale, and the only reason it exists: a two-digit
+  /// number drawn inside a 26pt progress ring, where the footnote size would
+  /// not fit. It is never used for words.
+  static const TextStyle micro = TextStyle(
+    fontSize: 10,
+    letterSpacing: 0,
+    height: 1.0,
   );
 }
 
