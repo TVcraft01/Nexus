@@ -385,6 +385,24 @@ class NexusRow extends StatelessWidget {
   }
 }
 
+/// A row's value: what the label answers to, right-aligned, a size smaller
+/// than the label and dimmer, so the eye reads the setting first.
+class NexusRowValue extends StatelessWidget {
+  const NexusRowValue(this.text, {super.key});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+        color: NexusPalette.of(context).textTertiary,
+      ),
+    );
+  }
+}
+
 /// A row whose action is a switch. The whole row toggles, the switch is only
 /// the indicator — a 48dp target on a 20dp thumb is how settings get missed.
 class NexusSwitchRow extends StatelessWidget {

@@ -10,6 +10,7 @@
 // rather than pinning the one that was reported.
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
@@ -136,13 +137,15 @@ void main() {
       );
       await tester.pump();
       // The screen is a lazy list on a real phone: scroll to the row the way a
-      // user reaches it, rather than assuming it is already built.
-      final button = find.widgetWithText(FilledButton, 'Check now');
-      await tester.scrollUntilVisible(button, 200,
+      // user reaches it, rather than assuming it is already built. The row is
+      // the action — the tinted "Check now" button it used to carry is gone,
+      // and the row still reaches the same handler with the same sentences.
+      final row = find.text('Check for updates now');
+      await tester.scrollUntilVisible(row, 200,
           scrollable: find.byType(Scrollable).first);
-      await tester.ensureVisible(button);
+      await tester.ensureVisible(row);
       await tester.pump();
-      await tester.tap(button);
+      await tester.tap(row);
       await tester.pump();
     }
 
@@ -164,6 +167,116 @@ void main() {
       await check(const UpdateCheck(UpdateInfo(version: '9.9.9')));
       expect(find.text('Update to v9.9.9 available'), findsOneWidget);
     } finally {
+      await tester.runAsync(mesh.stop);
+    }
+  });
+
+  // The list used to explain Nexus inside itself: "Local-first, no account",
+  // "Reachability is honest", "Understands what you teach it", "Actions need
+  // your approval", the encryption line. Those sentences are not settings, so
+  // they moved to a detail route — this is the guard that they moved rather
+  // than vanished, and that the list itself is a list of settings only.
+  testWidgets('the words that left the list are on About, not gone',
+      (tester) async {
+    late MeshService mesh;
+    await tester.runAsync(() async {
+      final store = NexusStore(
+        explicitPath:
+            '${Directory.systemTemp.createTempSync('settings-about').path}/s.json',
+      );
+      store.broadcastDiscovery = false;
+      await store.save();
+      mesh = MeshService(
+        identity:
+            DeviceInfo(id: 'settings-3', name: 'Settings PC', platform: 'linux'),
+        store: store,
+      );
+    });
+
+    tester.view.physicalSize = const Size(420, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: SettingsView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      // Not in place any more.
+      for (final sentence in ['Local-first', 'Reachability is honest']) {
+        expect(find.text(sentence), findsNothing,
+            reason: '"$sentence" is not a setting and does not sit in the '
+                'list');
+      }
+
+      final about = find.text('About Nexus');
+      await tester.scrollUntilVisible(about, 200,
+          scrollable: find.byType(Scrollable).first);
+      await tester.ensureVisible(about);
+      await tester.pump();
+      await tester.tap(about);
+      await tester.pumpAndSettle();
+
+      // Every fact, one tap away, each still a row.
+      for (final fact in [
+        'Version',
+        'Encryption',
+        'Account',
+        'Local-first',
+        'Reachability is honest',
+        'Understands what you teach it',
+        'Actions need your approval',
+      ]) {
+        expect(find.text(fact), findsOneWidget,
+            reason: '"$fact" moved to About, it was not dropped');
+      }
+    } finally {
+      await tester.runAsync(mesh.stop);
+    }
+  });
+
+  // The screen carried two tinted buttons — "Manage" beside the files row and
+  // "Check now" beside the updates row — and the design system allows the
+  // accent for state and action, never as a background wash. Both are values
+  // now; this is the guard that no chrome-button comes back.
+  testWidgets('the settings screen is rows and values, never buttons',
+      (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    late MeshService mesh;
+    await tester.runAsync(() async {
+      final store = NexusStore(
+        explicitPath:
+            '${Directory.systemTemp.createTempSync('settings-droid').path}/s.json',
+      );
+      store.broadcastDiscovery = false;
+      await store.save();
+      mesh = MeshService(
+        identity:
+            DeviceInfo(id: 'settings-4', name: 'Settings Phone', platform: 'android'),
+        store: store,
+      );
+    });
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: SettingsView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      // The one Android-only row is here, as a setting among settings.
+      expect(find.text('Show your files to paired devices'), findsOneWidget);
+      expect(find.byType(FilledButton), findsNothing);
+      expect(find.byType(OutlinedButton), findsNothing);
+      expect(find.byType(TextButton), findsNothing);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
       await tester.runAsync(mesh.stop);
     }
   });
