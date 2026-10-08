@@ -22,7 +22,12 @@ import 'package:nexus/ui/theme.dart';
 
 /// A mesh that answers a listing from a map instead of a peer.
 class _FakeMesh extends MeshService {
-  _FakeMesh(this._devices, {this.listings = const {}, this.failing = false})
+  _FakeMesh(
+    this._devices, {
+    this.listings = const {},
+    this.failing = false,
+    this.online = const {},
+  })
     : super(
         identity: DeviceInfo(
           id: 'test-device',
@@ -43,11 +48,14 @@ class _FakeMesh extends MeshService {
   /// When true every listing fails, the way an unreachable device does.
   final bool failing;
 
+  /// Which ids answer when dialled. Empty means all of them.
+  final Set<String> online;
+
   @override
   List<PairedDevice> get pairedDevices => _devices;
 
   @override
-  bool isOnline(String id) => true;
+  bool isOnline(String id) => online.isEmpty || online.contains(id);
 
   @override
   Future<List<FileEntry>?> listRemoteFiles(
@@ -62,8 +70,8 @@ class _FakeMesh extends MeshService {
   }
 }
 
-PairedDevice _device(String name) => PairedDevice(
-  id: 'peer-1',
+PairedDevice _device(String name, {String? id}) => PairedDevice(
+  id: id ?? 'peer-$name',
   name: name,
   platform: 'linux',
   address: '10.0.0.2',
@@ -206,6 +214,39 @@ void main() {
       find.text('Docs'),
       findsOneWidget,
       reason: 'up lands in the folder that holds it',
+    );
+  });
+
+  testWidgets('Copy to… opens on the device you are browsing', (tester) async {
+    await _pumpFiles(
+      tester,
+      _FakeMesh(
+        // The raw pairing order puts the device that cannot answer first —
+        // which is exactly where the picker used to open, on a spinner.
+        [_device('TVcraft01'), _device('Rehearsal PC')],
+        online: {'peer-Rehearsal PC'},
+        listings: {
+          '': [_file('notes.txt')],
+        },
+      ),
+    );
+    expect(find.text('Rehearsal PC · Home'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('File actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy to…'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Choose destination'), findsOneWidget);
+    expect(
+      find.text('TVcraft01 · Home'),
+      findsNothing,
+      reason: 'the sheet must open where the user is, not on the offline peer',
+    );
+    expect(
+      find.text('Rehearsal PC · Home'),
+      findsNWidgets(2),
+      reason: 'the browsing device is the sheet\'s starting point too',
     );
   });
 

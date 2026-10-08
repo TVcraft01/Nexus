@@ -18,12 +18,19 @@ Future<String> downloadsDirectory() async =>
 /// already there.
 Future<String> downloadsFilePath(String name, {String? inDirectory}) async {
   final dir = inDirectory ?? await downloadsDirectory();
-  var path = '$dir${Platform.pathSeparator}$name';
+  final separator = Platform.pathSeparator;
+  // The counter goes before the extension, so a second "report.pdf" becomes
+  // "report (1).pdf". A leading dot is part of the name, not an extension, so
+  // a dotfile becomes ".gitignore (1)" rather than growing a second suffix.
+  // This used to be a `replaceFirst` with a `\$1` in the replacement, which
+  // Dart does not expand — the literal "$1" ended up in the filename.
+  final dot = name.lastIndexOf('.');
+  final stem = dot > 0 ? name.substring(0, dot) : name;
+  final extension = dot > 0 ? name.substring(dot) : '';
+  var path = '$dir$separator$name';
   var n = 1;
   while (File(path).existsSync()) {
-    path =
-        '$dir${Platform.pathSeparator}'
-        '${name.replaceFirst(RegExp(r'(\.[^.]*)?$'), ' ($n)\$1')}';
+    path = '$dir$separator$stem ($n)$extension';
     n++;
   }
   return path;

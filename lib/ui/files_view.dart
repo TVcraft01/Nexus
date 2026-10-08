@@ -291,12 +291,21 @@ class _FilesViewState extends State<FilesView> {
   }
 
   Future<_FileDestination?> _pickDestination() async {
-    final devices = widget.mesh.pairedDevices.toList();
+    // Online peers first, exactly like the device chips above: the picker used
+    // to take the raw pairing order, so it could open on a device that cannot
+    // answer and sit on a spinner while the device the user was browsing sat
+    // second in the same list.
+    final devices = _selectableDevices();
     if (devices.isEmpty) return null;
     return showModalBottomSheet<_FileDestination>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _DestinationPicker(mesh: widget.mesh, devices: devices),
+      builder: (_) => _DestinationPicker(
+        mesh: widget.mesh,
+        devices: devices,
+        // Open where the user already is, not on whatever is first.
+        initial: _device,
+      ),
     );
   }
 
@@ -685,14 +694,22 @@ class _FileDestination {
 class _DestinationPicker extends StatefulWidget {
   final MeshService mesh;
   final List<PairedDevice> devices;
-  const _DestinationPicker({required this.mesh, required this.devices});
+
+  /// The device being browsed, so the sheet opens where the user already is.
+  final PairedDevice? initial;
+
+  const _DestinationPicker({
+    required this.mesh,
+    required this.devices,
+    this.initial,
+  });
 
   @override
   State<_DestinationPicker> createState() => _DestinationPickerState();
 }
 
 class _DestinationPickerState extends State<_DestinationPicker> {
-  late PairedDevice _device = widget.devices.first;
+  late PairedDevice _device = widget.initial ?? widget.devices.first;
   String _path = '';
   List<FileEntry>? _entries;
   bool _loading = false;
