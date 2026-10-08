@@ -301,16 +301,10 @@ class _PairSheetState extends State<_PairSheet> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: NexusColors.border,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
+              // No grabber of our own: every sheet already gets exactly one
+              // from the theme (`showDragHandle` + `dragHandleColor` in
+              // theme.dart), drawn by the framework and wired to drag-to-
+              // dismiss. A second bar here was pixels with no behavior.
               const SizedBox(height: 18),
               Row(
                 children: [

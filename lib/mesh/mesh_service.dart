@@ -3646,16 +3646,22 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
       onError: (_) {
         if (!completer.isCompleted) {
           completer.complete(
-            PairResult.failure('Connection was lost during pairing.',
-              reached: true),
+            PairResult.failure(
+              'The connection to the other device was lost. Check it is '
+              'still showing a code, then try again.',
+              reached: true,
+            ),
           );
         }
       },
       onDone: () {
         if (!completer.isCompleted) {
           completer.complete(
-            PairResult.failure('Connection closed before pairing finished.',
-              reached: true),
+            PairResult.failure(
+              'The other device stopped answering before pairing finished. '
+              'Check its code is still showing, then try again.',
+              reached: true,
+            ),
           );
         }
       },
