@@ -2,10 +2,17 @@ import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 
 import '../mesh/mesh_service.dart';
 import 'components/nexus_ui.dart'
-    show NexusEmptyState, NexusPageHeader, platformIcon;
+    show
+        NexusEmptyState,
+        NexusGroup,
+        NexusPageHeader,
+        NexusRow,
+        fileTypeIcon,
+        platformIcon;
 import 'downloads_dir.dart';
 import 'theme.dart';
 
@@ -213,30 +220,10 @@ class _FilesViewState extends State<FilesView> {
   Future<void> _rename(FileEntry entry) async {
     final device = _device;
     if (device == null || _operating.contains(entry.path)) return;
-    final controller = TextEditingController(text: entry.name);
     final name = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Rename'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'New name'),
-          onSubmitted: (value) => Navigator.pop(context, value.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Rename'),
-          ),
-        ],
-      ),
+      builder: (_) => _RenameFileDialog(initialName: entry.name),
     );
-    controller.dispose();
     if (name == null || name.isEmpty || name == entry.name || !mounted) return;
     final destination = _joinPath(_path, name);
     setState(() => _operating.add(entry.path));
@@ -657,7 +644,15 @@ class _FilesViewState extends State<FilesView> {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView.separated(
-        physics: const AlwaysScrollableScrollPhysics(),
+        // A flick throws the list (momentum projection) and the next flick
+        // carries the speed the last one left, which is what makes a fast
+        // scroll feel thrown rather than driven. At an edge the list resists
+        // progressively instead of stopping dead. Android's default physics
+        // does neither: by the framework's own documentation it "doesn't carry
+        // momentum", and its clamping boundary is a hard stop with a glow.
+        physics: const BouncingScrollPhysics(
+          parent: AlwaysScrollableScrollPhysics(),
+        ),
         padding: const EdgeInsets.only(bottom: NexusSpace.xxl),
         itemCount: entries.length,
         separatorBuilder: (context, _) => Divider(
@@ -681,6 +676,56 @@ class _FilesViewState extends State<FilesView> {
           onMove: () => _copyOrMove(entries[i], move: true),
         ),
       ),
+    );
+  }
+}
+
+/// Renames a file.
+///
+/// The dialog owns its own field controller. Handing one in from the caller
+/// and disposing it as soon as the route pops is not safe: the field is still
+/// mounted while the route animates out, and reads a controller that is
+/// already gone — the framework says so, in as many words, the moment the
+/// dialog is driven for real.
+class _RenameFileDialog extends StatefulWidget {
+  const _RenameFileDialog({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_RenameFileDialog> createState() => _RenameFileDialogState();
+}
+
+class _RenameFileDialogState extends State<_RenameFileDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialName,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.pop(context, _controller.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        decoration: const InputDecoration(labelText: 'New name'),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Rename')),
+      ],
     );
   }
 }
@@ -870,6 +915,15 @@ class _DestinationPickerState extends State<_DestinationPicker> {
   }
 }
 
+/// One file in the listing: what it is, what it is called, how big and how
+/// old — and nothing else.
+///
+/// This is the drive-app shape: the icon names the type, the name is the row,
+/// and the size and date sit under it in the quiet voice. There is no button
+/// per row — a list with a download button and a menu on every line is a
+/// toolbar wearing a list's clothes, and the row itself is the target. The
+/// actions are one long press away, and they are also published as the row's
+/// own accessibility actions, because a screen reader cannot press and hold.
 class _EntryRow extends StatelessWidget {
   final FileEntry entry;
   final double? progress;
@@ -895,147 +949,133 @@ class _EntryRow extends StatelessWidget {
     required this.onMove,
   });
 
+  /// The four things you can do to a file, in the order both the menu and the
+  /// accessibility actions show them.
+  List<({String label, IconData icon, VoidCallback run})> get _actions => [
+    (label: 'Rename', icon: Icons.edit_outlined, run: onRename),
+    (label: 'Copy to…', icon: Icons.copy_rounded, run: onCopy),
+    (label: 'Move to…', icon: Icons.drive_file_move_outlined, run: onMove),
+    (label: 'Delete', icon: Icons.delete_outline_rounded, run: onDelete),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final palette = NexusPalette.of(context);
-    return Material(
-      // Ink needs a surface to paint on, and the row itself stays transparent
-      // so the hairline between rows is the only edge it has.
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: busy ? null : onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: NexusSpace.lg,
-            vertical: NexusSpace.md,
+    return NexusRow(
+      title: entry.name,
+      // A folder's second line is what it is; a file's is how big and how old.
+      subtitle: entry.isDir
+          ? 'Folder'
+          : '${_size(entry.size)} · ${_when(entry.modified)}',
+      leading: Icon(
+        fileTypeIcon(name: entry.name, isDir: entry.isDir),
+        size: 24,
+        color: palette.textSecondary,
+      ),
+      // A folder goes somewhere, so it gets the one trailing chevron a row is
+      // allowed. A file is the thing itself: tapping it fetches it, and the
+      // chevron would promise another screen that does not exist.
+      chevron: entry.isDir,
+      trailing: _progressIndicator(palette),
+      // A row at work keeps its shape and loses only its response: the file
+      // being downloaded is still the row the finger landed on.
+      enabled: !busy,
+      onTap: onTap,
+      onLongPress: () => _showActions(context),
+      customActions: {
+        for (final action in _actions)
+          CustomSemanticsAction(label: action.label): action.run,
+      },
+    );
+  }
+
+  /// The row's own work, if it has any: a bare ring while the file is being
+  /// moved or renamed, and a filled ring with the percentage while bytes are
+  /// actually moving.
+  Widget? _progressIndicator(NexusPalette palette) {
+    if (deleting || operating) {
+      return const SizedBox(
+        width: 22,
+        height: 22,
+        child: CircularProgressIndicator(strokeWidth: 2.5),
+      );
+    }
+    if (!busy || progress == null) return null;
+    return SizedBox(
+      width: 26,
+      height: 26,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          CircularProgressIndicator(
+            strokeWidth: 2.5,
+            value: progress,
+            color: palette.accent,
+            backgroundColor: palette.surfaceSecondary,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    entry.isDir
-                        ? Icons.folder_rounded
-                        : Icons.insert_drive_file_rounded,
-                    size: 20,
-                    color: entry.isDir ? palette.accent : palette.textSecondary,
-                  ),
-                  const SizedBox(width: NexusSpace.md),
-                  Expanded(
-                    child: Text(
-                      entry.name,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (deleting || operating)
-                    const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(strokeWidth: 2.5),
-                    )
-                  else if (busy && progress != null)
-                    SizedBox(
-                      width: 26,
-                      height: 26,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            value: progress,
-                            color: palette.accent,
-                            backgroundColor: palette.surfaceSecondary,
-                          ),
-                          Text(
-                            '${(progress! * 100).round()}',
-                            style: TextStyle(
-                              fontSize: 8,
-                              color: palette.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else ...[
-                    if (!entry.isDir)
-                      IconButton(
-                        onPressed: onTap,
-                        tooltip: 'Download',
-                        icon: Icon(
-                          Icons.download_rounded,
-                          size: 20,
-                          color: palette.accent,
-                        ),
-                      ),
-                    PopupMenuButton<String>(
-                      tooltip: 'File actions',
-                      onSelected: (action) {
-                        switch (action) {
-                          case 'rename':
-                            onRename();
-                            break;
-                          case 'copy':
-                            onCopy();
-                            break;
-                          case 'move':
-                            onMove();
-                            break;
-                          case 'delete':
-                            onDelete();
-                            break;
-                        }
-                      },
-                      itemBuilder: (context) => [
-                        const PopupMenuItem(
-                          value: 'rename',
-                          child: Text('Rename'),
-                        ),
-                        const PopupMenuItem(
-                          value: 'copy',
-                          child: Text('Copy to…'),
-                        ),
-                        const PopupMenuItem(
-                          value: 'move',
-                          child: Text('Move to…'),
-                        ),
-                        const PopupMenuDivider(),
-                        const PopupMenuItem(
-                          value: 'delete',
-                          child: Text('Delete'),
-                        ),
-                      ],
-                      icon: Icon(
-                        Icons.more_vert_rounded,
-                        size: 20,
-                        color: palette.textSecondary,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              if (entry.isDir)
-                Padding(
-                  padding: const EdgeInsets.only(left: NexusSpace.xxxl),
-                  child: Text(
-                    'Folder',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                )
-              else
-                Padding(
-                  padding: const EdgeInsets.only(left: NexusSpace.xxxl),
-                  child: Text(
-                    '${_size(entry.size)} · ${_when(entry.modified)}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-            ],
+          Text(
+            '${(progress! * 100).round()}',
+            style: TextStyle(fontSize: 8, color: palette.textSecondary),
           ),
-        ),
+        ],
       ),
     );
+  }
+
+  /// The long-press menu. It hands back a label instead of running the handler
+  /// itself so the sheet is closed before the work starts — a rename dialog
+  /// opening on top of a sheet that is still on screen is two modals deep.
+  Future<void> _showActions(BuildContext context) async {
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) {
+        final palette = NexusPalette.of(sheetContext);
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              NexusSpace.lg,
+              0,
+              NexusSpace.lg,
+              NexusSpace.lg,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  entry.name,
+                  style: Theme.of(sheetContext).textTheme.titleMedium,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: NexusSpace.md),
+                NexusGroup(
+                  children: [
+                    for (final action in _actions)
+                      NexusRow(
+                        title: action.label,
+                        minHeight: NexusSize.rowCompact,
+                        destructive: action.label == 'Delete',
+                        leading: Icon(
+                          action.icon,
+                          size: 20,
+                          color: palette.textSecondary,
+                        ),
+                        onTap: () =>
+                            Navigator.pop(sheetContext, action.label),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (chosen == null) return;
+    for (final action in _actions) {
+      if (action.label == chosen) action.run();
+    }
   }
 }
 

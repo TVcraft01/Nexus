@@ -17,6 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
+import 'package:nexus/ui/components/nexus_ui.dart';
 import 'package:nexus/ui/files_view.dart';
 import 'package:nexus/ui/theme.dart';
 
@@ -117,6 +118,17 @@ PopupMenuItem<String> _item(WidgetTester tester, String label) =>
     tester.widget<PopupMenuItem<String>>(
       find.widgetWithText(PopupMenuItem<String>, label),
     );
+
+/// The row that shows [name] — the pressable surface a finger touches, which
+/// is what "the row" means on this screen.
+Finder _row(WidgetTester tester, String name) => find
+    .ancestor(of: find.text(name), matching: find.byType(NexusPressable))
+    .first;
+
+/// The same row as the widget that owns its label and its actions.
+Finder _rowWidget(String name) => find
+    .ancestor(of: find.text(name), matching: find.byType(NexusRow))
+    .first;
 
 void main() {
   testWidgets('the toolbar is one action and one menu, not four buttons', (
@@ -232,7 +244,9 @@ void main() {
     );
     expect(find.text('Rehearsal PC · Home'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('File actions'));
+    // The actions live behind a long press on the row itself: the row is the
+    // target, and there is no button standing on every line any more.
+    await tester.longPress(_row(tester, 'notes.txt'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Copy to…'));
     await tester.pumpAndSettle();
@@ -284,15 +298,178 @@ void main() {
       );
     }
 
-    // The row controls are per-row and still a pair each — the toolbar stays
-    // the only place with a prominent action.
+    // The drive-app shape: no control stands on a row. The toolbar's one
+    // action is the only button on the screen, and its menu the only menu —
+    // no download button and no per-row overflow, which is what this screen
+    // used to carry on every line.
     expect(find.widgetWithText(FilledButton, 'Send file…'), findsOneWidget);
-    expect(find.byTooltip('File actions'), findsNWidgets(2));
+    expect(find.byType(PopupMenuButton<String>), findsOneWidget);
     expect(
-      find.byTooltip('Download'),
-      findsOneWidget,
-      reason: 'only a file gets a download button; a folder is opened',
+      find.descendant(
+        of: find.byType(NexusPressable),
+        matching: find.byType(IconButton),
+      ),
+      findsNothing,
+      reason: 'no row carries a button — the row is the target',
     );
+    expect(find.byTooltip('File actions'), findsNothing);
+    expect(find.byTooltip('Download'), findsNothing);
+
+    // What names the type is the icon, at the size the row token asks for and
+    // in one muted colour — not a per-row badge or a coloured rainbow.
+    expect(find.byIcon(Icons.folder_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.description_outlined), findsOneWidget);
+    expect(
+      tester.getSize(find.byIcon(Icons.description_outlined)),
+      const Size(24, 24),
+    );
+    final leadingIcons = tester
+        .widgetList<Icon>(find.byWidgetPredicate((w) => w is Icon && w.size == 24))
+        .toList();
+    expect(leadingIcons, isNotEmpty, reason: 'each row leads with its type');
+    for (final icon in leadingIcons) {
+      expect(
+        icon.color,
+        palette.textSecondary,
+        reason: 'one muted colour for every type',
+      );
+    }
+
+    // Name first, facts under it; and only the folder leads somewhere, so only
+    // the folder wears a chevron.
+    expect(find.text('Folder'), findsOneWidget);
+    expect(find.text('2.0 KB · 2026-03-14'), findsOneWidget);
+    expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
+
+    // The row itself is the target, at the row token's height.
+    expect(
+      tester.getSize(_row(tester, 'notes.txt')).height,
+      greaterThanOrEqualTo(NexusSize.row),
+      reason: 'a file row is a NexusSize.row tall, like every other row',
+    );
+  });
+
+  testWidgets('a long press opens the actions, and a screen reader gets them '
+      'too', (tester) async {
+    final mesh = _FakeMesh(
+      [_device('TVcraft01')],
+      listings: {
+        '': [_file('notes.txt')],
+      },
+    );
+    await _pumpFiles(tester, mesh);
+
+    // Nothing is on screen until the gesture: no overflow glyph, no buttons.
+    expect(find.text('Rename'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(NexusPressable),
+        matching: find.byType(IconButton),
+      ),
+      findsNothing,
+    );
+
+    // A long press is a gesture a screen reader cannot perform the same way,
+    // so the same four actions are published on the row itself.
+    final row = tester.widget<NexusRow>(_rowWidget('notes.txt'));
+    expect(
+      row.customActions.keys.map((a) => a.label),
+      containsAll(<String>['Rename', 'Copy to…', 'Move to…', 'Delete']),
+      reason: 'the row menu must reach the accessibility menu as well',
+    );
+    expect(row.onLongPress, isNotNull);
+
+    await tester.longPress(_row(tester, 'notes.txt'));
+    await tester.pumpAndSettle();
+    for (final label in ['Rename', 'Copy to…', 'Move to…', 'Delete']) {
+      expect(find.text(label), findsOneWidget, reason: '$label is in the menu');
+    }
+
+    // And the menu's entries are the real handlers: Rename opens its dialog.
+    await tester.tap(find.text('Rename'));
+    await tester.pumpAndSettle();
+    expect(find.text('New name'), findsOneWidget);
+
+    // The press that opened the menu does not stay lit on the row behind it.
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    final container = tester.widget<AnimatedContainer>(
+      find
+          .descendant(
+            of: _row(tester, 'notes.txt'),
+            matching: find.byType(AnimatedContainer),
+          )
+          .first,
+    );
+    expect(
+      (container.decoration as BoxDecoration?)?.color,
+      Colors.transparent,
+      reason: 'a long press ends with the finger, not with the menu',
+    );
+  });
+
+  testWidgets('a row answers the finger on touch-DOWN, and settles on a spring',
+      (tester) async {
+    await _pumpFiles(
+      tester,
+      _FakeMesh(
+        [_device('TVcraft01')],
+        listings: {
+          '': [_file('notes.txt')],
+        },
+      ),
+    );
+
+    final row = _row(tester, 'notes.txt');
+    Color? tint() {
+      final box = tester.widget<AnimatedContainer>(
+        find.descendant(of: row, matching: find.byType(AnimatedContainer)).first,
+      );
+      return (box.decoration as BoxDecoration?)?.color;
+    }
+
+    // The x axis of the transform: on a scale-only matrix the z axis stays 1,
+    // so `getMaxScaleOnAxis()` would report 1 whatever the press is doing.
+    double scale() => tester
+        .widget<Transform>(
+          find.descendant(of: row, matching: find.byType(Transform)).first,
+        )
+        .transform
+        .storage[0];
+
+    expect(tint(), Colors.transparent, reason: 'a resting row is not tinted');
+    expect(scale(), moreOrLessEquals(1, epsilon: 0.0001));
+
+    // The finger lands. One frame later the row is already lit — no release
+    // is involved, which is the whole rule.
+    final gesture = await tester.startGesture(tester.getCenter(row));
+    await tester.pump();
+    expect(tint(), isNot(Colors.transparent),
+        reason: 'the press must show on touch-down, not on touch-up');
+
+    await tester.pump(const Duration(milliseconds: 120));
+    final pressed = scale();
+    expect(pressed, lessThan(1), reason: 'the row moves under the finger');
+
+    // The finger lifts mid-flight. The row carries on from where it is — it
+    // does not jump back to 1 and restart.
+    await gesture.up();
+    await tester.pump(const Duration(milliseconds: 16));
+    final justAfter = scale();
+    expect(
+      justAfter,
+      lessThan(1),
+      reason: 'releasing must not snap the row back',
+    );
+    expect(
+      (justAfter - pressed).abs(),
+      lessThan(0.005),
+      reason: 'the row continues from the value it was at — no seam',
+    );
+    expect(tint(), Colors.transparent, reason: 'the press ends with the lift');
+
+    await tester.pumpAndSettle();
+    expect(scale(), moreOrLessEquals(1, epsilon: 0.0001));
   });
 
   testWidgets('nothing paired teaches instead of showing a dead toolbar', (
