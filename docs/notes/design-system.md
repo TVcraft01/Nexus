@@ -51,21 +51,35 @@ margin is **16pt**.
 | `xxxl` | 32 | empty-state padding |
 | `huge` | 40 | rare, hero blocks |
 | `page` | 16 | horizontal gutter for phone pages |
-| `section` | 24 | vertical gap between two page sections |
+| `section` | 16 | vertical gap between two page sections (Apple's 16 between groups) |
 
 ## 3. Type
 
-System font, four sizes carry the app. No ultralight; nothing below 11.5pt.
+System font. The scale is Apple's text styles, with the tracking each size
+needs — tracking is *not* one value for every size. Large display text wants
+negative tracking because letters read too far apart as they grow, body copy
+sits near zero, and small text wants slightly positive tracking to stay
+legible. The numbers follow the SF Pro tracking curve: about -0.086 px per
+point in the text range (17pt ≈ -0.43, 16pt ≈ -0.31, 15pt ≈ -0.23,
+13pt ≈ -0.08, 12pt = 0, 11pt ≈ +0.06), flattening to about -0.02em once the
+face switches to Display at 20pt and up. Leading moves the other way: tight
+on large text, looser on the small copy read in sentences.
 
-| Token | Size | Weight | Use |
-|---|---|---|---|
-| `display` | 26 | 700 | page title |
-| `title` | 17 | 600 | card/sheet title, "Nexus" |
-| `rowTitle` | 15 | 600 | list row title |
-| `body` | 14 | 400 | body copy, row subtitle |
-| `caption` | 12.5 | 400 | helper text |
-| `overline` | 11.5 | 700, +0.8 | uppercase group label |
-| `button` | 15 | 600 | button label |
+| Token | Size | Weight | Tracking | Leading | Apple style / use |
+|---|---|---|---|---|---|
+| `display` | 34 | 700 | -0.68 | 1.2 | Large Title — page title |
+| `title` | 20 | 600 | -0.40 | 1.25 | Title 3 — sheet title, "Nexus" |
+| `rowTitle` | 17 | 500 | -0.43 | 1.29 | Body 17 — list row title |
+| `body` | 15 | 400 | -0.23 | 1.33 | Subheadline — body copy |
+| `caption` | 13 | 400 | -0.08 | 1.38 | Footnote — row subtitle, value |
+| `overline` | 12.5 | 600 | +0.62 | 1.3 | uppercase group label |
+| `button` | 17 | 600 | -0.43 | 1.2 | Headline — button label |
+| `micro` | 10 | 400 | 0 | 1.0 | the one size below the scale: a number inside a 26pt ring |
+
+Weights are chosen for the face that renders them: Roboto, which Android
+actually has, is lighter than SF at the same weight, so a row title takes
+`w500` where iOS would say "regular" — it lands at the same optical weight on
+the device.
 
 ## 4. Radius, size, motion, shadow
 
@@ -114,6 +128,27 @@ the screen has no better home for it.
 **Primary button** — exactly one per view, `FilledButton`, accent fill,
 white label, radius 12, 48pt tall. Secondary = `OutlinedButton`;
 tertiary = `TextButton`. **Style, not size, carries the hierarchy.**
+
+## 6. Cupertino — which widget is iOS, and where
+
+The app is Material-hosted (`MaterialApp`, because the theme, the tokens and
+most of the surfaces are Material) with **Cupertino where the platform's own
+idiom is the product**:
+
+| Thing | Widget | Note |
+|---|---|---|
+| Phone navigation | `CupertinoTabBar` | translucent; the framework blurs what is behind it |
+| Desktop navigation | `NexusSidebar` | iOS puts a sidebar under a pointer, not a tab bar |
+| A pushed page | `CupertinoPageScaffold` + `CupertinoNavigationBar` | translucent bar; the page scrolls under it |
+| A push | `CupertinoPageRoute` | horizontal slide, edge-swipe back |
+| Toggles | `CupertinoSwitch` | in the app's accent, not the system green |
+| Yes/no dialogs | `CupertinoAlertDialog` | destructive action red, no filled button |
+| Indeterminate progress | `CupertinoActivityIndicator` | determinate progress stays `CircularProgressIndicator` — Cupertino has no ring that shows a value |
+
+`CupertinoTheme` resolves colours from a *light* system theme by default, so
+`NexusCupertinoTheme` writes it once from the tokens in `MaterialApp`'s
+builder, above the navigator, where every route inherits it. A Cupertino
+control must never be the one surface that is the wrong colour.
 
 **Composer** — `surfaceSecondary` pill, `radius 12`, no visible border, mic
 inside at `textSecondary`, one circular accent send button with a tooltip.
