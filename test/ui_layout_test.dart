@@ -124,9 +124,10 @@ void main() {
     await _on(TargetPlatform.android, () async {
       await _pumpShell(tester, geometry: _phone, mesh: mesh);
 
-      // The shell is the touch layout: bottom navigation, no rail.
-      expect(find.byType(NavigationBar), findsOneWidget);
-      expect(find.byType(NavigationRail), findsNothing);
+      // The shell is the touch layout: an iOS tab bar at the bottom, no
+      // sidebar.
+      expect(find.byType(NexusTabBar), findsOneWidget);
+      expect(find.byType(NexusSidebar), findsNothing);
 
       for (final tab in _tabs) {
         await _openTab(tester, tab);
@@ -159,11 +160,11 @@ void main() {
       await _on(platform, () async {
         await _pumpShell(tester, geometry: geometry, mesh: mesh);
 
-        // Desktop is the pointer layout: a rail that gives its space back,
+        // Desktop is the pointer layout: a sidebar that gives its space back,
         // rather than the phone's layout stretched.
         if (platform == TargetPlatform.linux) {
-          expect(find.byType(NavigationRail), findsOneWidget);
-          expect(find.byType(NavigationBar), findsNothing);
+          expect(find.byType(NexusSidebar), findsOneWidget);
+          expect(find.byType(NexusTabBar), findsNothing);
         }
 
         for (final tab in _tabs) {

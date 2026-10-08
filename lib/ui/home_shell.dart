@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart' show CupertinoTabBar;
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import 'components/nexus_ui.dart' show NexusPressable;
 
 import '../core/brain.dart';
 import '../core/device_actions.dart' show gapAnswer;
@@ -317,11 +320,10 @@ class _HomeShellState extends State<HomeShell> {
           body: _isDesktop
               ? Row(
                   children: [
-                    _DesktopRail(
+                    NexusSidebar(
                       index: _index,
                       onSelect: (i) => setState(() => _index = i),
                     ),
-                    const VerticalDivider(width: 1),
                     Expanded(
                       child: Center(
                         child: ConstrainedBox(
@@ -337,7 +339,7 @@ class _HomeShellState extends State<HomeShell> {
               : SafeArea(bottom: false, child: content),
           bottomNavigationBar: _isDesktop || keyboardOpen
               ? null
-              : _PhoneNavBar(
+              : NexusTabBar(
                   index: _index,
                   onSelect: (i) => setState(() => _index = i),
                 ),
@@ -347,35 +349,18 @@ class _HomeShellState extends State<HomeShell> {
   }
 }
 
-/// The phone's bottom bar: four touch-first destinations, in the thumb zone.
-class _PhoneNavBar extends StatelessWidget {
-  const _PhoneNavBar({required this.index, required this.onSelect});
-
-  final int index;
-  final ValueChanged<int> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    return NavigationBar(
-      selectedIndex: index,
-      onDestinationSelected: onSelect,
-      destinations: [
-        for (final d in kNexusDestinations)
-          NavigationDestination(
-            icon: Icon(d.icon),
-            selectedIcon: Icon(d.selectedIcon),
-            label: d.label,
-            tooltip: d.label,
-          ),
-      ],
-    );
-  }
-}
-
-/// The desktop rail: the same destinations, laid out for a pointer and a
-/// mouse-sized window.
-class _DesktopRail extends StatelessWidget {
-  const _DesktopRail({required this.index, required this.onSelect});
+/// The phone's bottom bar: an iOS tab bar.
+///
+/// Four destinations at the bottom of the screen, a hairline on top and a
+/// small label under each glyph. The background is deliberately translucent:
+/// `CupertinoTabBar` turns a non-opaque background into a real backdrop blur
+/// (`bottom_tab_bar.dart` — `ClipRect` + `BackdropFilter(sigma 10)`), so the
+/// page keeps scrolling underneath the bar instead of stopping above an
+/// opaque strip. That blur is the one thing Material's `NavigationBar`
+/// cannot do, and it is what makes a bar read as chrome floating over the
+/// content rather than a wall across it.
+class NexusTabBar extends StatelessWidget {
+  const NexusTabBar({super.key, required this.index, required this.onSelect});
 
   final int index;
   final ValueChanged<int> onSelect;
@@ -383,20 +368,125 @@ class _DesktopRail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = NexusPalette.of(context);
-    return NavigationRail(
-      selectedIndex: index,
-      onDestinationSelected: onSelect,
-      labelType: NavigationRailLabelType.all,
-      groupAlignment: -0.9,
-      backgroundColor: palette.surface,
-      destinations: [
+    return CupertinoTabBar(
+      currentIndex: index,
+      onTap: onSelect,
+      backgroundColor: palette.surface.withValues(alpha: 0.82),
+      activeColor: palette.accent,
+      inactiveColor: palette.textSecondary,
+      iconSize: NexusSize.navIcon,
+      border: Border(top: BorderSide(color: palette.separator, width: 0.5)),
+      items: [
         for (final d in kNexusDestinations)
-          NavigationRailDestination(
+          BottomNavigationBarItem(
             icon: Icon(d.icon),
-            selectedIcon: Icon(d.selectedIcon),
-            label: Text(d.label),
+            activeIcon: Icon(d.selectedIcon),
+            label: d.label,
           ),
       ],
+    );
+  }
+}
+
+/// The desktop's rail: a sidebar, not a tab bar.
+///
+/// iOS does not put a tab bar under a pointer: a wide window gets a sidebar,
+/// where the same destinations are rows — glyph and name side by side, the
+/// current one on a tinted row with the accent ink. It is the same list in a
+/// layout the platform actually has, which is the point of having two.
+class NexusSidebar extends StatelessWidget {
+  const NexusSidebar({super.key, required this.index, required this.onSelect});
+
+  final int index;
+  final ValueChanged<int> onSelect;
+
+  /// Wide enough for a label beside an icon, narrow enough to give the page
+  /// back most of a half-screen window.
+  static const double width = 184;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return Container(
+      width: width,
+      decoration: BoxDecoration(
+        // The sidebar is the heavier material, so it separates the region
+        // instead of competing with the page.
+        color: palette.surface,
+        border: Border(right: BorderSide(color: palette.separator, width: 0.5)),
+      ),
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: NexusSpace.lg),
+            for (var i = 0; i < kNexusDestinations.length; i++)
+              _SidebarRow(
+                destination: kNexusDestinations[i],
+                selected: i == index,
+                onTap: () => onSelect(i),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarRow extends StatelessWidget {
+  const _SidebarRow({
+    required this.destination,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final NexusDestination destination;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    final ink = selected ? palette.accent : palette.textSecondary;
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: NexusSpace.sm,
+        vertical: NexusSpace.xxs,
+      ),
+      child: NexusPressable(
+        onTap: onTap,
+        tint: selected ? palette.accentTint(0.14) : null,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: selected ? palette.accentTint() : Colors.transparent,
+            borderRadius: NexusRadius.row,
+          ),
+          child: SizedBox(
+            height: NexusSize.minTouch,
+            child: Row(
+              children: [
+                const SizedBox(width: NexusSpace.sm),
+                Icon(
+                  selected ? destination.selectedIcon : destination.icon,
+                  size: NexusSize.navIcon,
+                  color: ink,
+                ),
+                const SizedBox(width: NexusSpace.sm),
+                Expanded(
+                  child: Text(
+                    destination.label,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: selected ? palette.accent : palette.textPrimary,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
