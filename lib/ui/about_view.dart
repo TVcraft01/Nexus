@@ -1,3 +1,5 @@
+import 'package:flutter/cupertino.dart'
+    show CupertinoNavigationBar, CupertinoPageScaffold;
 import 'package:flutter/material.dart';
 
 import '../core/version.dart';
@@ -16,13 +18,19 @@ class AboutView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = NexusPalette.of(context);
-    return Scaffold(
+    // A pushed page, in iOS chrome: the title in the bar, a back chevron the
+    // framework draws, and a translucent bar that blurs the list sliding
+    // under it instead of an opaque strip across the top.
+    return CupertinoPageScaffold(
       backgroundColor: palette.bg,
-      appBar: AppBar(
-        backgroundColor: palette.bg,
-        title: const Text('About Nexus'),
+      navigationBar: CupertinoNavigationBar(
+        backgroundColor: palette.surface.withValues(alpha: 0.82),
+        border: Border(
+          bottom: BorderSide(color: palette.separator, width: 0.5),
+        ),
+        middle: const Text('About Nexus'),
       ),
-      body: NexusPage(
+      child: NexusPage(
         children: [
           const NexusPageHeader(
             title: 'Nexus $appVersion',

@@ -10,6 +10,7 @@
 // rather than pinning the one that was reported.
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart' show CupertinoSwitch;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -78,8 +79,10 @@ void main() {
         expect(name, findsOneWidget, reason: '"$label" is on the screen');
 
         final row = find.ancestor(of: name, matching: find.byType(Row)).first;
-        Switch current() => tester.widget<Switch>(
-              find.descendant(of: row, matching: find.byType(Switch)),
+        // The control is the iOS switch now, and the assertion follows it: the
+        // row's words must still toggle the setting itself.
+        CupertinoSwitch current() => tester.widget<CupertinoSwitch>(
+              find.descendant(of: row, matching: find.byType(CupertinoSwitch)),
             );
 
         final before = current().value;

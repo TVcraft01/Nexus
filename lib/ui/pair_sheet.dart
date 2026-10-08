@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/cupertino.dart' show CupertinoPageRoute;
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
@@ -176,7 +177,7 @@ class _PairSheetState extends State<_PairSheet> {
   Future<void> _scanQr() async {
     final payload = await Navigator.push<PairPayload>(
       context,
-      MaterialPageRoute(builder: (_) => const ScanQrPage()),
+      CupertinoPageRoute(builder: (_) => const ScanQrPage()),
     );
     if (payload == null || !mounted) return;
     if (payload.id == widget.mesh.identity.id) {
@@ -685,7 +686,7 @@ class _PairSheetState extends State<_PairSheet> {
             onPressed: () async {
               final paired = await Navigator.push<bool>(
                 this.context,
-                MaterialPageRoute(
+                CupertinoPageRoute(
                   builder: (_) => CablePairPage(mesh: widget.mesh),
                 ),
               );

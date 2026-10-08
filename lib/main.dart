@@ -17,6 +17,7 @@ import 'core/identity.dart';
 import 'core/store.dart';
 import 'mesh/gateway.dart';
 import 'mesh/mesh_service.dart';
+import 'ui/components/nexus_ui.dart' show NexusCupertinoTheme;
 import 'ui/home_shell.dart';
 import 'ui/theme.dart';
 
@@ -270,6 +271,13 @@ class _NexusAppState extends State<NexusApp> with WindowListener {
       title: 'Nexus',
       debugShowCheckedModeBanner: false,
       theme: buildNexusTheme(),
+      // The Cupertino widgets the app now builds (the tab bar, a pushed
+      // page's navigation bar, a sheet, an iOS alert, the switches) read
+      // their colours from a CupertinoTheme whose default is *light*. The
+      // builder sits above the navigator, so every route inherits the app's
+      // own dark theme instead of a black title on a black page.
+      builder: (context, child) =>
+          NexusCupertinoTheme(child: child ?? const SizedBox.shrink()),
       home: HomeShell(mesh: widget.mesh),
     );
   }

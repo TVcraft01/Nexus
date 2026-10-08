@@ -1,3 +1,8 @@
+import 'package:flutter/cupertino.dart'
+    show
+        CupertinoAlertDialog,
+        CupertinoDialogAction,
+        CupertinoTextField;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
@@ -684,28 +689,26 @@ Future<void> _renamePairedDevice(
 
 Future<bool?> _confirmForget(BuildContext context, PairedDevice device) {
   return showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Forget this device?'),
-      content: Text(
-        '${device.name} will be removed and must be paired again from '
-        "scratch to reconnect. This can't be undone.",
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
+    context: context,      // An iOS alert: the destructive action is red ink on the right, not a
+      // filled red button — the platform's own way of saying "this one hurts".
+      builder: (context) => CupertinoAlertDialog(
+        title: const Text('Forget this device?'),
+        content: Text(
+          '${device.name} will be removed and must be paired again from '
+          "scratch to reconnect. This can't be undone.",
         ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: NexusPalette.of(context).danger,
-            foregroundColor: NexusPalette.of(context).onDanger,
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
           ),
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('Forget device'),
-        ),
-      ],
-    ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Forget device'),
+          ),
+        ],
+      ),
   );
 }
 
@@ -731,22 +734,26 @@ class _RenameDeviceDialogState extends State<_RenameDeviceDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
+    return CupertinoAlertDialog(
       title: const Text('Rename device'),
-      content: TextField(
-        controller: _controller,
-        autofocus: true,
-        maxLength: 24,
-        textInputAction: TextInputAction.done,
-        decoration: const InputDecoration(labelText: 'Device name'),
-        onSubmitted: (value) => Navigator.pop(context, value.trim()),
+      content: Padding(
+        padding: const EdgeInsets.only(top: NexusSpace.md),
+        child: CupertinoTextField(
+          controller: _controller,
+          autofocus: true,
+          maxLength: 24,
+          textInputAction: TextInputAction.done,
+          placeholder: 'Device name',
+          onSubmitted: (value) => Navigator.pop(context, value.trim()),
+        ),
       ),
       actions: [
-        TextButton(
+        CupertinoDialogAction(
           onPressed: () => Navigator.pop(context),
           child: const Text('Cancel'),
         ),
-        FilledButton(
+        CupertinoDialogAction(
+          isDefaultAction: true,
           onPressed: () => Navigator.pop(context, _controller.text.trim()),
           child: const Text('Save'),
         ),

@@ -1,6 +1,12 @@
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/cupertino.dart'
+    show
+        CupertinoActivityIndicator,
+        CupertinoAlertDialog,
+        CupertinoDialogAction,
+        CupertinoTextField;
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 
@@ -171,27 +177,24 @@ class _FilesViewState extends State<FilesView> {
   Future<void> _delete(FileEntry entry) async {
     final device = _device;
     if (device == null || _deleting.contains(entry.path)) return;
-    final palette = NexusPalette.of(context);
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      // iOS anatomy: one sentence, then Cancel and the destructive action in
+      // the platform's red ink.
+      builder: (context) => CupertinoAlertDialog(
         title: Text('Delete ${entry.name}?'),
         content: Text(
           entry.isDir
               ? 'It will be removed from ${device.name} — only if empty.'
               : 'It will be removed from ${device.name}.',
-          style: Theme.of(context).textTheme.bodyMedium,
         ),
         actions: [
-          TextButton(
+          CupertinoDialogAction(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: palette.danger,
-              foregroundColor: palette.onDanger,
-            ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
             onPressed: () => Navigator.pop(context, true),
             child: const Text('Delete'),
           ),
@@ -375,10 +378,18 @@ class _FilesViewState extends State<FilesView> {
                 style: Theme.of(sheetContext).textTheme.titleMedium,
               ),
             ),
+            // The same row shape as the rest of the app, rather than a
+            // Material ListTile: one list style, whether the list lives on a
+            // page or in a sheet.
             for (final p in peers)
-              ListTile(
-                leading: Icon(platformIcon(p.platform)),
-                title: Text(p.name),
+              NexusRow(
+                title: p.name,
+                minHeight: NexusSize.rowCompact,
+                leading: Icon(
+                  platformIcon(p.platform),
+                  size: 20,
+                  color: palette.textSecondary,
+                ),
                 trailing: Icon(
                   Icons.send_rounded,
                   size: 18,
@@ -600,7 +611,10 @@ class _FilesViewState extends State<FilesView> {
   Widget _buildBody(BuildContext context) {
     final palette = NexusPalette.of(context);
     if (_loading && _entries == null) {
-      return const Center(child: CircularProgressIndicator(strokeWidth: 2.5));
+      // The iOS spinner. There is nothing to measure here — the mesh knows
+      // how many bytes a download has moved, not how many folders are left —
+      // so the indeterminate spinner is the honest one.
+      return const Center(child: CupertinoActivityIndicator(radius: 12));
     }
     if (_error != null) {
       return Center(
@@ -711,20 +725,27 @@ class _RenameFileDialogState extends State<_RenameFileDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
+    return CupertinoAlertDialog(
       title: const Text('Rename'),
-      content: TextField(
-        controller: _controller,
-        autofocus: true,
-        decoration: const InputDecoration(labelText: 'New name'),
-        onSubmitted: (_) => _submit(),
+      content: Padding(
+        padding: const EdgeInsets.only(top: NexusSpace.md),
+        child: CupertinoTextField(
+          controller: _controller,
+          autofocus: true,
+          placeholder: 'New name',
+          onSubmitted: (_) => _submit(),
+        ),
       ),
       actions: [
-        TextButton(
+        CupertinoDialogAction(
           onPressed: () => Navigator.pop(context),
           child: const Text('Cancel'),
         ),
-        FilledButton(onPressed: _submit, child: const Text('Rename')),
+        CupertinoDialogAction(
+          isDefaultAction: true,
+          onPressed: _submit,
+          child: const Text('Rename'),
+        ),
       ],
     );
   }
@@ -875,9 +896,7 @@ class _DestinationPickerState extends State<_DestinationPicker> {
               Divider(height: NexusSpace.xl, color: palette.separator),
               if (_loading)
                 const Expanded(
-                  child: Center(
-                    child: CircularProgressIndicator(strokeWidth: 2.5),
-                  ),
+                  child: Center(child: CupertinoActivityIndicator(radius: 12)),
                 )
               else if (_error != null)
                 Expanded(
@@ -895,13 +914,15 @@ class _DestinationPickerState extends State<_DestinationPicker> {
                     itemCount: _entries!.length,
                     itemBuilder: (context, index) {
                       final entry = _entries![index];
-                      return ListTile(
+                      return NexusRow(
+                        title: entry.name,
+                        minHeight: NexusSize.rowCompact,
                         leading: Icon(
                           Icons.folder_rounded,
+                          size: 22,
                           color: palette.accent,
                         ),
-                        title: Text(entry.name),
-                        trailing: const Icon(Icons.chevron_right_rounded),
+                        chevron: true,
                         onTap: () => _open(entry),
                       );
                     },
@@ -997,7 +1018,7 @@ class _EntryRow extends StatelessWidget {
       return const SizedBox(
         width: 22,
         height: 22,
-        child: CircularProgressIndicator(strokeWidth: 2.5),
+        child: CupertinoActivityIndicator(radius: 9),
       );
     }
     if (!busy || progress == null) return null;

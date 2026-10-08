@@ -1,5 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/cupertino.dart'
+    show
+        CupertinoActivityIndicator,
+        CupertinoSwitch,
+        CupertinoTextThemeData,
+        CupertinoTheme,
+        CupertinoThemeData;
 import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart' show SpringSimulation;
@@ -72,6 +79,57 @@ String platformLabel(String platform) {
   }
 }
 
+/// The Cupertino half of the app's theme.
+///
+/// Every Cupertino widget resolves its colours and type from an inherited
+/// [CupertinoTheme], and the default one is a *light* system theme — a black
+/// navigation title and a white dialog on this app's near-black background.
+/// This writes that theme once, from the same tokens everything else reads, so
+/// an iOS-shaped control cannot be the one surface that is the wrong colour.
+///
+/// It sits inside `MaterialApp`'s builder, above the navigator, so every route
+/// — pushed pages, dialogs, sheets — inherits it.
+class NexusCupertinoTheme extends StatelessWidget {
+  const NexusCupertinoTheme({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return CupertinoTheme(
+      data: CupertinoThemeData(
+        // The app ships dark; the light palette is data, not a second build.
+        brightness: Brightness.dark,
+        primaryColor: palette.accent,
+        barBackgroundColor: palette.surface.withValues(alpha: 0.82),
+        scaffoldBackgroundColor: palette.bg,
+        textTheme: CupertinoTextThemeData(
+          // Cupertino's own sizes, with this app's colours and tracking: the
+          // nav title is the same 17pt Headline the type scale names.
+          navTitleTextStyle: NexusType.title.copyWith(
+            color: palette.textPrimary,
+          ),
+          navLargeTitleTextStyle: NexusType.display.copyWith(
+            color: palette.textPrimary,
+          ),
+          textStyle: NexusType.body.copyWith(color: palette.textPrimary),
+          actionTextStyle: NexusType.button.copyWith(color: palette.accent),
+          tabLabelTextStyle: NexusType.caption.copyWith(
+            fontSize: 10,
+            letterSpacing: 0.1,
+            color: palette.textSecondary,
+          ),
+          pickerTextStyle: NexusType.rowTitle.copyWith(
+            color: palette.textPrimary,
+          ),
+        ),
+      ),
+      child: child,
+    );
+  }
+}
+
 /// The page frame every tab uses.
 ///
 /// It owns the three things that used to be re-decided in each view — the
@@ -98,13 +156,17 @@ class NexusPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.paddingOf(context).bottom;
+    // Whatever top inset this page was handed. In the shell that is nothing —
+    // SafeArea has already consumed the status bar — and on a pushed page it
+    // is the translucent navigation bar, which the framework reports as
+    // padding and which the page must clear before its first row.
+    final insets = MediaQuery.paddingOf(context);
     final list = ListView(
       padding: EdgeInsets.fromLTRB(
         NexusSpace.page,
-        NexusSpace.xl,
+        NexusSpace.xl + insets.top,
         NexusSpace.page,
-        NexusSpace.xxxl + bottomGutter + bottom,
+        NexusSpace.xxxl + bottomGutter + insets.bottom,
       ),
       children: children,
     );
@@ -653,7 +715,14 @@ class NexusSwitchRow extends StatelessWidget {
       semanticLabel:
           '$title. ${value ? 'On' : 'Off'}${subtitle == null ? '' : '. $subtitle'}',
       trailing: ExcludeSemantics(
-        child: Switch(value: value, onChanged: onChanged),
+        // The iOS switch, in this app's accent — one accent, and it is the one
+        // the row's label already uses for anything live.
+        child: CupertinoSwitch(
+          value: value,
+          onChanged: onChanged,
+          activeTrackColor: NexusPalette.of(context).accent,
+          inactiveTrackColor: NexusPalette.of(context).surfaceSecondary,
+        ),
       ),
     );
   }
@@ -1015,14 +1084,7 @@ class _NexusAsyncButtonState extends State<NexusAsyncButton> {
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         if (_phase == _AsyncPhase.busy)
-          SizedBox(
-            width: 16,
-            height: 16,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: palette.onAccent,
-            ),
-          )
+          CupertinoActivityIndicator(radius: 8, color: palette.onAccent)
         else if (icon != null)
           Icon(icon, size: 18),
         if (icon != null || _phase == _AsyncPhase.busy)

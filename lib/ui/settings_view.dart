@@ -1,3 +1,5 @@
+import 'package:flutter/cupertino.dart'
+    show CupertinoActivityIndicator, CupertinoPageRoute;
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
@@ -89,8 +91,9 @@ class _SettingsViewState extends State<SettingsView> {
 
   /// The facts this list used to explain in place, on their own screen.
   void _openAbout() {
+    // The iOS push: horizontal, with the edge-swipe back the platform has.
     Navigator.of(context).push<void>(
-      MaterialPageRoute(builder: (_) => const AboutView()),
+      CupertinoPageRoute(builder: (_) => const AboutView()),
     );
   }
 
@@ -218,11 +221,7 @@ class _SettingsViewState extends State<SettingsView> {
                 color: icon,
               ),
               trailing: _checking
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                  ? CupertinoActivityIndicator(radius: 8, color: palette.accent)
                   : null,
               onTap: widget.onCheckForUpdate == null ? null : _checkForUpdate,
             ),
