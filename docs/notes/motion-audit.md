@@ -28,8 +28,8 @@ Column meanings:
 |---|---|---|---|---|---|
 | `NexusRow` (before) | Settings ×10, Devices ×2, pair sheet ×4, destination picker, conversation menu, About | **~100 ms late** | `InkWell` splash: fixed, growing | yes (ink cancels) | `InkWell` does start on down (`ink_well.dart:1171` `_startNewSplash` → `1176` `onTapDown`), but inside a scrollable the tap recogniser holds `onTapDown` until the gesture arena resolves, i.e. up to `kPressTimeout` = 100 ms. A ripple *grows* from the touch point: the surface reads as catching up. |
 | `NexusRow` (**now**) | all of the above | **same frame** | accent tint, instant on; **spring** scale 1 → 0.98 | yes | `NexusPressable` reads raw pointer events, so the arena cannot delay the highlight, and a press cancelled by a scroll (past `kTouchSlop`) or by a long press steps back out. |
-| `NexusSwitchRow` | Settings ×4 | as `NexusRow` | as `NexusRow` | — | the switch itself is the framework's, unchanged. |
-| `ListTile` | Files destination picker | ~100 ms | Material | yes | left as the framework draws it. |
+| `NexusSwitchRow` | Settings ×4 | as `NexusRow` | as `NexusRow` | — | the control is now `CupertinoSwitch`, which drives its own thumb; the row's own spring is unchanged. |
+| `NexusRow` | Files sheets (destination picker, send-to) | **same frame** | spring | yes | was a Material `ListTile` (~100 ms, ripple); it is the shared row now, so a sheet's list moves like a page's. |
 
 ## 2. Buttons, chips, icons
 
@@ -139,3 +139,33 @@ Of the interactive elements audited:
    momentum, and a row that keeps its shape while it works.
 5. `NexusSpring` — Apple's two parameters (damping, response) as a token, so
    the numbers live in one place instead of at each call site.
+
+## 10. The Cupertino pass (later the same day)
+
+What changed since, judged by the same four questions. Every framework claim
+below was read in the installed SDK, with the line cited.
+
+| Control | Down? | Motion | Grab? | Velocity | There is no |
+|---|---|---|---|---|---|
+| `CupertinoTabBar` (phone shell) | the bar is not a control: each item is a `GestureDetector` that calls `onTap` | **none** — selection swaps instantly | — | — | iOS does not animate a tab change; a destination is a place, not a state |
+| `NexusSidebar` (desktop shell) | same frame | `NexusPressable` spring | yes | — | — |
+| `CupertinoNavigationBar` (pushed pages) | — | the bar's fill **lerps from the page colour to the bar colour** with the scroll-under value (`nav_bar.dart:746-757`), and blurs once it is not opaque (`:253-255`) | — | — | a chrome bar that is opaque at rest: iOS shows the material only once content is under it |
+| `CupertinoPageRoute` (About, Scan, Cable) | — | the framework's own transition | yes | yes — `CupertinoRouteTransitionMixin`'s back gesture is a 1:1 drag that decides commit vs cancel from release velocity | — |
+| `CupertinoSwitch` | the switch owns its thumb | the framework's | yes | — | — |
+| `CupertinoActivityIndicator` | — | loop, but only while work is actually in flight | — | — | — |
+
+Measured on the phone, not inferred: the tab bar is a 50dp bar under the
+platform's inset, with a full-width hairline on top, four items centred at
+134/404/674/944 px (the eighths of a 1080px screen), the selected glyph in the
+accent `#0a84ff` and the rest in `#8a94a6`, and a fill of `#11161f` over a page
+of `#0b0f14` — the translucent surface, composited. The About page's bar at
+rest measured the page colour `#0b0f14`, which is rule 12's *scroll edge*, not
+a missing background: the page is shorter than the screen, so there was no
+scroll-under state to photograph.
+
+**Still open** (unchanged from §5 and §7): pull-to-refresh is still Material's
+`RefreshIndicator` — a fixed 150/200 ms curve with no hook to hand a spring to —
+and the sheets are still `showModalBottomSheet`, so their grabber and barrier
+come from the Material theme rather than from Cupertino's own sheet. The two
+`GestureDetector`s in `assistant_view.dart` still show no press feedback; that
+file carries uncommitted work of the user's, so it was left alone.
