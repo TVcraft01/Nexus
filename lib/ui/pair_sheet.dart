@@ -1,6 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/cupertino.dart' show CupertinoPageRoute;
+import 'package:flutter/cupertino.dart'
+    show CupertinoPageRoute, CupertinoTextField;
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
@@ -79,6 +80,29 @@ Future<void> showPairSheet(
     builder: (context, controller) =>
         _PairSheet(mesh: mesh, nearby: nearby, scroll: controller),
   );
+}
+
+/// A form field's caption, above the field.
+///
+/// A Cupertino field has no floating label to hold it, and that is not a loss:
+/// a caption over a field is how iOS labels a form, and it stays readable once
+/// the field has text in it.
+class _FieldLabel extends StatelessWidget {
+  const _FieldLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: NexusSpace.sm),
+        child: Text(
+          text,
+          style: NexusType.caption.copyWith(
+            color: NexusColors.muted,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      );
 }
 
 class _PairSheet extends StatefulWidget {
@@ -390,9 +414,8 @@ class _PairSheetState extends State<_PairSheet> {
         const SizedBox(height: NexusSpace.sm),
         // Progressive disclosure: every transport is here, none of them is in
         // the way of the two that matter.
-        InkWell(
+        NexusPressable(
           onTap: () => setState(() => _moreWays = !_moreWays),
-          borderRadius: NexusRadius.row,
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: NexusSpace.md),
             child: Row(
@@ -751,41 +774,53 @@ class _PairSheetState extends State<_PairSheet> {
                 ],
               ),
             ),
-          TextField(
+          // Cupertino fields, not Material `TextField`s: this form lives in a
+          // sheet, which is a Cupertino route with no `Material` above it, and
+          // a Material field asserts (`debugCheckHasMaterial`) the moment it
+          // builds. The label sits above the field instead of floating in it,
+          // which is where iOS puts a form's captions anyway.
+          const _FieldLabel('Code'),
+          CupertinoTextField(
             controller: _codeController,
             textCapitalization: TextCapitalization.characters,
+            placeholder: 'XXXX-XXXX',
             style: NexusType.title.copyWith(
               fontWeight: FontWeight.w700,
               letterSpacing: 4,
               color: NexusColors.text,
             ),
-            decoration: const InputDecoration(
-              labelText: 'Code',
-              hintText: 'XXXX-XXXX',
-            ),
             onSubmitted: (_) => _pair(),
           ),
           const SizedBox(height: 12),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 flex: 3,
-                child: TextField(
-                  controller: _addressController,
-                  decoration: const InputDecoration(
-                    labelText: 'Address',
-                    hintText: '192.168.1.23',
-                  ),
-                  onSubmitted: (_) => _pair(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const _FieldLabel('Address'),
+                    CupertinoTextField(
+                      controller: _addressController,
+                      placeholder: '192.168.1.23',
+                      onSubmitted: (_) => _pair(),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: TextField(
-                  controller: _portController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Port'),
-                  onSubmitted: (_) => _pair(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const _FieldLabel('Port'),
+                    CupertinoTextField(
+                      controller: _portController,
+                      keyboardType: TextInputType.number,
+                      onSubmitted: (_) => _pair(),
+                    ),
+                  ],
                 ),
               ),
             ],

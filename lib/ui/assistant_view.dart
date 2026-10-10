@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/cupertino.dart' show CupertinoActionSheetAction;
+import 'package:flutter/cupertino.dart'
+    show CupertinoActionSheetAction, CupertinoTextField;
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 import 'package:flutter/services.dart'
@@ -3371,15 +3372,16 @@ class _DreamRowState extends State<_DreamRow> {
           Row(
             children: [
               Expanded(
-                child: TextField(
+                // A Cupertino field, not a Material `TextField`: this row is
+                // inside the dream sheet, and a sheet in this app is a
+                // Cupertino route with no `Material` above it — a Material
+                // field asserts (`debugCheckHasMaterial`) as soon as it
+                // builds.
+                child: CupertinoTextField(
                   key: const ValueKey('dream-meaning'),
                   controller: _controller,
+                  placeholder: _teachHint(widget.platform),
                   onSubmitted: (_) => _teach(),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: _teachHint(widget.platform),
-                    border: const OutlineInputBorder(),
-                  ),
                   style: NexusType.caption.copyWith(color: NexusColors.text),
                 ),
               ),

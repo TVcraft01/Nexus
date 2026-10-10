@@ -104,8 +104,8 @@ FileEntry _file(String name) => FileEntry(
 );
 
 Future<void> _pumpFiles(WidgetTester tester, MeshService mesh) async {
-  // The tab is a child of HomeShell's Scaffold, which is what supplies the
-  // Material the chips and buttons paint on.
+  // The tab is a child of HomeShell's Scaffold, exactly as it is on the phone:
+  // the page sits on the shell's own surface, not on one of its own.
   await tester.pumpWidget(
     MaterialApp(
       theme: buildNexusTheme(),
@@ -170,9 +170,17 @@ void main() {
     // lined up with nothing.
     final margin = tester.getTopLeft(find.text('Files')).dx;
     expect(
-      tester.getTopLeft(find.byType(ChoiceChip).first).dx,
+      tester.getTopLeft(find.byType(NexusChoicePill).first).dx,
       margin,
-      reason: 'the device chips sit on the page margin, not inside the title',
+      reason: 'the device pills sit on the page margin, not inside the title',
+    );
+    // The pills are the app's own now: a Material chip asserts an ambient
+    // Material, and one of these strips lives inside a sheet, where there is
+    // none — it was the reason a transparent Material sat under every sheet.
+    expect(
+      find.byType(ChoiceChip),
+      findsNothing,
+      reason: 'no Material chip is left on this screen',
     );
     expect(
       tester.getTopLeft(find.text('TVcraft01 · Home')).dx,

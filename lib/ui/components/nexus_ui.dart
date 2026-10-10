@@ -567,6 +567,84 @@ class _NexusPressableState extends State<NexusPressable>
   }
 }
 
+/// A small pill that picks one of a few — the app's own answer to a Material
+/// `ChoiceChip`.
+///
+/// Material's chip wants an ambient [Material] for its ink and asserts when
+/// there is none (`RawChip`'s build, `chip.dart`), which is why a transparent
+/// `Material` used to sit under every sheet in this app. This one is painted
+/// and pressed by Nexus itself — [NexusPressable], the same feedback every row
+/// and tile uses — so it works in a Cupertino route, where there is no
+/// `Material` above it at all.
+class NexusChoicePill extends StatelessWidget {
+  const NexusChoicePill({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.icon,
+    this.iconColor,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  /// A small hint before the label — a device's platform, say. Deliberately
+  /// smaller than the label: it is not what the eye should land on.
+  final IconData? icon;
+  final Color? iconColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: NexusPressable(
+        onTap: onTap,
+        borderRadius: NexusRadius.pill,
+        child: Container(
+          // The strip this lives in is a row of minTouch height, and the pill
+          // fills it: a pill that reads small must still be a target a thumb
+          // can find.
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: NexusSpace.md),
+          decoration: BoxDecoration(
+            color: selected ? palette.accentTint(0.16) : palette.surface,
+            borderRadius: NexusRadius.pill,
+            border: Border.all(
+              color: selected ? palette.accent : palette.separator,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null) ...[
+                Icon(
+                  icon,
+                  size: 16,
+                  color:
+                      iconColor ??
+                      (selected ? palette.accent : palette.textSecondary),
+                ),
+                const SizedBox(width: NexusSpace.sm),
+              ],
+              Flexible(
+                child: Text(
+                  label,
+                  style: NexusType.caption,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// One row in a [NexusGroup]. Uses the whole row as the target, keeps a
 /// minimum touch height, and announces title and subtitle as one label so a
 /// screen reader does not read them as two unrelated things.
@@ -1178,15 +1256,13 @@ class NexusSheetSurface extends StatelessWidget {
       // framework has already removed it (the grabber sits in that band); the
       // bottom one is a real gesture bar, and the sheet owns it.
       //
-      // A transparent Material sits under the content because Nexus is a
-      // Material application wearing Cupertino chrome: the controls inside a
-      // sheet — FilledButton, IconButton, ChoiceChip — are the app's own and
-      // reach for ink, and a Cupertino route has no Material in it. It paints
-      // nothing, so the sheet keeps the Cupertino surface above.
-      child: Material(
-        type: MaterialType.transparency,
-        child: SafeArea(top: false, child: child),
-      ),
+      // No `Material` here any more. A transparent one used to sit under the
+      // content so the Material controls inside a sheet could reach ink; the
+      // buttons in the app paint their own (`ButtonStyleButton` builds a
+      // `Material` of its own), the choices are Nexus's own [NexusChoicePill],
+      // and everything else that is pressable is a [NexusPressable] or a
+      // [NexusRow]. A sheet is a Cupertino route, and it is one throughout.
+      child: SafeArea(top: false, child: child),
     );
   }
 }

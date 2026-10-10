@@ -20,6 +20,7 @@ import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 import '../mesh/mesh_service.dart';
 import 'components/nexus_ui.dart'
     show
+        NexusChoicePill,
         NexusEmptyState,
         NexusPageHeader,
         NexusPressable,
@@ -640,25 +641,14 @@ class _FilesViewState extends State<FilesView> {
               for (final d in devices)
                 Padding(
                   padding: const EdgeInsets.only(right: NexusSpace.sm),
-                  child: ChoiceChip(
+                  child: NexusChoicePill(
                     selected: device?.id == d.id,
-                    onSelected: (_) => _selectDevice(d),
-                    avatar: Icon(
-                      platformIcon(d.platform),
-                      size: 16,
-                      color: widget.mesh.isOnline(d.id)
-                          ? palette.success
-                          : palette.textSecondary,
-                    ),
-                    label: Text(d.name, overflow: TextOverflow.ellipsis),
-                    labelStyle: NexusType.caption,
-                    selectedColor: palette.accentTint(0.16),
-                    backgroundColor: palette.surface,
-                    side: BorderSide(
-                      color: device?.id == d.id
-                          ? palette.accent
-                          : palette.separator,
-                    ),
+                    onTap: () => _selectDevice(d),
+                    icon: platformIcon(d.platform),
+                    iconColor: widget.mesh.isOnline(d.id)
+                        ? palette.success
+                        : palette.textSecondary,
+                    label: d.name,
                   ),
                 ),
             ],
@@ -1210,11 +1200,11 @@ class _DestinationPickerState extends State<_DestinationPicker> {
                     for (final device in widget.devices)
                       Padding(
                         padding: const EdgeInsets.only(right: NexusSpace.sm),
-                        child: ChoiceChip(
+                        child: NexusChoicePill(
                           selected: device.id == _device.id,
-                          label: Text(device.name),
-                          avatar: Icon(platformIcon(device.platform), size: 16),
-                          onSelected: (_) => _selectDevice(device),
+                          label: device.name,
+                          icon: platformIcon(device.platform),
+                          onTap: () => _selectDevice(device),
                         ),
                       ),
                   ],
