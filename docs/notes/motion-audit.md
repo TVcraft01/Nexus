@@ -220,17 +220,18 @@ widgets and geometry rather than by a screenshot.
 ## 12. On the phone — the same things, in pixels
 
 The device came back on the bus, so §11's claims were re-checked against a
-release build on a Samsung SM-A256E (2340×1080, SDK 36) instead of against the
+release build on a Samsung SM-A256E (1080×2340 at dpr 2.75, SDK 36) instead of
+against the
 SDK alone. Everything below is a measurement from a `screencap`, pulled and
 read at the pixel level; the tool that did it is described in §13.
 
 | Claim from §11 | What the pixels said |
 |---|---|
-| The sheet is a Cupertino page sheet | the top edge sat at **y≈188 px of 2340 = 8.0%**, which is `topGap`'s default, and the page behind was still drawn (lightened to `#1b1f24`) — not a full-screen modal |
-| A downward drag dismisses it | measured **y=188 → 514** mid-drag with the page lightening under the finger, then the sheet gone from the accessibility tree after release |
-| The action sheet blurs what is behind it | the fill read `#21272e` over the accent button against `#212224` over dark page at the same y, i.e. **translucent**, and a 1 px sharp edge behind it ramped over **~150 px** — **blurred**, not merely dimmed. The first attempt at this measurement was wrong (the sample box sat on the sheet's own label); the horizontal fixed-height scan is the one that holds |
-| Text follows the system preference | at `font_scale 1.3` the text ink measured **1.31–1.35×** the 1.0× capture, while the non-text band (the orb, 93 px) did not move |
-| The framework draws a grabber on the sheet | **It did not.** The sheet's top band was a flat `#121821` — the surface colour, no pixel lighter than the fill. This was the one claim the SDK reading got wrong, and it was a real bug: **see below** |
+| The sheet is a Cupertino page sheet | the top edge sat at **y=188 px of 2340 = 8.0%**, which is `topGap`'s default; and the page behind is still there, *lightened and blurred* rather than hidden — its dark bands go **15 → 34 lum** (`#0b0f14` → `#1e2226`), and the white `Devices` title, 236 lum on the page, arrives as the same flat 34, its glyph smeared into its neighbours |
+| A downward drag dismisses it | at rest the top edge is **y=188**; mid-drag it measured **y=674 (28.8% down)**, following the finger. Then the two halves of the release rule, both seen: a slow drag (0.24 screen-heights/s, under the 0.52 commit distance) **sprang back to exactly 188**, and a fling at 2.6 screen-heights/s (over `_kMinFlingVelocity` = 2.0) **dismissed** — the sheet-only strings left the accessibility tree and the page's own came back |
+| The action sheet blurs what is behind it | the fill is `0xBE292929` (**74.5%** opaque) under a sigma-30 `BackdropFilter` (`dialog.dart:153`, `:1313`). Measured through it: the page's **69-lum/px** accent-button edge arrives as a **1-lum/px** smear, and the whole 122-px button modulates the card by **2 lum** — where a merely translucent card would have carried that step through at 17.6 lum/px. The blur is real and provable; at 74.5% fill you cannot see it |
+| Text follows the system preference | at `font_scale 1.3` the same two sentences measured **1.312×** and **1.326×** by ink width, while the fixed-height controls (chips, mic, Send, tab bar) held their 126/131 px and nothing clipped — the composer ends at y=2046, the tab bar begins at 2083 |
+| The framework draws a grabber on the sheet | **It did not.** The sheet's top band was a flat `#121821` — the surface colour, no pixel lighter than the fill. With the fix in, the same measurement finds a handle at **x 493–586, y 200–213** = 34.2 × 5.1 dp, centred at x=540 of 1080 (the framework's is 36×5). This was the one claim the SDK reading got wrong, and it was a real bug: **see below** |
 
 **What the phone did not show.** §11's pull-to-refresh row was *not* re-checked
 on the device: with no peer reachable, the Files screen holds an error card and
@@ -254,9 +255,15 @@ in the tree when the pair sheet is open). The test was checked against the *old*
 code and fails there — a guard that passes either way is not a guard.
 
 What the phone also showed, and no widget tree would have: the sheet's own
-surface is `#121821` against a page at `#0e1116` — close enough that the sheet
-reads as a lifted panel rather than a separate card, which is the intent, but it
-is a contrast decision worth knowing the number of.
+surface is `#121821` (25 lum) against a page at `#0b0f14` (15 lum) — a lift of
+**10 lum**, close enough that the sheet reads as a lifted panel rather than a
+separate card, which is the intent, but it is a contrast decision worth knowing
+the number of.
+
+The two barriers are not the same barrier, and only the pixels say so. A **page
+sheet** lightens the page behind it (15 → 34 lum) and blurs it; an **action
+sheet**'s popup barrier *dims* the page it floats over (`#0b0f14` → `#06080a`,
+a uniform **−7 lum** measured at three rows both near and far from the card).
 
 ## 13. How these were taken
 
