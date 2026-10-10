@@ -217,10 +217,13 @@ void main() {
         await tester.pump();
       }
 
-      // User bubbles render at 13.5px, suggestion chips at 12px — this
-      // finder picks the bubble, not the chip.
+      // A suggestion chip can carry the same words the user typed, so the
+      // bubble is picked by its own role — the "You: …" label the bubble
+      // publishes to a screen reader — rather than by a font size that used
+      // to happen to differ from the chips'.
       Finder bubble(String t) => find.byWidgetPredicate(
-            (w) => w is Text && w.data == t && w.style?.fontSize == 13.5,
+            (w) =>
+                w is Semantics && w.properties.label == 'You: $t',
           );
 
       // Two exchanges in a row: both user bubbles survive, but only the

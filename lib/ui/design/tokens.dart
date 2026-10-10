@@ -491,6 +491,31 @@ abstract final class NexusType {
     letterSpacing: 0,
     height: 1.0,
   );
+
+  /// Callout 16 — a card's own heading, one step under a title, and the size
+  /// the assistant's cards were spelling out by hand before they had a name.
+  /// Emphasis is the widget's (`copyWith(fontWeight:)`), not a second token:
+  /// what a size owns is its size, its tracking and its leading.
+  static const TextStyle callout = TextStyle(
+    fontSize: 16,
+    letterSpacing: -0.31,
+    height: 1.31,
+  );
+
+  /// Caption 1 12 — the smallest size still read as a sentence.
+  static const TextStyle caption1 = TextStyle(
+    fontSize: 12,
+    letterSpacing: 0,
+    height: 1.33,
+  );
+
+  /// Caption 2 11 — a device's id, a live status line: print under print,
+  /// where the words are labels for something already on screen.
+  static const TextStyle caption2 = TextStyle(
+    fontSize: 11,
+    letterSpacing: 0.06,
+    height: 1.27,
+  );
 }
 
 /// The dark-only colour names Nexus shipped with, kept as aliases so the

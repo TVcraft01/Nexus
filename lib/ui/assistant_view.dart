@@ -1140,7 +1140,7 @@ class AssistantViewState extends State<AssistantView> {
               padding: const EdgeInsets.only(right: NexusSpace.sm),
               child: Center(
                 child: ActionChip(
-                  label: Text(s, style: const TextStyle(fontSize: 12)),
+                  label: Text(s, style: NexusType.caption1),
                   onPressed: () {
                     _controller.text = s;
                     _onSubmit();
@@ -1189,22 +1189,17 @@ class AssistantViewState extends State<AssistantView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
+              Text(
                 'Hello! I am Nexus.',
-                style: TextStyle(
+                style: NexusType.callout.copyWith(
                   color: NexusColors.text,
                   fontWeight: FontWeight.w700,
-                  fontSize: 16,
                 ),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Type what you want, the way you would say it.',
-                style: TextStyle(
-                  color: NexusColors.muted,
-                  fontSize: 13,
-                  height: 1.4,
-                ),
+                style: NexusType.caption.copyWith(color: NexusColors.muted),
               ),
               const SizedBox(height: 12),
               _firstStep(
@@ -1235,13 +1230,9 @@ class AssistantViewState extends State<AssistantView> {
                 'Pair your devices',
                 'in Devices — then I can act on them too',
               ),
-              const Text(
+              Text(
                 'If I misunderstand, tell me what you meant — I learn.',
-                style: TextStyle(
-                  color: NexusColors.muted,
-                  fontSize: 13,
-                  height: 1.4,
-                ),
+                style: NexusType.caption.copyWith(color: NexusColors.muted),
               ),
             ],
           ),
@@ -1265,11 +1256,7 @@ class AssistantViewState extends State<AssistantView> {
           Expanded(
             child: Text.rich(
               TextSpan(
-                style: const TextStyle(
-                  fontSize: 13,
-                  height: 1.4,
-                  color: NexusColors.muted,
-                ),
+                style: NexusType.caption.copyWith(color: NexusColors.muted),
                 children: [
                   TextSpan(
                     text: label,
@@ -1310,19 +1297,18 @@ class AssistantViewState extends State<AssistantView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
+              Text(
                 'Set me up — 30 seconds.',
-                style: TextStyle(
+                style: NexusType.callout.copyWith(
                   color: NexusColors.text,
                   fontWeight: FontWeight.w700,
-                  fontSize: 16,
                 ),
               ),
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 'Tell me your name and what to call me, then grant the '
                 'permissions I work with. You can change all of this later.',
-                style: TextStyle(color: NexusColors.muted, fontSize: 13),
+                style: NexusType.caption.copyWith(color: NexusColors.muted),
               ),
               const SizedBox(height: 14),
               TextField(
@@ -1330,13 +1316,11 @@ class AssistantViewState extends State<AssistantView> {
                 decoration: InputDecoration(
                   labelText: 'What should I be called?',
                   hintText: 'Nexus',
-                  labelStyle: const TextStyle(
+                  labelStyle: NexusType.caption1.copyWith(
                     color: NexusColors.muted,
-                    fontSize: 12,
                   ),
-                  hintStyle: const TextStyle(
+                  hintStyle: NexusType.caption.copyWith(
                     color: NexusColors.muted,
-                    fontSize: 13,
                   ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
@@ -1348,7 +1332,7 @@ class AssistantViewState extends State<AssistantView> {
                     vertical: 10,
                   ),
                 ),
-                style: const TextStyle(color: NexusColors.text, fontSize: 13),
+                style: NexusType.caption.copyWith(color: NexusColors.text),
               ),
               const SizedBox(height: 10),
               TextField(
@@ -1356,13 +1340,11 @@ class AssistantViewState extends State<AssistantView> {
                 decoration: InputDecoration(
                   labelText: 'Your name',
                   hintText: 'what should I call you?',
-                  labelStyle: const TextStyle(
+                  labelStyle: NexusType.caption1.copyWith(
                     color: NexusColors.muted,
-                    fontSize: 12,
                   ),
-                  hintStyle: const TextStyle(
+                  hintStyle: NexusType.caption.copyWith(
                     color: NexusColors.muted,
-                    fontSize: 13,
                   ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
@@ -1374,7 +1356,7 @@ class AssistantViewState extends State<AssistantView> {
                     vertical: 10,
                   ),
                 ),
-                style: const TextStyle(color: NexusColors.text, fontSize: 13),
+                style: NexusType.caption.copyWith(color: NexusColors.text),
               ),
               const SizedBox(height: 14),
               _permRow(
@@ -1433,18 +1415,14 @@ class AssistantViewState extends State<AssistantView> {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: NexusType.caption.copyWith(
                     color: NexusColors.text,
-                    fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
                 Text(
                   '$what — $status',
-                  style: const TextStyle(
-                    color: NexusColors.muted,
-                    fontSize: 12,
-                  ),
+                  style: NexusType.caption1.copyWith(color: NexusColors.muted),
                 ),
               ],
             ),
@@ -2039,7 +2017,10 @@ class AssistantViewState extends State<AssistantView> {
             : 'Local brain: ${_conversation.brainModel}',
       ),
     };
-    return GestureDetector(
+    // A pressable, not a bare GestureDetector: this strip answers the finger
+    // on touch-down and settles on a spring, where a GestureDetector only
+    // reacted once the finger came up.
+    return NexusPressable(
       onTap: _conversation.brainHealth == BrainHealth.probing || brain == null
           ? null
           : () => unawaited(_conversation.probe(brain)),
@@ -2059,7 +2040,7 @@ class AssistantViewState extends State<AssistantView> {
               child: Text(
                 text,
                 textAlign: TextAlign.center,
-                style: TextStyle(color: color, fontSize: 11),
+                style: NexusType.caption2.copyWith(color: color),
               ),
             ),
           ],
@@ -2078,15 +2059,15 @@ class AssistantViewState extends State<AssistantView> {
         : key;
     return Align(
       alignment: Alignment.centerLeft,
-      child: GestureDetector(
+      child: NexusPressable(
+        borderRadius: BorderRadius.circular(NexusRadius.xs),
         onTap: () => unawaited(_teachThis(phrase, entry)),
         child: Padding(
           padding: const EdgeInsets.only(top: 8),
           child: Text(
             'Or teach me what this means',
-            style: TextStyle(
+            style: NexusType.caption1.copyWith(
               color: NexusColors.accent.withValues(alpha: 0.9),
-              fontSize: 12,
               decoration: TextDecoration.underline,
               decorationColor: NexusColors.accent.withValues(alpha: 0.5),
             ),
@@ -2134,11 +2115,7 @@ class AssistantViewState extends State<AssistantView> {
             ),
             child: Text(
               user,
-              style: const TextStyle(
-                color: NexusColors.text,
-                fontSize: 13.5,
-                height: 1.35,
-              ),
+              style: NexusType.caption.copyWith(color: NexusColors.text),
             ),
           ),
         ),
@@ -2189,20 +2166,19 @@ class AssistantViewState extends State<AssistantView> {
               color: NexusColors.muted,
             ),
             const SizedBox(height: 12),
-            const Text(
+            Text(
               'Ask me anything — I listen and do.',
               textAlign: TextAlign.center,
-              style: TextStyle(
+              style: NexusType.body.copyWith(
                 color: NexusColors.text,
-                fontSize: 15,
                 fontWeight: FontWeight.w600,
               ),
             ),
             const SizedBox(height: 6),
-            const Text(
+            Text(
               'Type below, or tap a suggestion to try one.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: NexusColors.muted, fontSize: 13),
+              style: NexusType.caption.copyWith(color: NexusColors.muted),
             ),
           ],
         ),
@@ -2250,10 +2226,9 @@ class AssistantViewState extends State<AssistantView> {
               Expanded(
                 child: Text(
                   '$fromName wants to: ${_describeAction(request)}',
-                  style: const TextStyle(
+                  style: NexusType.callout.copyWith(
                     color: NexusColors.text,
                     fontWeight: FontWeight.w600,
-                    fontSize: 14,
                   ),
                 ),
               ),
@@ -2307,10 +2282,9 @@ class AssistantViewState extends State<AssistantView> {
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(
+                  style: NexusType.callout.copyWith(
                     color: NexusColors.text,
                     fontWeight: FontWeight.w600,
-                    fontSize: 14,
                   ),
                 ),
               ),
@@ -2342,9 +2316,8 @@ class AssistantViewState extends State<AssistantView> {
           ),
           child: Text(
             label ?? NexusCoreState.working.label,
-            style: const TextStyle(
+            style: NexusType.caption1.copyWith(
               color: NexusColors.accent,
-              fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -2376,9 +2349,8 @@ class AssistantViewState extends State<AssistantView> {
           ),
           child: Text(
             status.label,
-            style: TextStyle(
+            style: NexusType.caption1.copyWith(
               color: color,
-              fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -2388,7 +2360,7 @@ class AssistantViewState extends State<AssistantView> {
           Expanded(
             child: Text(
               explanation,
-              style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+              style: NexusType.caption1.copyWith(color: NexusColors.muted),
             ),
           ),
         ],
@@ -2418,10 +2390,9 @@ class AssistantViewState extends State<AssistantView> {
               Expanded(
                 child: Text(
                   ask.question,
-                  style: const TextStyle(
+                  style: NexusType.callout.copyWith(
                     color: NexusColors.text,
                     fontWeight: FontWeight.w600,
-                    fontSize: 14,
                   ),
                 ),
               ),
@@ -2431,7 +2402,7 @@ class AssistantViewState extends State<AssistantView> {
             const SizedBox(height: 6),
             Text(
               ask.hint!,
-              style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+              style: NexusType.caption1.copyWith(color: NexusColors.muted),
             ),
           ],
         ],
@@ -2473,26 +2444,23 @@ class AssistantViewState extends State<AssistantView> {
                     Expanded(
                       child: Text(
                         d.name,
-                        style: const TextStyle(
+                        style: NexusType.callout.copyWith(
                           color: NexusColors.text,
-                          fontSize: 14,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
                     Text(
                       d.id,
-                      style: const TextStyle(
+                      style: NexusType.caption2.copyWith(
                         color: NexusColors.muted,
-                        fontSize: 11,
                       ),
                     ),
                     const SizedBox(width: 8),
                     Text(
                       d.online ? 'Online' : 'Offline',
-                      style: TextStyle(
+                      style: NexusType.caption2.copyWith(
                         color: d.online ? NexusColors.ok : NexusColors.muted,
-                        fontSize: 11,
                       ),
                     ),
                   ],
@@ -2512,7 +2480,7 @@ class AssistantViewState extends State<AssistantView> {
         const SizedBox(height: 6),
         Text(
           '\u201c$text\u201d',
-          style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+          style: NexusType.caption1.copyWith(color: NexusColors.muted),
         ),
         const SizedBox(height: 10),
         FilledButton.icon(
@@ -2536,7 +2504,7 @@ class AssistantViewState extends State<AssistantView> {
         const SizedBox(height: 6),
         Text(
           'Target: ${request.target} · Action: ${request.action}',
-          style: const TextStyle(color: NexusColors.muted, fontSize: 11),
+          style: NexusType.caption2.copyWith(color: NexusColors.muted),
         ),
         const SizedBox(height: 10),
         FilledButton.icon(
@@ -2559,12 +2527,12 @@ class AssistantViewState extends State<AssistantView> {
       const SizedBox(height: 6),
       Text(
         'on $deviceName',
-        style: const TextStyle(color: NexusColors.muted, fontSize: 12),
+        style: NexusType.caption1.copyWith(color: NexusColors.muted),
       ),
       const SizedBox(height: 6),
       Text(
         'Target: ${request.target} · Action: ${request.action}',
-        style: const TextStyle(color: NexusColors.muted, fontSize: 11),
+        style: NexusType.caption2.copyWith(color: NexusColors.muted),
       ),
       if (_reply != null) ...[
         const SizedBox(height: 10),
@@ -2592,9 +2560,8 @@ class AssistantViewState extends State<AssistantView> {
       ),
       child: Text(
         reply,
-        style: TextStyle(
+        style: NexusType.caption1.copyWith(
           color: failed ? NexusColors.danger : NexusColors.text,
-          fontSize: 12,
         ),
       ),
     );
@@ -2711,11 +2678,7 @@ class AssistantViewState extends State<AssistantView> {
       ),
       child: Text(
         message.text,
-        style: const TextStyle(
-          color: NexusColors.text,
-          fontSize: 13,
-          height: 1.4,
-        ),
+        style: NexusType.caption.copyWith(color: NexusColors.text),
       ),
     );
   }
@@ -2817,9 +2780,8 @@ class _LiveClockState extends State<_LiveClock> {
     final mm = now.minute.toString().padLeft(2, '0');
     return Text(
       'It\'s $hh:$mm.',
-      style: const TextStyle(
+      style: NexusType.callout.copyWith(
         color: NexusColors.text,
-        fontSize: 16,
         fontWeight: FontWeight.w600,
       ),
     );
@@ -2878,9 +2840,8 @@ class _TeachPhraseDialogState extends State<_TeachPhraseDialog> {
       backgroundColor: NexusColors.surface,
       title: Text(
         'Teach "${widget.phrase}"',
-        style: const TextStyle(
+        style: NexusType.body.copyWith(
           color: NexusColors.text,
-          fontSize: 15,
           fontWeight: FontWeight.w600,
         ),
       ),
@@ -2897,17 +2858,14 @@ class _TeachPhraseDialogState extends State<_TeachPhraseDialog> {
               hintText: _teachHint(widget.platform),
               border: const OutlineInputBorder(),
             ),
-            style: const TextStyle(color: NexusColors.text, fontSize: 13),
+            style: NexusType.caption.copyWith(color: NexusColors.text),
           ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 _error!,
-                style: const TextStyle(
-                  color: NexusColors.danger,
-                  fontSize: 12,
-                ),
+                style: NexusType.caption1.copyWith(color: NexusColors.danger),
               ),
             ),
         ],
@@ -2978,10 +2936,9 @@ class _DreamSheetState extends State<_DreamSheet> {
                 Expanded(
                   child: Text(
                     'What I still misunderstand',
-                    style: const TextStyle(
+                    style: NexusType.body.copyWith(
                       color: NexusColors.text,
                       fontWeight: FontWeight.w700,
-                      fontSize: 15,
                     ),
                   ),
                 ),
@@ -2992,15 +2949,15 @@ class _DreamSheetState extends State<_DreamSheet> {
               widget.insights.isEmpty
                   ? 'Nothing yet — I understood everything you asked.'
                   : 'Things you asked that I had to give up on. Teach one and I never fail it again.',
-              style: const TextStyle(color: NexusColors.muted, fontSize: 12.5),
+              style: NexusType.caption1.copyWith(color: NexusColors.muted),
             ),
             const SizedBox(height: 14),
             if (widget.insights.isEmpty)
-              const Padding(
+              Padding(
                 padding: EdgeInsets.only(bottom: 8),
                 child: Text(
                   'Sweet dreams.',
-                  style: TextStyle(color: NexusColors.muted, fontSize: 13),
+                  style: NexusType.caption.copyWith(color: NexusColors.muted),
                 ),
               )
             else
@@ -3109,7 +3066,7 @@ class _DreamRowState extends State<_DreamRow> {
                     hintText: _teachHint(widget.platform),
                     border: const OutlineInputBorder(),
                   ),
-                  style: const TextStyle(color: NexusColors.text, fontSize: 13),
+                  style: NexusType.caption.copyWith(color: NexusColors.text),
                 ),
               ),
               IconButton(
