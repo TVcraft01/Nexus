@@ -48,13 +48,22 @@ Column meanings:
 
 | Control | Down? | Motion | Grab? | Velocity |
 |---|---|---|---|---|
-| Every `showModalBottomSheet` (pair sheet, device detail, conversation menu, dream review, file actions, destination picker) | yes (framework drag handle) | enter: fixed `_kBottomSheetEnterDuration` = 250 ms (`material/bottom_sheet.dart:27`) | **yes** — a dragged sheet follows the finger | **yes** — on drag end the framework flings the controller at the finger's speed (`bottom_sheet.dart:301-311`: `velocity / _childHeight`) |
+| `showCupertinoSheet` (pair sheet, device detail, destination picker, send-to, dream review) | yes — the framework's grabber is wired to the same recogniser that pops the route | enter: fixed 500 ms (`sheet.dart` `transitionDuration`) with `fastEaseInToSlowEaseOut`; **the drag itself is 1:1**, `popDragController.value -= delta` | **yes** — `_CupertinoDragGestureController` drives the route's own animation controller from the live drag, and a released drag continues from wherever it got to | **yes** — release is decided *by* velocity: `_kMinFlingVelocity` = 2.0 screen-heights/s, and the commit/cancel split is `popDragController.value > 0.52` when the finger is slow (`sheet.dart`) |
+| `showNexusActions` (`CupertinoActionSheet` via `showCupertinoModalPopup`) | the sheet slides with the barrier; the actions are `CupertinoButton`s | framework popup transition; the sheet is a real vibrancy layer — `BackdropFilter` at `CupertinoPopupSurface.defaultBlurSigma` inside a 12pt `ClipRSuperellipse` (`dialog.dart:1309-1316`) | dismissible: tap the barrier, or Cancel | — |
+| Material `showModalBottomSheet` (before) | yes, from the theme's handle | enter 250 ms (`material/bottom_sheet.dart:27`) | yes | yes |
 | Pair sheet's own grabber bar | — | — | — | **Deleted** (`3b4274e`): a second, behaviour-less bar 100 px below the framework's. |
 
-So the sheets already satisfy rules 2 and 4. The only deviation is that an
-*untouched* sheet enters on a fixed curve — acceptable, since nothing about
-that entry is gesture-driven, and the skill's own table gives a drawer the same
-treatment.
+Every sheet in the app is Cupertino's now (`71c3044`), so the grabber, the
+barrier, the corner radius and the drag are the framework's own. What a
+Cupertino route does **not** provide is a background: a Material sheet paints
+one for you, so the content paints its own (`NexusSheetSurface`), which is why
+the sheet's colour is written down in one place rather than in each caller.
+Every converted sheet hands the route's own `ScrollController` to its
+scrollable — that controller *is* the mechanism: the route watches it to know
+when the content is at its top, which is the moment a downward drag stops
+scrolling and starts dismissing. A themed Material handle could only imitate
+that. The one deviation left: an untouched sheet still enters on a fixed
+500 ms curve, which is a framework constant and not gesture-driven.
 
 ## 4. Scroll surfaces
 
@@ -70,15 +79,31 @@ and returns a spring rather than a clamp at the boundary. That is Apple's
 rules 5 and 9 already implemented in the framework — reachable by asking for
 it, but not the default on Android.
 
-## 5. Pull to refresh — the one rule the app still does not meet
+## 5. Pull to refresh — now the framework's own, and part of the scroll
 
-`RefreshIndicator` (Files) returns the indicator with
+Before: `RefreshIndicator` (Files) returned the indicator with
 `animateTo(…, duration: 150 ms)` then `animateTo(0.0, duration: 200 ms)`
-(`material/refresh_indicator.dart:29-33, 544-570`): a **fixed curve with no
-spring and no velocity handoff** from the release. The framework exposes no
-hook for either, so honouring this rule means re-implementing the whole
-gesture — overscroll detection, threshold, indicator drawing — which is a
-project of its own and not a motion tweak. **Documented, not fixed.**
+(`material/refresh_indicator.dart:29-33, 544-570`) — a **fixed curve, with no
+spring and no velocity handoff** from the release, and no hook to give it one.
+
+Now (`71c3044`): the Files list is a `CustomScrollView` whose first sliver is a
+`CupertinoSliverRefreshControl`, so the control is *inside* the scroll rather
+than an overlay on it — the pull moves with the finger, because it is the scroll
+that is moving. Two things follow from the SDK, not from assumption:
+
+- the callback fires **from the drag state**, the moment the indicator's extent
+  passes `refreshTriggerPullDistance` = 100, with the finger still down —
+  `refresh.dart:494-505`, plus a `HapticFeedback.mediumImpact()` — where the
+  Material indicator waits for the release;
+- the retraction is not an animation of its own: `refresh.dart` contains **no**
+  `AnimationController` and **no** `Duration(…)` at all. The state machine
+  (`inactive → drag → armed → refresh → done`) drives the sliver's box extent,
+  and the physics that put the list past the edge bring it back.
+
+Pinned by a test that pulls the real widget (`test/files_view_test.dart`):
+the control occupies no space at rest, it is on stage mid-pull, the listing is
+re-asked while the finger is still down, and it is back to no space after the
+release.
 
 ## 6. Continuous loops (are any of them decoration?)
 
@@ -87,7 +112,7 @@ project of its own and not a motion tweak. **Documented, not fixed.**
 | `NexusCore` orb spin | one rotation per 12 s (0.083 Hz), **only while the core is active** (`nexus_core.dart:118-142`) | slower than the skill's ~0.2 Hz warning; means "work in progress" |
 | `NexusStatusDot` pulse | 1400 ms repeat, only for `working` | status, not decoration |
 | `CircularProgressIndicator` | framework, ~1333 ms | means bytes are moving |
-| `RefreshIndicator` spinner | framework | — |
+| `CupertinoSliverRefreshControl` | the scroll's own physics; no independent animation exists in the widget (`refresh.dart`, no `AnimationController`) | means data is being re-read |
 | Fixed-duration state changes | `NexusMotion.fast/base/slow` = 120/220/320 ms | used for colour, opacity, and one expando |
 
 One fixed-duration **expander** remains: the Devices detail sheet's "Advanced"
@@ -98,7 +123,7 @@ interruptible, not a spring. Open, and cheap if it ever annoys anyone.
 
 | Rule | State |
 |---|---|
-| **Materials, not flat bars** (6) — nav bars, sheets and composers should be translucent layers with content scrolling underneath | **not met anywhere.** No `BackdropFilter` exists in `lib/ui/` (the only blur is the core orb's own `MaskFilter`). The navigation bar, the sheets and the composer are opaque `surface`. This is a deliberate gap: the design system carries depth with hairlines, and a blur behind the composer is a real per-frame cost on the phones this ships to. It is the largest remaining "not Apple" item. |
+| **Materials, not flat bars** (6) — nav bars, sheets and composers should be translucent layers with content scrolling underneath | **now met by the controls that are Cupertino's**: `CupertinoTabBar` and `CupertinoNavigationBar` blur once their fill is not opaque, and `CupertinoActionSheet` is a real vibrancy layer (`dialog.dart:1309-1316`). Nexus itself still paints **no** `BackdropFilter` (the only blur of its own is the core orb's `MaskFilter`), so the composer and an opaque page surface stay flat on purpose: a blur behind the composer is a real per-frame cost on the phones this ships to. The remaining gap is the *page* chrome the app owns rather than borrows. |
 | **Typography tracking is size-specific** (7) | **met.** `NexusType` tracks each size on purpose: `display` −0.5, `title` −0.2, `body`/`caption` 0, `overline` +0.8 — negative as text grows, positive for small caps. |
 | **Reduced motion** (14) | **met, and extended.** `NexusMotion.scaled()` collapses durations when the OS refuses animation; `NexusStatusDot` and `NexusCore` stop their tickers; `NexusPressable` keeps the instant tint and drops the spring. Tested. |
 
@@ -107,8 +132,9 @@ interruptible, not a spring. Open, and cheap if it ever annoys anyone.
 Of the interactive elements audited:
 
 - **2 controls with no press feedback at all** (rule 1): the assistant's brain
-  status line, and the "Or teach me what this means" affordance. Both are
-  `GestureDetector`s. **Open.**
+  status line, and the "Or teach me what this means" affordance. Both were bare
+  `GestureDetector`s. **Fixed** (`8936cee`): both are `NexusPressable` now, so
+  they tint in the frame the finger lands and settle on a spring.
 - **All 20+ rows and tiles responded on touch-up-ish timing** — on down, but up
   to 100 ms late, and with a growing Android ripple rather than an immediate
   surface response. **Fixed** for every `NexusRow` (one component, all call
@@ -122,9 +148,13 @@ Of the interactive elements audited:
   outside the screen being rebuilt).
 - **2 visible per-row buttons on every file row** — not a motion defect, but
   the same "the row is the target" principle. **Fixed.**
-- **1 fixed-duration return** (pull to refresh) and **1 fixed-duration
-  expander** (Devices → Advanced). **Open, documented above.**
-- **1 structural rule unmet app-wide** (translucent materials). **Open.**
+- **1 fixed-duration return** (pull to refresh). **Fixed** (`71c3044`): the
+  control is a sliver of the scroll, so the pull follows the finger and the
+  refresh starts under it. See §5.
+- **1 fixed-duration expander** (Devices → Advanced, 220 ms
+  `AnimatedCrossFade`). **Open**, and cheap: nothing about it is gesture-driven.
+- **1 structural rule partly met** (translucent materials): met by the Cupertino
+  chrome the app borrows, open for the surfaces it owns. **Open, by choice.**
 
 ## 9. What this pass changed, in one line each
 
@@ -163,9 +193,26 @@ rest measured the page colour `#0b0f14`, which is rule 12's *scroll edge*, not
 a missing background: the page is shorter than the screen, so there was no
 scroll-under state to photograph.
 
-**Still open** (unchanged from §5 and §7): pull-to-refresh is still Material's
-`RefreshIndicator` — a fixed 150/200 ms curve with no hook to hand a spring to —
-and the sheets are still `showModalBottomSheet`, so their grabber and barrier
-come from the Material theme rather than from Cupertino's own sheet. The two
-`GestureDetector`s in `assistant_view.dart` still show no press feedback; that
-file carries uncommitted work of the user's, so it was left alone.
+**Still open** at the time of writing: pull-to-refresh was Material's
+`RefreshIndicator`, the sheets were `showModalBottomSheet`, and the two
+`GestureDetector`s in `assistant_view.dart` showed nothing on press. All three
+were closed later the same day — §11.
+
+## 11. Sheets, the pull, and the last two bare gestures
+
+| What | Was | Is | Rule it now meets |
+|---|---|---|---|
+| A sheet (pair, device detail, destination picker, send-to, dream review) | `showModalBottomSheet` with a themed grabber | `showCupertinoSheet` with the framework's grabber, its own drag-to-dismiss, and the page behind pushing back (`71c3044`) | 2 (grab), 4 (velocity — the release is decided by the finger's speed) |
+| A short list of verbs (file actions, conversation menu) | a page-sized sheet holding two rows | `CupertinoActionSheet` — the iOS share-sheet shape, blurred and tap-outside-dismissible (`71c3044`) | 6 (a real vibrancy material) |
+| Pull-to-refresh (Files) | `RefreshIndicator`, fixed 150/200 ms | `CupertinoSliverRefreshControl`, fired from the drag at the trigger distance (`71c3044`) | 1 (it answers the finger that pulled it), 4 (the scroll's own physics bring it back) |
+| The assistant's brain strip, and "Or teach me what this means" | bare `GestureDetector`s: nothing on press | `NexusPressable` (`8936cee`) | 1 (feedback in the frame the finger lands), 3 (a spring) |
+| Text size | fixed pixels | the platform's scaler, clamped 0.85×–1.5×, with the row height following it (`111944c`) | 7 (Apple's Dynamic Type), and the clamp is the honest part: past 1.5× this layout is not a smaller problem, it is a different one |
+
+Measured, not inferred, where measurement was possible: the pull-to-refresh is
+pinned by a widget test that drags the real list (the control occupies no space
+at rest, is on stage mid-pull, the listing is re-asked while the finger is still
+down, and it is back to no space after the release). The sheets and the Dynamic
+Type clamp are pinned by widget tests too. What could **not** be photographed
+this pass is the phone: `adb` had no device on the bus, so the sheets' on-device
+appearance and the 1.3× font-size rendering are verified by the platform's own
+widgets and geometry rather than by a screenshot.

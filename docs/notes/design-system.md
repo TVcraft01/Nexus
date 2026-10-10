@@ -74,12 +74,40 @@ on large text, looser on the small copy read in sentences.
 | `caption` | 13 | 400 | -0.08 | 1.38 | Footnote — row subtitle, value |
 | `overline` | 12.5 | 600 | +0.62 | 1.3 | uppercase group label |
 | `button` | 17 | 600 | -0.43 | 1.2 | Headline — button label |
+| `callout` | 16 | 400 | -0.31 | 1.31 | Callout — a card's own heading |
+| `caption1` | 12 | 400 | 0 | 1.33 | Caption 1 — the smallest size still read as a sentence |
+| `caption2` | 11 | 400 | +0.06 | 1.27 | Caption 2 — a device id, a live status line |
 | `micro` | 10 | 400 | 0 | 1.0 | the one size below the scale: a number inside a 26pt ring |
 
 Weights are chosen for the face that renders them: Roboto, which Android
 actually has, is lighter than SF at the same weight, so a row title takes
 `w500` where iOS would say "regular" — it lands at the same optical weight on
 the device.
+
+A token owns three things: a size, its tracking and its leading. Emphasis is
+not a fourth size — a heading that is heavier says so with
+`copyWith(fontWeight: …)` at the call site. That rule is why `callout` exists at
+all: the assistant's cards were written as 14pt semibold and 16pt bold for the
+same role, and they are one style now (`8936cee`).
+
+### Dynamic Type
+
+Text follows the phone's text-size setting, the way Android's font size and
+iOS's Dynamic Type both ask it to. Flutter paints every `Text` at the platform
+scaler already, so what the tokens add is the **range**:
+
+| Token | Value | Why |
+|---|---|---|
+| `NexusType.minScale` | 0.85 | below this, 11pt print stops being legible at arm's length |
+| `NexusType.maxScale` | 1.5 | past this, a fixed 64pt row, a 52pt tab bar and a 16pt gutter stop being a smaller problem and become a different layout |
+| `NexusType.scalerOf(context)` | the platform scaler, clamped to the two above | for anything that needs to *know* the factor |
+| `NexusType.scaled(context, v)` | `v` at that factor | for the things that hold text — a row's minimum height is the first user |
+
+`NexusTextScaling` applies the clamp once, in `MaterialApp`'s builder beside
+`NexusCupertinoTheme`, above the navigator, so every route inherits it — pushed
+pages, dialogs and the Cupertino sheets alike. Apple's own scale reaches 3×; the
+clamp is deliberate, and pinning it (plus the row that grows) is what the
+Dynamic Type tests in `test/ui_layout_test.dart` measure.
 
 ## 4. Radius, size, motion, shadow
 
@@ -89,8 +117,12 @@ the device.
 | `md`/`row` | 12 | | `row` | 64 | | `base` | 220 ms |
 | `lg`/`card` | 16 | | `rowCompact` | 52 | | `slow` | 320 ms |
 | `xl` | 24 | | `button` | 48 | | `standard` | easeOutCubic |
-| `sheet` | 20 (top) | | `field` | 52 | | `emphasized` | easeOutQuart |
+|  |  | | `field` | 52 | | `emphasized` | easeOutQuart |
 | `pill` | 999 | | `readable` | 640 | | `settle` | easeInOut |
+
+There is no `sheet` radius any more: a sheet is Cupertino's, and its top
+corners are the framework's 12pt superellipse (`71c3044`). A radius token the
+app no longer paints is a second place to look when a sheet looks wrong.
 
 **Shadow** (new): elevation is carried by hairlines, not drop shadows, except
 for two things that genuinely float.
@@ -144,6 +176,10 @@ idiom is the product**:
 | Toggles | `CupertinoSwitch` | in the app's accent, not the system green |
 | Yes/no dialogs | `CupertinoAlertDialog` | destructive action red, no filled button |
 | Indeterminate progress | `CupertinoActivityIndicator` | determinate progress stays `CircularProgressIndicator` — Cupertino has no ring that shows a value |
+| A sheet | `showCupertinoSheet` (`showNexusSheet`) | framed by the sheet's own `NexusSheetSurface`; the grabber, the corners, the page-behind push and the drag-to-dismiss are the framework's |
+| A short list of verbs | `CupertinoActionSheet` (`showNexusActions`) | blurred vibrancy, separated Cancel, tap-outside dismisses |
+| Pull to refresh | `CupertinoSliverRefreshControl` | a sliver of the scroll, so the pull follows the finger; needs a `CustomScrollView` |
+| Text size | `NexusTextScaling` | the platform's scaler clamped to 0.85×–1.5×, applied once above the navigator |
 
 `CupertinoTheme` resolves colours from a *light* system theme by default, so
 `NexusCupertinoTheme` writes it once from the tokens in `MaterialApp`'s
