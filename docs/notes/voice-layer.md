@@ -9,6 +9,68 @@ Design note, 2026-10-08. Existing seams it builds on: `lib/core/speech.dart`
 (`SpeechInput` / `SpeechOutput`, live on Android), `lib/core/command_interpreter.dart`
 (rules), `lib/core/tiny_brain.dart` (on-device model seam, honest null today).
 
+## What is live now (2026-10-10)
+
+The first slice shipped: **one verb, spoken, on the phone.** Tap the mic, say
+"get report.pdf from my pc", and the file is fetched over the mesh.
+
+| Step | Where it runs | Offline? |
+|---|---|---|
+| Mic → text | `MainActivity.startSpeech` (system `SpeechRecognizer`) | yes |
+| Intent | `CommandInterpreter` (Dart, unchanged) | yes |
+| Fetch | the mesh → the paired PC (Dart) | needs the peer, not the internet |
+| Reply spoken | `MainActivity.speakText` (system `TextToSpeech`) | yes |
+
+**No new dependency, and no `flutter_tts`.** Both halves are the platform's own
+engines behind the two channels that were already in this tree
+(`dev.nexus.nexus/speech`, `dev.nexus.nexus/speech_out`) — `MainActivity`
+already had the recognizer and the `TextToSpeech` engine wired, so the work
+here was the loop on top of them, not a new stack. A second TTS binding would
+have been a second engine to initialise for the same words.
+
+**Offline is chosen, not hoped for.** `startSpeech` asks
+`SpeechRecognizer.isOnDeviceRecognitionAvailable` and — when the ROM has a
+local model — uses `createOnDeviceSpeechRecognizer`, a recognizer with no
+network path at all; otherwise the ordinary one with `EXTRA_PREFER_OFFLINE`.
+Which one ran is logged, because the claim is about the device, not the code.
+
+On the phone (2026-10-10), with the phrase played aloud by the PC's speakers
+so the run went through a real microphone and a real room:
+
+```
+speech: listening on-device (no network)
+speech: …What time is it
+speech: heard "What time is it" (peak 10.0dB)
+TextToSpeech: getHighestRankedPublicEngineName = com.google.android.tts
+TextToSpeech: Connected to TTS engine
+```
+
+### Three things this pass learned
+
+- **A recognizer writes what it heard, not what you meant.** "report.pdf"
+  comes back as "report dot pdf", and the file-fetch grammar needs the
+  extension to see a file at all. `spokenToWritten` in `lib/core/speech.dart`
+  writes a spoken dot back as a dot — but only where a *filename* is ending
+  (the end of the sentence, or the `from`/`to <device>` that follows it). Typed
+  text never passes through it, so nothing anyone types can be rewritten.
+- **A mis-hear is not an event.** Nothing heard now means the pill's ring goes
+  out and the composer is idle again: no card, nothing said aloud. The old
+  "I didn't catch that" reply turned every stray tap into a turn of
+  conversation.
+- **The microphone needs a way back.** The second tap on the mic — or the
+  screen going away — calls `stop`: the pending listen answers null and the
+  recognizer is released. Before this, a recognizer that never heard its own
+  end-of-speech left the composer listening with no way out but leaving the
+  screen.
+
+### What this slice is not
+
+Still pass 2 and 3: the wake word and the local LLM. It is English (whatever
+language the device's recognizer has), one utterance at a time, and the state
+machine is two states — idle and listening — because those are the two the app
+can evidence. The ring is the only live feedback: no partial transcript is
+rendered, though the engine's partials are logged for a device run.
+
 ## 1. Wake word
 
 Always-on, streaming, offline. Pick one and train it on "hey nexus".
@@ -36,10 +98,10 @@ One utterance at a time, offline.
 | whisper.cpp `small` | MIT | ~181 MB (q5) | slower than real-time | very good | ~99 |
 | Vosk small en | Apache-2.0 | ~40 MB | low, streaming | fair–good | many |
 
-**Recommend Android's on-device recognizer as the default** — it is already
-wired through `SpeechInput`, needs no new dependency, and is the lowest-latency
-streaming option; force `EXTRA_PREFER_OFFLINE` so it cannot silently reach the
-cloud. Fallback **whisper.cpp `base` (q5)** when the ROM has no on-device model
+**Shipped: Android's on-device recognizer** (see "What is live now") — it was
+already wired through `SpeechInput`, needs no new dependency, and is the
+lowest-latency streaming option; `EXTRA_PREFER_OFFLINE` is set so it cannot
+silently reach the cloud. Fallback **whisper.cpp `base` (q5)** when the ROM has no on-device model
 or has no model for the language. Never `small`: it is slower than real-time on
 this class of phone.
 
@@ -79,7 +141,7 @@ exactly as today.
 | Piper | MIT | ~20–60 MB/voice | near real-time on CPU | natural |
 | Coqui TTS / XTTS | MPL-2.0 | large | GPU-oriented | excellent, but not this hardware |
 
-**Recommend Android TTS** (already wired in `MainActivity.speakText`), with
+**Shipped: Android TTS** (already wired in `MainActivity.speakText`), with
 Piper as the quality upgrade if the system voice is not good enough. Piper needs
 onnxruntime + an espeak-ng phonemizer step, so it is the larger change.
 
