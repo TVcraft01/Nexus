@@ -68,6 +68,29 @@ class NexusStore {
 
   set alwaysMerge(bool value) => _settings()['alwaysMerge'] = value;
 
+  /// How the Files listing is ordered: 'name', 'date' or 'size'. Anything else
+  /// — a value from a newer build, a hand-edited store — reads as the default
+  /// rather than throwing on a preference.
+  String get fileSort {
+    final raw = (_data['settings'] as Map<String, dynamic>?)?['fileSort'];
+    return raw is String && const {'name', 'date', 'size'}.contains(raw)
+        ? raw
+        : 'name';
+  }
+
+  set fileSort(String value) => _settings()['fileSort'] = value;
+
+  /// Whether the Files listing is drawn as rows or as a grid: 'list' or
+  /// 'grid'. Bounded the same way as [fileSort].
+  String get fileLayout {
+    final raw = (_data['settings'] as Map<String, dynamic>?)?['fileLayout'];
+    return raw is String && const {'list', 'grid'}.contains(raw)
+        ? raw
+        : 'list';
+  }
+
+  set fileLayout(String value) => _settings()['fileLayout'] = value;
+
   /// Localhost gateway (Linux FUSE mount companion): a fixed default port the
   /// mount script can find, and a per-launch random token the daemon must
   /// present so only it (and the app) can use the gateway.

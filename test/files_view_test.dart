@@ -12,7 +12,8 @@
 // no port is assumed.
 import 'dart:io';
 
-import 'package:flutter/cupertino.dart' show CupertinoSliverRefreshControl;
+import 'package:flutter/cupertino.dart'
+    show CupertinoActionSheet, CupertinoSliverRefreshControl;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
@@ -120,11 +121,6 @@ Future<void> _openMenu(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-PopupMenuItem<String> _item(WidgetTester tester, String label) =>
-    tester.widget<PopupMenuItem<String>>(
-      find.widgetWithText(PopupMenuItem<String>, label),
-    );
-
 /// The row that shows [name] — the pressable surface a finger touches, which
 /// is what "the row" means on this screen.
 Finder _row(WidgetTester tester, String name) => find
@@ -143,10 +139,19 @@ void main() {
     await _pumpFiles(tester, _FakeMesh([_device('TVcraft01')]));
 
     expect(find.widgetWithText(FilledButton, 'Send file…'), findsOneWidget);
+    // The overflow is a labelled button opening a Cupertino action sheet. The
+    // Material PopupMenuButton it replaced is gone: it was the last Material
+    // menu sitting inside Cupertino chrome.
+    expect(find.byTooltip('More'), findsOneWidget);
     expect(
       find.byType(PopupMenuButton<String>),
-      findsOneWidget,
-      reason: 'the overflow menu is the only other control on the row',
+      findsNothing,
+      reason: 'no Material menu is left on this screen',
+    );
+    expect(
+      find.byType(PopupMenuItem<String>),
+      findsNothing,
+      reason: 'and no Material menu item either',
     );
 
     // The three controls the menu swallowed must not still be standing on the
@@ -176,40 +181,44 @@ void main() {
     );
   });
 
-  testWidgets('the menu holds Up, Home and Refresh — inert at the device root', (
-    tester,
-  ) async {
+  testWidgets('the overflow holds Sort, the view and Refresh — and no '
+      'navigation, which the breadcrumb owns now', (tester) async {
     await _pumpFiles(tester, _FakeMesh([_device('TVcraft01')]));
     await _openMenu(tester);
 
-    expect(find.text('Up one level'), findsOneWidget);
-    expect(find.text('Home'), findsOneWidget);
+    expect(
+      find.byType(CupertinoActionSheet),
+      findsOneWidget,
+      reason: 'the overflow is Apple\u2019s sheet, not a Material menu',
+    );
+    expect(find.text('Sort'), findsOneWidget);
+    expect(find.text('Grid view'), findsOneWidget);
     expect(find.text('Refresh'), findsOneWidget);
+    // Walking the tree is the breadcrumb's job now: Up and Home each moved one
+    // step, and neither could go sideways to a folder the user came from.
+    expect(find.text('Up one level'), findsNothing);
+    expect(find.text('Home'), findsNothing);
 
-    expect(
-      _item(tester, 'Up one level').enabled,
-      isFalse,
-      reason: 'there is nothing above the home folder',
-    );
-    expect(
-      _item(tester, 'Home').enabled,
-      isFalse,
-      reason: 'already at home — the control has nothing left to do',
-    );
-    expect(_item(tester, 'Refresh').enabled, isTrue);
+    // Sort is one sheet deeper, with the order in force marked — and no second
+    // stack of modals to unwind, because the first has closed.
+    await tester.tap(find.text('Sort'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sort by'), findsOneWidget);
+    expect(find.text('Name  ✓'), findsOneWidget, reason: 'name is the default');
+    expect(find.text('Date'), findsOneWidget);
+    expect(find.text('Size'), findsOneWidget);
   });
 
-  testWidgets('inside a folder the menu walks back up', (tester) async {
+  testWidgets('the breadcrumb goes back to any folder the user was in',
+      (tester) async {
     await _pumpFiles(
       tester,
       _FakeMesh(
         [_device('TVcraft01')],
         listings: {
           '': [_folder('Docs')],
-          // One level down, holding the same folder — so "up" has somewhere
-          // real to land other than the root shortcut.
-          '/home/neo': [_folder('Docs')],
-          '/home/neo/Docs': const [],
+          '/home/neo/Docs': [_folder('Nested')],
+          '/home/neo/Nested': const [],
         },
       ),
     );
@@ -217,22 +226,33 @@ void main() {
     await tester.tap(find.text('Docs'));
     await tester.pump();
     await tester.pump();
-    expect(
-      find.text('/home/neo/Docs'),
-      findsOneWidget,
-      reason: 'the path line is where you are',
-    );
+    // The crumb names the folder. The absolute path on the peer is no longer
+    // printed anywhere: it is not a path this app can walk, and the old Up
+    // item split it on the separator and went to a directory it had no
+    // listing for.
+    expect(find.text('/home/neo/Docs'), findsNothing);
+    expect(find.text('Docs'), findsOneWidget);
 
-    await _openMenu(tester);
-    expect(_item(tester, 'Up one level').enabled, isTrue);
-    await tester.tap(find.text('Up one level'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.text('Nested'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('TVcraft01 · Home'), findsOneWidget);
+    expect(find.text('Docs'), findsOneWidget, reason: 'the trail is two deep');
+    expect(find.text('Nested'), findsOneWidget);
 
-    expect(
-      find.text('Docs'),
-      findsOneWidget,
-      reason: 'up lands in the folder that holds it',
-    );
+    // Sideways, from two folders deep, in one tap — the move Up and Home each
+    // needed a whole control of their own to approximate.
+    await tester.tap(find.text('Docs'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Nested'), findsOneWidget, reason: 'the folder is listed');
+    expect(find.text('TVcraft01 · Home'), findsOneWidget);
+
+    await tester.tap(find.text('TVcraft01 · Home'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Nested'), findsNothing, reason: 'home holds only Docs');
+    expect(find.text('Docs'), findsOneWidget);
   });
 
   testWidgets('Copy to… opens on the device you are browsing', (tester) async {
@@ -309,7 +329,7 @@ void main() {
     // no download button and no per-row overflow, which is what this screen
     // used to carry on every line.
     expect(find.widgetWithText(FilledButton, 'Send file…'), findsOneWidget);
-    expect(find.byType(PopupMenuButton<String>), findsOneWidget);
+    expect(find.byType(PopupMenuButton<String>), findsNothing);
     expect(
       find.descendant(
         of: find.byType(NexusPressable),
@@ -387,18 +407,24 @@ void main() {
 
     await tester.longPress(_row(tester, 'notes.txt'));
     await tester.pumpAndSettle();
-    for (final label in ['Rename', 'Copy to…', 'Move to…', 'Delete']) {
+    // The two verbs a swipe does not carry. Rename and Delete are one swipe
+    // away instead, which the swipe test below pins.
+    for (final label in ['Copy to…', 'Move to…']) {
       expect(find.text(label), findsOneWidget, reason: '$label is in the menu');
     }
+    expect(find.text('Rename'), findsNothing);
+    expect(find.text('Delete'), findsNothing);
 
-    // And the menu's entries are the real handlers: Rename opens its dialog.
-    await tester.tap(find.text('Rename'));
+    // And the menu's entries are the real handlers: Copy to… opens the
+    // destination picker it names.
+    await tester.tap(find.text('Copy to…'));
     await tester.pumpAndSettle();
-    expect(find.text('New name'), findsOneWidget);
+    expect(find.text('Choose destination'), findsOneWidget);
 
-    // The press that opened the menu does not stay lit on the row behind it.
-    await tester.tap(find.text('Cancel'));
+    // Closed again by hand, so the press that opened the menu can be checked.
+    Navigator.of(tester.element(find.text('Choose destination'))).pop();
     await tester.pumpAndSettle();
+    expect(find.text('Choose destination'), findsNothing);
     final container = tester.widget<AnimatedContainer>(
       find
           .descendant(
@@ -476,6 +502,54 @@ void main() {
 
     await tester.pumpAndSettle();
     expect(scale(), moreOrLessEquals(1, epsilon: 0.0001));
+  });
+
+  testWidgets('a swipe reveals the two verbs a person reaches for most, and '
+      'they are not in the tree until it does', (tester) async {
+    await _pumpFiles(
+      tester,
+      _FakeMesh(
+        [_device('TVcraft01')],
+        listings: {
+          '': [_file('notes.txt')],
+        },
+      ),
+    );
+
+    // Nothing hidden is still present: a verb that is in the tree but off
+    // screen is one a screen reader reads and a test finds.
+    expect(find.text('Rename'), findsNothing);
+    expect(find.text('Delete'), findsNothing);
+
+    final row = _row(tester, 'notes.txt');
+    final before = tester.getTopLeft(find.text('notes.txt')).dx;
+    final gesture = await tester.startGesture(tester.getCenter(row));
+    await gesture.moveBy(const Offset(-100, 0));
+    await tester.pump();
+
+    expect(find.text('Rename'), findsOneWidget, reason: 'the swipe reveals them');
+    expect(find.text('Delete'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('notes.txt')).dx,
+      lessThan(before),
+      reason: 'the row follows the finger rather than blinking open',
+    );
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Rename'),
+      findsOneWidget,
+      reason: 'past half way it stays open',
+    );
+
+    // The revealed verb is the real handler, not a decoration.
+    await tester.tap(find.text('Rename'));
+    await tester.pumpAndSettle();
+    expect(find.text('New name'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.text('New name'), findsNothing);
   });
 
   testWidgets('nothing paired teaches instead of showing a dead toolbar', (

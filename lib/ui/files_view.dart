@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -7,9 +8,13 @@ import 'package:flutter/cupertino.dart'
         CupertinoActivityIndicator,
         CupertinoAlertDialog,
         CupertinoDialogAction,
+        CupertinoSearchTextField,
         CupertinoSliverRefreshControl,
         CupertinoTextField;
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart' show SpringSimulation;
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 
 import '../mesh/mesh_service.dart';
@@ -17,6 +22,7 @@ import 'components/nexus_ui.dart'
     show
         NexusEmptyState,
         NexusPageHeader,
+        NexusPressable,
         NexusRow,
         fileTypeIcon,
         platformIcon,
@@ -24,6 +30,22 @@ import 'components/nexus_ui.dart'
         showNexusSheet;
 import 'downloads_dir.dart';
 import 'theme.dart';
+
+/// How the listing is ordered. Folders always lead whatever this says: the
+/// drive apps this screen is built after never sort a folder down among the
+/// files, and neither does this one.
+enum _FileSort {
+  name('Name'),
+  date('Date'),
+  size('Size');
+
+  const _FileSort(this.label);
+
+  final String label;
+}
+
+/// How the listing is drawn: rows, or a grid of tiles.
+enum _FileLayout { list, grid }
 
 /// Browse files on any device in the mesh over the encrypted channel.
 ///
@@ -52,14 +74,76 @@ class _FilesViewState extends State<FilesView> {
   final Set<String> _deleting = {};
   final Set<String> _operating = {};
 
+  /// The folders walked into, oldest first — the breadcrumb, and the only
+  /// record of where the user actually came from. The device's home is not on
+  /// it: that is the crumb before the first entry.
+  ///
+  /// The entries themselves rather than a split of [_path] on the separator,
+  /// because [_path] is an absolute path on *another* machine: its parents are
+  /// directories this app has no listing for, and going up from
+  /// `/home/neo/Docs` is not `/home/neo`.
+  final List<FileEntry> _trail = [];
+
+  /// What the search field holds. Filters this listing by name — the mesh has
+  /// no remote search, so nothing is asked of the peer.
+  final TextEditingController _search = TextEditingController();
+  String _query = '';
+
+  /// The breadcrumb's own scroll, moved to its end whenever the path changes:
+  /// a crumb row is read from the deep end, and a jump into a nested folder
+  /// must not leave the fold the user just entered off screen.
+  final ScrollController _trailScroll = ScrollController();
+
+  _FileSort _sort = _FileSort.name;
+  _FileLayout _layout = _FileLayout.list;
+
+  /// The row whose actions are showing, by path. One at a time: a second swipe
+  /// closes the first, which is the one thing a list of revealed rows does not
+  /// do by itself.
+  String? _revealed;
+
   @override
   void initState() {
     super.initState();
+    // Read before the first frame, so the listing never draws in one shape and
+    // then jumps to the other.
+    _sort = _FileSort.values.firstWhere(
+      (s) => s.name == widget.mesh.store.fileSort,
+      orElse: () => _FileSort.name,
+    );
+    _layout = widget.mesh.store.fileLayout == 'grid'
+        ? _FileLayout.grid
+        : _FileLayout.list;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final devices = _selectableDevices();
       if (devices.isNotEmpty) _selectDevice(devices.first);
     });
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    _trailScroll.dispose();
+    super.dispose();
+  }
+
+  /// Puts the breadcrumb's deep end in view once the new path has been laid
+  /// out. After the frame, because the extent of a row that has not been
+  /// measured yet is zero.
+  void _crumbsToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_trailScroll.hasClients) return;
+      final end = _trailScroll.position.maxScrollExtent;
+      if (_trailScroll.offset != end) _trailScroll.jumpTo(end);
+    });
+  }
+
+  /// Remembers one view preference and gets out of the way: a preference that
+  /// fails to persist must never stop the listing changing now.
+  void _persist(void Function() write) {
+    write();
+    unawaited(widget.mesh.store.save());
   }
 
   /// Paired devices, online ones first (an offline device simply won't answer).
@@ -84,7 +168,12 @@ class _FilesViewState extends State<FilesView> {
       _sending.clear();
       _deleting.clear();
       _operating.clear();
+      _trail.clear();
+      _revealed = null;
+      _query = '';
     });
+    _search.clear();
+    _crumbsToEnd();
     _load();
   }
 
@@ -109,32 +198,84 @@ class _FilesViewState extends State<FilesView> {
   }
 
   void _open(FileEntry entry) {
-    if (entry.isDir) {
-      setState(() {
-        _path = entry.path;
-        _entries = null;
-      });
-      _load();
-    } else {
+    if (!entry.isDir) {
       _download(entry);
+      return;
     }
+    setState(() {
+      _trail.add(entry);
+      _path = entry.path;
+      _entries = null;
+      _revealed = null;
+      // A search is a search of where you are: carrying it into the folder you
+      // just opened would show an empty listing for a folder that is not.
+      _query = '';
+    });
+    _search.clear();
+    _crumbsToEnd();
+    _load();
   }
 
-  void _goUp() {
-    final sep = Platform.pathSeparator;
-    final idx = _path.lastIndexOf(sep);
-    if (idx <= 0) {
-      setState(() {
-        _path = '';
-        _entries = null;
-      });
-    } else {
-      setState(() {
-        _path = _path.substring(0, idx);
-        _entries = null;
-      });
-    }
+  /// Back to the device's home — the crumb before the first entry.
+  void _goHome() {
+    if (_trail.isEmpty) return;
+    setState(() {
+      _trail.clear();
+      _path = '';
+      _entries = null;
+      _revealed = null;
+      _query = '';
+    });
+    _search.clear();
+    _crumbsToEnd();
     _load();
+  }
+
+  /// Back to the folder at [index] in the trail, dropping everything walked
+  /// through after it: the trail is where the user has been, and jumping back
+  /// means those folders are no longer part of the walk.
+  ///
+  /// This is the move the Up and Home it replaced could not make — sideways to
+  /// a folder the user actually came from, in one tap.
+  void _goTo(int index) {
+    if (index < 0 || index >= _trail.length) return;
+    setState(() {
+      _path = _trail[index].path;
+      _trail.removeRange(index + 1, _trail.length);
+      _entries = null;
+      _revealed = null;
+      _query = '';
+    });
+    _search.clear();
+    _crumbsToEnd();
+    _load();
+  }
+
+  /// What the listing shows right now: the folder's entries, filtered by the
+  /// search field and put in the chosen order.
+  List<FileEntry> get _visible {
+    final entries = _entries ?? const <FileEntry>[];
+    final query = _query.trim().toLowerCase();
+    final matched = query.isEmpty
+        ? entries.toList()
+        : entries
+              .where((e) => e.name.toLowerCase().contains(query))
+              .toList();
+    int order(FileEntry a, FileEntry b) => switch (_sort) {
+      _FileSort.name => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      // Newest first: "by date" in a file browser means the thing you just
+      // wrote, not the oldest thing on the disk.
+      _FileSort.date => b.modified.compareTo(a.modified),
+      _FileSort.size => b.size.compareTo(a.size),
+    };
+    matched.sort((a, b) {
+      if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+      final byChosen = order(a, b);
+      // A stable tie-break, so two files of the same size do not swap places
+      // every time the listing is re-read.
+      return byChosen != 0 ? byChosen : a.name.compareTo(b.name);
+    });
+    return matched;
   }
 
   Future<void> _download(FileEntry entry) async {
@@ -524,65 +665,25 @@ class _FilesViewState extends State<FilesView> {
           ),
         ),
         const SizedBox(height: NexusSpace.sm),
-        // One action, one menu. "Send file…" is the only control on this screen
-        // that creates something: it opens the picker and pushes a file to a
-        // paired device, and nothing else does that. Up, Home and Refresh are
-        // navigation and recovery, so they sit behind the menu rather than
-        // competing with it for the same row.
+        // The path is a breadcrumb now. "Send file…" is still the only control
+        // here that creates anything; everything else the screen can do —
+        // order the listing, change its shape, ask the peer again — is behind
+        // the overflow. Up and Home are gone: they could only ever move one
+        // step, and a crumb goes to any folder the user has actually been in.
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: NexusSpace.page),
           child: Row(
             children: [
-              Expanded(
-                child: Text(
-                  _path.isEmpty ? '${device?.name ?? ''} · Home' : _path,
-                  style: Theme.of(context).textTheme.bodySmall,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
+              Expanded(child: _breadcrumb(context, palette)),
               const SizedBox(width: NexusSpace.sm),
               FilledButton.icon(
                 onPressed: _sending.isNotEmpty ? null : _pickAndSend,
                 icon: const Icon(Icons.upload_file_rounded, size: 18),
                 label: const Text('Send file…'),
               ),
-              PopupMenuButton<String>(
+              IconButton(
                 tooltip: 'More',
-                onSelected: (action) {
-                  switch (action) {
-                    case 'up':
-                      _goUp();
-                    case 'home':
-                      setState(() {
-                        _path = '';
-                        _entries = null;
-                      });
-                      _load();
-                    case 'refresh':
-                      _load();
-                  }
-                },
-                itemBuilder: (context) => [
-                  PopupMenuItem(
-                    value: 'up',
-                    enabled: _path.isNotEmpty && !_loading,
-                    child: const Text('Up one level'),
-                  ),
-                  PopupMenuItem(
-                    value: 'home',
-                    enabled: _path.isNotEmpty && !_loading,
-                    child: const Text('Home'),
-                  ),
-                  PopupMenuItem(
-                    value: 'refresh',
-                    enabled: !_loading,
-                    child: const Text('Refresh'),
-                  ),
-                ],
-                // An explicit token, not the framework default: a
-                // PopupMenuButton icon does not inherit iconButtonTheme, and
-                // an unset colour renders plain white — louder than any other
-                // icon in the app.
+                onPressed: _loading ? null : _showOverflow,
                 icon: Icon(
                   Icons.more_vert_rounded,
                   color: palette.textSecondary,
@@ -592,12 +693,163 @@ class _FilesViewState extends State<FilesView> {
           ),
         ),
         const SizedBox(height: NexusSpace.sm),
+        // iOS Files' own search field, filtering the listing already on
+        // screen: the mesh serves listings, not queries, so nothing here is
+        // asked of the peer.
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: NexusSpace.page),
+          child: CupertinoSearchTextField(
+            controller: _search,
+            placeholder: 'Search this folder',
+            onChanged: (value) => setState(() => _query = value),
+          ),
+        ),
+        const SizedBox(height: NexusSpace.sm),
         Divider(height: 1, color: palette.separator),
         Expanded(child: _buildBody(context)),
       ],
     );
   }
 
+
+  /// The path as crumbs: the device's home, then one crumb per folder the user
+  /// opened. The last one is where they already are and is not a control;
+  /// every other one goes back to it.
+  ///
+  /// The home crumb reads exactly as the old path line did, so the top of a
+  /// listing still starts with the same words. What changed is the way back:
+  /// the path itself is the control now, instead of a menu item that could
+  /// only ever step up once.
+  Widget _breadcrumb(BuildContext context, NexusPalette palette) {
+    final crumbs = <({String label, VoidCallback? open})>[
+      (
+        label: '${_device?.name ?? ''} · Home',
+        open: _trail.isEmpty ? null : _goHome,
+      ),
+      for (final (i, folder) in _trail.indexed)
+        (label: folder.name, open: i == _trail.length - 1 ? null : () => _goTo(i)),
+    ];
+    final style = Theme.of(context).textTheme.bodySmall;
+    return SizedBox(
+      height: NexusSize.minTouch,
+      // Read from its end: a path too long for the row keeps the folder the
+      // listing belongs to on screen and lets the top of the tree run off the
+      // leading edge, which is the half a user already knows. A path that fits
+      // starts at the page margin, where the path line it replaced started.
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        controller: _trailScroll,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (i, crumb) in crumbs.indexed) ...[
+              if (i > 0)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: NexusSpace.xs,
+                    ),
+                    child: Text(
+                      '\u203a',
+                      style: style?.copyWith(color: palette.textTertiary),
+                    ),
+                  ),
+                ),
+              if (crumb.open == null)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: NexusSpace.md),
+                    child: Text(
+                      crumb.label,
+                      style: style?.copyWith(
+                        color: palette.textPrimary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                )
+              else
+                // The crumb keeps its text's width and the row's full height,
+                // so the first one starts on the page margin — where the path
+                // line it replaced started.
+                NexusPressable(
+                  borderRadius: BorderRadius.circular(NexusRadius.xs),
+                  onTap: crumb.open,
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: NexusSpace.md),
+                      child: Text(crumb.label, style: style),
+                    ),
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Everything the toolbar can do besides send a file, as an action sheet —
+  /// the shape iOS gives a short list of verbs. This was a Material
+  /// `PopupMenuButton`: a Material menu inside Cupertino chrome, in an app that
+  /// had converted every other menu it owns.
+  Future<void> _showOverflow() async {
+    HapticFeedback.selectionClick();
+    final chosen = await showNexusActions<String>(
+      context: context,
+      actions: (popup) => [
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'sort'),
+          child: const Text('Sort'),
+        ),
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'layout'),
+          child: Text(_layout == _FileLayout.list ? 'Grid view' : 'List view'),
+        ),
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'refresh'),
+          child: const Text('Refresh'),
+        ),
+      ],
+    );
+    if (chosen == null || !mounted) return;
+    switch (chosen) {
+      case 'sort':
+        // After this sheet has closed: two sheets stacked is a stack the user
+        // has to unwind twice.
+        await _showSortSheet();
+      case 'layout':
+        final next = _layout == _FileLayout.list
+            ? _FileLayout.grid
+            : _FileLayout.list;
+        setState(() {
+          _layout = next;
+          _revealed = null;
+        });
+        _persist(() => widget.mesh.store.fileLayout = next.name);
+      case 'refresh':
+        _load();
+    }
+  }
+
+  /// Order the listing by. Three choices are read faster than they are aimed
+  /// at, and the one in force is marked.
+  Future<void> _showSortSheet() async {
+    final chosen = await showNexusActions<_FileSort>(
+      context: context,
+      title: const Text('Sort by'),
+      actions: (popup) => [
+        for (final sort in _FileSort.values)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(popup, sort),
+            child: Text(sort == _sort ? '${sort.label}  \u2713' : sort.label),
+          ),
+      ],
+    );
+    if (chosen == null || !mounted || chosen == _sort) return;
+    setState(() => _sort = chosen);
+    _persist(() => widget.mesh.store.fileSort = chosen.name);
+  }
   Widget _buildBody(BuildContext context) {
     final palette = NexusPalette.of(context);
     if (_loading && _entries == null) {
@@ -635,60 +887,140 @@ class _FilesViewState extends State<FilesView> {
         ),
       );
     }
-    final entries = _entries;
-    if (entries == null || entries.isEmpty) {
+    final entries = _visible;
+    if (entries.isEmpty) {
+      // Two different nothings. Saying "this folder is empty" to a search is a
+      // lie the user cannot see through — the folder may be full.
       return Center(
-        child: Text(
-          'This folder is empty.',
-          style: Theme.of(context).textTheme.bodySmall,
+        child: Padding(
+          padding: const EdgeInsets.all(NexusSpace.page),
+          child: Text(
+            _query.trim().isEmpty
+                ? 'This folder is empty.'
+                : 'Nothing here matches \u201c${_query.trim()}\u201d.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
         ),
       );
     }
-    // Rows on the page, separated by hairlines — not a rounded card each.
-    //
     // A sliver list rather than a ListView, because the refresh control is a
     // sliver: Cupertino's pull-to-refresh is part of the scroll itself — it
     // moves with the finger and springs back on release — where the Material
     // indicator is an overlay on a fixed 150/200 ms curve that cannot be
     // grabbed once the pull has started.
     return CustomScrollView(
-      // A flick throws the list (momentum projection) and the next flick
-      // carries the speed the last one left, which is what makes a fast
-      // scroll feel thrown rather than driven. At an edge the list resists
-      // progressively instead of stopping dead. Android's default physics
-      // does neither: by the framework's own documentation it "doesn't carry
-      // momentum", and its clamping boundary is a hard stop with a glow.
       physics: const BouncingScrollPhysics(
         parent: AlwaysScrollableScrollPhysics(),
       ),
       slivers: [
         CupertinoSliverRefreshControl(onRefresh: _load),
-        SliverList.separated(
-          itemCount: entries.length,
-          separatorBuilder: (context, _) => Divider(
-            height: 1,
-            indent: NexusSpace.lg,
-            color: palette.separator,
+        if (_layout == _FileLayout.grid)
+          SliverPadding(
+            padding: const EdgeInsets.all(NexusSpace.page),
+            sliver: SliverGrid.builder(
+              itemCount: entries.length,
+              // Three columns on a phone, more as the window grows, and never a
+              // tile so wide that its glyph floats in the middle of it.
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 124,
+                mainAxisSpacing: NexusSpace.md,
+                crossAxisSpacing: NexusSpace.md,
+                childAspectRatio: 0.82,
+              ),
+              itemBuilder: (context, i) => _EntryTile(
+                entry: entries[i],
+                progress: _progress[entries[i].path],
+                busy: _busy(entries[i]),
+                onTap: () => _open(entries[i]),
+                onDelete: () => _delete(entries[i]),
+                onRename: () => _rename(entries[i]),
+                onActions: () => _showRowActions(entries[i], all: true),
+              ),
+            ),
+          )
+        else
+          SliverList.separated(
+            itemCount: entries.length,
+            separatorBuilder: (context, _) => Divider(
+              height: 1,
+              indent: NexusSpace.lg,
+              color: palette.separator,
+            ),
+            itemBuilder: (context, i) => _EntryRow(
+              entry: entries[i],
+              progress: _progress[entries[i].path],
+              busy: _busy(entries[i]),
+              deleting: _deleting.contains(entries[i].path),
+              operating: _operating.contains(entries[i].path),
+              // One row's actions at a time, decided here rather than inside
+              // each row: two rows cannot both be half-open by accident.
+              revealed: _revealed == entries[i].path,
+              onReveal: (open) => setState(
+                () => _revealed = open ? entries[i].path : null,
+              ),
+              onTap: () => _open(entries[i]),
+              onDelete: () => _delete(entries[i]),
+              onRename: () => _rename(entries[i]),
+              onActions: () => _showRowActions(entries[i]),
+            ),
           ),
-          itemBuilder: (context, i) => _EntryRow(
-            entry: entries[i],
-            progress: _progress[entries[i].path],
-            busy:
-                _downloading.contains(entries[i].path) ||
-                _sending.contains(entries[i].path) ||
-                _operating.contains(entries[i].path),
-            deleting: _deleting.contains(entries[i].path),
-            operating: _operating.contains(entries[i].path),
-            onTap: () => _open(entries[i]),
-            onDelete: () => _delete(entries[i]),
-            onRename: () => _rename(entries[i]),
-            onCopy: () => _copyOrMove(entries[i], move: false),
-            onMove: () => _copyOrMove(entries[i], move: true),
-          ),
-        ),
         const SliverPadding(padding: EdgeInsets.only(bottom: NexusSpace.xxl)),
       ],
     );
+  }
+
+  /// Whether this entry is mid-flight: bytes moving, or a folder operation on
+  /// it. One definition, because the list and the grid must agree about it.
+  bool _busy(FileEntry entry) =>
+      _downloading.contains(entry.path) ||
+      _sending.contains(entry.path) ||
+      _operating.contains(entry.path);
+
+  /// The verbs that do not fit on a swipe, in an action sheet. Rename and
+  /// Delete are the two the swipe reveals, so they are not repeated here; a
+  /// screen reader still gets all four on the row itself, because it cannot
+  /// swipe one open.
+  Future<void> _showRowActions(FileEntry entry, {bool all = false}) async {
+    final palette = NexusPalette.of(context);
+    final chosen = await showNexusActions<String>(
+      context: context,
+      title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      actions: (popup) => [
+        // In a grid there is no swipe to reveal anything, so the sheet carries
+        // the whole set rather than leaving Rename and Delete unreachable.
+        if (all)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(popup, 'rename'),
+            child: const Text('Rename'),
+          ),
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'copy'),
+          child: const Text('Copy to…'),
+        ),
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'move'),
+          child: const Text('Move to…'),
+        ),
+        if (all)
+          CupertinoActionSheetAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(popup, 'delete'),
+            child: Text('Delete', style: TextStyle(color: palette.danger)),
+          ),
+      ],
+    );
+    if (chosen == null || !mounted) return;
+    switch (chosen) {
+      case 'rename':
+        await _rename(entry);
+      case 'copy':
+        await _copyOrMove(entry, move: false);
+      case 'move':
+        await _copyOrMove(entry, move: true);
+      case 'delete':
+        await _delete(entry);
+    }
   }
 }
 
@@ -942,20 +1274,30 @@ class _DestinationPickerState extends State<_DestinationPicker> {
 /// This is the drive-app shape: the icon names the type, the name is the row,
 /// and the size and date sit under it in the quiet voice. There is no button
 /// per row — a list with a download button and a menu on every line is a
-/// toolbar wearing a list's clothes, and the row itself is the target. The
-/// actions are one long press away, and they are also published as the row's
-/// own accessibility actions, because a screen reader cannot press and hold.
-class _EntryRow extends StatelessWidget {
+/// toolbar wearing a list's clothes, and the row itself is the target.
+///
+/// A swipe to the left reveals the two verbs a person reaches for most, the
+/// way iOS Files does it; the other two are one long press away. All four are
+/// published as the row's own accessibility actions, because a screen reader
+/// can neither press and hold nor swipe a row open.
+class _EntryRow extends StatefulWidget {
   final FileEntry entry;
   final double? progress;
   final bool busy;
   final bool deleting;
   final bool operating;
+
+  /// Whether this row's verbs are showing. Owned by the page, so two rows
+  /// cannot both be open.
+  final bool revealed;
+  final ValueChanged<bool> onReveal;
+
   final VoidCallback onTap;
   final VoidCallback onDelete;
   final VoidCallback onRename;
-  final VoidCallback onCopy;
-  final VoidCallback onMove;
+
+  /// The rest of the verbs, as a sheet: Copy to… and Move to….
+  final VoidCallback onActions;
 
   const _EntryRow({
     required this.entry,
@@ -963,25 +1305,156 @@ class _EntryRow extends StatelessWidget {
     required this.busy,
     required this.deleting,
     required this.operating,
+    required this.revealed,
+    required this.onReveal,
     required this.onTap,
     required this.onDelete,
     required this.onRename,
-    required this.onCopy,
-    required this.onMove,
+    required this.onActions,
   });
 
-  /// The four things you can do to a file, in the order both the menu and the
-  /// accessibility actions show them.
-  List<({String label, IconData icon, VoidCallback run})> get _actions => [
-    (label: 'Rename', icon: Icons.edit_outlined, run: onRename),
-    (label: 'Copy to…', icon: Icons.copy_rounded, run: onCopy),
-    (label: 'Move to…', icon: Icons.drive_file_move_outlined, run: onMove),
-    (label: 'Delete', icon: Icons.delete_outline_rounded, run: onDelete),
+  @override
+  State<_EntryRow> createState() => _EntryRowState();
+}
+
+class _EntryRowState extends State<_EntryRow>
+    with SingleTickerProviderStateMixin {
+  /// How far the row has slid, 0 → [_verbsWidth]. Unbounded, so a spring can
+  /// be handed it and a drag can re-target it mid-flight.
+  late final AnimationController _slide = AnimationController.unbounded(
+    vsync: this,
+  );
+
+  /// Wide enough for two labelled verbs at a thumb's width.
+  static const double _verbsWidth = 168;
+
+  /// Below this the row counts as shut. A spring approaches its target rather
+  /// than reaching it, so "is it at zero" is never the right question.
+  static const double _shut = 1;
+
+  bool get _open => _slide.value > _shut;
+
+  @override
+  void didUpdateWidget(covariant _EntryRow old) {
+    super.didUpdateWidget(old);
+    // The page owns which row is open. When it says this one is not, the row
+    // goes back on its own spring rather than being teleported shut.
+    if (!widget.revealed && _open) _settle(0);
+  }
+
+  @override
+  void dispose() {
+    _slide.dispose();
+    super.dispose();
+  }
+
+  void _settle(double target) {
+    if (MediaQuery.maybeDisableAnimationsOf(context) == true) {
+      _slide.value = target;
+      return;
+    }
+    _slide.animateWith(
+      SpringSimulation(
+        NexusSpring.of(),
+        _slide.value,
+        target,
+        _slide.velocity,
+      ),
+    );
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    if (widget.busy) return;
+    // Leftward drag opens: the verbs live at the trailing edge, under the row.
+    final next = (_slide.value - details.delta.dx).clamp(0.0, _verbsWidth);
+    if (next == _slide.value) return;
+    _slide.value = next;
+    widget.onReveal(next > _verbsWidth / 2);
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    if (widget.busy) return;
+    final opening = _slide.value > _verbsWidth / 2;
+    _settle(opening ? _verbsWidth : 0);
+    widget.onReveal(opening);
+  }
+
+  /// The verbs the swipe carries, in the order they appear.
+  List<({String label, IconData icon, Color color, VoidCallback run})> get _verbs => [
+    (
+      label: 'Rename',
+      icon: Icons.edit_outlined,
+      color: NexusPalette.of(context).accent,
+      run: widget.onRename,
+    ),
+    (
+      label: 'Delete',
+      icon: Icons.delete_outline_rounded,
+      color: NexusPalette.of(context).danger,
+      run: widget.onDelete,
+    ),
   ];
 
   @override
   Widget build(BuildContext context) {
     final palette = NexusPalette.of(context);
+    return GestureDetector(
+      onHorizontalDragUpdate: _onDragUpdate,
+      onHorizontalDragEnd: _onDragEnd,
+      // The row follows the finger from where it landed, not from where the
+      // recogniser decided the drag had started. The default throws away the
+      // movement that crossed the touch slop, so the row would lag the finger
+      // by it on every swipe.
+      dragStartBehavior: DragStartBehavior.down,
+      child: Stack(
+        children: [
+          AnimatedBuilder(
+            animation: _slide,
+            builder: (context, _) => Positioned.fill(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: SizedBox(
+                  width: _verbsWidth,
+                  child: !_open
+                      // Not built at all while the row is shut: a verb that is
+                      // in the tree but not on screen is something a screen
+                      // reader still reads and a test still finds.
+                      ? const SizedBox.shrink()
+                      : Row(
+                          children: [
+                            for (final verb in _verbs)
+                              Expanded(
+                                child: _SwipeVerb(
+                                  label: verb.label,
+                                  icon: verb.icon,
+                                  color: verb.color,
+                                  onPressed: verb.run,
+                                ),
+                              ),
+                          ],
+                        ),
+                ),
+              ),
+            ),
+          ),
+          AnimatedBuilder(
+            animation: _slide,
+            builder: (context, child) => Transform.translate(
+              offset: Offset(-_slide.value, 0),
+              child: child,
+            ),
+            // Opaque on the page's own colour, because the verbs are under it:
+            // a row that let them show through would read as a busy row rather
+            // than one with something behind it.
+            child: ColoredBox(color: palette.bg, child: _row(context, palette)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(BuildContext context, NexusPalette palette) {
+    final entry = widget.entry;
     return NexusRow(
       title: entry.name,
       // A folder's second line is what it is; a file's is how big and how old.
@@ -1000,12 +1473,26 @@ class _EntryRow extends StatelessWidget {
       trailing: _progressIndicator(palette),
       // A row at work keeps its shape and loses only its response: the file
       // being downloaded is still the row the finger landed on.
-      enabled: !busy,
-      onTap: onTap,
-      onLongPress: () => _showActions(context),
+      enabled: !widget.busy,
+      onTap: () {
+        // A row with its verbs showing answers a tap by putting them away: the
+        // tap is not for the file while the row is open, which is the rule iOS
+        // Files follows too.
+        if (_open) {
+          _settle(0);
+          widget.onReveal(false);
+          return;
+        }
+        widget.onTap();
+      },
+      onLongPress: widget.onActions,
+      // All four, in the order the sheet and the swipe show them — including
+      // the two the swipe carries, which a screen reader cannot reach.
       customActions: {
-        for (final action in _actions)
-          CustomSemanticsAction(label: action.label): action.run,
+        CustomSemanticsAction(label: 'Rename'): widget.onRename,
+        CustomSemanticsAction(label: 'Copy to…'): widget.onActions,
+        CustomSemanticsAction(label: 'Move to…'): widget.onActions,
+        CustomSemanticsAction(label: 'Delete'): widget.onDelete,
       },
     );
   }
@@ -1014,14 +1501,15 @@ class _EntryRow extends StatelessWidget {
   /// moved or renamed, and a filled ring with the percentage while bytes are
   /// actually moving.
   Widget? _progressIndicator(NexusPalette palette) {
-    if (deleting || operating) {
+    if (widget.deleting || widget.operating) {
       return const SizedBox(
         width: 22,
         height: 22,
         child: CupertinoActivityIndicator(radius: 9),
       );
     }
-    if (!busy || progress == null) return null;
+    final progress = widget.progress;
+    if (!widget.busy || progress == null) return null;
     return SizedBox(
       width: 26,
       height: 26,
@@ -1035,60 +1523,179 @@ class _EntryRow extends StatelessWidget {
             backgroundColor: palette.surfaceSecondary,
           ),
           Text(
-            '${(progress! * 100).round()}',
+            '${(progress * 100).round()}',
             style: NexusType.micro.copyWith(color: palette.textSecondary),
           ),
         ],
       ),
     );
   }
+}
 
-  /// The long-press menu. It hands back a label instead of running the handler
-  /// itself so the sheet is closed before the work starts — a rename dialog
-  /// opening on top of a sheet that is still on screen is two modals deep.
-  Future<void> _showActions(BuildContext context) async {
-    final chosen = await showNexusActions<String>(
-      context: context,
-      title: Text(
-        entry.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      actions: (popup) {
-        final palette = NexusPalette.of(popup);
-        return [
-          for (final action in _actions)
-            CupertinoActionSheetAction(
-              onPressed: () => Navigator.pop(popup, action.label),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    action.icon,
-                    size: 20,
-                    // Delete is the one verb that cannot be undone, so it is
-                    // the one that is not the ordinary ink.
-                    color: action.label == 'Delete'
-                        ? palette.danger
-                        : palette.textSecondary,
+/// One revealed verb. A filled surface rather than a pressable outline: it is
+/// only on screen while the finger is already moving, and the swipe that put it
+/// there is the response — a second press highlight would be a second answer to
+/// one gesture.
+class _SwipeVerb extends StatelessWidget {
+  const _SwipeVerb({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.onPressed,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      container: true,
+      button: true,
+      label: label,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onPressed,
+        child: ColoredBox(
+          color: color.withValues(alpha: 0.14),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 20, color: color),
+                const SizedBox(height: NexusSpace.xxs),
+                ExcludeSemantics(
+                  child: Text(
+                    label,
+                    style: NexusType.caption1.copyWith(color: color),
                   ),
-                  const SizedBox(width: NexusSpace.sm),
-                  Text(
-                    action.label,
-                    style: action.label == 'Delete'
-                        ? TextStyle(color: palette.danger)
-                        : null,
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-        ];
-      },
+          ),
+        ),
+      ),
     );
-    if (chosen == null) return;
-    for (final action in _actions) {
-      if (action.label == chosen) action.run();
-    }
+  }
+}
+
+/// One file as a tile, for the grid.
+///
+/// The tile's "thumbnail" is the type glyph on a surface square. Deliberately
+/// not a preview: a real one would mean pulling the file to look at it, and a
+/// placeholder that looked like a picture would be a claim about what is on
+/// screen that nothing here has checked.
+class _EntryTile extends StatelessWidget {
+  const _EntryTile({
+    required this.entry,
+    required this.progress,
+    required this.busy,
+    required this.onTap,
+    required this.onDelete,
+    required this.onRename,
+    required this.onActions,
+  });
+
+  final FileEntry entry;
+  final double? progress;
+  final bool busy;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+  final VoidCallback onRename;
+  final VoidCallback onActions;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return Semantics(
+      container: true,
+      button: true,
+      label: entry.isDir
+          ? '${entry.name}, folder'
+          : '${entry.name}, ${_size(entry.size)}',
+      customSemanticsActions: {
+        CustomSemanticsAction(label: 'Rename'): onRename,
+        CustomSemanticsAction(label: 'Copy to…'): onActions,
+        CustomSemanticsAction(label: 'Move to…'): onActions,
+        CustomSemanticsAction(label: 'Delete'): onDelete,
+      },
+      child: NexusPressable(
+        enabled: !busy,
+        borderRadius: NexusRadius.card,
+        onTap: onTap,
+        onLongPress: onActions,
+        child: ExcludeSemantics(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: palette.surface,
+                    borderRadius: NexusRadius.card,
+                    border: Border.all(color: palette.separator),
+                  ),
+                  child: Center(
+                    child: busy && progress != null
+                        ? SizedBox(
+                            width: 26,
+                            height: 26,
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  value: progress,
+                                  color: palette.accent,
+                                  backgroundColor: palette.surfaceSecondary,
+                                ),
+                                Text(
+                                  '${(progress! * 100).round()}',
+                                  style: NexusType.micro.copyWith(
+                                    color: palette.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        : Icon(
+                            fileTypeIcon(
+                              name: entry.name,
+                              isDir: entry.isDir,
+                            ),
+                            size: 30,
+                            color: palette.textSecondary,
+                          ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: NexusSpace.sm),
+              Text(
+                entry.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: NexusType.caption1.copyWith(
+                  color: palette.textPrimary,
+                ),
+              ),
+              if (!entry.isDir)
+                Text(
+                  _size(entry.size),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: NexusType.caption2.copyWith(
+                    color: palette.textTertiary,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
