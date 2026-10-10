@@ -61,10 +61,13 @@ String _timeAgo(DateTime? t) {
 
 /// The most devices the graph draws before it hands over to the list.
 ///
-/// Past this the ring turns into a spiral of overlapping glyphs, and the list
-/// below — which says everything the graph says, in words — is the honest
-/// rendering. It is a limit on what this picture can carry, not on pairing.
-const int _maxGraphDevices = 6;
+/// The graph draws two rings — three peers around the middle, nine around
+/// those — and pans and zooms, so a mesh of a dozen devices is still a picture
+/// rather than a pile. Past this the rings stop being readable at any zoom and
+/// the list below, which now carries the state itself (see [_PairedRow]), is
+/// the honest rendering. It is a limit on what this picture can carry, not on
+/// pairing.
+const int _maxGraphDevices = 12;
 
 /// What a link between two devices looks like, from the supervisor's own
 /// snapshot.
@@ -150,9 +153,11 @@ class DevicesView extends StatelessWidget {
           subtitle: 'Everything Nexus can work across.',
         ),
         // The picture comes first: this device in the middle and one line per
-        // link. The strip and the list below say the same things in words, and
-        // the list stays the rendering of record — for a screen reader, and
-        // for a mesh with more devices than a ring can hold.
+        // link, with the link's own state written under the device it belongs
+        // to. That is the one place the state of a graphed link is read — the
+        // rows below are the device index (name and what the device is), and
+        // they take the state back only when there is no picture to draw it
+        // in.
         if (paired.isNotEmpty && paired.length <= _maxGraphDevices) ...[
           const NexusSectionHeader(
             'The mesh',
@@ -169,7 +174,17 @@ class DevicesView extends StatelessWidget {
           const NexusSectionHeader('Your devices'),
           NexusGroup(
             children: [
-              for (final d in paired) _PairedRow(mesh: mesh, device: d),
+              for (final d in paired)
+                _PairedRow(
+                  mesh: mesh,
+                  device: d,
+                  // The state is drawn on the graph node when there is a graph; the
+                  // row says what the device *is*. With no picture (too many devices,
+                  // or none paired) the words come back here, because they are the
+                  // only place left that can carry them.
+                  stateInGraph:
+                      paired.isNotEmpty && paired.length <= _maxGraphDevices,
+                ),
             ],
           ),
         ],
@@ -193,7 +208,8 @@ class DevicesView extends StatelessWidget {
         if (nearby.isNotEmpty) ...[
           NexusSectionHeader(
             'Nearby',
-            detail: 'Pairing is the only step — after that everything is '
+            detail:
+                'Pairing is the only step — after that everything is '
                 'encrypted and direct.',
             trailing: Text(
               '${nearby.length}',
@@ -209,7 +225,8 @@ class DevicesView extends StatelessWidget {
         if (serial.isNotEmpty || remoteSerial.isNotEmpty) ...[
           NexusSectionHeader(
             'Microcontrollers',
-            detail: 'On a cable, or reachable through another device. They '
+            detail:
+                'On a cable, or reachable through another device. They '
                 'only do what they advertise.',
           ),
           NexusGroup(
@@ -302,9 +319,8 @@ class _Reachability extends StatelessWidget {
         Expanded(
           child: Text(
             note ?? text,
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: palette.textSecondary),
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: palette.textSecondary),
           ),
         ),
       ],
@@ -314,14 +330,27 @@ class _Reachability extends StatelessWidget {
 
 /// A paired device, as a row.
 ///
-/// The row says the four things a person needs — name, what it is, whether it
-/// is here, and one useful fact — and nothing else. Addresses, ports and
-/// protocol details live behind "Advanced" in the detail sheet.
+/// The row says what the device *is* — name, platform, and the way into its
+/// details — and nothing else, because the state of a paired link is drawn on
+/// the graph above it. Before this, the same link was described twice on one
+/// screen: once by the node and the line the painter draws for it, and again
+/// in this row's subtitle and its status dot. Two readings of one fact invite
+/// the two to disagree, and the row is the one nobody needs twice — it is a
+/// list of devices, and the picture is the state.
+///
+/// [stateInGraph] is false when no graph is drawn (more devices than the
+/// picture can carry, or a mesh with nothing paired): the words come back to
+/// the row, which is then the only place carrying them.
 class _PairedRow extends StatelessWidget {
-  const _PairedRow({required this.mesh, required this.device});
+  const _PairedRow({
+    required this.mesh,
+    required this.device,
+    this.stateInGraph = false,
+  });
 
   final MeshService mesh;
   final PairedDevice device;
+  final bool stateInGraph;
 
   @override
   Widget build(BuildContext context) {
@@ -336,13 +365,13 @@ class _PairedRow extends StatelessWidget {
     final (NexusStatusLevel level, String status) = retry != null
         ? (NexusStatusLevel.working, _reconnectingLabel(retry))
         : online
-            ? (NexusStatusLevel.online, 'Online')
-            : visible
-                ? (NexusStatusLevel.nearby, 'Nearby')
-                : (
-                    NexusStatusLevel.offline,
-                    'Offline · last seen ${_timeAgo(lastSeen)}',
-                  );
+        ? (NexusStatusLevel.online, 'Online')
+        : visible
+        ? (NexusStatusLevel.nearby, 'Nearby')
+        : (
+            NexusStatusLevel.offline,
+            'Offline · last seen ${_timeAgo(lastSeen)}',
+          );
 
     return NexusRow(
       minHeight: NexusSize.row,
@@ -356,18 +385,21 @@ class _PairedRow extends StatelessWidget {
         online: online,
       ),
       title: device.name,
-      subtitle: '${platformLabel(device.platform)} · $status',
+      subtitle: stateInGraph
+          ? platformLabel(device.platform)
+          : '${platformLabel(device.platform)} · $status',
       chevron: true,
-      // The dot reinforces the words; it does not repeat them. On the phone
-      // this row announced its status three times — once in the row's own
-      // label, once from a label on the dot, once as a tooltip — so the dot
-      // now takes the same rule as NexusSwitchRow's switch: excluded.
-      trailing: ExcludeSemantics(
-        child: Tooltip(
-          message: status,
-          child: NexusStatusDot(level: level, size: 10),
-        ),
-      ),
+      // Only when this row is the state's only home. The dot reinforces the
+      // words; it does not get to repeat them — the rule the phone taught this
+      // screen, and now the reason there is no dot while the graph is up.
+      trailing: stateInGraph
+          ? null
+          : ExcludeSemantics(
+              child: Tooltip(
+                message: status,
+                child: NexusStatusDot(level: level, size: 10),
+              ),
+            ),
     );
   }
 }
@@ -393,9 +425,7 @@ class _DeviceGlyph extends StatelessWidget {
       height: 40,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: online
-            ? palette.accentTint(0.10)
-            : palette.surfaceSecondary,
+        color: online ? palette.accentTint(0.10) : palette.surfaceSecondary,
         borderRadius: NexusRadius.row,
       ),
       child: Icon(
@@ -409,11 +439,7 @@ class _DeviceGlyph extends StatelessWidget {
 
 /// The device detail sheet: what it is, what it can do for you, and the
 /// actions — with the technical facts behind one more tap.
-void _showDetail(
-  BuildContext context,
-  MeshService mesh,
-  PairedDevice device,
-) {
+void _showDetail(BuildContext context, MeshService mesh, PairedDevice device) {
   // The detail is a page of its own — what the device is, what it can do, and
   // the actions — so it opens as an iOS sheet: the page behind pushes back,
   // the grabber is the framework's, and a downward drag dismisses it.
@@ -462,13 +488,13 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
     final (NexusStatusLevel level, String status) = retry != null
         ? (NexusStatusLevel.working, _reconnectingLabel(retry))
         : online
-            ? (NexusStatusLevel.online, 'Online · reachable now')
-            : visible
-                ? (NexusStatusLevel.nearby, 'Nearby but not reachable')
-                : (
-                    NexusStatusLevel.offline,
-                    'Offline · last seen ${_timeAgo(lastSeen)}',
-                  );
+        ? (NexusStatusLevel.online, 'Online · reachable now')
+        : visible
+        ? (NexusStatusLevel.nearby, 'Nearby but not reachable')
+        : (
+            NexusStatusLevel.offline,
+            'Offline · last seen ${_timeAgo(lastSeen)}',
+          );
 
     final capabilities = _runnableCapabilityLabels(device.platform);
 
@@ -486,10 +512,7 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                device.name,
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
+              Text(device.name, style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: NexusSpace.sm),
               Row(
                 children: [
@@ -589,10 +612,7 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
                         label: 'Address',
                         value: '${device.address}:${device.port}',
                       ),
-                      _DetailRow(
-                        label: 'Link',
-                        value: 'Encrypted · direct',
-                      ),
+                      _DetailRow(label: 'Link', value: 'Encrypted · direct'),
                       if (device.addresses.any(isTailscaleIp))
                         const _DetailRow(
                           label: 'Tailscale',
@@ -608,7 +628,9 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
                 child: OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
                     foregroundColor: palette.danger,
-                    side: BorderSide(color: palette.danger.withValues(alpha: 0.5)),
+                    side: BorderSide(
+                      color: palette.danger.withValues(alpha: 0.5),
+                    ),
                   ),
                   icon: const Icon(Icons.link_off_rounded, size: 18),
                   label: const Text('Forget device'),
@@ -754,8 +776,7 @@ class _TopologyGraphState extends State<_TopologyGraph>
   /// on the graph, and neighbours on the ring must not collide — and the width
   /// sets the ceiling, because on a phone width is what runs out first.
   double _radiusFor(int peers, double width) {
-    const beside =
-        _selfNodeWidth / 2 + _peerNodeWidth / 2 + NexusSpace.md;
+    const beside = _selfNodeWidth / 2 + _peerNodeWidth / 2 + NexusSpace.md;
     final chord = peers < 2
         ? 0.0
         : _peerNodeWidth / 2 / math.sin(math.pi / peers) + NexusSpace.sm;
@@ -775,6 +796,42 @@ class _TopologyGraphState extends State<_TopologyGraph>
     return [
       for (var i = 0; i < peers; i++) -math.pi / 2 + 2 * math.pi * i / peers,
     ];
+  }
+
+  /// Peers the inner ring holds before a second ring opens.
+  ///
+  /// Three keeps the arrangements a small mesh reads best as (one device to
+  /// the right, two left and right, three spread from the top). A fourth device
+  /// crowds the labels of the first three — measured on the phone, a fourth
+  /// node at that radius' angle sits on top of its neighbour — so it goes on a
+  /// ring of its own, staggered by half a step so no outer node hides behind an
+  /// inner one.
+  static const _innerRing = 3;
+
+  /// Which ring each peer sits on, and where on it.
+  ///
+  /// Not a force simulation: the mesh has no forces in it, and a picture that
+  /// rearranges itself while the user is looking at it is harder to read than a
+  /// fixed one. Position is a function of the device's index, so a device keeps
+  /// its place as long as the list of devices does.
+  List<({int ring, double angle})> _placement(int peers) {
+    final inner = math.min(peers, _innerRing);
+    final outer = peers - inner;
+    final rings = <({int ring, double angle})>[
+      for (final angle in _ringAngles(inner)) (ring: 0, angle: angle),
+    ];
+    if (outer <= 0) return rings;
+    final step = 2 * math.pi / outer;
+    rings.addAll([
+      for (final angle in _ringAngles(outer))
+        if (outer == 1 || outer == 2)
+          // One or two on the outer ring sit opposite each other, offset from
+          // the inner ring's own two so they are not a straight line.
+          (ring: 1, angle: angle + math.pi / 2)
+        else
+          (ring: 1, angle: angle + step / 2),
+    ]);
+    return rings;
   }
 
   Future<void> _showNodeActions(PairedDevice device) async {
@@ -815,8 +872,6 @@ class _TopologyGraphState extends State<_TopologyGraph>
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-        final radius = _radiusFor(peers.length, width);
-        final angles = _ringAngles(peers.length);
 
         // The room reserved under a disc for its label follows the user's text
         // size; the disc itself and the box's width do not, because the graph
@@ -830,9 +885,24 @@ class _TopologyGraphState extends State<_TopologyGraph>
           _selfDisc + NexusType.scaled(context, 54),
         );
 
+        // Two rings, one radius each. The inner one is the radius a ring of
+        // three needs (clamped to the page, which is what keeps a small mesh
+        // fitting without any panning); the outer one clears a whole node box
+        // radially, so the labels of the two rings never overlap.
+        final placement = _placement(peers.length);
+        final innerRadius = _radiusFor(
+          math.min(peers.length, _innerRing),
+          width,
+        );
+        final outerRadius = innerRadius + peerBox.height + NexusSpace.md;
+        final byRing = [innerRadius, outerRadius];
+
         final centres = [
-          for (final angle in angles)
-            Offset(math.cos(angle) * radius, math.sin(angle) * radius),
+          for (final spot in placement)
+            Offset(
+              math.cos(spot.angle) * byRing[spot.ring],
+              math.sin(spot.angle) * byRing[spot.ring],
+            ),
         ];
 
         // The picture's own bounds, so one device is a short graph and six is a
@@ -853,16 +923,33 @@ class _TopologyGraphState extends State<_TopologyGraph>
             ),
           );
         }
-        final shift = Offset((width - bounds.width) / 2 - bounds.left, -bounds.top);
+        // Two rings are wider than a phone page, so the picture is drawn on a
+        // canvas at least as large as the content and panned rather than
+        // squeezed: the artist's answer (a smaller radius) would be a pile of
+        // overlapping labels, and the user can move a canvas.
+        final canvasWidth = math
+            .max(width, bounds.width + NexusSpace.xxl)
+            .toDouble();
+        final canvasHeight = math
+            .max(bounds.height + NexusSpace.md, 200.0)
+            .toDouble();
+        final shift = Offset(
+          (canvasWidth - bounds.width) / 2 - bounds.left,
+          (canvasHeight - bounds.height) / 2 - bounds.top,
+        );
 
-        final links = <({_LinkState state, Offset at})>[];
+        final links = <({_LinkState state, PeerLink? retry, Offset at})>[];
         final live = <AnimationController>[_enter, _dash];
         var retrying = false;
         for (final (i, device) in peers.indexed) {
           final link = _linkFor(mesh, device.id);
           if (link.retry != null) retrying = true;
           live.add(_livenessFor(device.id, link.state.liveness));
-          links.add((state: link.state, at: shift + centres[i]));
+          links.add((
+            state: link.state,
+            retry: link.retry,
+            at: shift + centres[i],
+          ));
         }
 
         // The dash phase travels only while a link is actually being retried —
@@ -876,72 +963,96 @@ class _TopologyGraphState extends State<_TopologyGraph>
         }
 
         return SizedBox(
-          height: bounds.height,
-          child: AnimatedBuilder(
-            animation: Listenable.merge(live),
-            builder: (context, _) => Stack(
-              children: [
-                Positioned.fill(
-                  child: CustomPaint(
-                    painter: _TopologyPainter(
-                      selfAt: shift,
-                      selfRadius: _selfDisc / 2,
-                      peerRadius: _peerDisc / 2,
-                      links: [
-                        for (final (i, link) in links.indexed)
-                          (
-                            at: link.at,
-                            liveness: _live[peers[i].id]!.value,
-                          ),
-                      ],
-                      accent: palette.accent,
-                      quiet: palette.textTertiary,
-                      // 12px of travel over the cycle: enough that a dashed
-                      // link is visibly being worked on, slow enough that it
-                      // never reads as a progress bar.
-                      dashPhase: _dash.value * 12,
+          height: canvasHeight,
+          child: InteractiveViewer(
+            // The canvas is its own size, never the viewport's: with two rings
+            // it is wider than the page, and panning is how the rest of it is
+            // reached. Pinching zooms the same picture — nothing above it in
+            // the page moves, so a zoomed graph is a magnifier, not a layout
+            // change.
+            constrained: false,
+            minScale: 0.6,
+            // maxScale is left at the control's own 2.5, and clipBehavior at
+            // its own Clip.hardEdge: the graph must not paint over the page
+            // around it when it is zoomed in.
+            boundaryMargin: const EdgeInsets.all(NexusSpace.xxxl),
+            child: AnimatedBuilder(
+              animation: Listenable.merge(live),
+              builder: (context, _) => SizedBox(
+                width: canvasWidth,
+                height: canvasHeight,
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: CustomPaint(
+                        painter: _TopologyPainter(
+                          selfAt: shift,
+                          selfRadius: _selfDisc / 2,
+                          peerRadius: _peerDisc / 2,
+                          links: [
+                            for (final (i, link) in links.indexed)
+                              (
+                                at: link.at,
+                                liveness: _live[peers[i].id]!.value,
+                              ),
+                          ],
+                          accent: palette.accent,
+                          quiet: palette.textTertiary,
+                          // 12px of travel over the cycle: enough that a dashed
+                          // link is visibly being worked on, slow enough that it
+                          // never reads as a progress bar.
+                          dashPhase: _dash.value * 12,
+                        ),
+                        size: Size(canvasWidth, canvasHeight),
+                      ),
                     ),
-                    size: Size(width, bounds.height),
-                  ),
-                ),
-                _positioned(
-                  centre: shift,
-                  width: selfBox.width,
-                  disc: _selfDisc,
-                  arrival: _arrival(-1),
-                  child: _TopologyNode(
-                    platform: self.platform,
-                    name: self.name,
-                    state: _LinkState.online,
-                    detail: platformLabel(self.platform),
-                    isSelf: true,
-                  ),
-                ),
-                for (final (i, device) in peers.indexed)
-                  _positioned(
-                    centre: shift + centres[i],
-                    width: peerBox.width,
-                    disc: _peerDisc,
-                    arrival: _arrival(i),
-                    child: _TopologyNode(
-                      platform: device.platform,
-                      name: device.name,
-                      state: links[i].state,
-                      // The node says what the device *is*, never how its link
-                      // is: that is the line's job, and the row below is where
-                      // the state is read as words. Putting it here too would
-                      // be the same status said twice on one screen — the bug
-                      // `devices_states_test.dart` was written to stop.
-                      detail: platformLabel(device.platform),
-                      isSelf: false,
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        _showDetail(context, mesh, device);
-                      },
-                      onLongPress: () => unawaited(_showNodeActions(device)),
+                    _positioned(
+                      centre: shift,
+                      width: selfBox.width,
+                      disc: _selfDisc,
+                      arrival: _arrival(-1),
+                      child: _TopologyNode(
+                        platform: self.platform,
+                        name: self.name,
+                        state: _LinkState.online,
+                        detail: platformLabel(self.platform),
+                        isSelf: true,
+                      ),
                     ),
-                  ),
-              ],
+
+                    for (final (i, device) in peers.indexed)
+                      _positioned(
+                        centre: shift + centres[i],
+                        width: peerBox.width,
+                        disc: _peerDisc,
+                        arrival: _arrival(i),
+                        child: _TopologyNode(
+                          platform: device.platform,
+                          name: device.name,
+                          state: links[i].state,
+                          // The state in words, under the device it belongs to.
+                          // This is the one place a graphed link's state is read:
+                          // the row below is the device index, and it carries the
+                          // words only when there is no picture to draw them in
+                          // (see [_PairedRow.stateInGraph]). A retry shows the
+                          // wait it is actually on, so the countdown grows with
+                          // the backoff instead of repeating a stale number, and a
+                          // node that is being worked on says so.
+                          detail: links[i].retry != null
+                              ? _reconnectingLabel(links[i].retry!)
+                              : links[i].state.label,
+                          isSelf: false,
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            _showDetail(context, mesh, device);
+                          },
+                          onLongPress: () =>
+                              unawaited(_showNodeActions(device)),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
         );
@@ -1050,8 +1161,8 @@ class _TopologyNode extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style:
-                    (isSelf ? NexusType.rowTitle : NexusType.caption).copyWith(
+                style: (isSelf ? NexusType.rowTitle : NexusType.caption)
+                    .copyWith(
                       color: palette.textPrimary,
                       fontWeight: isSelf ? FontWeight.w600 : FontWeight.w500,
                     ),
@@ -1061,9 +1172,7 @@ class _TopologyNode extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: NexusType.caption1.copyWith(
-                  color: palette.textTertiary,
-                ),
+                style: NexusType.caption1.copyWith(color: palette.textTertiary),
               ),
             ],
           ),
@@ -1196,10 +1305,7 @@ class _DetailRow extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: Text(
-              label,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            child: Text(label, style: Theme.of(context).textTheme.bodySmall),
           ),
           const SizedBox(width: NexusSpace.md),
           Flexible(
@@ -1309,26 +1415,26 @@ Future<void> _renamePairedDevice(
 
 Future<bool?> _confirmForget(BuildContext context, PairedDevice device) {
   return showDialog<bool>(
-    context: context,      // An iOS alert: the destructive action is red ink on the right, not a
-      // filled red button — the platform's own way of saying "this one hurts".
-      builder: (context) => CupertinoAlertDialog(
-        title: const Text('Forget this device?'),
-        content: Text(
-          '${device.name} will be removed and must be paired again from '
-          "scratch to reconnect. This can't be undone.",
-        ),
-        actions: [
-          CupertinoDialogAction(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          CupertinoDialogAction(
-            isDestructiveAction: true,
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Forget device'),
-          ),
-        ],
+    context: context, // An iOS alert: the destructive action is red ink on the right, not a
+    // filled red button — the platform's own way of saying "this one hurts".
+    builder: (context) => CupertinoAlertDialog(
+      title: const Text('Forget this device?'),
+      content: Text(
+        '${device.name} will be removed and must be paired again from '
+        "scratch to reconnect. This can't be undone.",
       ),
+      actions: [
+        CupertinoDialogAction(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        CupertinoDialogAction(
+          isDestructiveAction: true,
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Forget device'),
+        ),
+      ],
+    ),
   );
 }
 

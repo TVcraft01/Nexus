@@ -39,17 +39,17 @@ import 'package:nexus/ui/theme.dart';
 /// A mesh that answers from a list instead of a network.
 class _FakeMesh extends MeshService {
   _FakeMesh(this._devices, {this.online = const {}, this.supervisor})
-      : super(
-          identity: DeviceInfo(
-            id: 'test-device',
-            name: 'Test PC',
-            platform: 'linux',
-          ),
-          store: NexusStore(
-            explicitPath:
-                '${Directory.systemTemp.createTempSync('dev').path}/s.json',
-          ),
-        );
+    : super(
+        identity: DeviceInfo(
+          id: 'test-device',
+          name: 'Test PC',
+          platform: 'linux',
+        ),
+        store: NexusStore(
+          explicitPath:
+              '${Directory.systemTemp.createTempSync('dev').path}/s.json',
+        ),
+      );
 
   final List<PairedDevice> _devices;
   final Set<String> online;
@@ -87,9 +87,19 @@ PairedDevice _device(String id, String name) => PairedDevice(
   pairingSecret: 'secret-$id',
 );
 
+/// The graph arrives on a spring, and a node that has not arrived yet is
+/// transparent: its semantics, and the words under it, are genuinely absent
+/// until it settles. Past the response time by a wide margin.
+Future<void> _settle(WidgetTester tester) async {
+  await tester.pump(const Duration(milliseconds: 900));
+}
+
 Future<void> _pumpDevices(WidgetTester tester, MeshService mesh) async {
   await tester.pumpWidget(
-    MaterialApp(theme: buildNexusTheme(), home: DevicesView(mesh: mesh)),
+    MaterialApp(
+      theme: buildNexusTheme(),
+      home: DevicesView(mesh: mesh),
+    ),
   );
   await tester.pump();
 }
@@ -207,26 +217,44 @@ void main() {
     expect(find.text('1 of 2 devices reachable right now.'), findsOneWidget);
   });
 
-  testWidgets('a device row names its status exactly once', (tester) async {
-    final handle = tester.ensureSemantics();
+  testWidgets(
+    'the link state is read once: on the graph, not again in the row',
+    (tester) async {
+      final handle = tester.ensureSemantics();
 
-    await _pumpDevices(tester, _FakeMesh([_device('a', 'Nova')]));
+      await _pumpDevices(tester, _FakeMesh([_device('a', 'Nova')]));
+      await _settle(tester);
 
-    final row = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Nova\.')));
-    expect(row.label, 'Nova. Linux · Offline · last seen never');
-    expect(
-      row.label.split('Offline').length - 1,
-      1,
-      reason: 'the dot must not add a second reading of the status',
-    );
-    expect(
-      row.tooltip,
-      isEmpty,
-      reason: 'the status is in the row, not hidden behind a hover hint',
-    );
+      // The row is the device index: what the device is, and the way into it.
+      final row = tester.getSemantics(
+        find.bySemanticsLabel(RegExp(r'^Nova\.')),
+      );
+      expect(row.label, 'Nova. Linux');
+      expect(
+        row.label.contains('Offline'),
+        isFalse,
+        reason:
+            'the picture above is where the link state is read; a row that '
+            'repeats it gives the same fact two homes, and two homes disagree',
+      );
+      expect(
+        row.tooltip,
+        isEmpty,
+        reason: 'and the state is not hidden behind a hover hint either',
+      );
 
-    handle.dispose();
-  });
+      // It is read where it belongs: under the node, in words, beside the line
+      // the painter draws for it.
+      expect(find.text('Offline'), findsOneWidget);
+      expect(
+        find.textContaining('Offline'),
+        findsOneWidget,
+        reason: 'exactly one reading of the state on the whole screen',
+      );
+
+      handle.dispose();
+    },
+  );
 
   testWidgets('a peer the supervisor is retrying says Reconnecting', (
     tester,
@@ -240,7 +268,9 @@ void main() {
     // The row has spoken; the timer must not outlive the test.
     await supervisor.stop();
 
-    expect(find.text('Linux · Reconnecting…'), findsOneWidget);
+    await _settle(tester);
+
+    expect(find.text('Reconnecting…'), findsOneWidget);
     expect(
       find.textContaining('Offline'),
       findsNothing,
@@ -249,7 +279,7 @@ void main() {
     expect(
       find.textContaining('Reconnecting'),
       findsOneWidget,
-      reason: 'the state is read once, in the row',
+      reason: 'the state is read once — under the node it belongs to',
     );
   });
 
@@ -265,6 +295,8 @@ void main() {
       _FakeMesh([_device('a', 'Nova')], supervisor: supervisor),
     );
     await supervisor.stop();
+
+    await _settle(tester);
 
     expect(
       find.textContaining(RegExp(r'Reconnecting · next try in \d+s')),
@@ -284,6 +316,7 @@ void main() {
       _FakeMesh([_device('a', 'Nova')], online: {'a'}, supervisor: supervisor),
     );
     await supervisor.stop();
+    await _settle(tester);
 
     expect(find.textContaining('Online'), findsOneWidget);
     expect(find.textContaining('Reconnecting'), findsNothing);
@@ -301,8 +334,11 @@ void main() {
       _FakeMesh([_device('a', 'Nova')], supervisor: supervisor),
     );
     await supervisor.stop();
+    await _settle(tester);
 
-    expect(find.text('Linux · Offline · last seen never'), findsOneWidget);
+    // The node is where this device's state is read now, and it must keep
+    // saying Offline: the supervisor's new state never swallows the old one.
+    expect(find.text('Offline'), findsOneWidget);
     expect(find.textContaining('Reconnecting'), findsNothing);
   });
 
@@ -313,79 +349,265 @@ void main() {
   // heard — and that the picture gives way to the list when it cannot carry
   // the mesh any more.
   group('the graph', () {
-    /// The graph arrives on a spring, and a node that has not arrived yet is
-    /// transparent, so its semantics are genuinely absent until it settles.
-    /// Past the response time by a wide margin: the value has to be off zero.
-    Future<void> settle(WidgetTester tester) async {
-      await tester.pump(const Duration(milliseconds: 900));
-    }
+    testWidgets(
+      'a node names its device and the state the supervisor reports',
+      (tester) async {
+        final supervisor = await _watching('a', clock: _fixedClock);
+        final handle = tester.ensureSemantics();
 
-    testWidgets('a node names its device and the state the supervisor reports',
-        (tester) async {
-      final supervisor = await _watching('a', clock: _fixedClock);
+        await _pumpDevices(
+          tester,
+          _FakeMesh([_device('a', 'Nova')], supervisor: supervisor),
+        );
+        await _settle(tester);
+        await supervisor.stop();
+
+        final node = tester.getSemantics(
+          find.bySemanticsLabel(RegExp(r'^Nova,')),
+        );
+        expect(
+          node.label,
+          'Nova, Reconnecting',
+          reason:
+              'the node draws the link from the same verdict the row prints',
+        );
+
+        handle.dispose();
+      },
+    );
+
+    testWidgets(
+      'the centre node is this device, and is not a device to act on',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+
+        await _pumpDevices(tester, _FakeMesh([_device('a', 'Nova')]));
+        await _settle(tester);
+
+        final self = tester.getSemantics(
+          find.bySemanticsLabel(RegExp(r'^Test PC,')),
+        );
+        expect(self.label, 'Test PC, this device');
+        expect(
+          self.getSemanticsData().hasAction(SemanticsAction.longPress),
+          isFalse,
+          reason: 'there is no unpairing this device from itself',
+        );
+        // The paired device's node does take the gesture.
+        expect(
+          tester
+              .getSemantics(find.bySemanticsLabel(RegExp(r'^Nova,')))
+              .getSemanticsData()
+              .hasAction(SemanticsAction.longPress),
+          isTrue,
+        );
+
+        handle.dispose();
+      },
+    );
+
+    testWidgets('a fourth peer opens a second ring instead of piling up', (
+      tester,
+    ) async {
       final handle = tester.ensureSemantics();
+      // A window tall enough to build the whole page: the graph is a two-ring
+      // picture now, so on the default test window the list below it never
+      // comes into view, and would be missing for a reason that has nothing to
+      // do with what is being measured.
+      tester.view.physicalSize = const Size(420, 1500);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final four = [
+        for (final id in ['a', 'b', 'c', 'd']) _device(id, 'Device $id'),
+      ];
 
-      await _pumpDevices(
-        tester,
-        _FakeMesh([_device('a', 'Nova')], supervisor: supervisor),
-      );
-      await settle(tester);
-      await supervisor.stop();
+      await _pumpDevices(tester, _FakeMesh(four));
+      await _settle(tester);
 
-      final node = tester.getSemantics(
-        find.bySemanticsLabel(RegExp(r'^Nova,')),
+      // Every device is on the picture and in the list — the two rings exist
+      // so the fourth device has somewhere to go, rather than the graph giving
+      // up and handing the mesh to the list.
+      expect(find.byType(NexusRow), findsNWidgets(four.length));
+      for (final id in ['a', 'b', 'c', 'd']) {
+        expect(
+          find.bySemanticsLabel(RegExp('^Device $id,')),
+          findsOneWidget,
+          reason: 'Device $id has a node of its own',
+        );
+      }
+
+      // And the ring really is a ring. Measured between peers, not from the
+      // centre node: a node's box is taller than its disc (it holds the name
+      // and the state under it), and the centre node's box is a different size
+      // again, so distances from it are distances between boxes, not between
+      // discs. Peers share one box size, so their distances to each other are
+      // the ring's own chords — which for three on a circle are equal.
+      Offset centreOf(String id) =>
+          tester.getCenter(find.bySemanticsLabel(RegExp('^Device $id,')));
+      double chord(String a, String b) => (centreOf(a) - centreOf(b)).distance;
+      final sides = [chord('a', 'b'), chord('b', 'c'), chord('c', 'a')];
+      final widest = sides.reduce((a, b) => a > b ? a : b);
+      final narrowest = sides.reduce((a, b) => a < b ? a : b);
+      expect(
+        widest - narrowest,
+        lessThan(1.0),
+        reason: 'the first three sit on one ring — an even triangle',
       );
       expect(
-        node.label,
-        'Nova, Reconnecting',
-        reason: 'the node draws the link from the same verdict the row prints',
+        chord('d', 'a'),
+        greaterThan(widest),
+        reason: 'and the fourth is on a ring outside them',
       );
 
       handle.dispose();
     });
 
-    testWidgets('the centre node is this device, and is not a device to act on',
-        (tester) async {
-      final handle = tester.ensureSemantics();
-
-      await _pumpDevices(tester, _FakeMesh([_device('a', 'Nova')]));
-      await settle(tester);
-
-      final self = tester.getSemantics(
-        find.bySemanticsLabel(RegExp(r'^Test PC,')),
-      );
-      expect(self.label, 'Test PC, this device');
-      expect(
-        self.getSemanticsData().hasAction(SemanticsAction.longPress),
-        isFalse,
-        reason: 'there is no unpairing this device from itself',
-      );
-      // The paired device's node does take the gesture.
-      expect(
-        tester
-            .getSemantics(find.bySemanticsLabel(RegExp(r'^Nova,')))
-            .getSemanticsData()
-            .hasAction(SemanticsAction.longPress),
-        isTrue,
-      );
-
-      handle.dispose();
-    });
-
-    testWidgets('past six devices the list carries the mesh on its own',
-        (tester) async {
+    testWidgets('past twelve devices the list carries the mesh on its own', (
+      tester,
+    ) async {
       final many = [
-        for (final id in ['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+        for (final id in [
+          'a',
+          'b',
+          'c',
+          'd',
+          'e',
+          'f',
+          'g',
+          'h',
+          'i',
+          'j',
+          'k',
+          'l',
+          'm',
+        ])
           _device(id, 'Device $id'),
       ];
 
       await _pumpDevices(tester, _FakeMesh(many));
-      await settle(tester);
+      await _settle(tester);
 
-      // Seven rows, and not one node: the name appears exactly once, which is
-      // the row that is always there.
+      // Thirteen rows and not one node: past what two rings can carry, the
+      // list is the honest rendering — and it says the state itself, because
+      // there is no picture left to read it from.
       expect(find.byType(NexusRow), findsNWidgets(many.length));
       expect(find.text('Device a'), findsOneWidget);
+      expect(
+        find.textContaining('Offline'),
+        findsNWidgets(many.length),
+        reason: 'with no graph, every row carries its own state words',
+      );
+    });
+
+    testWidgets('with the picture up, the rows do not say the state again', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(420, 1500);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await _pumpDevices(
+        tester,
+        _FakeMesh(
+          [_device('a', 'Nova'), _device('b', 'Pulsar')],
+          online: {'a'},
+        ),
+      );
+      await _settle(tester);
+
+      // The picture is up, and it is where the state lives: the online node
+      // says so. The list below it used to say the same thing twice over —
+      // once in words and once as a dot — which is what a graph makes
+      // redundant.
+      expect(
+        tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Nova,'))).label,
+        'Nova, Online',
+      );
+      for (final word in ['Online', 'Offline', 'Reconnecting']) {
+        expect(
+          find.descendant(
+            of: find.byType(NexusRow),
+            matching: find.textContaining(word),
+          ),
+          findsNothing,
+          reason: 'the node already says $word; the row does not repeat it',
+        );
+      }
+
+      // What the row keeps is the thing the picture cannot draw: what kind of
+      // device this is. Two rows, two subtitles, no state words either side.
+      expect(
+        find.descendant(
+          of: find.byType(NexusRow),
+          matching: find.text('Linux'),
+        ),
+        findsNWidgets(2),
+      );
+    });
+
+    testWidgets('the picture pans and zooms, so a wide mesh is still reachable', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(420, 1500);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      // Six peers: two full rings, which is a canvas wider than the page — the
+      // case panning exists for.
+      final six = [
+        for (final id in ['a', 'b', 'c', 'd', 'e', 'f'])
+          _device(id, 'Device $id'),
+      ];
+
+      await _pumpDevices(tester, _FakeMesh(six));
+      await _settle(tester);
+
+      final viewer = find.byType(InteractiveViewer);
+      expect(viewer, findsOneWidget, reason: 'the picture is a canvas now');
+
+      Offset nodeAt(String id) =>
+          tester.getCenter(find.bySemanticsLabel(RegExp('^Device $id,')));
+      final frame = tester.getRect(viewer);
+
+      // A drag on the picture moves the picture. Started away from the nodes,
+      // because a finger that lands on a node is a finger on that node.
+      final before = nodeAt('a');
+      final drag = await tester.startGesture(
+        Offset(frame.left + 12, frame.center.dy),
+      );
+      for (var i = 0; i < 6; i++) {
+        await drag.moveBy(const Offset(-14, 0));
+        await tester.pump();
+      }
+      await drag.up();
+      await tester.pump();
+      final after = nodeAt('a');
+      expect(
+        after.dx,
+        lessThan(before.dx - 20),
+        reason: 'the canvas followed the finger instead of resisting it',
+      );
+
+      // And a pinch zooms the same picture. Two fingers, apart: a node off the
+      // pinch's own centre must travel further from it, which is what zooming
+      // means on a picture.
+      double spread() => (nodeAt('a') - tester.getCenter(viewer)).distance;
+      final spreadBefore = spread();
+      final centre = tester.getCenter(viewer);
+      final left = await tester.startGesture(centre - const Offset(24, 0));
+      final right = await tester.startGesture(centre + const Offset(24, 0));
+      for (var i = 0; i < 8; i++) {
+        await left.moveBy(const Offset(-10, 0));
+        await right.moveBy(const Offset(10, 0));
+        await tester.pump();
+      }
+      await left.up();
+      await right.up();
+      await tester.pumpAndSettle();
+      expect(
+        spread(),
+        greaterThan(spreadBefore + 4),
+        reason: 'the picture grew under the pinch',
+      );
     });
   });
 }
