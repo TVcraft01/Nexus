@@ -58,6 +58,9 @@ class _FakeMesh extends MeshService {
   /// which crossed the trigger actually refreshed.
   int listingCalls = 0;
 
+  /// Every path the screen asked the peer to delete, in order.
+  final List<String> deleted = [];
+
   @override
   List<PairedDevice> get pairedDevices => _devices;
 
@@ -75,6 +78,12 @@ class _FakeMesh extends MeshService {
       return null;
     }
     return listings[path] ?? const [];
+  }
+
+  @override
+  Future<bool> deleteRemoteFile(PairedDevice peer, String path) async {
+    deleted.add(path);
+    return true;
   }
 }
 
@@ -278,9 +287,13 @@ void main() {
     );
     expect(find.text('Rehearsal PC · Home'), findsOneWidget);
 
-    // The actions live behind a long press on the row itself: the row is the
-    // target, and there is no button standing on every line any more.
+    // The verbs that place a file live behind the selection now: a long press
+    // picks the row, and the bar at the foot of the page carries them. One
+    // file goes through exactly the path three files do.
     await tester.longPress(_row(tester, 'notes.txt'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 selected'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.more_horiz_rounded));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Copy to…'));
     await tester.pumpAndSettle();
@@ -383,8 +396,8 @@ void main() {
     );
   });
 
-  testWidgets('a long press opens the actions, and a screen reader gets them '
-      'too', (tester) async {
+  testWidgets('a long press picks the row, and a screen reader still gets the '
+      'verbs', (tester) async {
     final mesh = _FakeMesh(
       [_device('TVcraft01')],
       listings: {
@@ -393,8 +406,10 @@ void main() {
     );
     await _pumpFiles(tester, mesh);
 
-    // Nothing is on screen until the gesture: no overflow glyph, no buttons.
+    // Nothing is on screen until the gesture: no overflow glyph, no buttons,
+    // and no selection bar at the foot of the page.
     expect(find.text('Rename'), findsNothing);
+    expect(find.textContaining('selected'), findsNothing);
     expect(
       find.descendant(
         of: find.byType(NexusPressable),
@@ -415,21 +430,37 @@ void main() {
 
     await tester.longPress(_row(tester, 'notes.txt'));
     await tester.pumpAndSettle();
-    // The two verbs a swipe does not carry. Rename and Delete are one swipe
-    // away instead, which the swipe test below pins.
-    for (final label in ['Copy to…', 'Move to…']) {
-      expect(find.text(label), findsOneWidget, reason: '$label is in the menu');
+    // The long press picks: the row is counted, and the bar carries the verbs
+    // it is picked for. Nothing acts on the file yet — one pick is not a
+    // delete, which is the whole reason the selection is a mode.
+    expect(find.text('1 selected'), findsOneWidget);
+    for (final tooltip in ['Download', 'Delete', 'More actions']) {
+      expect(
+        find.byTooltip(tooltip),
+        findsOneWidget,
+        reason: '$tooltip is a verb the selection carries',
+      );
     }
-    expect(find.text('Rename'), findsNothing);
-    expect(find.text('Delete'), findsNothing);
+    expect(
+      find.byTooltip('More'),
+      findsOneWidget,
+      reason: 'the toolbar menu keeps its own name — the bar does not shadow it',
+    );
+    expect(
+      find.text('Rename'),
+      findsNothing,
+      reason: 'the verbs that need a choice live one tap further in',
+    );
 
-    // And the menu's entries are the real handlers: Copy to… opens the
+    // And the sheet's entries are the real handlers: Copy to… opens the
     // destination picker it names.
+    await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Copy to…'));
     await tester.pumpAndSettle();
     expect(find.text('Choose destination'), findsOneWidget);
 
-    // Closed again by hand, so the press that opened the menu can be checked.
+    // Closed again by hand, so the state the press left behind can be checked.
     Navigator.of(tester.element(find.text('Choose destination'))).pop();
     await tester.pumpAndSettle();
     expect(find.text('Choose destination'), findsNothing);
@@ -445,6 +476,117 @@ void main() {
       (container.decoration as BoxDecoration?)?.color,
       Colors.transparent,
       reason: 'a long press ends with the finger, not with the menu',
+    );
+  });
+
+  testWidgets('picking is a mode: a tap toggles, the count is the selection, '
+      'and Cancel is the way out', (tester) async {
+    await _pumpFiles(
+      tester,
+      _FakeMesh(
+        [_device('TVcraft01')],
+        listings: {
+          '': [_folder('Docs'), _file('notes.txt'), _file('budget.csv')],
+        },
+      ),
+    );
+
+    await tester.longPress(_row(tester, 'notes.txt'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 selected'), findsOneWidget);
+    // The picked row is marked in place, so the count and the list agree.
+    expect(
+      find.descendant(
+        of: _row(tester, 'notes.txt'),
+        matching: find.byIcon(Icons.check_circle_rounded),
+      ),
+      findsOneWidget,
+    );
+
+    // Two more taps: one adds, one takes away. While anything is picked a tap
+    // answers the selection instead of opening the file, which is why the
+    // folder below is safe to tap.
+    await tester.tap(_row(tester, 'budget.csv'));
+    await tester.pumpAndSettle();
+    expect(find.text('2 selected'), findsOneWidget);
+    await tester.tap(_row(tester, 'budget.csv'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 selected'), findsOneWidget);
+
+    // Tapping the picked row itself un-picks it, and the last un-pick is the
+    // end of the mode: the bar leaves with it, so there is no empty bar.
+    await tester.tap(_row(tester, 'notes.txt'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('selected'), findsNothing);
+    expect(find.byTooltip('Download'), findsNothing);
+
+    // And the explicit way out, from a real selection.
+    await tester.longPress(_row(tester, 'Docs'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 selected'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('selected'), findsNothing);
+    expect(
+      find.byIcon(Icons.check_circle_rounded),
+      findsNothing,
+      reason: 'Cancel takes the marks with it',
+    );
+  });
+
+  testWidgets('deleting a batch asks once, and the listing loses every pick',
+      (tester) async {
+    final mesh = _FakeMesh(
+      [_device('TVcraft01')],
+      listings: {
+        '': [_file('notes.txt'), _file('budget.csv')],
+      },
+    );
+    await _pumpFiles(tester, mesh);
+
+    await tester.longPress(_row(tester, 'notes.txt'));
+    await tester.pumpAndSettle();
+    await tester.tap(_row(tester, 'budget.csv'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Delete'));
+    await tester.pumpAndSettle();
+
+    // One dialog for the batch, naming the count rather than the files.
+    expect(find.text('Delete 2 items?'), findsOneWidget);
+    expect(mesh.deleted, isEmpty, reason: 'nothing goes before the answer');
+
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    expect(mesh.deleted, hasLength(2));
+    expect(find.text('notes.txt'), findsNothing);
+    expect(find.text('budget.csv'), findsNothing);
+    expect(
+      find.textContaining('selected'),
+      findsNothing,
+      reason: 'the bar leaves with the files it was acting on',
+    );
+  });
+
+  testWidgets('the line under the header is what the folder holds, not a '
+      'capacity the peer never sends', (tester) async {
+    await _pumpFiles(
+      tester,
+      _FakeMesh(
+        [_device('TVcraft01')],
+        listings: {
+          '': [_folder('Docs'), _file('notes.txt'), _file('budget.csv')],
+        },
+      ),
+    );
+
+    // The storage line, honestly scoped: a folder's item count and the bytes
+    // of the files in it. A "used of total" bar would be a number the mesh
+    // cannot produce — the peer reports names and sizes, never bytes free.
+    expect(find.text('3 items · 4.0 KB'), findsOneWidget);
+    expect(
+      find.textContaining('of '),
+      findsNothing,
+      reason: 'no used-of-total claim anywhere on the screen',
     );
   });
 

@@ -103,6 +103,20 @@ class _FilesViewState extends State<FilesView> {
   /// do by itself.
   String? _revealed;
 
+  /// Local copies of the images in this listing, by remote path — the
+  /// thumbnails. Only a fetch that landed is here, so a path that is missing
+  /// is one still in flight or one that failed: either way the tile keeps its
+  /// type icon.
+  final Map<String, String> _thumbs = {};
+  final Set<String> _thumbPending = {};
+
+  /// The entries the user has picked. Non-empty means the screen is in
+  /// selection mode: a tap toggles a row instead of opening it, and the bar at
+  /// the foot of the page carries the verbs.
+  final Set<String> _picked = {};
+
+  bool get _selecting => _picked.isNotEmpty;
+
   @override
   void initState() {
     super.initState();
@@ -195,7 +209,14 @@ class _FilesViewState extends State<FilesView> {
       } else {
         _error = widget.mesh.lastFileError ?? 'Could not read that folder.';
       }
+      // A new listing is a new set of names. A picked path that is no longer
+      // here is a selection the user cannot see, and a thumbnail from another
+      // folder (or another device) is not this folder's picture.
+      _picked.clear();
+      _thumbs.clear();
+      _thumbPending.clear();
     });
+    if (entries != null) unawaited(_ensureThumbs(entries));
   }
 
   void _open(FileEntry entry) {
@@ -259,9 +280,7 @@ class _FilesViewState extends State<FilesView> {
     final query = _query.trim().toLowerCase();
     final matched = query.isEmpty
         ? entries.toList()
-        : entries
-              .where((e) => e.name.toLowerCase().contains(query))
-              .toList();
+        : entries.where((e) => e.name.toLowerCase().contains(query)).toList();
     int order(FileEntry a, FileEntry b) => switch (_sort) {
       _FileSort.name => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
       // Newest first: "by date" in a file browser means the thing you just
@@ -347,22 +366,16 @@ class _FilesViewState extends State<FilesView> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    setState(() => _deleting.add(entry.path));
-    final ok = await widget.mesh.deleteRemoteFile(device, entry.path);
+    if (await _deleteNow(entry)) return;
     if (!mounted) return;
-    setState(() => _deleting.remove(entry.path));
-    if (ok) {
-      setState(() => _entries?.removeWhere((e) => e.path == entry.path));
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Could not delete ${entry.name}: '
-            '${widget.mesh.lastFileError ?? 'unknown error'}',
-          ),
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Could not delete ${entry.name}: '
+          '${widget.mesh.lastFileError ?? 'unknown error'}',
         ),
-      );
-    }
+      ),
+    );
   }
 
   Future<void> _rename(FileEntry entry) async {
@@ -586,6 +599,21 @@ class _FilesViewState extends State<FilesView> {
       });
     }
 
+    // What this folder holds, in the one currency the mesh actually reports:
+    // the listing itself — every entry's size, summed for the files. There is
+    // no capacity to show: the peer sends names and sizes, never bytes free,
+    // and dart:io has no filesystem-capacity API, so a "used of total" line
+    // would be a number this app made up.
+    final listing = _visible;
+    final totalBytes = listing.fold<int>(
+      0,
+      (sum, e) => sum + (e.isDir ? 0 : e.size),
+    );
+    final summary = _entries == null || _error != null || listing.isEmpty
+        ? null
+        : '${listing.length} ${listing.length == 1 ? 'item' : 'items'} · '
+              '${_size(totalBytes)}';
+
     // The header belongs to the tab, not to the file listing — show it even
     // when there is nothing paired yet (the empty state below it). No icon
     // tile: it carried no state, and a tile beside a title is decoration.
@@ -694,13 +722,25 @@ class _FilesViewState extends State<FilesView> {
             onChanged: (value) => setState(() => _query = value),
           ),
         ),
+        if (summary != null) ...[
+          const SizedBox(height: NexusSpace.sm),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: NexusSpace.page),
+            child: Text(
+              summary,
+              style: NexusType.caption1.copyWith(color: palette.textTertiary),
+            ),
+          ),
+        ],
         const SizedBox(height: NexusSpace.sm),
         Divider(height: 1, color: palette.separator),
         Expanded(child: _buildBody(context)),
+        // The batch bar sits at the foot of the page, above the app's tab bar:
+        // where the hand already is when a list is being worked through.
+        if (_selecting) _selectionBar(palette),
       ],
     );
   }
-
 
   /// The path as crumbs: the device's home, then one crumb per folder the user
   /// opened. The last one is where they already are and is not a control;
@@ -717,7 +757,10 @@ class _FilesViewState extends State<FilesView> {
         open: _trail.isEmpty ? null : _goHome,
       ),
       for (final (i, folder) in _trail.indexed)
-        (label: folder.name, open: i == _trail.length - 1 ? null : () => _goTo(i)),
+        (
+          label: folder.name,
+          open: i == _trail.length - 1 ? null : () => _goTo(i),
+        ),
     ];
     final style = Theme.of(context).textTheme.bodySmall;
     return SizedBox(
@@ -840,6 +883,7 @@ class _FilesViewState extends State<FilesView> {
     setState(() => _sort = chosen);
     _persist(() => widget.mesh.store.fileSort = chosen.name);
   }
+
   Widget _buildBody(BuildContext context) {
     final palette = NexusPalette.of(context);
     if (_loading && _entries == null) {
@@ -922,6 +966,10 @@ class _FilesViewState extends State<FilesView> {
                 entry: entries[i],
                 progress: _progress[entries[i].path],
                 busy: _busy(entries[i]),
+                thumbPath: _thumbs[entries[i].path],
+                picking: _selecting,
+                picked: _picked.contains(entries[i].path),
+                onPick: () => _togglePick(entries[i]),
                 onTap: () => _open(entries[i]),
                 onDelete: () => _delete(entries[i]),
                 onRename: () => _rename(entries[i]),
@@ -941,14 +989,17 @@ class _FilesViewState extends State<FilesView> {
               entry: entries[i],
               progress: _progress[entries[i].path],
               busy: _busy(entries[i]),
+              thumbPath: _thumbs[entries[i].path],
+              picking: _selecting,
+              picked: _picked.contains(entries[i].path),
+              onPick: () => _togglePick(entries[i]),
               deleting: _deleting.contains(entries[i].path),
               operating: _operating.contains(entries[i].path),
               // One row's actions at a time, decided here rather than inside
               // each row: two rows cannot both be half-open by accident.
               revealed: _revealed == entries[i].path,
-              onReveal: (open) => setState(
-                () => _revealed = open ? entries[i].path : null,
-              ),
+              onReveal: (open) =>
+                  setState(() => _revealed = open ? entries[i].path : null),
               onTap: () => _open(entries[i]),
               onDelete: () => _delete(entries[i]),
               onRename: () => _rename(entries[i]),
@@ -966,6 +1017,303 @@ class _FilesViewState extends State<FilesView> {
       _downloading.contains(entry.path) ||
       _sending.contains(entry.path) ||
       _operating.contains(entry.path);
+
+  /// Fetches a preview for every small image in [entries], one at a time.
+  ///
+  /// The mesh has no preview endpoint: a thumbnail *is* the file, so this asks
+  /// only for pictures small enough that the fetch costs less than opening the
+  /// tile would, and it does them in listing order rather than all at once — a
+  /// folder of two hundred photos should not open two hundred connections to
+  /// draw a list somebody is scrolling through. A fetch that fails leaves the
+  /// tile with its type icon, which is what it showed before thumbnails
+  /// existed at all.
+  Future<void> _ensureThumbs(List<FileEntry> entries) async {
+    final device = _device;
+    if (device == null || !widget.mesh.isOnline(device.id)) return;
+    for (final entry in entries) {
+      if (!mounted || device.id != _device?.id) return;
+      if (entry.isDir || !_thumbWanted(entry)) continue;
+      if (_thumbs.containsKey(entry.path) ||
+          _thumbPending.contains(entry.path)) {
+        continue;
+      }
+      setState(() => _thumbPending.add(entry.path));
+      final file = await widget.mesh.pullRemoteFile(
+        device,
+        entry.path,
+        savePath: _thumbSavePath(device, entry),
+      );
+      if (!mounted) return;
+      setState(() {
+        _thumbPending.remove(entry.path);
+        if (file != null) _thumbs[entry.path] = file.path;
+      });
+    }
+  }
+
+  /// Whether a fetch for this entry is worth a connection: a picture, of a
+  /// size the listing actually reported, under the cap.
+  bool _thumbWanted(FileEntry entry) =>
+      _isImageName(entry.name) &&
+      entry.size > 0 &&
+      entry.size <= _maxThumbBytes;
+
+  /// Where a thumbnail is cached. `Directory.systemTemp` is the app's cache
+  /// directory on Android — the right home for a copy that may be evicted at
+  /// any time — and the name is keyed by device and path, so walking back into
+  /// the same folder reuses the file instead of fetching it again.
+  String _thumbSavePath(PairedDevice device, FileEntry entry) {
+    final dir = Directory('${Directory.systemTemp.path}/nexus-thumbs');
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    final key = '${device.id}|${entry.path}'.hashCode.toRadixString(16);
+    return '${dir.path}/$key-${entry.name}';
+  }
+
+  /// Picking: a long press selects, a tap toggles while anything is picked,
+  /// and an empty selection is the ordinary listing again. Selection mode does
+  /// not open files — the rule iOS Files follows, and the reason the bar has a
+  /// way out rather than being a trap.
+  void _togglePick(FileEntry entry) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (!_picked.add(entry.path)) _picked.remove(entry.path);
+      if (_picked.isEmpty) _revealed = null;
+    });
+  }
+
+  void _clearPicks() {
+    if (_picked.isEmpty) return;
+    setState(() {
+      _picked.clear();
+      _revealed = null;
+    });
+  }
+
+  /// The picked entries, in listing order rather than in the order they were
+  /// tapped: every batch verb then acts the way the list reads.
+  List<FileEntry> get _pickedEntries => [
+    for (final entry in _entries ?? const <FileEntry>[])
+      if (_picked.contains(entry.path)) entry,
+  ];
+
+  /// Deletes [entry] on the peer, without asking. The confirmation belongs to
+  /// whoever is doing the asking: one dialog for one file, one for a batch.
+  Future<bool> _deleteNow(FileEntry entry) async {
+    final device = _device;
+    if (device == null || _deleting.contains(entry.path)) return false;
+    setState(() => _deleting.add(entry.path));
+    final ok = await widget.mesh.deleteRemoteFile(device, entry.path);
+    if (!mounted) return ok;
+    setState(() {
+      _deleting.remove(entry.path);
+      if (ok) _entries?.removeWhere((e) => e.path == entry.path);
+    });
+    return ok;
+  }
+
+  /// The batch verbs. Each is the single-file verb run over the picks, with
+  /// the confirmation — or the destination — asked for once instead of once
+  /// per file.
+  Future<void> _deletePicked() async {
+    final device = _device;
+    final picked = _pickedEntries;
+    if (device == null || picked.isEmpty) return;
+    final folders = picked.where((e) => e.isDir).length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => CupertinoAlertDialog(
+        title: Text(
+          picked.length == 1
+              ? 'Delete ${picked.single.name}?'
+              : 'Delete ${picked.length} items?',
+        ),
+        content: Text(
+          folders > 0
+              ? 'They will be removed from ${device.name}. Folders go only if '
+                    'empty.'
+              : 'They will be removed from ${device.name}.',
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    var failed = 0;
+    for (final entry in picked) {
+      if (!mounted) return;
+      if (!await _deleteNow(entry)) failed++;
+    }
+    if (!mounted) return;
+    _clearPicks();
+    if (failed > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            failed == picked.length
+                ? 'Could not delete anything: '
+                      '${widget.mesh.lastFileError ?? 'unknown error'}'
+                : 'Deleted ${picked.length - failed} of ${picked.length}; '
+                      '${widget.mesh.lastFileError ?? 'the rest failed'}',
+          ),
+        ),
+      );
+    }
+  }
+
+  /// Downloads every pick into the phone's Downloads folder, in order. The
+  /// per-file progress ring is the same one a single download shows, so a
+  /// batch reads as several downloads rather than as a batch.
+  Future<void> _downloadPicked() async {
+    final picked = _pickedEntries;
+    if (picked.isEmpty) return;
+    _clearPicks();
+    for (final entry in picked) {
+      if (!mounted) return;
+      if (entry.isDir) continue;
+      await _download(entry);
+    }
+  }
+
+  /// Sends every pick to one destination, asked for once: a destination per
+  /// file is a form, and the reason the single-file verb is a sheet is that
+  /// there is one file to place. Copy and move are the same errand with one
+  /// flag between them, so they share this.
+  Future<void> _sendPicked({required bool move}) async {
+    final source = _device;
+    final picked = _pickedEntries;
+    if (source == null || picked.isEmpty) return;
+    final target = await _pickDestination();
+    if (target == null || !mounted) return;
+    var done = 0;
+    for (final entry in picked) {
+      if (!mounted) return;
+      final destination = _joinPath(target.path, entry.name);
+      final result = await widget.mesh.transferRemoteFile(
+        source,
+        entry.path,
+        target.device,
+        destination,
+        move: move,
+      );
+      if (result != null) done++;
+    }
+    if (!mounted) return;
+    _clearPicks();
+    await _load();
+    if (!mounted) return;
+    final verb = move ? 'Moved' : 'Copied';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          done == picked.length
+              ? '$verb $done to ${target.device.name}'
+              : '$verb $done of ${picked.length} to ${target.device.name}',
+        ),
+      ),
+    );
+  }
+
+  /// The rest of the verbs for the picks — the ones that do not fit in a bar,
+  /// or that need exactly one item to make sense. Rename is offered only when
+  /// one thing is picked: a list is not a form, and "rename these three" has
+  /// no one answer.
+  Future<void> _showPickedActions() async {
+    final picked = _pickedEntries;
+    if (picked.isEmpty) return;
+    final chosen = await showNexusActions<String>(
+      context: context,
+      title: Text(
+        _picked.length == 1 ? picked.single.name : '${_picked.length} items',
+      ),
+      actions: (popup) => [
+        if (picked.length == 1)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(popup, 'rename'),
+            child: const Text('Rename'),
+          ),
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'copy'),
+          child: const Text('Copy to…'),
+        ),
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'move'),
+          child: const Text('Move to…'),
+        ),
+      ],
+    );
+    if (chosen == null || !mounted) return;
+    switch (chosen) {
+      case 'rename':
+        _clearPicks();
+        await _rename(picked.single);
+      case 'copy':
+        await _sendPicked(move: false);
+      case 'move':
+        await _sendPicked(move: true);
+    }
+  }
+
+  /// The bar the picks are acted on from. iOS shape: it arrives at the foot of
+  /// the page, where the thumb already is, and carries the count, the verbs
+  /// and the way out.
+  Widget _selectionBar(NexusPalette palette) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.page,
+        NexusSpace.xs,
+        NexusSpace.xs,
+        NexusSpace.xs,
+      ),
+      decoration: BoxDecoration(
+        color: palette.surface,
+        border: Border(top: BorderSide(color: palette.separator)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              _picked.length == 1 ? '1 selected' : '${_picked.length} selected',
+              overflow: TextOverflow.ellipsis,
+              style: NexusType.callout.copyWith(
+                color: palette.textPrimary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Download',
+            onPressed: _downloadPicked,
+            icon: Icon(Icons.download_rounded, color: palette.textSecondary),
+          ),
+          IconButton(
+            tooltip: 'Delete',
+            onPressed: _deletePicked,
+            icon: Icon(Icons.delete_rounded, color: palette.danger),
+          ),
+          // The verbs that do not fit a bar, one tap away in the same Cupertino
+          // sheet the single-file verbs use: Rename (one pick), Copy to… and
+          // Move to….
+          // Not "More": the toolbar already has one of those, and two controls
+          // with one name is one name a screen reader cannot tell apart.
+          IconButton(
+            tooltip: 'More actions',
+            onPressed: _showPickedActions,
+            icon: Icon(Icons.more_horiz_rounded, color: palette.textSecondary),
+          ),
+          TextButton(onPressed: _clearPicks, child: const Text('Cancel')),
+        ],
+      ),
+    );
+  }
 
   /// The verbs that do not fit on a swipe, in an action sheet. Rename and
   /// Delete are the two the swipe reveals, so they are not repeated here; a
@@ -1193,65 +1541,61 @@ class _DestinationPickerState extends State<_DestinationPicker> {
           ),
           const SizedBox(height: NexusSpace.xs),
           SizedBox(
-                height: NexusSize.minTouch,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: [
-                    for (final device in widget.devices)
-                      Padding(
-                        padding: const EdgeInsets.only(right: NexusSpace.sm),
-                        child: NexusChoicePill(
-                          selected: device.id == _device.id,
-                          label: device.name,
-                          icon: platformIcon(device.platform),
-                          onTap: () => _selectDevice(device),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: NexusSpace.sm),
-              Text(
-                _path.isEmpty ? '${_device.name} · Home' : _path,
-                style: Theme.of(context).textTheme.bodySmall,
-                overflow: TextOverflow.ellipsis,
-              ),
-              Divider(height: NexusSpace.xl, color: palette.separator),
-              if (_loading)
-                const Expanded(
-                  child: Center(child: CupertinoActivityIndicator(radius: 12)),
-                )
-              else if (_error != null)
-                Expanded(
-                  child: Center(
-                    child: Text(_error!, textAlign: TextAlign.center),
+            height: NexusSize.minTouch,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                for (final device in widget.devices)
+                  Padding(
+                    padding: const EdgeInsets.only(right: NexusSpace.sm),
+                    child: NexusChoicePill(
+                      selected: device.id == _device.id,
+                      label: device.name,
+                      icon: platformIcon(device.platform),
+                      onTap: () => _selectDevice(device),
+                    ),
                   ),
-                )
-              else if (_entries == null || _entries!.isEmpty)
-                const Expanded(
-                  child: Center(child: Text('No subfolders here.')),
-                )
-              else
-                Expanded(
-                  child: ListView.builder(
-                    controller: widget.scroll,
-                    itemCount: _entries!.length,
-                    itemBuilder: (context, index) {
-                      final entry = _entries![index];
-                      return NexusRow(
-                        title: entry.name,
-                        minHeight: NexusSize.rowCompact,
-                        leading: Icon(
-                          Icons.folder_rounded,
-                          size: 22,
-                          color: palette.accent,
-                        ),
-                        chevron: true,
-                        onTap: () => _open(entry),
-                      );
-                    },
-                  ),
-                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: NexusSpace.sm),
+          Text(
+            _path.isEmpty ? '${_device.name} · Home' : _path,
+            style: Theme.of(context).textTheme.bodySmall,
+            overflow: TextOverflow.ellipsis,
+          ),
+          Divider(height: NexusSpace.xl, color: palette.separator),
+          if (_loading)
+            const Expanded(
+              child: Center(child: CupertinoActivityIndicator(radius: 12)),
+            )
+          else if (_error != null)
+            Expanded(
+              child: Center(child: Text(_error!, textAlign: TextAlign.center)),
+            )
+          else if (_entries == null || _entries!.isEmpty)
+            const Expanded(child: Center(child: Text('No subfolders here.')))
+          else
+            Expanded(
+              child: ListView.builder(
+                controller: widget.scroll,
+                itemCount: _entries!.length,
+                itemBuilder: (context, index) {
+                  final entry = _entries![index];
+                  return NexusRow(
+                    title: entry.name,
+                    minHeight: NexusSize.rowCompact,
+                    leading: Icon(
+                      Icons.folder_rounded,
+                      size: 22,
+                      color: palette.accent,
+                    ),
+                    chevron: true,
+                    onTap: () => _open(entry),
+                  );
+                },
+              ),
+            ),
         ],
       ),
     );
@@ -1277,6 +1621,16 @@ class _EntryRow extends StatefulWidget {
   final bool deleting;
   final bool operating;
 
+  /// A local copy of this file when it is a small picture — the thumbnail.
+  /// Null for everything else, and for an image whose fetch has not landed.
+  final String? thumbPath;
+
+  /// Whether the screen is in selection mode, and whether this row is one of
+  /// the picks. A picking screen does not open files: a tap toggles.
+  final bool picking;
+  final bool picked;
+  final VoidCallback onPick;
+
   /// Whether this row's verbs are showing. Owned by the page, so two rows
   /// cannot both be open.
   final bool revealed;
@@ -1295,6 +1649,10 @@ class _EntryRow extends StatefulWidget {
     required this.busy,
     required this.deleting,
     required this.operating,
+    required this.thumbPath,
+    required this.picking,
+    required this.picked,
+    required this.onPick,
     required this.revealed,
     required this.onReveal,
     required this.onTap,
@@ -1344,12 +1702,7 @@ class _EntryRowState extends State<_EntryRow>
       return;
     }
     _slide.animateWith(
-      SpringSimulation(
-        NexusSpring.of(),
-        _slide.value,
-        target,
-        _slide.velocity,
-      ),
+      SpringSimulation(NexusSpring.of(), _slide.value, target, _slide.velocity),
     );
   }
 
@@ -1370,7 +1723,8 @@ class _EntryRowState extends State<_EntryRow>
   }
 
   /// The verbs the swipe carries, in the order they appear.
-  List<({String label, IconData icon, Color color, VoidCallback run})> get _verbs => [
+  List<({String label, IconData icon, Color color, VoidCallback run})>
+  get _verbs => [
     (
       label: 'Rename',
       icon: Icons.edit_outlined,
@@ -1451,20 +1805,30 @@ class _EntryRowState extends State<_EntryRow>
       subtitle: entry.isDir
           ? 'Folder'
           : '${_size(entry.size)} · ${_when(entry.modified)}',
-      leading: Icon(
-        fileTypeIcon(name: entry.name, isDir: entry.isDir),
-        size: 24,
-        color: palette.textSecondary,
-      ),
+      leading: _leading(palette),
       // A folder goes somewhere, so it gets the one trailing chevron a row is
       // allowed. A file is the thing itself: tapping it fetches it, and the
       // chevron would promise another screen that does not exist.
       chevron: entry.isDir,
-      trailing: _progressIndicator(palette),
+      trailing: widget.picking
+          ? Icon(
+              widget.picked
+                  ? Icons.check_circle_rounded
+                  : Icons.circle_outlined,
+              size: 24,
+              color: widget.picked ? palette.accent : palette.textTertiary,
+            )
+          : _progressIndicator(palette),
       // A row at work keeps its shape and loses only its response: the file
       // being downloaded is still the row the finger landed on.
       enabled: !widget.busy,
       onTap: () {
+        // Picking first: while anything is picked, a tap answers the selection
+        // rather than the file.
+        if (widget.picking) {
+          widget.onPick();
+          return;
+        }
         // A row with its verbs showing answers a tap by putting them away: the
         // tap is not for the file while the row is open, which is the rule iOS
         // Files follows too.
@@ -1475,7 +1839,10 @@ class _EntryRowState extends State<_EntryRow>
         }
         widget.onTap();
       },
-      onLongPress: widget.onActions,
+      // Long press picks, which is how a file list gains a second thing to do
+      // with a finger. The verbs it used to open are all still here: two on
+      // the swipe, and all four as custom actions for a screen reader.
+      onLongPress: widget.onPick,
       // All four, in the order the sheet and the swipe show them — including
       // the two the swipe carries, which a screen reader cannot reach.
       customActions: {
@@ -1484,6 +1851,33 @@ class _EntryRowState extends State<_EntryRow>
         CustomSemanticsAction(label: 'Move to…'): widget.onActions,
         CustomSemanticsAction(label: 'Delete'): widget.onDelete,
       },
+    );
+  }
+
+  /// What sits before the name: the picture itself when there is a thumbnail,
+  /// and the file's type glyph otherwise. A thumbnail that fails to decode
+  /// falls back to the glyph rather than to a broken box — the file is still
+  /// the file, and the row must not look damaged because a preview is.
+  Widget _leading(NexusPalette palette) {
+    final icon = Icon(
+      fileTypeIcon(name: widget.entry.name, isDir: widget.entry.isDir),
+      size: 24,
+      color: palette.textSecondary,
+    );
+    final thumbPath = widget.thumbPath;
+    if (thumbPath == null) return icon;
+    return ClipRRect(
+      borderRadius: NexusRadius.row,
+      child: Image.file(
+        File(thumbPath),
+        width: 34,
+        height: 34,
+        fit: BoxFit.cover,
+        // Decoded at the size it is drawn at, not at the camera's: a 12 MP
+        // photo is 48 MB of pixels the row will never show.
+        cacheWidth: 102,
+        errorBuilder: (_, _, _) => icon,
+      ),
     );
   }
 
@@ -1582,6 +1976,10 @@ class _EntryTile extends StatelessWidget {
     required this.entry,
     required this.progress,
     required this.busy,
+    required this.thumbPath,
+    required this.picking,
+    required this.picked,
+    required this.onPick,
     required this.onTap,
     required this.onDelete,
     required this.onRename,
@@ -1591,6 +1989,15 @@ class _EntryTile extends StatelessWidget {
   final FileEntry entry;
   final double? progress;
   final bool busy;
+
+  /// A local copy of this file when it is a small picture — the thumbnail.
+  final String? thumbPath;
+
+  /// Whether the screen is in selection mode, and whether this tile is one of
+  /// the picks.
+  final bool picking;
+  final bool picked;
+  final VoidCallback onPick;
   final VoidCallback onTap;
   final VoidCallback onDelete;
   final VoidCallback onRename;
@@ -1599,6 +2006,7 @@ class _EntryTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = NexusPalette.of(context);
+    final transferring = progress;
     return Semantics(
       container: true,
       button: true,
@@ -1614,8 +2022,8 @@ class _EntryTile extends StatelessWidget {
       child: NexusPressable(
         enabled: !busy,
         borderRadius: NexusRadius.card,
-        onTap: onTap,
-        onLongPress: onActions,
+        onTap: picking ? onPick : onTap,
+        onLongPress: onPick,
         child: ExcludeSemantics(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1627,9 +2035,14 @@ class _EntryTile extends StatelessWidget {
                     borderRadius: NexusRadius.card,
                     border: Border.all(color: palette.separator),
                   ),
-                  child: Center(
-                    child: busy && progress != null
-                        ? SizedBox(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Bytes moving outrank both: a tile being transferred
+                      // says how far it has got, whatever it is a picture of.
+                      if (busy && transferring != null)
+                        Center(
+                          child: SizedBox(
                             width: 26,
                             height: 26,
                             child: Stack(
@@ -1637,27 +2050,66 @@ class _EntryTile extends StatelessWidget {
                               children: [
                                 CircularProgressIndicator(
                                   strokeWidth: 2.5,
-                                  value: progress,
+                                  value: transferring,
                                   color: palette.accent,
                                   backgroundColor: palette.surfaceSecondary,
                                 ),
                                 Text(
-                                  '${(progress! * 100).round()}',
+                                  '${(transferring * 100).round()}',
                                   style: NexusType.micro.copyWith(
                                     color: palette.textSecondary,
                                   ),
                                 ),
                               ],
                             ),
-                          )
-                        : Icon(
-                            fileTypeIcon(
-                              name: entry.name,
-                              isDir: entry.isDir,
+                          ),
+                        )
+                      else if (thumbPath != null && !picking)
+                        // The picture is the tile. Clipped to the tile's own
+                        // corner rather than the sheet's, so a grid of photos
+                        // reads as a grid of photos.
+                        ClipRRect(
+                          borderRadius: NexusRadius.card,
+                          child: Image.file(
+                            File(thumbPath!),
+                            fit: BoxFit.cover,
+                            // Drawn at tile width; decoding the full file to
+                            // show it 100dp wide is the whole cost of a grid
+                            // with no thumbnails in it.
+                            cacheWidth: 260,
+                            errorBuilder: (_, _, _) => Icon(
+                              fileTypeIcon(
+                                name: entry.name,
+                                isDir: entry.isDir,
+                              ),
+                              size: 30,
+                              color: palette.textSecondary,
                             ),
+                          ),
+                        )
+                      else
+                        Center(
+                          child: Icon(
+                            fileTypeIcon(name: entry.name, isDir: entry.isDir),
                             size: 30,
                             color: palette.textSecondary,
                           ),
+                        ),
+                      if (picking)
+                        Positioned(
+                          top: NexusSpace.xs,
+                          right: NexusSpace.xs,
+                          child: Icon(
+                            picked
+                                ? Icons.check_circle_rounded
+                                : Icons.circle_outlined,
+                            size: 22,
+                            color: picked
+                                ? palette.accent
+                                : palette.textTertiary,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -1667,9 +2119,7 @@ class _EntryTile extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: NexusType.caption1.copyWith(
-                  color: palette.textPrimary,
-                ),
+                style: NexusType.caption1.copyWith(color: palette.textPrimary),
               ),
               if (!entry.isDir)
                 Text(
@@ -1687,6 +2137,26 @@ class _EntryTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The biggest file worth fetching to draw a tile: a thumbnail that costs
+/// more than the picture itself is not a thumbnail.
+const int _maxThumbBytes = 3 << 20; // 3 MB
+
+/// Extensions whose bytes Flutter can decode from memory without a plugin
+/// (PNG, JPEG, GIF, WebP and BMP all have codecs in the engine). Deliberately
+/// short: a name this misses shows its type icon, which is what every tile
+/// showed before thumbnails existed.
+bool _isImageName(String name) {
+  final lower = name.toLowerCase();
+  return const [
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.webp',
+    '.bmp',
+  ].any(lower.endsWith);
 }
 
 String _size(int bytes) {
@@ -1707,4 +2177,3 @@ String _when(DateTime t) {
   }
   return '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
 }
-
