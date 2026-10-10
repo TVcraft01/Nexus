@@ -16,6 +16,7 @@ import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/core/query_log.dart';
+import 'package:nexus/core/speech.dart';
 import 'package:nexus/ui/assistant_view.dart';
 import 'package:nexus/ui/components/nexus_ui.dart' show NexusPresence;
 import 'package:nexus/ui/device_executor.dart';
@@ -112,6 +113,19 @@ class _PairedPcMesh extends MeshService {
 
 /// An executor whose file fetch the test finishes by hand — so the in-flight
 /// view can be asserted before the transfer lands.
+/// A recognizer that "hears" one fixed utterance — the test stand-in for
+/// Android's SpeechRecognizer.
+class _HeardSpeech extends SpeechInput {
+  _HeardSpeech(this.heard);
+  final String? heard;
+
+  @override
+  bool get available => true;
+
+  @override
+  Future<String?> listen() async => heard;
+}
+
 class _GatedFileExecutor extends DeviceExecutor {
   final _outcome = Completer<ActionResult>();
   AgentRequest? lastRequest;
@@ -1403,6 +1417,54 @@ void brainWidgetTests() {
           findsOneWidget,
         );
       } finally {
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets(
+    'voice: a spoken file fetch asks for the same file as typing it',
+    (tester) async {
+      // What the recognizer actually returns for "get report.pdf from my pc":
+      // words, never punctuation. The fetch has to come out of that anyway —
+      // one tap on the mic, no typing, no second tap.
+      final store = NexusStore(
+        explicitPath:
+            '${Directory.systemTemp.createTempSync('avt-voice').path}/s.json',
+      )..clipboardSync = true;
+      final mesh = _PairedPcMesh(store: store);
+      final executor = _GatedFileExecutor();
+      SpeechInput.override = () =>
+          _HeardSpeech('Get report dot pdf from my PC');
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildNexusTheme(),
+            home: Scaffold(
+              body: AssistantView(mesh: mesh, executor: executor),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        await tester.tap(find.byTooltip('Speak your question'));
+        await tester.pump(); // listening
+        await tester.pump(); // the recognized words resolve
+
+        // The spoken ask became the same command a typed one would: the file
+        // named the way the grammar needs it, from the pairing's PC.
+        expect(executor.lastRequest, isNotNull);
+        expect(executor.lastRequest!.action, AgentActions.fileFetch);
+        expect(executor.lastRequest!.arguments['filename'], 'report.pdf');
+        expect(executor.lastRequest!.arguments['peerId'], 'pc1');
+        expect(
+          find.textContaining('Getting report.pdf from My PC'),
+          findsOneWidget,
+        );
+      } finally {
+        SpeechInput.override = null;
         QueryLog.i.resetForTest();
         await mesh.stop();
       }

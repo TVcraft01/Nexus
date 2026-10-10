@@ -734,7 +734,14 @@ class AssistantViewState extends State<AssistantView> {
   /// One utterance, then the recognized words run through the same pipeline
   /// as typing them — the "command based" assistant, spoken. Devices without
   /// a speech service answer honestly instead of pretending to listen.
+  ///
+  /// Press-to-talk in its simplest form: one tap opens the microphone, the
+  /// tap again (or the recognizer hearing the utterance end) closes it. There
+  /// is no hold-to-talk, because the platform recogniser, not the finger,
+  /// decides when a sentence is over — a release that cut the user off
+  /// mid-clause would be a worse guess than waiting for silence.
   Future<void> _listen() async {
+    if (_listening) return; // the second tap is a stop, not a second session
     final speech = SpeechInput.current;
     if (!speech.available) {
       _conversation.appendResult(
@@ -753,22 +760,23 @@ class AssistantViewState extends State<AssistantView> {
     final heard = await speech.listen();
     if (!mounted) return;
     setState(() => _listening = false);
-    final text = heard?.trim() ?? '';
-    if (text.isEmpty) {
-      _conversation.appendResult(
-        const AgentDispatchResult(
-          status: AgentResultStatus.succeeded,
-          dispatch: AgentMessage(
-            'I didn\'t catch that — could you say it again?',
-          ),
-        ),
-        spoken: true, // the user just spoke — the retry prompt is read aloud
-      );
-      return;
-    }
+    // Spoken words, written: a recognizer hears "report dot pdf" where the
+    // command grammar needs "report.pdf". Only the spoken seam rewrites.
+    final text = spokenToWritten(heard?.trim() ?? '');
+    // Nothing heard — a mis-hear, a tap that caught no words, or the user
+    // stopping the mic — is not an event. The pill's ring goes out and the
+    // composer is simply idle again: no card, nothing said aloud, nothing to
+    // dismiss. Silence gave Nexus nothing to answer, and a "sorry?" card for
+    // every stray tap would turn the thread into a log of missed attempts.
+    if (text.isEmpty) return;
     _controller.text = text;
     _onSubmit(voice: true);
   }
+
+  /// The second tap: stop waiting for words. [SpeechInput.stop] answers the
+  /// pending [SpeechInput.listen] with null, so [_listen]'s one idle path
+  /// does the rest — the ring goes out and the thread is untouched.
+  Future<void> _stopListening() => SpeechInput.current.stop();
 
   /// The status a device action's own outcome deserves.
   ///
@@ -1834,14 +1842,38 @@ class AssistantViewState extends State<AssistantView> {
         NexusSpace.page,
         NexusSpace.sm,
       ),
-      child: Container(
+      // The listening indicator, the way the three AI apps do it: the pill
+      // itself carries the state — a soft accent ring and a faint accent
+      // wash, no words. It is the thing you are talking into that is alive,
+      // not a label sitting beside it. Animated so the ring swells in rather
+      // than appearing, and still under "reduce motion".
+      child: AnimatedContainer(
+        key: const ValueKey('composer-pill'),
+        duration: NexusMotion.scaled(context, NexusMotion.base),
+        curve: Curves.easeOut,
         decoration: BoxDecoration(
           // The one thing that floats over the thread: a seated composer, so
           // it reads as a layer above the conversation, not a box drawn on it.
-          color: palette.surfaceSecondary,
+          color: _listening
+              ? Color.alphaBlend(
+                  palette.accent.withValues(alpha: 0.06),
+                  palette.surfaceSecondary,
+                )
+              : palette.surfaceSecondary,
           borderRadius: NexusRadius.composer,
-          border: Border.all(color: palette.separator),
-          boxShadow: NexusShadow.raised,
+          border: Border.all(
+            color: _listening ? palette.accent : palette.separator,
+          ),
+          boxShadow: _listening
+              ? [
+                  ...NexusShadow.raised,
+                  BoxShadow(
+                    color: palette.accent.withValues(alpha: 0.20),
+                    blurRadius: 16,
+                    spreadRadius: 1,
+                  ),
+                ]
+              : NexusShadow.raised,
         ),
         child: Row(
           children: [
@@ -1868,13 +1900,16 @@ class AssistantViewState extends State<AssistantView> {
               ),
             ),
             IconButton(
-              tooltip: _listening ? 'Listening…' : 'Speak your question',
+              // While listening the tooltip is the way out, not a description:
+              // the second tap takes the microphone back.
+              tooltip: _listening ? 'Stop listening' : 'Speak your question',
               icon: Icon(
-                _listening ? Icons.mic_rounded : Icons.mic_none_rounded,
+                _listening ? Icons.stop_rounded : Icons.mic_none_rounded,
                 size: 22,
                 color: _listening ? palette.accent : palette.textSecondary,
               ),
-              onPressed: _listening ? null : () => unawaited(_listen()),
+              onPressed: () =>
+                  unawaited(_listening ? _stopListening() : _listen()),
             ),
             // The app's primary action: labelled for screen readers, filled
             // so it is unmistakably the thing to press, with its own 48dp

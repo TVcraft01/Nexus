@@ -20,16 +20,32 @@ import 'package:nexus/ui/components/nexus_ui.dart' show NexusPresence;
 import 'package:nexus/ui/theme.dart';
 
 /// A recognizer that "hears" a fixed utterance (or nothing) — the test
-/// stand-in for Android's SpeechRecognizer.
+/// stand-in for Android's SpeechRecognizer. [hold] leaves the utterance open
+/// the way the platform recognizer waits for the end of speech, so a second
+/// tap has something to stop.
 class _FakeSpeechInput extends SpeechInput {
-  _FakeSpeechInput(this.heard);
+  _FakeSpeechInput(this.heard, {this.hold = false});
   final String? heard;
+  final bool hold;
+
+  Completer<String?>? _open;
+  int stops = 0;
 
   @override
   bool get available => true;
 
   @override
-  Future<String?> listen() async => heard;
+  Future<String?> listen() {
+    if (!hold) return Future<String?>.value(heard);
+    return (_open = Completer<String?>()).future;
+  }
+
+  @override
+  Future<void> stop() async {
+    stops++;
+    _open?.complete(null);
+    _open = null;
+  }
 }
 
 /// A speaker that records every utterance instead of saying it — the test
@@ -577,9 +593,13 @@ void main() {
     }
   });
 
-  testWidgets('voice: nothing heard answers honestly, never a silent mic', (tester) async {
+  testWidgets('voice: nothing heard goes back to idle — no card, nothing said', (
+    tester,
+  ) async {
     final (store, mesh) = await boot();
+    final speaker = _FakeSpeechOutput();
     SpeechInput.override = () => _FakeSpeechInput(null);
+    SpeechOutput.override = () => speaker;
     try {
       await tester.pumpWidget(harness(mesh));
       await tester.pump();
@@ -587,9 +607,20 @@ void main() {
       await tester.tap(find.byTooltip('Speak your question'));
       await tester.pump();
       await tester.pump();
-      expect(find.textContaining('didn\'t catch that'), findsWidgets);
+
+      // A tap that caught no words is not an event. Silence gave the
+      // assistant nothing to answer, so the thread is untouched: no retry
+      // card, nothing spoken, nothing run on the user's behalf.
+      expect(find.textContaining('didn\'t catch'), findsNothing);
+      expect(find.textContaining('Voice input isn\'t set up'), findsNothing);
+      expect(speaker.spoken, isEmpty);
+      expect(find.textContaining("It's "), findsNothing);
+      // And the microphone is closed again.
+      expect(find.byTooltip('Speak your question'), findsOneWidget);
+      expect(find.byTooltip('Stop listening'), findsNothing);
     } finally {
       SpeechInput.override = null;
+      SpeechOutput.override = null;
       QueryLog.i.resetForTest();
       await mesh.stop();
     }
@@ -624,26 +655,36 @@ void main() {
     }
   });
 
-  testWidgets('voice: nothing heard is said back out loud', (tester) async {
+  testWidgets('voice: the pill carries the listening ring, and the second tap '
+      'takes the mic back', (tester) async {
     final (store, mesh) = await boot();
-    final speaker = _FakeSpeechOutput();
-    SpeechInput.override = () => _FakeSpeechInput(null);
-    SpeechOutput.override = () => speaker;
+    final mic = _FakeSpeechInput(null, hold: true);
+    SpeechInput.override = () => mic;
     try {
       await tester.pumpWidget(harness(mesh));
       await tester.pump();
 
+      // Idle: an ordinary composer — the accent is nowhere on the pill.
+      expect(_pillBorder(tester), isNot(_accent(tester)));
+
       await tester.tap(find.byTooltip('Speak your question'));
       await tester.pump();
-      await tester.pump();
 
-      // The retry prompt is spoken, not just shown — the mic attempt is a
-      // spoken exchange, so Nexus answers aloud.
-      expect(speaker.spoken, isNotEmpty);
-      expect(speaker.spoken.last, contains('didn\'t catch that'));
+      // Listening: the pill itself says so — accent ring, no words anywhere.
+      expect(find.byTooltip('Stop listening'), findsOneWidget);
+      expect(find.text('Listening…'), findsNothing);
+      expect(_pillBorder(tester), _accent(tester));
+
+      // The second tap stops the utterance: the ring goes out, the composer
+      // is idle, and nothing was heard so nothing happened.
+      await tester.tap(find.byTooltip('Stop listening'));
+      await tester.pump();
+      await tester.pump();
+      expect(mic.stops, 1);
+      expect(_pillBorder(tester), isNot(_accent(tester)));
+      expect(find.byTooltip('Speak your question'), findsOneWidget);
     } finally {
       SpeechInput.override = null;
-      SpeechOutput.override = null;
       QueryLog.i.resetForTest();
       await mesh.stop();
     }
@@ -1011,3 +1052,18 @@ void main() {
     },
   );
 }
+
+/// The colour the composer pill is wearing right now — the listening
+/// indicator, read off the widget that is actually on screen rather than off
+/// a flag the test could be fooling itself with.
+Color _pillBorder(WidgetTester tester) {
+  final pill = tester.widget<AnimatedContainer>(
+    find.byKey(const ValueKey('composer-pill')),
+  );
+  final decoration = pill.decoration! as BoxDecoration;
+  return decoration.border!.top.color;
+}
+
+/// The accent the pill turns to while it listens.
+Color _accent(WidgetTester tester) =>
+    NexusPalette.of(tester.element(find.byKey(const ValueKey('composer-pill')))).accent;

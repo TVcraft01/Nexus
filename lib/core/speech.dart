@@ -7,6 +7,28 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, visibleForTesting;
 import 'package:flutter/services.dart' show MethodChannel;
 
+/// What a recognizer hands back is what it *heard*, not what was meant:
+/// "report.pdf" comes back as "report dot pdf", and the file-fetch grammar
+/// needs the extension to see a file at all. So the spoken seam writes the
+/// spoken dot back as the character it stands for.
+///
+/// Deliberately narrow, so it can only ever help: the dot is written back
+/// only where a *filename* is ending — one to eight word characters after the
+/// spoken dot, and then either the end of the sentence or the
+/// `from`/`to <device>` that names where the file is going. A sentence that
+/// merely contains the word "dot" ("that is the dot in the middle") is left
+/// exactly as it was heard, and typed text never passes through here at all.
+String spokenToWritten(String heard) => heard.replaceAllMapped(
+  RegExp(
+    r'\s*\b(?:dot|period)\s+([A-Za-z0-9]{1,8})\b'
+    r'(?=\s+(?:from|to|onto|into)\b|$)',
+    caseSensitive: false,
+  ),
+  // Extensions are written lower-case on disk, and a recognizer capitalises
+  // whatever it likes ("Report Dot PDF"); the name it heard is left alone.
+  (match) => '.${match[1]!.toLowerCase()}',
+);
+
 class SpeechInput {
   const SpeechInput();
 
@@ -29,6 +51,20 @@ class SpeechInput {
       return await _channel.invokeMethod<String>('listen');
     } catch (_) {
       return null; // never crash the composer for a mic failure
+    }
+  }
+
+  /// Stops the utterance in flight: the second tap on the mic, or the screen
+  /// going away. Answers like hearing nothing, so the caller has one idle path
+  /// (a pending [listen] resolves null). Never throws, never blocks on the
+  /// recognizer acknowledging — the microphone is released on the platform
+  /// side either way.
+  Future<void> stop() async {
+    if (!available) return;
+    try {
+      await _channel.invokeMethod<void>('stop');
+    } catch (_) {
+      // A mic that cannot be stopped is not something the composer can fix.
     }
   }
 

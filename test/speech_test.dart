@@ -21,6 +21,33 @@ void main() {
     expect(await const SpeechOutput().speak('hello'), isFalse);
   });
 
+  test('spoken filenames are written back as files', () {
+    // What the microphone actually returns for "get report.pdf from my pc"
+    // — measured on the phone, the recognizer writes the filename as words.
+    expect(
+      spokenToWritten('get report dot pdf from my pc'),
+      'get report.pdf from my pc',
+    );
+    expect(
+      spokenToWritten('Get Report Dot PDF From My PC'),
+      'Get Report.pdf From My PC',
+    );
+    // A file named with no destination: the spoken dot ends the sentence.
+    expect(spokenToWritten('open notes period txt'), 'open notes.txt');
+    expect(
+      spokenToWritten('get todo dot txt to my phone'),
+      'get todo.txt to my phone',
+    );
+    // Nothing else is touched: ordinary speech, and a dot that is not
+    // ending a filename, come back exactly as they were heard.
+    expect(spokenToWritten('what time is it'), 'what time is it');
+    expect(
+      spokenToWritten('that is the dot in the middle'),
+      'that is the dot in the middle',
+    );
+    expect(spokenToWritten(''), '');
+  });
+
   test('android without a speech engine fails gracefully', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     expect(const SpeechInput().available, isTrue);
