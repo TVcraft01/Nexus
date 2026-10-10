@@ -176,7 +176,7 @@ idiom is the product**:
 | Toggles | `CupertinoSwitch` | in the app's accent, not the system green |
 | Yes/no dialogs | `CupertinoAlertDialog` | destructive action red, no filled button |
 | Indeterminate progress | `CupertinoActivityIndicator` | determinate progress stays `CircularProgressIndicator` — Cupertino has no ring that shows a value |
-| A sheet | `showCupertinoSheet` (`showNexusSheet`) | framed by the sheet's own `NexusSheetSurface`; the grabber, the corners, the page-behind push and the drag-to-dismiss are the framework's |
+| A sheet | `CupertinoSheetRoute` (`showNexusSheet`) | framed by the sheet's own `NexusSheetSurface`; the grabber, the corners, the page-behind push and the drag-to-dismiss are the framework's. **Not** `showCupertinoSheet`: that wrapper drops `showDragHandle`, so the handle it is asked for never appears (`cupertino/sheet.dart:199-206`) |
 | A short list of verbs | `CupertinoActionSheet` (`showNexusActions`) | blurred vibrancy, separated Cancel, tap-outside dismisses |
 | Pull to refresh | `CupertinoSliverRefreshControl` | a sliver of the scroll, so the pull follows the finger; needs a `CustomScrollView` |
 | Text size | `NexusTextScaling` | the platform's scaler clamped to 0.85×–1.5×, applied once above the navigator |

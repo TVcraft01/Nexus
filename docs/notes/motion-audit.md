@@ -202,7 +202,7 @@ were closed later the same day — §11.
 
 | What | Was | Is | Rule it now meets |
 |---|---|---|---|
-| A sheet (pair, device detail, destination picker, send-to, dream review) | `showModalBottomSheet` with a themed grabber | `showCupertinoSheet` with the framework's grabber, its own drag-to-dismiss, and the page behind pushing back (`71c3044`) | 2 (grab), 4 (velocity — the release is decided by the finger's speed) |
+| A sheet (pair, device detail, destination picker, send-to, dream review) | `showModalBottomSheet` with a themed grabber | `CupertinoSheetRoute` with the framework's grabber, its own drag-to-dismiss, and the page behind pushing back (`71c3044`; the handle was missing until §12, when the phone proved it) | 2 (grab), 4 (velocity — the release is decided by the finger's speed) |
 | A short list of verbs (file actions, conversation menu) | a page-sized sheet holding two rows | `CupertinoActionSheet` — the iOS share-sheet shape, blurred and tap-outside-dismissible (`71c3044`) | 6 (a real vibrancy material) |
 | Pull-to-refresh (Files) | `RefreshIndicator`, fixed 150/200 ms | `CupertinoSliverRefreshControl`, fired from the drag at the trigger distance (`71c3044`) | 1 (it answers the finger that pulled it), 4 (the scroll's own physics bring it back) |
 | The assistant's brain strip, and "Or teach me what this means" | bare `GestureDetector`s: nothing on press | `NexusPressable` (`8936cee`) | 1 (feedback in the frame the finger lands), 3 (a spring) |
@@ -216,3 +216,47 @@ Type clamp are pinned by widget tests too. What could **not** be photographed
 this pass is the phone: `adb` had no device on the bus, so the sheets' on-device
 appearance and the 1.3× font-size rendering are verified by the platform's own
 widgets and geometry rather than by a screenshot.
+
+## 12. On the phone — the same things, in pixels
+
+The device came back on the bus, so §11's claims were re-checked against a
+release build on a Samsung SM-A256E (2340×1080, SDK 36) instead of against the
+SDK alone. Everything below is a measurement from a `screencap`, pulled and
+read at the pixel level; the tool that did it is described in §13.
+
+| Claim from §11 | What the pixels said |
+|---|---|
+| The sheet is a Cupertino page sheet | the top edge sat at **y≈188 px of 2340 = 8.0%**, which is `topGap`'s default, and the page behind was still drawn (lightened to `#1b1f24`) — not a full-screen modal |
+| A downward drag dismisses it | measured **y=188 → 514** mid-drag with the page lightening under the finger, then the sheet gone from the accessibility tree after release |
+| The action sheet blurs what is behind it | the fill read `#21272e` over the accent button against `#212224` over dark page at the same y, i.e. **translucent**, and a 1 px sharp edge behind it ramped over **~150 px** — **blurred**, not merely dimmed. The first attempt at this measurement was wrong (the sample box sat on the sheet's own label); the horizontal fixed-height scan is the one that holds |
+| Text follows the system preference | at `font_scale 1.3` the text ink measured **1.31–1.35×** the 1.0× capture, while the non-text band (the orb, 93 px) did not move |
+| The framework draws a grabber on the sheet | **It did not.** The sheet's top band was a flat `#121821` — the surface colour, no pixel lighter than the fill. This was the one claim the SDK reading got wrong, and it was a real bug: **see below** |
+
+**The defect, and why reading the SDK was not enough.** `showCupertinoSheet`
+takes a `showDragHandle` argument and silently does not forward it when it
+builds its route (`cupertino/sheet.dart:199-206`), so every sheet in the app
+was opened without the handle the code asked for — and both the doc tables and
+the widget tree agreed with the code, because the flag *looks* like it works.
+`showNexusSheet` now pushes `CupertinoSheetRoute` directly, which does take the
+flag. The only thing the convenience wrapper added was nested-navigation
+support, and no sheet in the app is opened from inside a sheet.
+
+A widget test pins it (`test/accessibility_test.dart`: exactly one 36×5 handle
+in the tree when the pair sheet is open). The test was checked against the *old*
+code and fails there — a guard that passes either way is not a guard.
+
+What the phone also showed, and no widget tree would have: the sheet's own
+surface is `#121821` against a page at `#0e1116` — close enough that the sheet
+reads as a lifted panel rather than a separate card, which is the intent, but it
+is a contrast decision worth knowing the number of.
+
+## 13. How these were taken
+
+`adb shell screencap -p` to `/sdcard`, then `adb pull`; gestures through
+`adb shell input swipe`; measurements in Python over the PNG, sampling exact
+rows and columns rather than eyeballing. The accessibility tree
+(`adb shell uiautomator dump`) gives real node bounds and is what the sheet
+top edge and the drag were read from; where the tree stops publishing (after a
+force-stop, or for a `font_scale` relaunch) the pixels are the source. Nothing
+here came from the PC screen: the workstation is headless by policy, and every
+image in this section is the phone's own framebuffer.

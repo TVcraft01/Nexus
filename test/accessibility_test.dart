@@ -211,6 +211,22 @@ void main() {
       // button that opened it is a text button, so this also covers the
       // toolbar-sized controls the sheet uses.
       expect(find.byType(OutlinedButton), findsWidgets);
+
+      // The framework's grabber — the 36x5 handle a Cupertino sheet draws at
+      // its top. This is not decoration: `showCupertinoSheet` builds its route
+      // without forwarding `showDragHandle`, so a sheet opened through the
+      // convenience function has no handle at all and no pixel of it on the
+      // phone. Asserting the handle exists is what keeps that from coming
+      // back, since the flag looks like it works.
+      final handles = find.byWidgetPredicate(
+        (w) => w is SizedBox && w.width == 36 && w.height == 5,
+      );
+      expect(
+        handles,
+        findsOneWidget,
+        reason: 'a Cupertino sheet draws exactly one grabber',
+      );
+
       expectControlsAreUsable(tester, where: 'the pair sheet');
     } finally {
       debugDefaultTargetPlatformOverride = null;

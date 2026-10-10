@@ -5,12 +5,12 @@ import 'package:flutter/cupertino.dart'
         CupertinoActionSheet,
         CupertinoActionSheetAction,
         CupertinoActivityIndicator,
+        CupertinoSheetRoute,
         CupertinoSwitch,
         CupertinoTextThemeData,
         CupertinoTheme,
         CupertinoThemeData,
-        showCupertinoModalPopup,
-        showCupertinoSheet;
+        showCupertinoModalPopup;
 import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart' show SpringSimulation;
@@ -1204,13 +1204,21 @@ Future<T?> showNexusSheet<T>({
   Color? color,
   double? topGap,
 }) {
-  return showCupertinoSheet<T>(
-    context: context,
-    topGap: topGap,
-    showDragHandle: true,
-    scrollableBuilder: (context, controller) => NexusSheetSurface(
-      color: color,
-      child: builder(context, controller),
+  // The route, not `showCupertinoSheet`: that convenience function builds its
+  // route without forwarding `showDragHandle` (`cupertino/sheet.dart:199-206`
+  // in Flutter 3.47.5), so asking it for the framework's handle silently gets
+  // you a sheet with no handle at all. It was measured, not guessed: the top
+  // band of the sheet was the flat surface colour, with no pixel lighter than
+  // the fill in it. The route takes the flag, and the only thing the wrapper
+  // adds is nested navigation, which no sheet here uses.
+  return Navigator.of(context, rootNavigator: true).push<T>(
+    CupertinoSheetRoute<T>(
+      topGap: topGap,
+      showDragHandle: true,
+      scrollableBuilder: (context, controller) => NexusSheetSurface(
+        color: color,
+        child: builder(context, controller),
+      ),
     ),
   );
 }
