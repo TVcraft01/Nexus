@@ -131,6 +131,12 @@ class MainActivity : FlutterActivity() {
     private val REQUEST_SPEECH_PERMISSIONS = 42605
     private var pendingSpeechResult: MethodChannel.Result? = null
 
+    // The recognition session in flight, held so a second tap on the mic can
+    // end it. A recognizer that never hears its own end-of-speech would
+    // otherwise leave the composer listening with no way out but leaving the
+    // screen, and it must also be released when the activity goes away.
+    private var activeRecognizer: SpeechRecognizer? = null
+
     // Voice output: the system TextToSpeech engine says the assistant's
     // reply aloud. No runtime permission needed.
     private val SPEECH_OUT_CHANNEL = "dev.nexus.nexus/speech_out"
@@ -178,6 +184,9 @@ class MainActivity : FlutterActivity() {
     private var pendingTtsResult: MethodChannel.Result? = null
 
     override fun onDestroy() {
+        // A recognizer in flight dies with the screen: leaving Nexus must not
+        // leave the microphone listening in the background.
+        releaseRecognizer()
         // The in-app preview must die with the activity — otherwise the
         // audio keeps playing after Nexus is closed, and reopening stacks a
         // second player over the ghost.
@@ -255,11 +264,16 @@ class MainActivity : FlutterActivity() {
 
         // Voice input: one utterance through the system SpeechRecognizer.
         // The recognized words come back as text and run through the same
-        // assistant pipeline as typing.
+        // assistant pipeline as typing. `stop` ends the utterance early —
+        // the composer is press-to-talk, so the button has to be able to
+        // take back its own microphone.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SPEECH_CHANNEL)
             .setMethodCallHandler { call, result ->
-                if (call.method == "listen") listenSpeech(result)
-                else result.notImplemented()
+                when (call.method) {
+                    "listen" -> listenSpeech(result)
+                    "stop" -> stopSpeech(result)
+                    else -> result.notImplemented()
+                }
             }
 
         // Voice output: reads the assistant's reply out loud through the
@@ -1367,19 +1381,51 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// One utterance, decoded on the phone.
+    ///
+    /// The offline rule is the point of voice here, not a setting: a phone
+    /// with no signal is exactly where talking to it beats typing. So the
+    /// on-device recognizer is used whenever the ROM has a local model for
+    /// the language — that path cannot reach the network even by accident —
+    /// and the ordinary recognizer, asking for offline results, is the
+    /// fallback. Which one ran is logged, because "it worked in airplane
+    /// mode" is the claim, and the log is how that claim is checked.
     private fun startSpeech(result: MethodChannel.Result) {
-        val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        // One session at a time: a second tap while the first is still
+        // listening must not leave two recognizers holding the microphone.
+        releaseRecognizer()
+        val onDeviceAvailable =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
+        val recognizer = if (onDeviceAvailable) {
+            SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+        } else {
+            SpeechRecognizer.createSpeechRecognizer(this)
+        }
+        activeRecognizer = recognizer
+        Log.i(
+            TAG,
+            if (onDeviceAvailable) "speech: listening on-device (no network)"
+            else "speech: listening via the system recognizer, offline preferred",
+        )
+        // The loudest the microphone got during the utterance, logged with
+        // the outcome: a device run that hears nothing can then tell a quiet
+        // room from a microphone that never opened — from the result alone
+        // the two are the same null.
+        var peakDb = -1f
         recognizer.setRecognitionListener(object : RecognitionListener {
             override fun onResults(results: Bundle?) {
                 val text = results
                     ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull()
-                recognizer.destroy()
+                Log.i(TAG, "speech: heard \"${text ?: ""}\" (peak ${peakDb}dB)")
+                if (!releaseRecognizerIf(recognizer)) return
                 result.success(text)
             }
 
             override fun onError(error: Int) {
-                recognizer.destroy()
+                Log.i(TAG, "speech: nothing recognized (error $error, peak ${peakDb}dB)")
+                if (!releaseRecognizerIf(recognizer)) return
                 result.success(null) // nothing heard / mic unavailable
             }
 
@@ -1387,18 +1433,75 @@ class MainActivity : FlutterActivity() {
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
-            override fun onPartialResults(partialResults: Bundle?) {}
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                // Not shown — the pill's ring is the only live signal — but
+                // logged, so a device run can see the engine was hearing
+                // words while it waited for the utterance to end.
+                val partial = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!partial.isNullOrBlank()) Log.i(TAG, "speech: …$partial")
+            }
+
             override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onRmsChanged(rmsdB: Float) {}
+
+            override fun onRmsChanged(rmsdB: Float) {
+                if (rmsdB > peakDb) peakDb = rmsdB
+            }
         })
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
             )
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            // The live transcript is not rendered, but the engine reports it:
+            // seeing words arrive before the result is what tells a device run
+            // that the recognizer was listening to speech at all.
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            // Never the cloud: if the phone has no offline model it answers
+            // "nothing heard" instead of quietly uploading the room.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
         recognizer.startListening(intent)
+    }
+
+    /// Ends the utterance early: the user tapped the mic again. The pending
+    /// `listen` call answers null, which is the same answer as hearing
+    /// nothing — the composer goes back to idle.
+    private fun stopSpeech(result: MethodChannel.Result) {
+        val recognizer = activeRecognizer
+        activeRecognizer = null
+        recognizer?.let {
+            Log.i(TAG, "speech: stopped by the user")
+            runCatching { it.cancel() }
+            runCatching { it.destroy() }
+        }
+        result.success(null)
+    }
+
+    /// Drops the recognizer in flight, if any. Called before a new session
+    /// and from onDestroy, so the microphone is never held by a dead screen.
+    private fun releaseRecognizer() {
+        val recognizer = activeRecognizer
+        activeRecognizer = null
+        recognizer?.let {
+            runCatching { it.cancel() }
+            runCatching { it.destroy() }
+        }
+    }
+
+    /// Releases the session unless it was already replaced (a stop, or a
+    /// newer tap) — in which case its late callback is stale and must not
+    /// answer a call somebody else owns.
+    private fun releaseRecognizerIf(recognizer: SpeechRecognizer): Boolean {
+        if (activeRecognizer !== recognizer) {
+            runCatching { recognizer.destroy() }
+            return false
+        }
+        activeRecognizer = null
+        runCatching { recognizer.destroy() }
+        return true
     }
 
     /// "video call mom on whatsapp": only ever opens a video call in an app
