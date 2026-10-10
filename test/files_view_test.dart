@@ -12,6 +12,7 @@
 // no port is assumed.
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart' show CupertinoSliverRefreshControl;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
@@ -52,6 +53,10 @@ class _FakeMesh extends MeshService {
   /// Which ids answer when dialled. Empty means all of them.
   final Set<String> online;
 
+  /// How many listings have been asked for — so a test can prove that a pull
+  /// which crossed the trigger actually refreshed.
+  int listingCalls = 0;
+
   @override
   List<PairedDevice> get pairedDevices => _devices;
 
@@ -63,6 +68,7 @@ class _FakeMesh extends MeshService {
     PairedDevice peer,
     String path,
   ) async {
+    listingCalls++;
     if (failing) {
       lastFileError = 'Could not reach ${peer.name}.';
       return null;
@@ -496,5 +502,60 @@ void main() {
     // The one place two prominent buttons share this screen: the toolbar's
     // action does not stand down while the body offers a retry.
     expect(find.widgetWithText(FilledButton, 'Send file…'), findsOneWidget);
+  });
+
+  testWidgets('the listing refreshes from a pull, through a control that is '
+      'part of the scroll', (tester) async {
+    final mesh = _FakeMesh(
+      [_device('TVcraft01')],
+      listings: {
+        '': [_file('notes.txt')],
+      },
+    );
+    await _pumpFiles(tester, mesh);
+    expect(find.text('notes.txt'), findsOneWidget);
+    // The control is a sliver of the scroll, not an overlay on it. At rest it
+    // has no extent — the viewport counts a zero-height sliver at its edge as
+    // off stage, which is why the finder has to look off stage to see it.
+    expect(
+      find.byType(CupertinoSliverRefreshControl, skipOffstage: false),
+      findsOneWidget,
+      reason: 'the pull-to-refresh is part of the scroll view itself',
+    );
+    expect(
+      find.byType(CupertinoSliverRefreshControl),
+      findsNothing,
+      reason: 'at rest the control occupies no space',
+    );
+
+    final before = mesh.listingCalls;
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(CustomScrollView)),
+    );
+    // Past the 100pt trigger, without letting go.
+    await gesture.moveBy(const Offset(0, 220));
+    await tester.pump();
+    expect(
+      find.byType(CupertinoSliverRefreshControl),
+      findsOneWidget,
+      reason: 'the control moves with the finger instead of sitting over it',
+    );
+    // The iOS control starts its work the moment the pull passes the trigger,
+    // with the finger still down; the Material indicator waits for the
+    // release. That is the behaviour the sliver buys.
+    expect(
+      mesh.listingCalls,
+      greaterThan(before),
+      reason: 'a pull past the trigger refreshes under the finger',
+    );
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.text('notes.txt'), findsOneWidget);
+    expect(
+      find.byType(CupertinoSliverRefreshControl),
+      findsNothing,
+      reason: 'and the control goes back to occupying no space',
+    );
   });
 }
