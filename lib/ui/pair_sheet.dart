@@ -68,23 +68,30 @@ Future<void> showPairSheet(
   BuildContext context, {
   required MeshService mesh,
   DiscoveredDevice? nearby,
-}) {
-  return showModalBottomSheet(
+}) async {
+  // Pairing is a form, not a list of verbs, so it opens as a real iOS sheet:
+  // the page behind it pushes back, the grabber is the framework's own and is
+  // wired to the drag, and the sheet stops just below the top of the screen
+  // instead of floating in the bottom two thirds of it.
+  await showNexusSheet<void>(
     context: context,
-    isScrollControlled: true,
-    backgroundColor: NexusColors.surface,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      side: BorderSide(color: NexusColors.border),
-    ),
-    builder: (context) => _PairSheet(mesh: mesh, nearby: nearby),
+    color: NexusColors.surface,
+    builder: (context, controller) =>
+        _PairSheet(mesh: mesh, nearby: nearby, scroll: controller),
   );
 }
 
 class _PairSheet extends StatefulWidget {
   final MeshService mesh;
   final DiscoveredDevice? nearby;
-  const _PairSheet({required this.mesh, this.nearby});
+
+  /// The sheet's scroll controller. A tab has to hand it to its own
+  /// scrollable: the framework watches that controller to know when the
+  /// content is at the top, which is the moment a downward drag stops
+  /// scrolling the form and starts dismissing the sheet.
+  final ScrollController scroll;
+
+  const _PairSheet({required this.mesh, this.nearby, required this.scroll});
 
   @override
   State<_PairSheet> createState() => _PairSheetState();
@@ -288,58 +295,50 @@ class _PairSheetState extends State<_PairSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final height = MediaQuery.of(context).size.height;
     return Padding(
       padding: EdgeInsets.only(
         left: 20,
         right: 20,
+        // Room under the framework's grabber, and under the keyboard when a
+        // field on the "Enter code" tab has focus.
         top: 14,
         bottom: MediaQuery.of(context).viewInsets.bottom + 20,
       ),
-      child: SingleChildScrollView(
-        child: SizedBox(
-          height: height * 0.72,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: 18),
+          Row(
             children: [
-              // No grabber of our own: every sheet already gets exactly one
-              // from the theme (`showDragHandle` + `dragHandleColor` in
-              // theme.dart), drawn by the framework and wired to drag-to-
-              // dismiss. A second bar here was pixels with no behavior.
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  if (_tab >= 0)
-                    IconButton(
-                      onPressed: () => setState(() => _tab = -1),
-                      tooltip: 'Back',
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
-                  Expanded(
-                    child: Text(
-                      _tab < 0 ? 'Add device' : 'Finish pairing',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    tooltip: 'Close',
-                    icon: const Icon(Icons.close_rounded),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
+              if (_tab >= 0)
+                IconButton(
+                  onPressed: () => setState(() => _tab = -1),
+                  tooltip: 'Back',
+                  icon: const Icon(Icons.arrow_back_rounded),
+                ),
               Expanded(
-                child: switch (_tab) {
-                  -1 => _buildChooseTab(context),
-                  0 => _buildShowTab(context),
-                  1 => _buildEnterTab(context),
-                  _ => _buildCableTab(context),
-                },
+                child: Text(
+                  _tab < 0 ? 'Add device' : 'Finish pairing',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              IconButton(
+                onPressed: () => Navigator.pop(context),
+                tooltip: 'Close',
+                icon: const Icon(Icons.close_rounded),
               ),
             ],
           ),
-        ),
+          const SizedBox(height: 6),
+          Expanded(
+            child: switch (_tab) {
+              -1 => _buildChooseTab(context),
+              0 => _buildShowTab(context),
+              1 => _buildEnterTab(context),
+              _ => _buildCableTab(context),
+            },
+          ),
+        ],
       ),
     );
   }
@@ -352,6 +351,7 @@ class _PairSheetState extends State<_PairSheet> {
         .toList();
 
     return ListView(
+      controller: widget.scroll,
       padding: const EdgeInsets.only(top: NexusSpace.sm, bottom: NexusSpace.lg),
       children: [
         Text(
@@ -462,6 +462,7 @@ class _PairSheetState extends State<_PairSheet> {
   Widget _buildShowTab(BuildContext context) {
     final valid = widget.mesh.pendingCodeActive;
     return SingleChildScrollView(
+      controller: widget.scroll,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -568,6 +569,7 @@ class _PairSheetState extends State<_PairSheet> {
     // instead of a "start" button (a phone cannot install apps on a PC).
     if (!_canCable) {
       return SingleChildScrollView(
+        controller: widget.scroll,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -647,6 +649,7 @@ class _PairSheetState extends State<_PairSheet> {
     }
 
     return SingleChildScrollView(
+      controller: widget.scroll,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -716,6 +719,7 @@ class _PairSheetState extends State<_PairSheet> {
 
   Widget _buildEnterTab(BuildContext context) {
     return SingleChildScrollView(
+      controller: widget.scroll,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

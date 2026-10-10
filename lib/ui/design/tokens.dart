@@ -265,7 +265,6 @@ abstract final class NexusRadius {
   static const double md = 12;
   static const double lg = 16;
   static const double xl = 24;
-  static const Radius sheet = Radius.circular(20);
 
   static const BorderRadius row = BorderRadius.all(Radius.circular(md));
   static const BorderRadius card = BorderRadius.all(Radius.circular(lg));

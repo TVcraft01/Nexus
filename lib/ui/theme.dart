@@ -134,18 +134,12 @@ ThemeData buildNexusTheme({Brightness brightness = Brightness.dark}) {
       insetPadding: const EdgeInsets.all(NexusSpace.lg),
       shape: const RoundedRectangleBorder(borderRadius: NexusRadius.row),
     ),
-    bottomSheetTheme: BottomSheetThemeData(
-      backgroundColor: palette.surface,
-      surfaceTintColor: Colors.transparent,
-      modalBackgroundColor: palette.surface,
-      modalBarrierColor: palette.scrim,
-      showDragHandle: true,
-      dragHandleColor: palette.separator,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: NexusRadius.sheet),
-      ),
-      clipBehavior: Clip.antiAlias,
-    ),
+    // No bottomSheetTheme: nothing in the app shows a Material bottom sheet
+    // any more. Sheets are Cupertino's (`showNexusSheet` / `showNexusActions`
+    // in components/nexus_ui.dart) and every part of that chrome — the
+    // grabber, the corner radius, the barrier, the drag — belongs to the
+    // framework, which is why a theme entry here would only be a second place
+    // to look when a sheet looks wrong.
     dialogTheme: DialogThemeData(
       backgroundColor: palette.surfaceElevated,
       surfaceTintColor: Colors.transparent,

@@ -3,9 +3,11 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/cupertino.dart'
     show
+        CupertinoActionSheetAction,
         CupertinoActivityIndicator,
         CupertinoAlertDialog,
         CupertinoDialogAction,
+        CupertinoSliverRefreshControl,
         CupertinoTextField;
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart' show CustomSemanticsAction;
@@ -14,11 +16,12 @@ import '../mesh/mesh_service.dart';
 import 'components/nexus_ui.dart'
     show
         NexusEmptyState,
-        NexusGroup,
         NexusPageHeader,
         NexusRow,
         fileTypeIcon,
-        platformIcon;
+        platformIcon,
+        showNexusActions,
+        showNexusSheet;
 import 'downloads_dir.dart';
 import 'theme.dart';
 
@@ -287,14 +290,14 @@ class _FilesViewState extends State<FilesView> {
     // second in the same list.
     final devices = _selectableDevices();
     if (devices.isEmpty) return null;
-    return showModalBottomSheet<_FileDestination>(
+    return showNexusSheet<_FileDestination>(
       context: context,
-      isScrollControlled: true,
-      builder: (_) => _DestinationPicker(
+      builder: (context, controller) => _DestinationPicker(
         mesh: widget.mesh,
         devices: devices,
         // Open where the user already is, not on whatever is first.
         initial: _device,
+        scroll: controller,
       ),
     );
   }
@@ -362,46 +365,33 @@ class _FilesViewState extends State<FilesView> {
       return;
     }
     final palette = NexusPalette.of(context);
-    final target = await showModalBottomSheet<PairedDevice>(
+    // "Which of these devices?" is the share sheet's question, and an action
+    // sheet is its iOS answer: a page-sized sheet holding a title and two
+    // rows is mostly empty space. Reachability stays in the glyph, the way a
+    // device reads everywhere else — lit when the peer is up.
+    final target = await showNexusActions<PairedDevice>(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: NexusRadius.sheet),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(NexusSpace.lg),
-              child: Text(
-                'Send ${entry.name} to…',
-                style: Theme.of(sheetContext).textTheme.titleMedium,
-              ),
-            ),
-            // The same row shape as the rest of the app, rather than a
-            // Material ListTile: one list style, whether the list lives on a
-            // page or in a sheet.
-            for (final p in peers)
-              NexusRow(
-                title: p.name,
-                minHeight: NexusSize.rowCompact,
-                leading: Icon(
+      title: Text('Send ${entry.name} to…'),
+      actions: (popup) => [
+        for (final p in peers)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(popup, p),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
                   platformIcon(p.platform),
                   size: 20,
-                  color: palette.textSecondary,
-                ),
-                trailing: Icon(
-                  Icons.send_rounded,
-                  size: 18,
                   color: widget.mesh.isOnline(p.id)
                       ? palette.success
                       : palette.textSecondary,
                 ),
-                onTap: () => Navigator.pop(sheetContext, p),
-              ),
-          ],
-        ),
-      ),
+                const SizedBox(width: NexusSpace.sm),
+                Text(p.name),
+              ],
+            ),
+          ),
+      ],
     );
     if (target == null || !mounted) return;
     setState(() {
@@ -655,41 +645,49 @@ class _FilesViewState extends State<FilesView> {
       );
     }
     // Rows on the page, separated by hairlines — not a rounded card each.
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView.separated(
-        // A flick throws the list (momentum projection) and the next flick
-        // carries the speed the last one left, which is what makes a fast
-        // scroll feel thrown rather than driven. At an edge the list resists
-        // progressively instead of stopping dead. Android's default physics
-        // does neither: by the framework's own documentation it "doesn't carry
-        // momentum", and its clamping boundary is a hard stop with a glow.
-        physics: const BouncingScrollPhysics(
-          parent: AlwaysScrollableScrollPhysics(),
-        ),
-        padding: const EdgeInsets.only(bottom: NexusSpace.xxl),
-        itemCount: entries.length,
-        separatorBuilder: (context, _) => Divider(
-          height: 1,
-          indent: NexusSpace.lg,
-          color: palette.separator,
-        ),
-        itemBuilder: (context, i) => _EntryRow(
-          entry: entries[i],
-          progress: _progress[entries[i].path],
-          busy:
-              _downloading.contains(entries[i].path) ||
-              _sending.contains(entries[i].path) ||
-              _operating.contains(entries[i].path),
-          deleting: _deleting.contains(entries[i].path),
-          operating: _operating.contains(entries[i].path),
-          onTap: () => _open(entries[i]),
-          onDelete: () => _delete(entries[i]),
-          onRename: () => _rename(entries[i]),
-          onCopy: () => _copyOrMove(entries[i], move: false),
-          onMove: () => _copyOrMove(entries[i], move: true),
-        ),
+    //
+    // A sliver list rather than a ListView, because the refresh control is a
+    // sliver: Cupertino's pull-to-refresh is part of the scroll itself — it
+    // moves with the finger and springs back on release — where the Material
+    // indicator is an overlay on a fixed 150/200 ms curve that cannot be
+    // grabbed once the pull has started.
+    return CustomScrollView(
+      // A flick throws the list (momentum projection) and the next flick
+      // carries the speed the last one left, which is what makes a fast
+      // scroll feel thrown rather than driven. At an edge the list resists
+      // progressively instead of stopping dead. Android's default physics
+      // does neither: by the framework's own documentation it "doesn't carry
+      // momentum", and its clamping boundary is a hard stop with a glow.
+      physics: const BouncingScrollPhysics(
+        parent: AlwaysScrollableScrollPhysics(),
       ),
+      slivers: [
+        CupertinoSliverRefreshControl(onRefresh: _load),
+        SliverList.separated(
+          itemCount: entries.length,
+          separatorBuilder: (context, _) => Divider(
+            height: 1,
+            indent: NexusSpace.lg,
+            color: palette.separator,
+          ),
+          itemBuilder: (context, i) => _EntryRow(
+            entry: entries[i],
+            progress: _progress[entries[i].path],
+            busy:
+                _downloading.contains(entries[i].path) ||
+                _sending.contains(entries[i].path) ||
+                _operating.contains(entries[i].path),
+            deleting: _deleting.contains(entries[i].path),
+            operating: _operating.contains(entries[i].path),
+            onTap: () => _open(entries[i]),
+            onDelete: () => _delete(entries[i]),
+            onRename: () => _rename(entries[i]),
+            onCopy: () => _copyOrMove(entries[i], move: false),
+            onMove: () => _copyOrMove(entries[i], move: true),
+          ),
+        ),
+        const SliverPadding(padding: EdgeInsets.only(bottom: NexusSpace.xxl)),
+      ],
     );
   }
 }
@@ -764,9 +762,15 @@ class _DestinationPicker extends StatefulWidget {
   /// The device being browsed, so the sheet opens where the user already is.
   final PairedDevice? initial;
 
+  /// The sheet's scroll controller. The framework reads it to know when the
+  /// folder list is at its top, which is when a downward drag should dismiss
+  /// the sheet rather than scroll the folders.
+  final ScrollController scroll;
+
   const _DestinationPicker({
     required this.mesh,
     required this.devices,
+    required this.scroll,
     this.initial,
   });
 
@@ -832,44 +836,41 @@ class _DestinationPickerState extends State<_DestinationPicker> {
   @override
   Widget build(BuildContext context) {
     final palette = NexusPalette.of(context);
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(
-          NexusSpace.lg,
-          NexusSpace.md,
-          NexusSpace.lg,
-          NexusSpace.lg,
-        ),
-        child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * .72,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.lg,
+        NexusSpace.md,
+        NexusSpace.lg,
+        NexusSpace.lg,
+      ),
+      // The sheet is as tall as the screen allows, so the folder list takes
+      // what is left after the header instead of a fixed 72% of the display.
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  IconButton(
-                    onPressed: _path.isEmpty ? null : _up,
-                    tooltip: 'Up',
-                    icon: const Icon(Icons.arrow_upward_rounded),
-                  ),
-                  Expanded(
-                    child: Text(
-                      'Choose destination',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  ),
-                  FilledButton.icon(
-                    onPressed: () => Navigator.pop(
-                      context,
-                      _FileDestination(_device, _path),
-                    ),
-                    icon: const Icon(Icons.check_rounded, size: 18),
-                    label: const Text('Choose here'),
-                  ),
-                ],
+              IconButton(
+                onPressed: _path.isEmpty ? null : _up,
+                tooltip: 'Up',
+                icon: const Icon(Icons.arrow_upward_rounded),
               ),
-              const SizedBox(height: NexusSpace.xs),
-              SizedBox(
+              Expanded(
+                child: Text(
+                  'Choose destination',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              FilledButton.icon(
+                onPressed: () =>
+                    Navigator.pop(context, _FileDestination(_device, _path)),
+                icon: const Icon(Icons.check_rounded, size: 18),
+                label: const Text('Choose here'),
+              ),
+            ],
+          ),
+          const SizedBox(height: NexusSpace.xs),
+          SizedBox(
                 height: NexusSize.minTouch,
                 child: ListView(
                   scrollDirection: Axis.horizontal,
@@ -911,6 +912,7 @@ class _DestinationPickerState extends State<_DestinationPicker> {
               else
                 Expanded(
                   child: ListView.builder(
+                    controller: widget.scroll,
                     itemCount: _entries!.length,
                     itemBuilder: (context, index) {
                       final entry = _entries![index];
@@ -928,9 +930,7 @@ class _DestinationPickerState extends State<_DestinationPicker> {
                     },
                   ),
                 ),
-            ],
-          ),
-        ),
+        ],
       ),
     );
   }
@@ -1047,50 +1047,42 @@ class _EntryRow extends StatelessWidget {
   /// itself so the sheet is closed before the work starts — a rename dialog
   /// opening on top of a sheet that is still on screen is two modals deep.
   Future<void> _showActions(BuildContext context) async {
-    final chosen = await showModalBottomSheet<String>(
+    final chosen = await showNexusActions<String>(
       context: context,
-      builder: (sheetContext) {
-        final palette = NexusPalette.of(sheetContext);
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(
-              NexusSpace.lg,
-              0,
-              NexusSpace.lg,
-              NexusSpace.lg,
+      title: Text(
+        entry.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      actions: (popup) {
+        final palette = NexusPalette.of(popup);
+        return [
+          for (final action in _actions)
+            CupertinoActionSheetAction(
+              onPressed: () => Navigator.pop(popup, action.label),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    action.icon,
+                    size: 20,
+                    // Delete is the one verb that cannot be undone, so it is
+                    // the one that is not the ordinary ink.
+                    color: action.label == 'Delete'
+                        ? palette.danger
+                        : palette.textSecondary,
+                  ),
+                  const SizedBox(width: NexusSpace.sm),
+                  Text(
+                    action.label,
+                    style: action.label == 'Delete'
+                        ? TextStyle(color: palette.danger)
+                        : null,
+                  ),
+                ],
+              ),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  entry.name,
-                  style: Theme.of(sheetContext).textTheme.titleMedium,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: NexusSpace.md),
-                NexusGroup(
-                  children: [
-                    for (final action in _actions)
-                      NexusRow(
-                        title: action.label,
-                        minHeight: NexusSize.rowCompact,
-                        destructive: action.label == 'Delete',
-                        leading: Icon(
-                          action.icon,
-                          size: 20,
-                          color: palette.textSecondary,
-                        ),
-                        onTap: () =>
-                            Navigator.pop(sheetContext, action.label),
-                      ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
+        ];
       },
     );
     if (chosen == null) return;

@@ -351,18 +351,30 @@ void _showDetail(
   MeshService mesh,
   PairedDevice device,
 ) {
-  showModalBottomSheet<void>(
+  // The detail is a page of its own — what the device is, what it can do, and
+  // the actions — so it opens as an iOS sheet: the page behind pushes back,
+  // the grabber is the framework's, and a downward drag dismisses it.
+  showNexusSheet<void>(
     context: context,
-    isScrollControlled: true,
-    builder: (context) => _DeviceDetailSheet(mesh: mesh, device: device),
+    builder: (context, controller) =>
+        _DeviceDetailSheet(mesh: mesh, device: device, scroll: controller),
   );
 }
 
 class _DeviceDetailSheet extends StatefulWidget {
-  const _DeviceDetailSheet({required this.mesh, required this.device});
+  const _DeviceDetailSheet({
+    required this.mesh,
+    required this.device,
+    required this.scroll,
+  });
 
   final MeshService mesh;
   final PairedDevice device;
+
+  /// The sheet's scroll controller: the framework reads it to know when the
+  /// page is scrolled to the top, which is when a downward drag should stop
+  /// scrolling and start dismissing.
+  final ScrollController scroll;
 
   @override
   State<_DeviceDetailSheet> createState() => _DeviceDetailSheetState();
@@ -407,6 +419,7 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
           NexusSpace.xl,
         ),
         child: SingleChildScrollView(
+          controller: widget.scroll,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

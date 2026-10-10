@@ -2,11 +2,15 @@ import 'dart:async';
 
 import 'package:flutter/cupertino.dart'
     show
+        CupertinoActionSheet,
+        CupertinoActionSheetAction,
         CupertinoActivityIndicator,
         CupertinoSwitch,
         CupertinoTextThemeData,
         CupertinoTheme,
-        CupertinoThemeData;
+        CupertinoThemeData,
+        showCupertinoModalPopup,
+        showCupertinoSheet;
 import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart' show SpringSimulation;
@@ -1117,4 +1121,96 @@ class _NexusAsyncButtonState extends State<NexusAsyncButton> {
           : button,
     );
   }
+}
+
+/// The painted surface of an iOS sheet.
+///
+/// A Cupertino sheet brings no background of its own. A Material bottom sheet
+/// paints a colour, a shape and a barrier for you; the iOS route instead
+/// draws the grabber, rounds the top corners, slides the page behind back and
+/// hands the rest to the content. This is that content's background, so the
+/// colour of a sheet is decided in one place rather than in each caller.
+class NexusSheetSurface extends StatelessWidget {
+  const NexusSheetSurface({super.key, required this.child, this.color});
+
+  final Widget child;
+
+  /// The fill behind the sheet's content. Defaults to the page colour, which
+  /// is what iOS uses for a sheet that is not a card.
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return ColoredBox(
+      color: color ?? palette.bg,
+      // The top inset belongs to the status bar behind the sheet and the
+      // framework has already removed it (the grabber sits in that band); the
+      // bottom one is a real gesture bar, and the sheet owns it.
+      //
+      // A transparent Material sits under the content because Nexus is a
+      // Material application wearing Cupertino chrome: the controls inside a
+      // sheet — FilledButton, IconButton, ChoiceChip — are the app's own and
+      // reach for ink, and a Cupertino route has no Material in it. It paints
+      // nothing, so the sheet keeps the Cupertino surface above.
+      child: Material(
+        type: MaterialType.transparency,
+        child: SafeArea(top: false, child: child),
+      ),
+    );
+  }
+}
+
+/// Shows [builder] as an iOS sheet: one grabber drawn by the framework, the
+/// page behind pushing back, and a downward drag that dismisses it — the
+/// behaviour a ModalBottomSheet's own handle only imitates.
+///
+/// [builder] is handed the sheet's [ScrollController]. Give it to the
+/// scrollable inside the sheet, or a drag on that scrollable can never dismiss
+/// the sheet; the framework needs it to know when the content is at its top.
+Future<T?> showNexusSheet<T>({
+  required BuildContext context,
+  required ScrollableWidgetBuilder builder,
+  Color? color,
+  double? topGap,
+}) {
+  return showCupertinoSheet<T>(
+    context: context,
+    topGap: topGap,
+    showDragHandle: true,
+    scrollableBuilder: (context, controller) => NexusSheetSurface(
+      color: color,
+      child: builder(context, controller),
+    ),
+  );
+}
+
+/// Shows an iOS action sheet — the idiom for a short list of verbs, where a
+/// page-sized sheet would be mostly empty space.
+///
+/// The blur behind it, the rounded card, the separated Cancel button and the
+/// tap-outside barrier are the framework's, so the caller supplies the verbs
+/// and nothing else.
+Future<T?> showNexusActions<T>({
+  required BuildContext context,
+  // Built with the popup's own context, so an action closes the sheet with
+  // `Navigator.pop(popupContext)` whatever navigator the caller sits under.
+  required List<Widget> Function(BuildContext popupContext) actions,
+  Widget? title,
+  Widget? message,
+  String cancelLabel = 'Cancel',
+}) {
+  return showCupertinoModalPopup<T>(
+    context: context,
+    builder: (popupContext) => CupertinoActionSheet(
+      title: title,
+      message: message,
+      actions: actions(popupContext),
+      cancelButton: CupertinoActionSheetAction(
+        isDefaultAction: true,
+        onPressed: () => Navigator.pop(popupContext),
+        child: Text(cancelLabel),
+      ),
+    ),
+  );
 }

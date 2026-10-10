@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/cupertino.dart' show CupertinoActionSheetAction;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
@@ -1563,18 +1564,15 @@ class AssistantViewState extends State<AssistantView> {
       lines,
       exclude: {..._service.learnedSnapshot.keys},
     );
-    await showModalBottomSheet<void>(
+    await showNexusSheet<void>(
       context: context,
-      backgroundColor: NexusPalette.of(context).bg,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: NexusRadius.sheet),
+      color: NexusPalette.of(context).bg,
+      builder: (context, controller) => _DreamSheet(
+        service: _service,
+        insights: insights,
+        platform: _platform,
+        scroll: controller,
       ),
-      builder: (sheetContext) =>
-          _DreamSheet(
-            service: _service,
-            insights: insights,
-            platform: _platform,
-          ),
     );
   }
 
@@ -1920,55 +1918,28 @@ class AssistantViewState extends State<AssistantView> {
   /// buttons in the header: a long press on the header row opens this sheet.
   /// Both entries call exactly the methods the old buttons did.
   Future<void> _showConversationMenu() async {
-    await showModalBottomSheet<void>(
+    // Two verbs: an action sheet is the shape iOS gives them, with the blur,
+    // the separated Cancel button and the tap-outside barrier the framework
+    // already draws. The old subtitles were the same sentence the labels
+    // already say.
+    await showNexusActions<void>(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: NexusRadius.sheet),
-      ),
-      builder: (sheetContext) {
-        final palette = NexusPalette.of(sheetContext);
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(
-              NexusSpace.sm,
-              NexusSpace.md,
-              NexusSpace.sm,
-              NexusSpace.sm,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                NexusRow(
-                  title: 'New conversation',
-                  subtitle: 'Clear this thread and start again.',
-                  leading: Icon(
-                    Icons.add_comment_outlined,
-                    size: 20,
-                    color: palette.textSecondary,
-                  ),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    _startNewConversation();
-                  },
-                ),
-                NexusRow(
-                  title: 'What I still misunderstand',
-                  subtitle: 'Review and teach the phrases I gave up on.',
-                  leading: Icon(
-                    Icons.psychology_alt_outlined,
-                    size: 20,
-                    color: palette.textSecondary,
-                  ),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    unawaited(_showDreamReview(context));
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+      actions: (popup) => [
+        CupertinoActionSheetAction(
+          onPressed: () {
+            Navigator.pop(popup);
+            _startNewConversation();
+          },
+          child: const Text('New conversation'),
+        ),
+        CupertinoActionSheetAction(
+          onPressed: () {
+            Navigator.pop(popup);
+            unawaited(_showDreamReview(context));
+          },
+          child: const Text('What I still misunderstand'),
+        ),
+      ],
     );
   }
 
@@ -2964,10 +2935,15 @@ class _DreamSheet extends StatefulWidget {
   /// The system this device is — what a row's placeholder may name.
   final String platform;
 
+  /// The sheet's scroll controller: the framework watches it so a downward
+  /// drag on a scrolled-to-top list dismisses the sheet.
+  final ScrollController scroll;
+
   const _DreamSheet({
     required this.service,
     required this.insights,
     required this.platform,
+    required this.scroll,
   });
 
   @override
@@ -3030,6 +3006,7 @@ class _DreamSheetState extends State<_DreamSheet> {
             else
               Flexible(
                 child: ListView.builder(
+                  controller: widget.scroll,
                   shrinkWrap: true,
                   itemCount: open.length,
                   itemBuilder: (context, index) => _DreamRow(
