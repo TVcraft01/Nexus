@@ -232,6 +232,14 @@ read at the pixel level; the tool that did it is described in §13.
 | Text follows the system preference | at `font_scale 1.3` the text ink measured **1.31–1.35×** the 1.0× capture, while the non-text band (the orb, 93 px) did not move |
 | The framework draws a grabber on the sheet | **It did not.** The sheet's top band was a flat `#121821` — the surface colour, no pixel lighter than the fill. This was the one claim the SDK reading got wrong, and it was a real bug: **see below** |
 
+**What the phone did not show.** §11's pull-to-refresh row was *not* re-checked
+on the device: with no peer reachable, the Files screen holds an error card and
+no listing, and a held drag through `input motionevent` produced no frame
+different from rest — so there is no capture of the control, and its evidence
+remains the widget test that drags the real list. The one screen recording this
+pass took (a 4.9 s `screenrecord` of two downward drags on Files) shows the list
+answering a drag; it does not show a refresh.
+
 **The defect, and why reading the SDK was not enough.** `showCupertinoSheet`
 takes a `showDragHandle` argument and silently does not forward it when it
 builds its route (`cupertino/sheet.dart:199-206`), so every sheet in the app
