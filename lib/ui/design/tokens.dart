@@ -269,6 +269,11 @@ abstract final class NexusRadius {
   static const BorderRadius row = BorderRadius.all(Radius.circular(md));
   static const BorderRadius card = BorderRadius.all(Radius.circular(lg));
   static const BorderRadius pill = BorderRadius.all(Radius.circular(999));
+
+  /// The floating composer at the bottom of the assistant. Between [card] and
+  /// [pill] on purpose: a card's 16 reads as a panel, a capsule reads as a
+  /// search box, and the input a chat app puts under a thread is neither.
+  static const BorderRadius composer = BorderRadius.all(Radius.circular(22));
 }
 
 /// Control and row heights.

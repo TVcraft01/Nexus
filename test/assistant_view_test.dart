@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show SystemChannels;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/brain.dart';
@@ -301,6 +302,11 @@ class _RecordingBrain extends LocalBrain {
   String? lastSystem;
   List<ChatTurn>? lastHistory;
 
+  /// How many times the model was asked. A re-ask has no other observable
+  /// effect on the thread — the reply is a constant — so the count is what
+  /// proves Regenerate really asked again instead of replaying a stored card.
+  int asks = 0;
+
   @override
   Future<String?> availableModel({bool refresh = false}) async => 'llama3.2:3b';
 
@@ -311,6 +317,7 @@ class _RecordingBrain extends LocalBrain {
     double temperature = 0.7,
     int maxTokens = 300,
   }) async {
+    asks++;
     lastSystem = system;
     lastHistory = history;
     return (text: 'memory received', reachable: true);
@@ -377,6 +384,106 @@ void brainWidgetTests() {
       await tester.pump();
       expect(find.textContaining("It's "), findsOneWidget);
     } finally {
+      QueryLog.i.resetForTest();
+      await mesh.stop();
+    }
+  });
+
+  testWidgets('an answer carries its own verbs, and Regenerate only appears '
+      'where re-asking cannot re-run anything', (tester) async {
+    final store = NexusStore(
+      explicitPath:
+          '${Directory.systemTemp.createTempSync('avt_verbs').path}/s.json',
+    )..clipboardSync = true;
+    final mesh = MeshService(
+      identity: DeviceInfo(
+        id: 'test-device',
+        name: 'Test PC',
+        platform: 'linux',
+      ),
+      store: store,
+    );
+    final brain = _RecordingBrain();
+
+    // Copy goes through the platform channel, which is the only thing that
+    // makes it a copy — a clipboard nobody wrote to is a button that lies.
+    final copied = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add((call.arguments as Map)['text'] as String);
+        }
+        return null;
+      },
+    );
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: AssistantView(mesh: mesh, brain: brain)),
+        ),
+      );
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), 'i had a rough day today');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      await tester.pump();
+      const answer = 'memory received';
+      expect(find.text(answer), findsOneWidget);
+      expect(brain.asks, 1);
+
+      // The verbs live behind a long press on the answer itself: the card has
+      // no room for chrome, and the answer is what they act on.
+      //
+      // Pumped by hand rather than settled: the core's orb is a continuous
+      // animation while Nexus is busy, and pumpAndSettle would wait on it.
+      await tester.longPress(find.text(answer));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('Copy'), findsOneWidget);
+      expect(
+        find.text('Regenerate'),
+        findsOneWidget,
+        reason: 'a card that answered a question ran no action, so asking it '
+            'again is a second answer rather than a second side effect',
+      );
+
+      await tester.tap(find.text('Copy'));
+      // The exit has to finish before the sheet's title — which quotes the
+      // answer — leaves the tree, or the next finder is ambiguous for a frame.
+      await tester.pumpAndSettle();
+      expect(
+        copied,
+        [answer],
+        reason: 'the answer itself reached the clipboard',
+      );
+      expect(find.text('Copied.'), findsOneWidget);
+      expect(find.text(answer), findsOneWidget, reason: 'the sheet has gone');
+
+      // Regenerate asks the same question again: the model is called a second
+      // time, where replaying a stored card would leave the count at one.
+      await tester.longPress(find.text(answer));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('Regenerate'));
+      await tester.pump();
+      await tester.pump();
+      expect(brain.asks, 2, reason: 'the ask went back to the brain');
+      // Settled, so the sheet that carried the verb — and quoted the answer in
+      // its title — is out of the tree before the answer is counted.
+      await tester.pumpAndSettle();
+      expect(
+        find.text(answer),
+        findsNWidgets(2),
+        reason: 'a regenerated answer joins the thread as its own exchange',
+      );
+    } finally {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      );
       QueryLog.i.resetForTest();
       await mesh.stop();
     }

@@ -3,7 +3,9 @@ import 'dart:convert';
 
 import 'package:flutter/cupertino.dart' show CupertinoActionSheetAction;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show HapticFeedback;
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
+import 'package:flutter/services.dart'
+    show Clipboard, ClipboardData, HapticFeedback;
 
 import '../core/agent_contract.dart';
 import '../core/brain.dart';
@@ -1086,7 +1088,12 @@ class AssistantViewState extends State<AssistantView> {
   }
 
   /// One-tap examples — for anyone who doesn't know what to type yet.
-  Widget _suggestionChips() {
+  ///
+  /// [wrapped] lays them out under the greeting, centred and on as many lines
+  /// as they need; the default is one scrollable row above the composer.
+  /// [limit] caps how many are offered where the next line costs more than
+  /// one more suggestion is worth.
+  Widget _suggestionChips({bool wrapped = false, int limit = 6}) {
     // The skill loop's visible payoff: skills the user genuinely reaches
     // for lead the chips, shown by a canonical example that always parses —
     // even when no single phrase repeats often enough to be a habit. A
@@ -1125,6 +1132,34 @@ class AssistantViewState extends State<AssistantView> {
     } else {
       suggestions = suggestionExamplesFor(_platform);
     }
+    final palette = NexusPalette.of(context);
+    final chips = [
+      for (final s in suggestions.take(limit))
+        ActionChip(
+          // A soft surface pill, not an outlined button: these are words to
+          // try, and a row of bordered controls reads as a toolbar rather
+          // than as three things a person might say.
+          label: Text(s, style: NexusType.caption1),
+          shape: const StadiumBorder(),
+          side: BorderSide.none,
+          backgroundColor: palette.surfaceSecondary,
+          onPressed: () {
+            _controller.text = s;
+            _onSubmit();
+          },
+        ),
+    ];
+    if (wrapped) {
+      // Under the greeting they wrap and centre, the way every chat app
+      // built after ChatGPT opens a blank thread, instead of running off the
+      // side of the screen where nobody scrolls them.
+      return Wrap(
+        alignment: WrapAlignment.center,
+        spacing: NexusSpace.sm,
+        runSpacing: NexusSpace.sm,
+        children: chips,
+      );
+    }
     // A chip is a tap target a thumb has to hit one-handed, so its row is the
     // full [NexusSize.minTouch] tall and the chip is centred in it: the
     // measured target on the phone was 40dp, under both Android's 48dp and
@@ -1135,18 +1170,10 @@ class AssistantViewState extends State<AssistantView> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: NexusSpace.lg),
         children: [
-          for (final s in suggestions)
+          for (final chip in chips)
             Padding(
               padding: const EdgeInsets.only(right: NexusSpace.sm),
-              child: Center(
-                child: ActionChip(
-                  label: Text(s, style: NexusType.caption1),
-                  onPressed: () {
-                    _controller.text = s;
-                    _onSubmit();
-                  },
-                ),
-              ),
+              child: Center(child: chip),
             ),
           // Room to scroll the last chip clear of the edge.
           const SizedBox(width: NexusSpace.lg),
@@ -1172,11 +1199,39 @@ class AssistantViewState extends State<AssistantView> {
     return _legacyWelcomeView();
   }
 
-  /// The plain first-run card once setup is done.
+  /// The plain first-run page once setup is done: the greeting, the
+  /// suggestions directly under it, and then what Nexus can really run.
+  ///
+  /// The greeting is the page's own heading now rather than a line inside the
+  /// card, because the card was the second thing the eye reached: the first
+  /// thing on a blank screen should be the thing to say, not a panel about
+  /// the app. The card keeps only the steps.
   Widget _legacyWelcomeView() {
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.lg,
+        NexusSpace.huge,
+        NexusSpace.lg,
+        NexusSpace.xxl,
+      ),
       children: [
+        Text(
+          'Hello! I am Nexus.',
+          textAlign: TextAlign.center,
+          style: NexusType.title.copyWith(
+            color: NexusColors.text,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: NexusSpace.sm),
+        Text(
+          'Type what you want, the way you would say it.',
+          textAlign: TextAlign.center,
+          style: NexusType.body.copyWith(color: NexusColors.muted),
+        ),
+        const SizedBox(height: NexusSpace.xxl),
+        _suggestionChips(wrapped: true, limit: 4),
+        const SizedBox(height: NexusSpace.xxl),
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -1189,19 +1244,6 @@ class AssistantViewState extends State<AssistantView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Hello! I am Nexus.',
-                style: NexusType.callout.copyWith(
-                  color: NexusColors.text,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Type what you want, the way you would say it.',
-                style: NexusType.caption.copyWith(color: NexusColors.muted),
-              ),
-              const SizedBox(height: 12),
               _firstStep(
                 Icons.touch_app_rounded,
                 'Tap a suggestion',
@@ -1759,16 +1801,29 @@ class AssistantViewState extends State<AssistantView> {
         // While first-run setup is open, the composer and the example chips
         // are out of the tree entirely — nothing to focus, submit, or tap.
         if (!_onboardingActive) ...[
-          // One-tap examples, directly above the field they fill in.
-          _suggestionChips(),
+          // One-tap examples, directly above the field they fill in — but
+          // only while there is a thread for them to sit above. On a blank
+          // screen they live inside the greeting, under it, and are not drawn
+          // a second time here.
+          if (!_greetingShown) _suggestionChips(),
           _composer(),
         ],
       ],
     );
   }
 
+  /// True while the thread area is holding a greeting rather than a
+  /// conversation. The chips belong to whichever of the two surfaces is
+  /// showing them, never both, so the same three suggestions cannot appear
+  /// twice on one screen.
+  bool get _greetingShown => _conversation.isEmpty && _incoming() == null;
+
   /// The input bar: the app's primary action, at the bottom of the screen
   /// where the hand already is — never a control you have to reach for.
+  ///
+  /// Both of its controls sit inside the field rather than beside it: the
+  /// composer is one object that floats over the thread, and a mic or a send
+  /// button outside the pill would be a second object next to it.
   Widget _composer() {
     final palette = NexusPalette.of(context);
     return Padding(
@@ -1783,7 +1838,7 @@ class AssistantViewState extends State<AssistantView> {
           // The one thing that floats over the thread: a seated composer, so
           // it reads as a layer above the conversation, not a box drawn on it.
           color: palette.surfaceSecondary,
-          borderRadius: NexusRadius.card,
+          borderRadius: NexusRadius.composer,
           border: Border.all(color: palette.separator),
           boxShadow: NexusShadow.raised,
         ),
@@ -1824,7 +1879,7 @@ class AssistantViewState extends State<AssistantView> {
             // so it is unmistakably the thing to press, with its own 48dp
             // target.
             Padding(
-              padding: const EdgeInsets.only(right: NexusSpace.sm),
+              padding: const EdgeInsets.only(right: NexusSpace.xs),
               child: IconButton.filled(
                 tooltip: 'Send',
                 icon: const Icon(Icons.arrow_upward_rounded, size: 20),
@@ -1968,7 +2023,16 @@ class AssistantViewState extends State<AssistantView> {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       children: [
         for (final (i, entry) in entries.indexed) ...[
-          _entryView(entry, isLast: i == 0),
+          // Keyed by the entry itself, so the entrance belongs to the card
+          // that just arrived rather than to the position it took: the list
+          // is newest-first, so without a key every card would hand its
+          // animation to whatever replaced it at the same index.
+          KeyedSubtree(
+            key: ObjectKey(entry),
+            child: i == 0
+                ? _AnswerEntrance(child: _entryView(entry, isLast: true))
+                : _entryView(entry, isLast: false),
+          ),
           const SizedBox(height: 12),
         ],
         if (incoming != null) ...[
@@ -2098,6 +2162,9 @@ class AssistantViewState extends State<AssistantView> {
   /// status chip (only on the newest exchange, so history stays calm).
   Widget _entryView(ConversationEntry entry, {required bool isLast}) {
     if (entry.userText case final String user) {
+      // The user's own words, right-aligned on a quiet surface. Deliberately
+      // not accent-tinted any more: colour in this app means "Nexus is doing
+      // something", and a column of blue balloons spends it on decoration.
       return Align(
         alignment: Alignment.centerRight,
         child: Semantics(
@@ -2105,17 +2172,14 @@ class AssistantViewState extends State<AssistantView> {
           label: 'You: $user',
           child: Container(
             constraints: const BoxConstraints(maxWidth: 320),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: BoxDecoration(
-              color: NexusColors.accent.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: NexusColors.accent.withValues(alpha: 0.3),
-              ),
+              color: NexusPalette.of(context).surfaceSecondary,
+              borderRadius: const BorderRadius.all(Radius.circular(18)),
             ),
             child: Text(
               user,
-              style: NexusType.caption.copyWith(color: NexusColors.text),
+              style: NexusType.body.copyWith(color: NexusColors.text),
             ),
           ),
         ),
@@ -2137,7 +2201,16 @@ class AssistantViewState extends State<AssistantView> {
             _deviceListView(list.devices),
           if (result.dispatch case final AgentActionPlan plan) _planView(plan),
           if (result.dispatch case final AgentMessage message)
-            isLast && message.live ? _liveClockView() : _messageView(message),
+            isLast && message.live
+                ? _liveClockView()
+                : _messageView(
+                    message,
+                    // Regenerate is offered only where re-asking cannot re-run
+                    // anything: a card that answered a question the
+                    // interpreter did not know ran no action, so asking again
+                    // is a second answer rather than a second side effect.
+                    regenerate: isLast && entry.teachKey != null,
+                  ),
           // The brain answered a "teach me" phrase — keep the teaching loop
           // one quiet tap away instead of losing it to the conversation.
           if (isLast && entry.teachKey != null) _teachAffordance(entry),
@@ -2152,37 +2225,41 @@ class AssistantViewState extends State<AssistantView> {
     );
   }
 
-  /// A friendly prompt when devices are paired but nothing has been asked yet.
+  /// The greeting a blank conversation opens on.
+  ///
+  /// Large, centred, and with nothing above it — no glyph, no card — with the
+  /// suggestions directly under it, which is the shape ChatGPT, Claude and
+  /// DeepSeek all converge on: a blank thread is an invitation to say
+  /// something, so the first thing on screen is what to say. The previous
+  /// version put a 44px icon and two lines in the middle of the page and left
+  /// the chips in a separate row at the bottom, saying the same thing twice
+  /// in two places, neither of them where the eye starts.
   Widget _emptyChat() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.forum_outlined,
-              size: 44,
-              color: NexusColors.muted,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Ask me anything — I listen and do.',
-              textAlign: TextAlign.center,
-              style: NexusType.body.copyWith(
-                color: NexusColors.text,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Type below, or tap a suggestion to try one.',
-              textAlign: TextAlign.center,
-              style: NexusType.caption.copyWith(color: NexusColors.muted),
-            ),
-          ],
-        ),
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.xxl,
+        NexusSpace.huge,
+        NexusSpace.xxl,
+        NexusSpace.xl,
       ),
+      children: [
+        Text(
+          'Ask me anything — I listen and do.',
+          textAlign: TextAlign.center,
+          style: NexusType.title.copyWith(
+            color: NexusColors.text,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: NexusSpace.sm),
+        Text(
+          'Type below, or tap a suggestion to try one.',
+          textAlign: TextAlign.center,
+          style: NexusType.body.copyWith(color: NexusColors.muted),
+        ),
+        const SizedBox(height: NexusSpace.xxl),
+        _suggestionChips(wrapped: true, limit: 4),
+      ],
     );
   }
 
@@ -2305,21 +2382,34 @@ class AssistantViewState extends State<AssistantView> {
   /// The chip a still-running action wears. [label] is the live line a fetch
   /// reports while it moves bytes; without one it says the core's own word
   /// for work in flight, which is what every other action says.
+  /// What Nexus is doing right now, in one word and three dots.
+  ///
+  /// The dots are the DeepSeek cue: work in progress is shown as motion that
+  /// small, not as a spinner. A spinner is the shape a machine uses for
+  /// "blocked on something I cannot name", and Nexus is not blocked — it is
+  /// reading what you asked.
   Widget _workingChip([String? label]) {
     return Row(
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
             color: NexusColors.accent.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Text(
-            label ?? NexusCoreState.working.label,
-            style: NexusType.caption1.copyWith(
-              color: NexusColors.accent,
-              fontWeight: FontWeight.w600,
-            ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const _ThinkingDots(),
+              const SizedBox(width: NexusSpace.sm),
+              Text(
+                label ?? NexusCoreState.working.label,
+                style: NexusType.caption1.copyWith(
+                  color: NexusColors.accent,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
         ),
       ],
@@ -2668,19 +2758,101 @@ class AssistantViewState extends State<AssistantView> {
     }
   }
 
-  Widget _messageView(AgentMessage message) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: NexusColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: NexusColors.accent.withValues(alpha: 0.35)),
-      ),
-      child: Text(
-        message.text,
-        style: NexusType.caption.copyWith(color: NexusColors.text),
+  /// One of Nexus's own answers: full width, no bubble.
+  ///
+  /// This is the single biggest difference from a chat app that gives both
+  /// sides a balloon. The reply is the page's own text, set at a comfortable
+  /// reading size and leading, so a long answer reads as a document instead of
+  /// as a caption inside a box — and the two sides are told apart by *where*
+  /// they sit rather than by two competing fills.
+  ///
+  /// Its verbs are one long press away, as an action sheet (see
+  /// [_showAnswerActions]) and as the card's own semantics actions, because a
+  /// screen reader cannot press and hold.
+  Widget _messageView(AgentMessage message, {bool regenerate = false}) {
+    final actions = _answerActions(message, regenerate: regenerate);
+    return Semantics(
+      container: true,
+      customSemanticsActions: {
+        for (final action in actions)
+          CustomSemanticsAction(label: action.label): action.run,
+      },
+      child: NexusPressable(
+        onLongPress: () => unawaited(
+          _showAnswerActions(actions, title: message.text),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: NexusSpace.xs),
+          child: SizedBox(
+            width: double.infinity,
+            child: Text(
+              message.text,
+              style: NexusType.body.copyWith(
+                color: NexusColors.text,
+                // Looser than the token's leading: a reply is read in
+                // sentences, and 15pt at 1.33 is a caption's rhythm.
+                height: 1.45,
+              ),
+            ),
+          ),
+        ),
       ),
     );
+  }
+
+  /// The verbs on one of Nexus's own answers, in the order the sheet shows
+  /// them. Empty for a live widget (the clock), whose text is not a copy of
+  /// anything stable.
+  List<({String label, VoidCallback run})> _answerActions(
+    AgentMessage message, {
+    required bool regenerate,
+  }) => [
+    (label: 'Copy', run: () => unawaited(_copyAnswer(message.text))),
+    if (regenerate && _lastInput.isNotEmpty)
+      (label: 'Regenerate', run: _regenerate),
+  ];
+
+  /// Copies an answer to the system clipboard and says so. A silent copy is
+  /// indistinguishable from a long press that did nothing, so the snackbar is
+  /// part of the action rather than decoration.
+  Future<void> _copyAnswer(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied.')));
+  }
+
+  /// Asks the last question again, exactly as typing it once more would —
+  /// the answer is regenerated, not a stored one replayed.
+  void _regenerate() {
+    _controller.text = _lastInput;
+    _onSubmit();
+  }
+
+  /// Opens the answer's verbs as an action sheet. An action sheet rather than
+  /// an inline row: the card has no room for chrome, and a short list of verbs
+  /// is the shape iOS gives exactly this.
+  Future<void> _showAnswerActions(
+    List<({String label, VoidCallback run})> actions, {
+    required String title,
+  }) async {
+    HapticFeedback.selectionClick();
+    final chosen = await showNexusActions<String>(
+      context: context,
+      title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
+      actions: (popup) => [
+        for (final action in actions)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(popup, action.label),
+            child: Text(action.label),
+          ),
+      ],
+    );
+    if (chosen == null) return;
+    for (final action in actions) {
+      if (action.label == chosen) action.run();
+    }
   }
 
   /// The answer to "what time is it" keeps ticking instead of going stale.
@@ -2746,6 +2918,148 @@ String _askHintFor(String platform) {
 String _teachHint(String platform) {
   final phrase = _phrase(AgentActions.deviceList, platform);
   return phrase == null ? 'means…' : 'means… e.g. "$phrase"';
+}
+
+/// Three dots pulsing in sequence while Nexus is working — the only motion an
+/// answer in progress carries.
+///
+/// Each dot is a third of the cycle behind the one before it, so the group
+/// reads as one travelling pulse instead of three blinks. Small (16×6) and
+/// slow (1.2 s) on purpose: this sits in the corner of the eye above an answer
+/// the user has not read yet, and anything faster or bigger would compete with
+/// the reading rather than report on the writing.
+class _ThinkingDots extends StatefulWidget {
+  const _ThinkingDots();
+
+  @override
+  State<_ThinkingDots> createState() => _ThinkingDotsState();
+}
+
+class _ThinkingDotsState extends State<_ThinkingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse.repeat();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reduce motion stops the loop rather than shortening it: three dots that
+    // never move are still three dots, and the word beside them already says
+    // what is happening.
+    if (MediaQuery.maybeDisableAnimationsOf(context) == true) {
+      _pulse.stop();
+      _pulse.value = 0;
+    } else if (!_pulse.isAnimating) {
+      _pulse.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return SizedBox(
+      width: 16,
+      height: 6,
+      child: AnimatedBuilder(
+        animation: _pulse,
+        builder: (context, _) => CustomPaint(
+          painter: _ThinkingDotsPainter(
+            color: palette.accent,
+            phase: _pulse.value,
+          ),
+          size: const Size(16, 6),
+        ),
+      ),
+    );
+  }
+}
+
+/// Three 3px dots, one every 5px, each at a different point in the same cycle.
+class _ThinkingDotsPainter extends CustomPainter {
+  _ThinkingDotsPainter({required this.color, required this.phase});
+
+  final Color color;
+  final double phase;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final radius = size.height / 2;
+    final paint = Paint();
+    for (var i = 0; i < 3; i++) {
+      // A third of the cycle apart, lifted 0.45 -> 1.0 and back so the pulse
+      // travels rather than flashing.
+      final t = (phase + i / 3) % 1.0;
+      paint.color = color.withValues(alpha: 0.45 + 0.55 * (1 - (t * 2 - 1).abs()));
+      canvas.drawCircle(
+        Offset(radius + i * (size.width - size.height) / 2, radius),
+        radius,
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ThinkingDotsPainter old) =>
+      old.phase != phase || old.color != color;
+}
+
+/// A card that fades in as it appears.
+///
+/// A reply arrives whole — there is no token stream to animate — so this is
+/// the whole animation, and it is opacity only: no slide, no scale, and above
+/// all no typewriter. Text that is already complete and is then revealed
+/// letter by letter is a performance the reader has to sit through, and it is
+/// the clearest tell that a model is behind the screen.
+///
+/// The duration is the design system's opacity value rather than a new one;
+/// see `docs/notes/motion-audit.md` §12. With reduce motion on, the card is
+/// simply there.
+class _AnswerEntrance extends StatefulWidget {
+  const _AnswerEntrance({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_AnswerEntrance> createState() => _AnswerEntranceState();
+}
+
+class _AnswerEntranceState extends State<_AnswerEntrance>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _fade = AnimationController(
+    vsync: this,
+    duration: NexusMotion.fast,
+  )..forward();
+
+  @override
+  void dispose() {
+    _fade.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (MediaQuery.maybeDisableAnimationsOf(context) == true) {
+      return widget.child;
+    }
+    return FadeTransition(
+      opacity: CurvedAnimation(parent: _fade, curve: Curves.easeOut),
+      child: widget.child,
+    );
+  }
 }
 
 /// A ticking clock: "It's HH:MM.", refreshed every second.
