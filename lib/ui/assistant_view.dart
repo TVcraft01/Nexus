@@ -2235,32 +2235,53 @@ class AssistantViewState extends State<AssistantView> {
   /// version put a 44px icon and two lines in the middle of the page and left
   /// the chips in a separate row at the bottom, saying the same thing twice
   /// in two places, neither of them where the eye starts.
+  ///
+  /// It sits in the *middle* of the thread area, not at its top. Those three
+  /// apps open a blank thread with the greeting block centred in the room the
+  /// conversation will later fill — measured on the phone, the greeting used
+  /// to start 431px down a 2340px screen, just under the status lines, which
+  /// reads as a form whose first row happens to be a greeting. Centring is
+  /// done inside a scroll view rather than by a fixed offset: on a short
+  /// window, or at 1.5× type, the block is taller than the room and must
+  /// scroll rather than be clipped to stay centred.
   Widget _emptyChat() {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-        NexusSpace.xxl,
-        NexusSpace.huge,
-        NexusSpace.xxl,
-        NexusSpace.xl,
-      ),
-      children: [
-        Text(
-          'Ask me anything — I listen and do.',
-          textAlign: TextAlign.center,
-          style: NexusType.title.copyWith(
-            color: NexusColors.text,
-            fontWeight: FontWeight.w600,
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        child: ConstrainedBox(
+          // At least the room available, so `Center` has something to centre
+          // in; taller than it when the type is big, so the block scrolls.
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: NexusSpace.xxl,
+                vertical: NexusSpace.xl,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Ask me anything — I listen and do.',
+                    textAlign: TextAlign.center,
+                    style: NexusType.title.copyWith(
+                      color: NexusColors.text,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: NexusSpace.sm),
+                  Text(
+                    'Type below, or tap a suggestion to try one.',
+                    textAlign: TextAlign.center,
+                    style: NexusType.body.copyWith(color: NexusColors.muted),
+                  ),
+                  const SizedBox(height: NexusSpace.xxl),
+                  _suggestionChips(wrapped: true, limit: 4),
+                ],
+              ),
+            ),
           ),
         ),
-        const SizedBox(height: NexusSpace.sm),
-        Text(
-          'Type below, or tap a suggestion to try one.',
-          textAlign: TextAlign.center,
-          style: NexusType.body.copyWith(color: NexusColors.muted),
-        ),
-        const SizedBox(height: NexusSpace.xxl),
-        _suggestionChips(wrapped: true, limit: 4),
-      ],
+      ),
     );
   }
 

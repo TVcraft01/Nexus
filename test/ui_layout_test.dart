@@ -97,6 +97,43 @@ Future<void> _pumpShell(
   await tester.pump(const Duration(milliseconds: 60));
 }
 
+/// A mesh with one paired device and no I/O at all.
+///
+/// The assistant's greeting only exists once something is paired — with an
+/// empty mesh a blank thread shows the first-run setup card instead — and a
+/// real pairing means a real dial, whose timeout timer is still pending when
+/// the test body ends. Faking the two members the screens read is what lets
+/// the greeting be measured on the real shell.
+class _OnePairedDeviceMesh extends MeshService {
+  _OnePairedDeviceMesh(this._peer)
+    : super(
+        identity: DeviceInfo(
+          id: 'layout-device',
+          name: 'Layout PC',
+          platform: 'linux',
+        ),
+        store: NexusStore(
+          explicitPath:
+              '${Directory.systemTemp.createTempSync('layout-fake').path}/s.json',
+        ),
+        heartbeatInterval: const Duration(seconds: 30),
+      );
+
+  final PairedDevice _peer;
+
+  @override
+  List<PairedDevice> get pairedDevices => [_peer];
+
+  @override
+  bool isOnline(String id) => false;
+
+  /// No listing and no dial: `Files` builds inside the shell, and a real
+  /// listing attempt outlives the test as a connect-timeout timer.
+  @override
+  Future<List<FileEntry>?> listRemoteFiles(PairedDevice peer, String path) async =>
+      null;
+}
+
 Future<void> _openTab(WidgetTester tester, String tab) async {
   await tester.tap(find.text(tab).last);
   await tester.pump();
@@ -255,6 +292,80 @@ void main() {
     });
 
     await tester.runAsync(mesh.stop);
+  });
+
+  testWidgets('a blank thread centres its greeting in the space above the '
+      'composer', (tester) async {
+    // One paired device is what turns the first-run setup card into the empty
+    // thread; the greeting only exists on the second kind of blank screen.
+    final mesh = _OnePairedDeviceMesh(
+      PairedDevice(
+        id: 'layout-peer',
+        name: 'Layout peer',
+        platform: 'linux',
+        address: '10.0.0.9',
+        port: 51999,
+        pairingSecret: 'layout-secret',
+      ),
+    );
+    await _on(TargetPlatform.android, () async {
+      await _pumpShell(tester, geometry: _phone, mesh: mesh);
+      await _openTab(tester, 'Assistant');
+
+      final assistant = find.byType(AssistantView);
+      final greeting = find.descendant(
+        of: assistant,
+        matching: find.text('Ask me anything — I listen and do.'),
+      );
+      expect(greeting, findsOneWidget, reason: 'a blank thread greets');
+
+      // The thread area is the scroll view the greeting was centred inside;
+      // the composer is what it must stay clear of.
+      final area = tester.getRect(
+        find
+            .ancestor(
+              of: greeting,
+              matching: find.byType(SingleChildScrollView),
+            )
+            .first,
+      );
+      final chips = find.descendant(
+        of: assistant,
+        matching: find.byType(ActionChip),
+      );
+      final composer = tester.getRect(
+        find.descendant(of: assistant, matching: find.byType(TextField)),
+      );
+
+      // The whole block — greeting line, the line under it, the chips — is one
+      // object, and the object is what the eye should find in the middle. The
+      // test for "in the middle" is that the room above it and the room below
+      // it are the same: pinning the block to the top left 40dp above and
+      // ~180dp below, which is what the phone showed (a greeting 431dp down a
+      // 2340dp screen, level with the status lines).
+      final blockTop = tester.getRect(greeting).top;
+      final blockBottom = tester.getRect(chips.last).bottom;
+      final gapAbove = blockTop - area.top;
+      final gapBelow = area.bottom - blockBottom;
+
+      expect(
+        (gapAbove - gapBelow).abs(),
+        lessThan(area.height * 0.06),
+        reason: 'the greeting must be centred in the thread area — '
+            '${gapAbove.toStringAsFixed(1)}dp above it, '
+            '${gapBelow.toStringAsFixed(1)}dp below',
+      );
+      expect(
+        gapAbove,
+        greaterThan(NexusSpace.lg),
+        reason: 'and not flush against the top, which is where it was',
+      );
+      expect(
+        blockBottom,
+        lessThan(composer.top),
+        reason: 'a centred greeting never runs into the composer',
+      );
+    });
   });
 
   // Apple's Dynamic Type rule: text follows the user's text-size preference.
