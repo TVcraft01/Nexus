@@ -134,6 +134,32 @@ class NexusCupertinoTheme extends StatelessWidget {
   }
 }
 
+/// Follows the user's text-size preference, inside the range the layouts are
+/// built for.
+///
+/// Flutter scales text on its own — every `Text` reads the platform's scaler —
+/// so the reason this exists is the ceiling and the floor: a phone set to 2×
+/// turns a 64dp row into a title that does not fit in it, and Android's
+/// smallest setting shrinks text below what is legible. Both ends are clamped
+/// to [NexusType.minScale]–[NexusType.maxScale], and anything whose size is
+/// there to hold text grows with them through [NexusType.scaled].
+///
+/// It sits inside `MaterialApp`'s builder next to [NexusCupertinoTheme], above
+/// the navigator, so every route — pushed pages, dialogs, sheets — inherits
+/// it.
+class NexusTextScaling extends StatelessWidget {
+  const NexusTextScaling({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(
+    minScaleFactor: NexusType.minScale,
+    maxScaleFactor: NexusType.maxScale,
+    child: child,
+  );
+}
+
 /// The page frame every tab uses.
 ///
 /// It owns the three things that used to be re-decided in each view — the
@@ -650,7 +676,11 @@ class NexusRow extends StatelessWidget {
     );
 
     final row = ConstrainedBox(
-      constraints: BoxConstraints(minHeight: minHeight),
+      // The row's height holds its text, so it follows the user's text size:
+      // a 17pt title at 1.5× needs a taller row, not a clipped one.
+      constraints: BoxConstraints(
+        minHeight: NexusType.scaled(context, minHeight),
+      ),
       child: content,
     );
 

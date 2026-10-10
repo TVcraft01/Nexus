@@ -21,6 +21,8 @@ import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/ui/assistant_view.dart';
+import 'package:nexus/ui/components/nexus_ui.dart'
+    show NexusRow, NexusTextScaling;
 import 'package:nexus/ui/home_shell.dart';
 import 'package:nexus/ui/nexus_core.dart';
 import 'package:nexus/ui/theme.dart';
@@ -253,5 +255,85 @@ void main() {
     });
 
     await tester.runAsync(mesh.stop);
+  });
+
+  // Apple's Dynamic Type rule: text follows the user's text-size preference.
+  // Flutter already paints every `Text` at the platform's scaler, so what is
+  // worth pinning here is the part Nexus adds — the ceiling, and the row that
+  // grows with the text so a bigger title is never a clipped one.
+  group('Dynamic Type', () {
+    /// The size a [NexusType.body] `Text` actually paints at when the platform
+    /// asks for [scale].
+    Future<double> paintedAt(WidgetTester tester, double scale) async {
+      await tester.pumpWidget(
+        MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+          child: const NexusTextScaling(
+            child: Directionality(
+              textDirection: TextDirection.ltr,
+              child: Text('Nexus', style: NexusType.body),
+            ),
+          ),
+        ),
+      );
+      final rich = tester.widget<RichText>(find.byType(RichText));
+      return rich.textScaler.scale(NexusType.body.fontSize!);
+    }
+
+    testWidgets('the phone\u2019s text size grows the type, and the app stops '
+        'it where its layouts end', (tester) async {
+      expect(await paintedAt(tester, 1.0), NexusType.body.fontSize);
+      expect(
+        await paintedAt(tester, 1.3),
+        closeTo(NexusType.body.fontSize! * 1.3, 0.01),
+        reason: 'a phone set to 1.3× paints 1.3× text',
+      );
+      // 3× is past what a fixed row, a fixed tab bar and a fixed gutter can
+      // hold; it lands on the clamp rather than overflowing them.
+      expect(
+        await paintedAt(tester, 3.0),
+        closeTo(NexusType.body.fontSize! * NexusType.maxScale, 0.01),
+        reason: 'the ceiling is ${NexusType.maxScale}×, not 3×',
+      );
+    });
+
+    testWidgets('a row grows with the text, so a bigger title is not '
+        'clipped', (tester) async {
+      Future<double> rowHeight(WidgetTester tester, double scale) async {
+        await tester.pumpWidget(
+          MediaQuery(
+            data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+            // A Column with no height of its own, so the row is measured at
+            // the height it asks for rather than the height of the screen.
+            child: const NexusTextScaling(
+              child: Directionality(
+                textDirection: TextDirection.ltr,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    NexusRow(title: 'notes.txt', subtitle: 'Folder'),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+        return tester.getSize(find.byType(NexusRow)).height;
+      }
+
+      final atOne = await rowHeight(tester, 1.0);
+      expect(
+        atOne,
+        greaterThanOrEqualTo(NexusSize.row),
+        reason: 'a row is never shorter than the token height',
+      );
+      // The floor moved with the text, which is the point: at 1.3× the row
+      // reserves 1.3× the height its title and caption need.
+      expect(
+        await rowHeight(tester, 1.3),
+        greaterThanOrEqualTo(NexusSize.row * 1.3),
+        reason: 'the row owns the height its text needs',
+      );
+    });
   });
 }

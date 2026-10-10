@@ -17,7 +17,7 @@ import 'core/identity.dart';
 import 'core/store.dart';
 import 'mesh/gateway.dart';
 import 'mesh/mesh_service.dart';
-import 'ui/components/nexus_ui.dart' show NexusCupertinoTheme;
+import 'ui/components/nexus_ui.dart' show NexusCupertinoTheme, NexusTextScaling;
 import 'ui/home_shell.dart';
 import 'ui/theme.dart';
 
@@ -276,8 +276,12 @@ class _NexusAppState extends State<NexusApp> with WindowListener {
       // their colours from a CupertinoTheme whose default is *light*. The
       // builder sits above the navigator, so every route inherits the app's
       // own dark theme instead of a black title on a black page.
-      builder: (context, child) =>
-          NexusCupertinoTheme(child: child ?? const SizedBox.shrink()),
+      // Text follows the phone's text-size setting, clamped to the range the
+      // layouts are built for (NexusType.minScale–maxScale); both wrappers sit
+      // above the navigator so every route inherits them.
+      builder: (context, child) => NexusTextScaling(
+        child: NexusCupertinoTheme(child: child ?? const SizedBox.shrink()),
+      ),
       home: HomeShell(mesh: widget.mesh),
     );
   }

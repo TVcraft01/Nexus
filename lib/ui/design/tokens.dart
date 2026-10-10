@@ -403,6 +403,30 @@ abstract final class NexusSpring {
 /// title takes `w500` where iOS would say "regular" — it lands at the same
 /// optical weight on the device.
 abstract final class NexusType {
+  /// The range the app's layouts are built for, as a multiple of each size.
+  ///
+  /// Apple's own scale runs to 3× at the largest accessibility sizes, but
+  /// Nexus is built on fixed rows and a fixed tab bar; past 1.5× the honest
+  /// answer is a redesign, not a bigger font. Below 0.85× text stops being
+  /// legible at arm's length.
+  static const double minScale = 0.85;
+  static const double maxScale = 1.5;
+
+  /// The user's text-size preference, clamped to [minScale]–[maxScale].
+  ///
+  /// Flutter already applies the platform's scaler to every `Text`, so the
+  /// only reason to ask for it is to *bound* it (see [NexusTextScaling]) or
+  /// to grow something that is not text — a row's height, a gutter.
+  static TextScaler scalerOf(BuildContext context) =>
+      MediaQuery.textScalerOf(
+        context,
+      ).clamp(minScaleFactor: minScale, maxScaleFactor: maxScale);
+
+  /// [value] at the user's text size. A row's height is there to hold a title
+  /// and a caption; when those grow, so does the row.
+  static double scaled(BuildContext context, double value) =>
+      value * scalerOf(context).scale(1.0);
+
   /// Large Title. Sits inside the page and scrolls with it, the way an iOS
   /// large title does.
   static const TextStyle display = TextStyle(
