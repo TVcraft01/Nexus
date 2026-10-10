@@ -1,9 +1,14 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/cupertino.dart'
     show
+        CupertinoActionSheetAction,
         CupertinoAlertDialog,
         CupertinoDialogAction,
         CupertinoTextField;
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart' show SpringSimulation;
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../core/capability.dart';
@@ -54,6 +59,51 @@ String _timeAgo(DateTime? t) {
   return '${d.inDays}d ago';
 }
 
+/// The most devices the graph draws before it hands over to the list.
+///
+/// Past this the ring turns into a spiral of overlapping glyphs, and the list
+/// below — which says everything the graph says, in words — is the honest
+/// rendering. It is a limit on what this picture can carry, not on pairing.
+const int _maxGraphDevices = 6;
+
+/// What a link between two devices looks like, from the supervisor's own
+/// snapshot.
+///
+/// Three states, each of them something the supervisor or the mesh actually
+/// reports, and no fourth: deliberately narrower than "not online", because a
+/// device that is down with no retry recorded is not being reconnected, and
+/// calling it "reconnecting" would be a claim nothing measured.
+enum _LinkState {
+  online,
+  reconnecting,
+  offline;
+
+  /// How live the line is, 0..1. The painter reads this one number, so the
+  /// line's colour, its weight and its dash pattern all move together when the
+  /// state does — a link that drops fades out rather than being cut.
+  double get liveness => switch (this) {
+    _LinkState.online => 1,
+    _LinkState.reconnecting => 0.5,
+    _LinkState.offline => 0,
+  };
+
+  String get label => switch (this) {
+    _LinkState.online => 'Online',
+    _LinkState.reconnecting => 'Reconnecting',
+    _LinkState.offline => 'Offline',
+  };
+}
+
+/// The graph's and the row's shared verdict on one paired device.
+({_LinkState state, PeerLink? retry}) _linkFor(MeshService mesh, String id) {
+  final retry = _retryingLink(mesh, id);
+  if (retry != null) return (state: _LinkState.reconnecting, retry: retry);
+  return (
+    state: mesh.isOnline(id) ? _LinkState.online : _LinkState.offline,
+    retry: null,
+  );
+}
+
 /// What this device can actually run for you, named the way the capability
 /// registry names it.
 ///
@@ -99,6 +149,19 @@ class DevicesView extends StatelessWidget {
           title: 'Devices',
           subtitle: 'Everything Nexus can work across.',
         ),
+        // The picture comes first: this device in the middle and one line per
+        // link. The strip and the list below say the same things in words, and
+        // the list stays the rendering of record — for a screen reader, and
+        // for a mesh with more devices than a ring can hold.
+        if (paired.isNotEmpty && paired.length <= _maxGraphDevices) ...[
+          const NexusSectionHeader(
+            'The mesh',
+            detail:
+                'This device in the middle. Solid is online, dashed is being '
+                'reconnected, dotted is down.',
+          ),
+          _TopologyGraph(mesh: mesh),
+        ],
         _Reachability(note: mesh.lastNotice, mesh: mesh),
         if (paired.isEmpty)
           const SizedBox(height: NexusSpace.lg)
@@ -569,6 +632,550 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
       ),
     );
   }
+}
+
+// The node boxes are fixed sizes rather than content-sized, because the graph
+// places them by hand: a box whose width depended on its label would move the
+// line's endpoint every time a device was renamed. The room reserved under a
+// disc for that label does follow the user's text size (see [_TopologyGraph]),
+// but the width does not — a device with a long name ellipsises here, and the
+// list below is where the whole name lives.
+const double _peerDisc = 56;
+const double _selfDisc = 76;
+const double _peerNodeWidth = 92;
+const double _selfNodeWidth = 124;
+
+/// The gap a line keeps from the disc it starts or ends at, so a link reads as
+/// joining two devices rather than passing under them.
+const double _lineInset = 6;
+
+/// The mesh as a picture: this device in the middle, every paired device on a
+/// ring around it, one line per link.
+///
+/// The line is the link, so it carries the link's state and nothing else.
+/// There is no signal-strength bar and no glow, because the app measures how
+/// long a peer has been silent and whether a retry is in flight — and says
+/// exactly that. Anything richer on this screen would be invented.
+class _TopologyGraph extends StatefulWidget {
+  const _TopologyGraph({required this.mesh});
+
+  final MeshService mesh;
+
+  @override
+  State<_TopologyGraph> createState() => _TopologyGraphState();
+}
+
+class _TopologyGraphState extends State<_TopologyGraph>
+    with TickerProviderStateMixin {
+  /// The entrance. A spring, not a duration: it can be re-targeted mid-flight,
+  /// which is what stops a graph arriving while the mesh is still changing its
+  /// mind from restarting.
+  late final AnimationController _enter = AnimationController.unbounded(
+    vsync: this,
+  )..animateWith(SpringSimulation(NexusSpring.of(), 0, 1, 0));
+
+  /// The travelling dashes on a live retry. Started only while something is
+  /// genuinely being retried, so a resting graph has no motion in it at all.
+  late final AnimationController _dash = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  );
+
+  /// One spring per link, re-targeted in place from wherever it currently is
+  /// (and at whatever speed), so a link that changes state mid-flight
+  /// continues its motion instead of restarting it.
+  final Map<String, AnimationController> _live = {};
+  final Map<String, double> _want = {};
+
+  bool _reduced = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduced = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    if (reduced == _reduced) return;
+    _reduced = reduced;
+    if (reduced) {
+      _enter.value = 1;
+      _dash.stop();
+      _dash.value = 0;
+    } else {
+      _enter.animateWith(
+        SpringSimulation(NexusSpring.of(), _enter.value, 1, _enter.velocity),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _enter.dispose();
+    _dash.dispose();
+    for (final controller in _live.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  /// The line's liveness, springing towards [target] from wherever it is now.
+  /// Re-targeted only when the target itself changes, so a spring already on
+  /// its way is never restarted every frame.
+  AnimationController _livenessFor(String id, double target) {
+    final controller = _live[id] ??= AnimationController.unbounded(
+      vsync: this,
+      value: target,
+    );
+    if (_want[id] == target) return controller;
+    _want[id] = target;
+    if (_reduced) {
+      controller.value = target;
+    } else {
+      controller.animateWith(
+        SpringSimulation(
+          NexusSpring.of(),
+          controller.value,
+          target,
+          controller.velocity,
+        ),
+      );
+    }
+    return controller;
+  }
+
+  /// How far a node has arrived: the centre first, then the ring a beat behind
+  /// it, so the picture assembles clockwise instead of blinking in whole.
+  double _arrival(int index) {
+    if (_reduced) return 1;
+    final delay = index < 0 ? 0.0 : math.min(0.06 * (index + 1), 0.36);
+    return ((_enter.value - delay) / (1 - delay)).clamp(0.0, 1.0);
+  }
+
+  /// Far enough out that no two node boxes touch, and no further than the page
+  /// has room for. Two facts set the floor — the centre node is the biggest box
+  /// on the graph, and neighbours on the ring must not collide — and the width
+  /// sets the ceiling, because on a phone width is what runs out first.
+  double _radiusFor(int peers, double width) {
+    const beside =
+        _selfNodeWidth / 2 + _peerNodeWidth / 2 + NexusSpace.md;
+    final chord = peers < 2
+        ? 0.0
+        : _peerNodeWidth / 2 / math.sin(math.pi / peers) + NexusSpace.sm;
+    final allowed = (width - _peerNodeWidth) / 2;
+    return math.min(
+      math.max(beside, chord),
+      math.max(allowed, _peerNodeWidth / 2 + NexusSpace.sm),
+    );
+  }
+
+  /// Where each peer sits on its ring. One device goes to the right and two go
+  /// left and right — a link reads best as a line across the screen — and from
+  /// three on they are spread evenly from the top, clockwise.
+  List<double> _ringAngles(int peers) {
+    if (peers == 1) return const [0];
+    if (peers == 2) return const [0, math.pi];
+    return [
+      for (var i = 0; i < peers; i++) -math.pi / 2 + 2 * math.pi * i / peers,
+    ];
+  }
+
+  Future<void> _showNodeActions(PairedDevice device) async {
+    HapticFeedback.selectionClick();
+    final chosen = await showNexusActions<String>(
+      context: context,
+      title: Text(device.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      actions: (popup) => [
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'details'),
+          child: const Text('Show details'),
+        ),
+        CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(popup, 'unpair'),
+          child: const Text('Unpair'),
+        ),
+      ],
+    );
+    if (chosen == null || !mounted) return;
+    switch (chosen) {
+      case 'details':
+        _showDetail(context, widget.mesh, device);
+      case 'unpair':
+        // The same confirmation the detail sheet uses, because forgetting is
+        // the same act wherever it is reached from.
+        final confirmed = await _confirmForget(context, device);
+        if (confirmed == true) await widget.mesh.forgetDevice(device.id);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    final mesh = widget.mesh;
+    final peers = mesh.pairedDevices;
+    final self = mesh.identity;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final radius = _radiusFor(peers.length, width);
+        final angles = _ringAngles(peers.length);
+
+        // The room reserved under a disc for its label follows the user's text
+        // size; the disc itself and the box's width do not, because the graph
+        // is a picture of the mesh, not a place to read a long name.
+        final peerBox = Size(
+          _peerNodeWidth,
+          _peerDisc + NexusType.scaled(context, 46),
+        );
+        final selfBox = Size(
+          _selfNodeWidth,
+          _selfDisc + NexusType.scaled(context, 54),
+        );
+
+        final centres = [
+          for (final angle in angles)
+            Offset(math.cos(angle) * radius, math.sin(angle) * radius),
+        ];
+
+        // The picture's own bounds, so one device is a short graph and six is a
+        // tall one rather than the same fixed rectangle with a mostly empty
+        // middle — and so nothing is ever positioned outside the box it is
+        // clipped to.
+        var bounds = Rect.fromCenter(
+          center: Offset.zero,
+          width: selfBox.width,
+          height: selfBox.height,
+        );
+        for (final centre in centres) {
+          bounds = bounds.expandToInclude(
+            Rect.fromCenter(
+              center: centre,
+              width: peerBox.width,
+              height: peerBox.height,
+            ),
+          );
+        }
+        final shift = Offset((width - bounds.width) / 2 - bounds.left, -bounds.top);
+
+        final links = <({_LinkState state, Offset at})>[];
+        final live = <AnimationController>[_enter, _dash];
+        var retrying = false;
+        for (final (i, device) in peers.indexed) {
+          final link = _linkFor(mesh, device.id);
+          if (link.retry != null) retrying = true;
+          live.add(_livenessFor(device.id, link.state.liveness));
+          links.add((state: link.state, at: shift + centres[i]));
+        }
+
+        // The dash phase travels only while a link is actually being retried —
+        // and it is parked at zero otherwise, so a graph that is not
+        // reconnecting is completely still.
+        if (retrying && !_reduced) {
+          if (!_dash.isAnimating) _dash.repeat();
+        } else if (_dash.value != 0) {
+          _dash.stop();
+          _dash.value = 0;
+        }
+
+        return SizedBox(
+          height: bounds.height,
+          child: AnimatedBuilder(
+            animation: Listenable.merge(live),
+            builder: (context, _) => Stack(
+              children: [
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: _TopologyPainter(
+                      selfAt: shift,
+                      selfRadius: _selfDisc / 2,
+                      peerRadius: _peerDisc / 2,
+                      links: [
+                        for (final (i, link) in links.indexed)
+                          (
+                            at: link.at,
+                            liveness: _live[peers[i].id]!.value,
+                          ),
+                      ],
+                      accent: palette.accent,
+                      quiet: palette.textTertiary,
+                      // 12px of travel over the cycle: enough that a dashed
+                      // link is visibly being worked on, slow enough that it
+                      // never reads as a progress bar.
+                      dashPhase: _dash.value * 12,
+                    ),
+                    size: Size(width, bounds.height),
+                  ),
+                ),
+                _positioned(
+                  centre: shift,
+                  width: selfBox.width,
+                  disc: _selfDisc,
+                  arrival: _arrival(-1),
+                  child: _TopologyNode(
+                    platform: self.platform,
+                    name: self.name,
+                    state: _LinkState.online,
+                    detail: platformLabel(self.platform),
+                    isSelf: true,
+                  ),
+                ),
+                for (final (i, device) in peers.indexed)
+                  _positioned(
+                    centre: shift + centres[i],
+                    width: peerBox.width,
+                    disc: _peerDisc,
+                    arrival: _arrival(i),
+                    child: _TopologyNode(
+                      platform: device.platform,
+                      name: device.name,
+                      state: links[i].state,
+                      // The node says what the device *is*, never how its link
+                      // is: that is the line's job, and the row below is where
+                      // the state is read as words. Putting it here too would
+                      // be the same status said twice on one screen — the bug
+                      // `devices_states_test.dart` was written to stop.
+                      detail: platformLabel(device.platform),
+                      isSelf: false,
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        _showDetail(context, mesh, device);
+                      },
+                      onLongPress: () => unawaited(_showNodeActions(device)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// One node, placed by its disc's centre and scaled in as it arrives.
+  Widget _positioned({
+    required Offset centre,
+    required double width,
+    required double disc,
+    required double arrival,
+    required Widget child,
+  }) {
+    return Positioned(
+      left: centre.dx - width / 2,
+      top: centre.dy - disc / 2,
+      width: width,
+      child: Opacity(
+        opacity: arrival,
+        // The spring's own value drives the scale: a node grows into place
+        // rather than sliding into it, because there is nowhere on this screen
+        // it would be sliding from.
+        child: Transform.scale(scale: 0.8 + 0.2 * arrival, child: child),
+      ),
+    );
+  }
+}
+
+/// One device on the graph: its platform glyph in a disc, its name and its link
+/// state under it.
+///
+/// The whole node is the pressable surface, not just the disc, so a thumb
+/// aiming at a glyph does not have to land on it exactly.
+class _TopologyNode extends StatelessWidget {
+  const _TopologyNode({
+    required this.platform,
+    required this.name,
+    required this.state,
+    required this.detail,
+    required this.isSelf,
+    this.onTap,
+    this.onLongPress,
+  });
+
+  final String platform;
+  final String name;
+  final _LinkState state;
+  final String detail;
+
+  /// The device the graph is drawn from: bigger, ringed in the accent, and not
+  /// something you can pair with or forget.
+  final bool isSelf;
+
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    final disc = isSelf ? _selfDisc : _peerDisc;
+    final live = state == _LinkState.online;
+    return Semantics(
+      container: true,
+      button: onTap != null,
+      // The node's own label carries the state a screen reader cannot get from
+      // a dashed line; the words inside are excluded so the node is not read as
+      // three unrelated fragments.
+      label: isSelf ? '$name, this device' : '$name, ${state.label}',
+      child: NexusPressable(
+        borderRadius: NexusRadius.pill,
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: ExcludeSemantics(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: disc,
+                height: disc,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: live
+                      ? palette.accentTint(isSelf ? 0.14 : 0.12)
+                      : palette.surfaceSecondary,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: isSelf
+                        ? palette.accent
+                        : live
+                        ? palette.accent.withValues(alpha: 0.5)
+                        : palette.separator,
+                    width: isSelf ? 2 : 1,
+                  ),
+                ),
+                child: Icon(
+                  platformIcon(platform),
+                  size: isSelf ? 32 : 24,
+                  color: live ? palette.accent : palette.textSecondary,
+                ),
+              ),
+              const SizedBox(height: NexusSpace.xs),
+              Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style:
+                    (isSelf ? NexusType.rowTitle : NexusType.caption).copyWith(
+                      color: palette.textPrimary,
+                      fontWeight: isSelf ? FontWeight.w600 : FontWeight.w500,
+                    ),
+              ),
+              Text(
+                detail,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: NexusType.caption1.copyWith(
+                  color: palette.textTertiary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Draws the links. One line per paired device, from the centre disc to that
+/// device's disc, carrying nothing but the link's own state.
+class _TopologyPainter extends CustomPainter {
+  _TopologyPainter({
+    required this.selfAt,
+    required this.selfRadius,
+    required this.peerRadius,
+    required this.links,
+    required this.accent,
+    required this.quiet,
+    required this.dashPhase,
+  });
+
+  final Offset selfAt;
+  final double selfRadius;
+  final double peerRadius;
+  final List<({Offset at, double liveness})> links;
+  final Color accent;
+  final Color quiet;
+  final double dashPhase;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final link in links) {
+      final direction = link.at - selfAt;
+      final distance = direction.distance;
+      if (distance <= 0) continue;
+      final unit = direction / distance;
+      final start = selfAt + unit * (selfRadius + _lineInset);
+      final end = link.at - unit * (peerRadius + _lineInset);
+      if ((end - start).distance <= 0) continue;
+
+      final v = link.liveness.clamp(0.0, 1.0);
+      // One number drives all three: colour towards the accent, weight up, and
+      // the dash closing up. A link that comes back therefore brightens and
+      // thickens into a solid line rather than switching to one.
+      final colour = Color.lerp(quiet, accent, v)!;
+      final alpha = 0.18 + 0.4 * v;
+      final weight = 1 + 1.2 * v;
+
+      // The solid line and the dashes cross-fade over the last quarter of the
+      // way to online, so the change of pattern is a fade and never a cut.
+      final solid = ((v - 0.75) / 0.25).clamp(0.0, 1.0);
+      if (solid > 0) {
+        canvas.drawLine(
+          start,
+          end,
+          Paint()
+            ..color = colour.withValues(alpha: alpha * solid)
+            ..strokeWidth = weight
+            ..strokeCap = StrokeCap.round,
+        );
+      }
+      if (solid < 1) {
+        canvas.drawPath(
+          _dashedLine(
+            start,
+            end,
+            // A down link is a sparse dotted trace: the pairing is
+            // remembered, the link itself is not there. A live retry is a
+            // clear dash that travels.
+            on: 1.5 + 3.5 * v,
+            gap: 10 - 3.5 * v,
+            phase: dashPhase * v,
+          ),
+          Paint()
+            ..color = colour.withValues(alpha: alpha * (1 - solid))
+            ..strokeWidth = weight
+            ..strokeCap = StrokeCap.round,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_TopologyPainter old) => true;
+}
+
+/// [a]→[b] as a dashed path, starting [phase] pixels into the pattern so the
+/// dashes travel along the line instead of blinking where they are.
+Path _dashedLine(
+  Offset a,
+  Offset b, {
+  required double on,
+  required double gap,
+  required double phase,
+}) {
+  final path = Path();
+  final total = (b - a).distance;
+  final step = on + gap;
+  if (total <= 0 || step <= 0 || on <= 0) return path;
+  final unit = (b - a) / total;
+  var at = -(phase % step);
+  while (at < total) {
+    final from = math.max(at, 0.0);
+    final to = math.min(at + on, total);
+    if (to > from) {
+      path.moveTo(a.dx + unit.dx * from, a.dy + unit.dy * from);
+      path.lineTo(a.dx + unit.dx * to, a.dy + unit.dy * to);
+    }
+    at += step;
+  }
+  return path;
 }
 
 /// One technical fact. Label left, value right — the shape every phone's

@@ -25,12 +25,14 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show SemanticsAction;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/connection_supervisor.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/mesh/mesh_transport.dart';
+import 'package:nexus/ui/components/nexus_ui.dart' show NexusRow;
 import 'package:nexus/ui/devices_view.dart';
 import 'package:nexus/ui/theme.dart';
 
@@ -146,7 +148,11 @@ void main() {
     // A device that is already paired is on screen straight away: the store is
     // read synchronously, so the tab never flashes "nothing here" at someone
     // who has something here.
-    expect(find.text('Nova'), findsOneWidget);
+    //
+    // Found by its row rather than by its name, because the graph names it too
+    // now: one node above, one row below, and the row is the rendering of
+    // record. Exactly one of those is the invariant.
+    expect(find.widgetWithText(NexusRow, 'Nova'), findsOneWidget);
     expect(
       find.text('No devices yet'),
       findsNothing,
@@ -179,8 +185,8 @@ void main() {
       _FakeMesh([_device('a', 'Nova'), _device('b', 'Ridge')]),
     );
 
-    expect(find.text('Nova'), findsOneWidget);
-    expect(find.text('Ridge'), findsOneWidget);
+    expect(find.widgetWithText(NexusRow, 'Nova'), findsOneWidget);
+    expect(find.widgetWithText(NexusRow, 'Ridge'), findsOneWidget);
     expect(
       find.text('None of your 2 devices are reachable right now.'),
       findsOneWidget,
@@ -298,5 +304,88 @@ void main() {
 
     expect(find.text('Linux · Offline · last seen never'), findsOneWidget);
     expect(find.textContaining('Reconnecting'), findsNothing);
+  });
+
+  // The graph is a picture of the same links, drawn from the same two sources
+  // the rows read: the mesh's own reachability and the supervisor's retry. What
+  // is pinned here is that a screen reader gets that state from a node — the
+  // only place on the picture it can be read, since a dashed line cannot be
+  // heard — and that the picture gives way to the list when it cannot carry
+  // the mesh any more.
+  group('the graph', () {
+    /// The graph arrives on a spring, and a node that has not arrived yet is
+    /// transparent, so its semantics are genuinely absent until it settles.
+    /// Past the response time by a wide margin: the value has to be off zero.
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump(const Duration(milliseconds: 900));
+    }
+
+    testWidgets('a node names its device and the state the supervisor reports',
+        (tester) async {
+      final supervisor = await _watching('a', clock: _fixedClock);
+      final handle = tester.ensureSemantics();
+
+      await _pumpDevices(
+        tester,
+        _FakeMesh([_device('a', 'Nova')], supervisor: supervisor),
+      );
+      await settle(tester);
+      await supervisor.stop();
+
+      final node = tester.getSemantics(
+        find.bySemanticsLabel(RegExp(r'^Nova,')),
+      );
+      expect(
+        node.label,
+        'Nova, Reconnecting',
+        reason: 'the node draws the link from the same verdict the row prints',
+      );
+
+      handle.dispose();
+    });
+
+    testWidgets('the centre node is this device, and is not a device to act on',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+
+      await _pumpDevices(tester, _FakeMesh([_device('a', 'Nova')]));
+      await settle(tester);
+
+      final self = tester.getSemantics(
+        find.bySemanticsLabel(RegExp(r'^Test PC,')),
+      );
+      expect(self.label, 'Test PC, this device');
+      expect(
+        self.getSemanticsData().hasAction(SemanticsAction.longPress),
+        isFalse,
+        reason: 'there is no unpairing this device from itself',
+      );
+      // The paired device's node does take the gesture.
+      expect(
+        tester
+            .getSemantics(find.bySemanticsLabel(RegExp(r'^Nova,')))
+            .getSemanticsData()
+            .hasAction(SemanticsAction.longPress),
+        isTrue,
+      );
+
+      handle.dispose();
+    });
+
+    testWidgets('past six devices the list carries the mesh on its own',
+        (tester) async {
+      final many = [
+        for (final id in ['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+          _device(id, 'Device $id'),
+      ];
+
+      await _pumpDevices(tester, _FakeMesh(many));
+      await settle(tester);
+
+      // Seven rows, and not one node: the name appears exactly once, which is
+      // the row that is always there.
+      expect(find.byType(NexusRow), findsNWidgets(many.length));
+      expect(find.text('Device a'), findsOneWidget);
+    });
   });
 }
