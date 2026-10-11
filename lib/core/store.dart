@@ -301,6 +301,35 @@ class NexusStore {
     });
   }
 
+  /// The last files this device fetched, newest first — the Files tab's
+  /// "Recent" section. Purely local facts (path, name, size, source peer,
+  /// when it landed); no peer is ever asked to draw this list.
+  List<Map<String, dynamic>> get recentFetched =>
+      ((_data['recentFetched'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  /// Remembers a file this device just saved. Re-fetching the same path
+  /// moves it back to the top rather than appearing twice; the list keeps
+  /// the latest 10 and drops the rest.
+  void recordFetchedFile(Map<String, dynamic> file) {
+    final path = file['path']?.toString() ?? '';
+    if (path.isEmpty) return;
+    final list =
+        _data.putIfAbsent('recentFetched', () => <Map<String, dynamic>>[])
+            as List;
+    list.removeWhere((e) => e is Map && e['path'] == path);
+    list.insert(0, {...file, 'fetchedAt': DateTime.now().toIso8601String()});
+    if (list.length > 10) list.removeRange(10, list.length);
+  }
+
+  /// Forgets a fetched file — deleted from the assistant's card, or gone
+  /// from disk when the Files tab went looking for it.
+  void removeFetchedFile(String path) {
+    final list = _data['recentFetched'] as List?;
+    list?.removeWhere((e) => e is Map && e['path'] == path);
+  }
+
   Future<void> load() async {
     _file ??= await _defaultFile();
     if (await _file!.exists()) {

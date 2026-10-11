@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show File, Platform;
 
 import 'package:flutter/cupertino.dart'
     show CupertinoActionSheetAction, CupertinoTextField;
@@ -26,12 +27,18 @@ import '../core/speech.dart';
 import '../mesh/mesh_service.dart';
 import 'components/nexus_ui.dart';
 import 'device_executor.dart';
+import 'local_files.dart';
 import 'nexus_core.dart';
 import 'theme.dart';
 
 /// The assistant is a translator from human to machine: it asks when it
 /// doesn't understand, and remembers what you taught it. This service is kept
 /// alive for the whole view so questions and answers share one memory.
+
+/// What the assistant knows about a file a fetch just saved — the object the
+/// success card renders and its verbs act on. Carried on the fetch's result
+/// payload, never parsed back out of a sentence.
+typedef FetchedFile = ({String path, String name, int size, String peer});
 
 class AssistantView extends StatefulWidget {
   final MeshService mesh;
@@ -48,11 +55,28 @@ class AssistantView extends StatefulWidget {
   /// "working" state can be stranded.
   final DeviceExecutor? executor;
 
+  /// Opens a file this device holds with the platform's default viewer.
+  /// Injectable so a widget test can watch a tap without launching anything;
+  /// null uses the real one (ACTION_VIEW on Android, xdg-open on Linux).
+  final Future<bool> Function(String path)? openFile;
+
+  /// Shares a file through the platform share sheet. Same injection rule as
+  /// [openFile].
+  final Future<bool> Function(String path)? shareFile;
+
+  /// Leaves the assistant for the Files tab — where "Show in Files" on a
+  /// fetched file's card lands. Null in tests and embedded uses; the sheet
+  /// still offers the verb and it quietly does nothing without the wiring.
+  final VoidCallback? onShowFiles;
+
   const AssistantView({
     super.key,
     required this.mesh,
     this.brain,
     this.executor,
+    this.openFile,
+    this.shareFile,
+    this.onShowFiles,
   });
 
   @override
@@ -152,7 +176,19 @@ class AssistantViewState extends State<AssistantView> {
           fileAccessPrompt: _askForFileAccess,
         );
     executor.fileFetchProgress = _noteFetchProgress;
+    // Every fetch this device runs — typed, spoken, approved, or triggered
+    // by a peer — becomes a Recent entry in the Files tab. The executor is
+    // the one choke point where a pull actually saves bytes, so the memory
+    // starts here rather than in whichever card happens to show the result.
+    executor.onFileFetched = _rememberFetched;
     return executor;
+  }
+
+  /// Mirrors a landed fetch into the store's Recent list. The store is this
+  /// device's own file; nothing is sent anywhere.
+  void _rememberFetched(Map<String, dynamic> file) {
+    widget.mesh.store.recordFetchedFile(file);
+    unawaited(widget.mesh.store.save());
   }
 
   /// The live line for an in-flight fetch, or null when none is running. It
@@ -704,6 +740,7 @@ class AssistantViewState extends State<AssistantView> {
         outcome.message,
         request: request,
         candidates: outcome.candidates,
+        data: outcome.data,
       );
     } catch (error) {
       // A platform call that throws is still something the user has to be
@@ -802,6 +839,7 @@ class AssistantViewState extends State<AssistantView> {
     String message, {
     AgentRequest? request,
     List<String> candidates = const [],
+    Map<String, dynamic>? data,
   }) {
     final ok = status == AgentResultStatus.succeeded;
     setState(() {
@@ -829,7 +867,9 @@ class AssistantViewState extends State<AssistantView> {
       AgentDispatchResult(
         status: status,
         message: ok ? '' : message,
-        dispatch: ok ? AgentMessage(message) : null,
+        // The payload rides along on success: a fetched file turns its card
+        // into the file itself rather than a sentence with a path in it.
+        dispatch: ok ? AgentMessage(message, data: data) : null,
       ),
       replaceLast: true,
     );
@@ -2222,6 +2262,12 @@ class AssistantViewState extends State<AssistantView> {
       );
     }
     final result = entry.result!;
+    // A fetch outcome carries its file as an object; the card renders that
+    // object instead of the sentence that would otherwise carry a raw path.
+    final file = switch (result.dispatch) {
+      final AgentMessage message => _fileOf(message),
+      _ => null,
+    };
     return Semantics(
       container: true,
       child: Column(
@@ -2237,7 +2283,9 @@ class AssistantViewState extends State<AssistantView> {
             _deviceListView(list.devices),
           if (result.dispatch case final AgentActionPlan plan) _planView(plan),
           if (result.dispatch case final AgentMessage message)
-            isLast && message.live
+            file != null
+                ? _fetchedFileView(entry, file: file)
+                : isLast && message.live
                 ? _liveClockView()
                 : _messageView(
                     message,
@@ -2257,6 +2305,192 @@ class AssistantViewState extends State<AssistantView> {
             _approvalBar(),
           ],
         ],
+      ),
+    );
+  }
+
+  /// The file a fetch outcome card is about, when its result carries one.
+  /// Read from the fetch's payload — never parsed back out of the sentence —
+  /// so the card is built from the same object the executor saved.
+  FetchedFile? _fileOf(AgentMessage message) {
+    final data = message.data;
+    if (data == null) return null;
+    final path = data['path']?.toString() ?? '';
+    if (path.isEmpty) return null;
+    return (
+      path: path,
+      name: data['name']?.toString() ?? path.split(Platform.pathSeparator).last,
+      size: (data['size'] as num?)?.toInt() ?? 0,
+      peer: data['peer']?.toString() ?? '',
+    );
+  }
+
+  /// The card a fetched file deserves: the file itself, not the sentence
+  /// that carried its path. Tap it to open it with the platform's viewer;
+  /// long-press for what else can be done with a file that already lives on
+  /// this device.
+  Widget _fetchedFileView(
+    ConversationEntry entry, {
+    required FetchedFile file,
+  }) {
+    final subtitle = [
+      fileSizeLabel(file.size),
+      if (file.peer.isNotEmpty) 'from ${file.peer}',
+    ].join(' · ');
+    return Semantics(
+      container: true,
+      label: 'File ${file.name}, $subtitle. Tap to open it.',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _openFetched(file),
+        onLongPress: () => _fetchedFileActions(entry, file: file),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: NexusColors.surface,
+            borderRadius: const BorderRadius.all(Radius.circular(14)),
+            border: Border.all(
+              color: NexusColors.muted.withValues(alpha: 0.25),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                fileTypeIcon(name: file.name, isDir: false),
+                size: 28,
+                color: NexusColors.muted,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      file.name,
+                      style: NexusType.rowTitle.copyWith(
+                        color: NexusColors.text,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: NexusType.caption1.copyWith(
+                        color: NexusColors.muted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // The affordance: this card is a door, not a receipt.
+              Icon(
+                Icons.open_in_new_rounded,
+                size: 18,
+                color: NexusColors.muted,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Tap: the file opens with whatever this platform opens that kind of file
+  /// with. When nothing could — the file is gone, or no app claimed it — the
+  /// card says so instead of silently doing nothing.
+  Future<void> _openFetched(FetchedFile file) async {
+    final open = widget.openFile ?? openLocalFile;
+    final ok = await open(file.path);
+    if (!mounted || ok) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Could not open ${file.name} — it may have been moved or deleted.',
+        ),
+      ),
+    );
+  }
+
+  /// Long-press: the rest of what can be done with a file that is already on
+  /// this device — an action sheet, because this is a short list of verbs
+  /// rather than a page of settings.
+  Future<void> _fetchedFileActions(
+    ConversationEntry entry, {
+    required FetchedFile file,
+  }) async {
+    final chosen = await showNexusActions<String>(
+      context: context,
+      title: Text(file.name),
+      message: Text('${fileSizeLabel(file.size)} · saved on this device'),
+      actions: (popup) => [
+        CupertinoActionSheetAction(
+          child: const Text('Share'),
+          onPressed: () => Navigator.pop(popup, 'share'),
+        ),
+        CupertinoActionSheetAction(
+          child: const Text('Save as…'),
+          onPressed: () => Navigator.pop(popup, 'save'),
+        ),
+        CupertinoActionSheetAction(
+          child: const Text('Show in Files'),
+          onPressed: () => Navigator.pop(popup, 'files'),
+        ),
+        CupertinoActionSheetAction(
+          isDestructiveAction: true,
+          child: const Text('Delete'),
+          onPressed: () => Navigator.pop(popup, 'delete'),
+        ),
+      ],
+    );
+    if (!mounted || chosen == null) return; // dismissed = the user's choice
+    switch (chosen) {
+      case 'share':
+        final share = widget.shareFile ?? shareLocalFile;
+        final ok = await share(file.path);
+        if (!mounted || ok) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('There is no share sheet on this device.'),
+          ),
+        );
+      case 'save':
+        final saved = await saveLocalFileAs(file.path);
+        if (!mounted || saved == null) return; // cancelled stays quiet
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved another copy to $saved.')),
+        );
+      case 'files':
+        widget.onShowFiles?.call();
+      case 'delete':
+        await _deleteFetched(entry, file: file);
+    }
+  }
+
+  /// Delete: the file goes from this device, the Recent list forgets it, and
+  /// the card becomes the plain fact. A file that refuses to delete stays on
+  /// screen — still openable — and says so; the card never claims a deletion
+  /// that didn't happen.
+  Future<void> _deleteFetched(
+    ConversationEntry entry, {
+    required FetchedFile file,
+  }) async {
+    try {
+      final gone = File(file.path);
+      if (gone.existsSync()) gone.deleteSync();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete ${file.name}.')),
+      );
+      return;
+    }
+    widget.mesh.store.removeFetchedFile(file.path);
+    unawaited(widget.mesh.store.save());
+    if (!mounted) return;
+    _conversation.replaceEntry(
+      entry,
+      AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage('Deleted ${file.name}.'),
       ),
     );
   }

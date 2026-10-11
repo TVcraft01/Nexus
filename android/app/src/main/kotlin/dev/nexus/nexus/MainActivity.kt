@@ -34,6 +34,7 @@ import android.speech.tts.TextToSpeech
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.view.KeyEvent
+import android.webkit.MimeTypeMap
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -739,6 +740,12 @@ class MainActivity : FlutterActivity() {
                     "opened link",
                     args?.get("title")?.toString() ?: "Open with",
                 )
+                "openFile" -> openFileOnDevice(
+                    args?.get("path")?.toString() ?: "",
+                )
+                "shareFile" -> shareFileFromDevice(
+                    args?.get("path")?.toString() ?: "",
+                )
                 "torch" -> setTorch(args?.get("mode")?.toString() != "off")
                 "battery" -> batteryStatus()
                 "volume" -> adjustVolume(
@@ -838,6 +845,70 @@ class MainActivity : FlutterActivity() {
         Log.i(TAG, "$done ($title)")
         return mapOf("ok" to true, "message" to done.replaceFirstChar { it.uppercase() } + ".")
     }
+
+    /// ACTION_VIEW on a file this device holds, through the FileProvider, so
+    /// any viewer can read it without the file being world-readable. The path
+    /// must live under a root the provider declares (updater_paths.xml) —
+    /// shared storage, the app's own folders, or the updater's cache.
+    private fun openFileOnDevice(path: String): Map<String, Any?> {
+        val file = File(path)
+        if (!file.isFile) {
+            return mapOf("ok" to false, "message" to "That file isn't here any more.")
+        }
+        val uri = localFileUri(file) ?: return mapOf(
+            "ok" to false,
+            "message" to "Nexus can't hand that file to other apps just now.",
+        )
+        return startActionIntentChooser(
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeTypeOf(file))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            },
+            "opened ${file.name}",
+            "Open with",
+        )
+    }
+
+    /// The platform share sheet for a local file: ACTION_SEND with the file
+    /// as the stream, readable through the same content:// URI.
+    private fun shareFileFromDevice(path: String): Map<String, Any?> {
+        val file = File(path)
+        if (!file.isFile) {
+            return mapOf("ok" to false, "message" to "That file isn't here any more.")
+        }
+        val uri = localFileUri(file) ?: return mapOf(
+            "ok" to false,
+            "message" to "Nexus can't hand that file to other apps just now.",
+        )
+        return startActionIntentChooser(
+            Intent(Intent.ACTION_SEND).apply {
+                type = mimeTypeOf(file)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            },
+            "shared ${file.name}",
+            "Share via",
+        )
+    }
+
+    /// The content:// URI other apps may read [file] through. Below Android N
+    /// a file:// URI needs no provider; from N on, exposing one is refused.
+    private fun localFileUri(file: File): Uri? = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            FileProvider.getUriForFile(this, "$packageName.updater", file)
+        } else {
+            Uri.fromFile(file)
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "localFileUri failed for ${file.path}: $e")
+        null
+    }
+
+    /// The MIME type other apps expect for [file], guessed from its extension.
+    /// "*/*" when nothing recognizes it — Android then lets the user pick.
+    private fun mimeTypeOf(file: File): String =
+        MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
 
     private fun setTorch(on: Boolean): Map<String, Any?> {
         val cm = getSystemService(CameraManager::class.java)

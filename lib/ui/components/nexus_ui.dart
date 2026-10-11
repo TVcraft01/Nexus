@@ -65,6 +65,18 @@ IconData fileTypeIcon({required String name, required bool isDir}) {
   };
 }
 
+/// Bytes in the one line a file row has room for: "480 B", "4.0 KB",
+/// "12.3 MB", "1.2 GB". One owner, so a Files row and the assistant's
+/// fetched-file card read a size in exactly the same words.
+String fileSizeLabel(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+}
+
 /// What a platform is called in front of a user — never its id.
 String platformLabel(String platform) {
   switch (platform) {

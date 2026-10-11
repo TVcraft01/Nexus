@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="updates" path="." />
+    <!-- Fetched files: anything under shared storage (Download/…) and the
+         app's own folders, so "open" and "share" can hand a real content://
+         URI to another app. -->
+    <external-path name="shared_storage" path="." />
+    <external-files-path name="app_external" path="." />
+    <files-path name="app_internal" path="." />
 </paths>

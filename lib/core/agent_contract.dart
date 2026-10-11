@@ -249,11 +249,18 @@ class AgentMessage extends AgentDispatch {
   /// Arguments for the action, if any.
   final Map<String, dynamic>? arguments;
 
+  /// Structured payload behind this message. A successful file fetch carries
+  /// its file here ({'path', 'name', 'size', 'peer'}) so the card can render
+  /// the file as an object to act on — open, share, delete — instead of a
+  /// sentence with a raw path in it. Null for plain answers.
+  final Map<String, dynamic>? data;
+
   const AgentMessage(
     this.text, {
     this.live = false,
     this.action,
     this.arguments,
+    this.data,
   });
 }
 

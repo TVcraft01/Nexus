@@ -25,11 +25,13 @@ import 'components/nexus_ui.dart'
         NexusPageHeader,
         NexusPressable,
         NexusRow,
+        fileSizeLabel,
         fileTypeIcon,
         platformIcon,
         showNexusActions,
         showNexusSheet;
 import 'downloads_dir.dart';
+import 'local_files.dart';
 import 'theme.dart';
 
 /// How the listing is ordered. Folders always lead whatever this says: the
@@ -57,7 +59,13 @@ enum _FileLayout { list, grid }
 /// Tailscale address — from anywhere.
 class FilesView extends StatefulWidget {
   final MeshService mesh;
-  const FilesView({super.key, required this.mesh});
+
+  /// Opens a local file with the platform's default viewer — what a Recent
+  /// row's tap does. Injectable so a widget test can watch a tap without
+  /// launching anything; null uses the real one (ACTION_VIEW / xdg-open).
+  final Future<bool> Function(String path)? openFile;
+
+  const FilesView({super.key, required this.mesh, this.openFile});
 
   @override
   State<FilesView> createState() => _FilesViewState();
@@ -579,6 +587,128 @@ class _FilesViewState extends State<FilesView> {
     );
   }
 
+  /// The Files tab's own Recent: the last files this device fetched, newest
+  /// first — straight from the local store, with no peer asked. A fetched
+  /// file used to exist only inside the assistant's card as a path string;
+  /// this is where the user finds it again, at the top of the root view.
+  Widget _recentSection(BuildContext context, NexusPalette palette) {
+    final recent = widget.mesh.store.recentFetched;
+    if (recent.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.page,
+        NexusSpace.lg,
+        NexusSpace.page,
+        0,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Recent',
+            style: NexusType.caption1.copyWith(
+              color: palette.textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: NexusSpace.xs),
+          ConstrainedBox(
+            // Ten rows would push the listing they sit above off the screen.
+            constraints: const BoxConstraints(maxHeight: 300),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final file in recent) _recentRow(context, palette, file),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One recent fetch, in the same shape as a listing row: the type glyph,
+  /// the name, and the size with where it came from.
+  Widget _recentRow(
+    BuildContext context,
+    NexusPalette palette,
+    Map<String, dynamic> file,
+  ) {
+    final path = file['path']?.toString() ?? '';
+    final name = file['name']?.toString() ?? path;
+    final peer = file['peer']?.toString() ?? '';
+    final subtitle = [
+      fileSizeLabel((file['size'] as num?)?.toInt() ?? 0),
+      if (peer.isNotEmpty) 'from $peer',
+    ].join(' · ');
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'Recent file $name, $subtitle. Tap to open it.',
+      child: NexusPressable(
+        onTap: () => _openRecent(name, path),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            children: [
+              Icon(
+                fileTypeIcon(name: name, isDir: false),
+                size: 22,
+                color: palette.textSecondary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(
+                        color: palette.textTertiary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 18,
+                color: palette.textTertiary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Tap a recent row: the local file opens the same way the assistant's
+  /// card opens it. A row whose file is gone from disk (deleted outside the
+  /// app) is forgotten rather than left as a trap.
+  Future<void> _openRecent(String name, String path) async {
+    final open = widget.openFile ?? openLocalFile;
+    final ok = await open(path);
+    if (!mounted || ok) return;
+    widget.mesh.store.removeFetchedFile(path);
+    unawaited(widget.mesh.store.save());
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$name is no longer on this device.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = NexusPalette.of(context);
@@ -612,7 +742,7 @@ class _FilesViewState extends State<FilesView> {
     final summary = _entries == null || _error != null || listing.isEmpty
         ? null
         : '${listing.length} ${listing.length == 1 ? 'item' : 'items'} · '
-              '${_size(totalBytes)}';
+              '${fileSizeLabel(totalBytes)}';
 
     // The header belongs to the tab, not to the file listing — show it even
     // when there is nothing paired yet (the empty state below it). No icon
@@ -633,9 +763,12 @@ class _FilesViewState extends State<FilesView> {
     );
 
     if (devices.isEmpty) {
-      return const Column(
+      return Column(
         children: [
           header,
+          // Recent stands even alone: a file fetched by asking is exactly
+          // what a user comes back here to find.
+          _recentSection(context, palette),
           Expanded(
             child: Center(
               child: Padding(
@@ -658,6 +791,9 @@ class _FilesViewState extends State<FilesView> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         header,
+        // Recent sits at the top of the root view, above the peer list. Once
+        // a folder is open, the listing the user asked for owns the screen.
+        if (_trail.isEmpty) _recentSection(context, palette),
         const SizedBox(height: NexusSpace.lg),
         // Device picker: one chip per paired device, online ones first.
         SizedBox(
@@ -1804,7 +1940,7 @@ class _EntryRowState extends State<_EntryRow>
       // A folder's second line is what it is; a file's is how big and how old.
       subtitle: entry.isDir
           ? 'Folder'
-          : '${_size(entry.size)} · ${_when(entry.modified)}',
+          : '${fileSizeLabel(entry.size)} · ${_when(entry.modified)}',
       leading: _leading(palette),
       // A folder goes somewhere, so it gets the one trailing chevron a row is
       // allowed. A file is the thing itself: tapping it fetches it, and the
@@ -2011,8 +2147,7 @@ class _EntryTile extends StatelessWidget {
       container: true,
       button: true,
       label: entry.isDir
-          ? '${entry.name}, folder'
-          : '${entry.name}, ${_size(entry.size)}',
+          ? '${entry.name}, folder'            : '${entry.name}, ${fileSizeLabel(entry.size)}',
       customSemanticsActions: {
         CustomSemanticsAction(label: 'Rename'): onRename,
         CustomSemanticsAction(label: 'Copy to…'): onActions,
@@ -2123,7 +2258,7 @@ class _EntryTile extends StatelessWidget {
               ),
               if (!entry.isDir)
                 Text(
-                  _size(entry.size),
+                  fileSizeLabel(entry.size),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center,
@@ -2157,15 +2292,6 @@ bool _isImageName(String name) {
     '.webp',
     '.bmp',
   ].any(lower.endsWith);
-}
-
-String _size(int bytes) {
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  if (bytes < 1024 * 1024 * 1024) {
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
-  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
 }
 
 String _when(DateTime t) {

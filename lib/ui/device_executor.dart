@@ -68,6 +68,13 @@ class DeviceExecutor {
   /// watching (tests, headless runs) and the pull reports nothing.
   void Function(String label)? fileFetchProgress;
 
+  /// Called when a fetch lands, with the saved file's facts — path, name,
+  /// size, source peer. The view mirrors it into the Files tab's "Recent"
+  /// list. Every fetch this device runs funnels through [_fetchFile], so
+  /// this is the single place a download becomes a memory. Null when
+  /// nobody is listening.
+  void Function(Map<String, dynamic> file)? onFileFetched;
+
   /// The folder fetched files land in. Null in the product — the platform's
   /// Downloads folder is resolved at run time; tests inject a temp dir so
   /// they never touch the user's real files.
@@ -1252,7 +1259,23 @@ class DeviceExecutor {
     final message = result.ok && root.appScoped
         ? '${result.message} $appScopedDownloadNote'
         : result.message;
-    return ActionResult(result.ok, message);
+    if (!result.ok) return ActionResult(false, message);
+    // The pull landed. Hand the file over as an object — path, name, size,
+    // source peer — so the card can be something the user acts on (open,
+    // share, delete) instead of a sentence carrying a raw path, and so the
+    // Recent list can remember it. A save that reports success but left no
+    // file on disk has no object to offer: the card falls back to the plain
+    // sentence, which still tells the truth.
+    final saved = File(savePath);
+    if (!saved.existsSync()) return ActionResult(true, message);
+    final info = <String, dynamic>{
+      'path': savePath,
+      'name': savePath.split(Platform.pathSeparator).last,
+      'size': saved.lengthSync(),
+      'peer': device,
+    };
+    onFileFetched?.call(info);
+    return ActionResult(true, message, data: info);
   }
 
   /// Offers Android's "All files access" once, in flow, when a fetch would

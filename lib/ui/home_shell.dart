@@ -280,6 +280,9 @@ class _HomeShellState extends State<HomeShell> {
             key: _assistantKey,
             mesh: widget.mesh,
             brain: _brain,
+            // "Show in Files" on a fetched file's card lands here: the same
+            // tab switch the sidebar does, to where Recent lists the file.
+            onShowFiles: () => setState(() => _index = 2),
           ),
           DevicesView(mesh: widget.mesh),
           FilesView(mesh: widget.mesh),
