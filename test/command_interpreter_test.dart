@@ -270,6 +270,76 @@ void main() {
       });
     });
 
+    group('unspaced transcripts are segmented before parsing', () {
+      // Measured on the phone: the on-device recognizer returned
+      // "getreportpdffrommypc" for "get report.pdf from my pc" — one token,
+      // the dot on the extension eaten with the spaces. Android's recognizer
+      // cannot be asked for word boundaries, so the parser puts them back.
+
+      test('a glued transcript is re-segmented with the parser\'s vocabulary',
+          () {
+        final get = interpreter.interpret('getreportpdffrommypc');
+        expect(get.outcome, InterpretOutcome.matched);
+        expect(get.command!.action, AgentActions.fileFetch);
+        expect(get.command!.arguments['filename'], 'report.pdf');
+        expect(get.command!.arguments['deviceName'], 'pc');
+
+        final fetch = interpreter.interpret('fetchreportpdffrommypc');
+        expect(fetch.command!.action, AgentActions.fileFetch);
+        expect(fetch.command!.arguments['filename'], 'report.pdf');
+        expect(fetch.command!.arguments['deviceName'], 'pc');
+
+        final copy = interpreter.interpret('copynotestxttomyphone');
+        expect(copy.command!.action, AgentActions.clipboardWrite);
+        expect(copy.command!.arguments['text'], 'notes.txt');
+      });
+
+      test('segmentation changes the spaces, never the meaning', () {
+        // Each glued form resolves exactly as the sentence the user said —
+        // including "showmypc", which the parser honestly does not own
+        // (there is no "show <device>" rule) and so stays unknown, the same
+        // as its spaced twin.
+        for (final (glued, spoken) in [
+          ('getreportpdffrommypc', 'get report.pdf from my pc'),
+          ('fetchreportpdffrommypc', 'fetch report.pdf from my pc'),
+          ('showmypc', 'show my pc'),
+        ]) {
+          final onGlued = interpreter.interpret(glued);
+          final onSpaced = interpreter.interpret(spoken);
+          expect(onGlued.outcome, onSpaced.outcome, reason: glued);
+          expect(onGlued.command?.action, onSpaced.command?.action,
+              reason: glued);
+        }
+      });
+
+      test('the repair is gated: spaced and short sentences pass through', () {
+        // The seam is narrow on purpose — a spaced sentence or a short
+        // unspaced one comes back exactly as it went in.
+        expect(
+          CommandInterpreter.segmentUnspaced('get report.pdf from my pc'),
+          'get report.pdf from my pc',
+        );
+        expect(CommandInterpreter.segmentUnspaced('hellothere'), 'hellothere');
+        expect(interpreter.interpret('hellothere').outcome,
+            InterpretOutcome.unknown);
+      });
+
+      test('nothing recognizable stays nothing', () {
+        // Segmentation may split on stray vocabulary ("a" inside a run of
+        // letters), but whatever it produces still faces every rule below —
+        // so a sentence nothing owns ends in the same "I don't understand"
+        // it found before, never in a guess.
+        for (final phrase in [
+          'qwertyuiopasdfgh', // over the gate, no command in it
+          'theroadtonowhere', // exactly at the gate — untouched
+        ]) {
+          expect(interpreter.interpret(phrase).outcome,
+              InterpretOutcome.unknown,
+              reason: phrase);
+        }
+      });
+    });
+
     test('a non-arithmetic "what is …" asks memory before the web', () {
       // Personal questions must never web-search the user's own secrets;
       // generic ones reach the web honestly via the service fallback when

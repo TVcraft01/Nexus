@@ -316,6 +316,163 @@ class CommandInterpreter {
     return prev[b.length];
   }
 
+  /// The parser's own word shapes, for repairing an unspaced transcript.
+  ///
+  /// A recognizer sometimes returns the whole utterance as one token —
+  /// measured on the phone as "getreportpdffrommypc" for "get report.pdf
+  /// from my pc". Android's SpeechRecognizer offers no word boundaries and
+  /// no re-spacing option (EXTRA_PARTIAL_RESULTS carries the same glued
+  /// hypothesis), so the repair is here. The vocabulary is deliberately the
+  /// grammar's own — the file-fetch verbs, the listing/finding verbs, the
+  /// connectors, the device nouns find/ring already knows, and the number
+  /// words a transcript may spell out — never the words a user asks *about*:
+  /// those are exactly the ones no vocabulary can hold, and they are
+  /// recovered as content runs below instead.
+  static const Map<String, String> _segmentVocabulary = {
+    // The file grammar's own verbs, glued included ("sendme" is itself the
+    // missing space inside the phrase).
+    'sendme': 'send me',
+    'get': 'get',
+    'fetch': 'fetch',
+    'copy': 'copy',
+    // The parser's other action verbs.
+    'find': 'find',
+    'show': 'show',
+    'open': 'open',
+    'remember': 'remember',
+    // Connectors.
+    'from': 'from',
+    'my': 'my',
+    'the': 'the',
+    'a': 'a',
+    'an': 'an',
+    'on': 'on',
+    'in': 'in',
+    'to': 'to',
+    // Device nouns — the find/ring list plus the registry's ("tv",
+    // "television", "devices"), so "showmypc" and "findmytv" can breathe.
+    'phone': 'phone',
+    'cellphone': 'cellphone',
+    'cell': 'cell',
+    'mobile': 'mobile',
+    'tablet': 'tablet',
+    'ipad': 'ipad',
+    'pc': 'pc',
+    'laptop': 'laptop',
+    'computer': 'computer',
+    'desktop': 'desktop',
+    'device': 'device',
+    'devices': 'devices',
+    'watch': 'watch',
+    'tv': 'tv',
+    'television': 'television',
+    // Number words, when a transcript spells a number out.
+    'zero': 'zero',
+    'one': 'one',
+    'two': 'two',
+    'three': 'three',
+    'four': 'four',
+    'five': 'five',
+    'six': 'six',
+    'seven': 'seven',
+    'eight': 'eight',
+    'nine': 'nine',
+    'ten': 'ten',
+    'eleven': 'eleven',
+    'twelve': 'twelve',
+    'thirteen': 'thirteen',
+    'fourteen': 'fourteen',
+    'fifteen': 'fifteen',
+    'sixteen': 'sixteen',
+    'seventeen': 'seventeen',
+    'eighteen': 'eighteen',
+    'nineteen': 'nineteen',
+    'twenty': 'twenty',
+    'thirty': 'thirty',
+    'forty': 'forty',
+    'fifty': 'fifty',
+    'sixty': 'sixty',
+    'seventy': 'seventy',
+    'eighty': 'eighty',
+    'ninety': 'ninety',
+  };
+
+  /// File extensions are vocabulary too, and they are the boundary a glued
+  /// filename presents: "reportpdf" is "report" + "pdf", and the file
+  /// grammar needs the dot back to see a file at all. A content run that
+  /// ends right before one of these rejoins as "name.ext".
+  static const Set<String> _fileExtensions = {
+    'pdf',
+    'txt',
+    'jpg',
+    'jpeg',
+    'png',
+    'bin',
+    'md',
+    'csv',
+    'zip',
+  };
+
+  /// Puts back the spaces a recognizer dropped: an unspaced sentence is
+  /// re-segmented by greedy longest match against [_segmentVocabulary], and
+  /// a run of letters no vocabulary word covers is kept whole as one content
+  /// word — a filename, a contact, a song title: the words a user asks
+  /// about, which are precisely the ones no vocabulary can hold.
+  ///
+  /// The gate is deliberately narrow: a sentence with a space in it, or a
+  /// short unspaced one, is returned exactly as given — a glued transcript
+  /// that long enough to be more than one word is the whole defect this
+  /// repairs. Segmentation never invents a command: whatever it produces
+  /// still runs every rule below, so a string it cannot account for ends in
+  /// the same "I don't understand" it found before.
+  static String segmentUnspaced(String norm) {
+    if (norm.contains(' ') || norm.length <= 15) return norm;
+    final words = <String>[];
+    final content = StringBuffer();
+    var i = 0;
+    while (i < norm.length) {
+      // The longest word at this position — vocabulary or extension,
+      // longest first so a longer word is never mistaken for a shorter one
+      // plus its leftovers ("sendme" over "send", "jpeg" over "jpg").
+      String? best;
+      String? bestSpoken;
+      for (final entry in _segmentVocabulary.entries) {
+        if (norm.startsWith(entry.key, i) &&
+            (best == null || entry.key.length > best.length)) {
+          best = entry.key;
+          bestSpoken = entry.value;
+        }
+      }
+      for (final extension in _fileExtensions) {
+        if (norm.startsWith(extension, i) &&
+            (best == null || extension.length > best.length)) {
+          best = extension;
+          bestSpoken = extension;
+        }
+      }
+      if (best != null) {
+        // An extension right after a content run rejoins as "name.ext":
+        // that is the dot the recognizer ate ("reportpdf" → "report.pdf").
+        if (_fileExtensions.contains(best) && content.isNotEmpty) {
+          content.write('.$best');
+          i += best.length;
+          continue;
+        }
+        if (content.isNotEmpty) {
+          words.add(content.toString());
+          content.clear();
+        }
+        words.add(bestSpoken!);
+        i += best.length;
+        continue;
+      }
+      content.write(norm[i]);
+      i++;
+    }
+    if (content.isNotEmpty) words.add(content.toString());
+    return words.join(' ');
+  }
+
   static String normalizePhrase(String input) {
     var t = input.trim().toLowerCase();
     const accents = {
@@ -423,7 +580,7 @@ class CommandInterpreter {
   }
 
   InterpretResult interpret(String input) {
-    final norm = normalizePhrase(input);
+    final norm = segmentUnspaced(normalizePhrase(input));
 
     // --- Greetings
     if (_oneOf(norm, const [
