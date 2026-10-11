@@ -84,6 +84,17 @@ class CommandService {
     'call.contact',
   };
 
+  /// The argument a device-less fetch ("get report.pdf") is missing, and
+  /// the defaults key the answered device is remembered under.
+  static const _fetchDeviceKey = 'file.fetch.deviceName';
+
+  /// The defaults key holding the id of the peer the last successful fetch
+  /// ran against — the memory that lets the next "get report.pdf" resolve
+  /// without asking again, whether or not a device was named. Persisted with
+  /// every other remembered default through [onMemoryChanged], so it
+  /// survives a restart like the answer it came from.
+  static const _lastFetchPeerKey = 'file.fetch.lastPeer';
+
   /// What the card promises after it asks a question.
   ///
   /// For a preference — an alarm time, a playlist — the promise holds: the
@@ -333,19 +344,37 @@ class CommandService {
 
       case InterpretOutcome.needsInfo:
         final key = interpreted.missingArgKey!;
-        // Remembered default? Then no question is needed anymore.
-        final remembered = _defaults[key] ?? _onceAnswers[key];
-        if (remembered != null) {
-          return _dispatchParsed(
-            _withArgument(interpreted.command!, key, remembered),
+        // "get report.pdf" names the file, not the device — and the device
+        // is often already known: the only one online, or the one the last
+        // fetch ran against. Resolution runs before the generic
+        // remembered-default check because that check would fill a
+        // remembered name in even when its device is no longer reachable;
+        // here the online test lives, and null means "ask" — never guess
+        // between someone's devices.
+        if (key == _fetchDeviceKey) {
+          final resolved = _autoResolveFetch(
+            interpreted.command!,
             approval,
             requestId,
-            // The sentence that is actually being run, not the action: a
-            // device offer raised from this dispatch re-runs the raw input
-            // when the user approves it, and an empty string there dead-ends
-            // as an unavailable answer with nothing to explain it.
-            rawInput: text,
+            text,
           );
+          if (resolved != null) return resolved;
+        } else {
+          // Remembered default? Then no question is needed anymore.
+          final remembered = _defaults[key] ?? _onceAnswers[key];
+          if (remembered != null) {
+            return _dispatchParsed(
+              _withArgument(interpreted.command!, key, remembered),
+              approval,
+              requestId,
+              // The sentence that is actually being run, not the action: a
+              // device offer raised from this dispatch re-runs the raw input
+              // when the user approves it, and an empty string there
+              // dead-ends as an unavailable answer with nothing to explain
+              // it.
+              rawInput: text,
+            );
+          }
         }
         // A fact may already answer this ("remember that my name is john"
         // then "what is my name") — don't ask for what the user already
@@ -590,14 +619,21 @@ class CommandService {
         // for, and keep it out of the defaults and out of the ledger.
         _onceAnswers[argKey] = answer;
       } else {
-        _defaults[argKey] = answer;
+        // A device answer arrives as a person says it — "from my pc" — and
+        // is remembered as the parser would have captured it: "pc". The
+        // bare name is what the registry resolves, so the stored default
+        // can never be a preposition nothing matches.
+        final value = argKey == _fetchDeviceKey
+            ? _bareDeviceAnswer(answer)
+            : answer;
+        _defaults[argKey] = value;
         _ledger = _ledger.record(
           MemoryLedgerKind.preference,
           argKey,
           MemoryStamp.now(MemoryOrigin.explicit, _here),
         );
         onMemoryChanged?.call();
-        onDefaultLearned?.call(argKey, answer);
+        onDefaultLearned?.call(argKey, value);
       }
       return original != null
           ? _resume(original, approval, requestId)
@@ -1410,10 +1446,22 @@ class CommandService {
         message: 'I don\'t see a paired device named "$named".',
       );
     }
+    // Every successful fetch remembers its device — named outright, answered
+    // to a question, or resolved by [_autoResolveFetch] — so the next
+    // device-less ask goes straight there instead of asking again.
+    if (_defaults[_lastFetchPeerKey] != source.id) {
+      _defaults[_lastFetchPeerKey] = source.id;
+      onMemoryChanged?.call();
+    }
+    // A fetch the user did not name a device for names the device it picked
+    // up front: the pick is visible, not a guess made behind the scenes.
+    final resolved = command.arguments['autoResolved'] == true;
     return AgentDispatchResult(
       status: AgentResultStatus.succeeded,
       dispatch: AgentMessage(
-        FileFetchWords.fetching(filename, source.name),
+        resolved
+            ? FileFetchWords.fetchingFromResolved(filename, source.name)
+            : FileFetchWords.fetching(filename, source.name),
         action: AgentActions.fileFetch,
         arguments: {
           'peerId': source.id,
@@ -1421,6 +1469,65 @@ class CommandService {
           'filename': filename,
         },
       ),
+    );
+  }
+
+  /// The fetch behind a device-less "get report.pdf", resolved from what is
+  /// already known — or null when the device genuinely has to be asked for.
+  ///
+  /// The rules, in order: nothing reachable says so; exactly one reachable
+  /// peer is the answer without asking; several reachable peers consult the
+  /// last peer the fetch ran against (or the device the user answered a
+  /// "which device?" with) and use it only while it is still online. What is
+  /// left — several peers, no usable memory — is a real question, and the
+  /// caller asks it rather than guessing between someone's devices.
+  AgentDispatchResult? _autoResolveFetch(
+    ParsedCommand command,
+    AgentApproval approval,
+    String requestId,
+    String rawInput,
+  ) {
+    final online = [for (final d in devices()) if (d.online) d];
+    if (online.isEmpty) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.unavailable,
+        message: FileFetchWords.noneReachable,
+      );
+    }
+    AgentDeviceSnapshot? pick;
+    if (online.length == 1) {
+      pick = online.single;
+    } else {
+      final lastId = _defaults[_lastFetchPeerKey] as String?;
+      final byId = lastId == null
+          ? null
+          : online.where((d) => d.id == lastId).toList();
+      if (byId != null && byId.isNotEmpty) {
+        pick = byId.first;
+      } else {
+        // The name answered to an earlier "which device?" counts too — but
+        // only while that device is actually reachable.
+        final remembered = _defaults[_fetchDeviceKey] as String?;
+        final byName = remembered == null
+            ? null
+            : _resolveFileSource(remembered);
+        if (byName != null && byName.online) pick = byName;
+      }
+    }
+    if (pick == null) return null; // several peers, no memory: ask
+    return _dispatchParsed(
+      ParsedCommand(
+        action: command.action,
+        target: command.target,
+        arguments: {
+          ...command.arguments,
+          'deviceName': pick.name,
+          'autoResolved': true,
+        },
+      ),
+      approval,
+      requestId,
+      rawInput: rawInput,
     );
   }
 
@@ -1474,6 +1581,17 @@ bool _isYes(String answer) => const {
   'do it',
   'go ahead',
 }.contains(answer.trim().toLowerCase());
+
+/// "from my pc" / "my laptop" as the device name the registry stores: the
+/// preposition and article a person naturally adds when answering "which
+/// device?" are stripped, leaving the same bare noun the fetch grammar
+/// captures ("get report.pdf from my pc" stores "pc").
+String _bareDeviceAnswer(String answer) {
+  var t = answer.trim().toLowerCase();
+  t = t.replaceFirst(RegExp(r'^(?:from|on|to|by|with)\s+'), '');
+  t = t.replaceFirst(RegExp(r'^(?:my |the |your )+'), '');
+  return t;
+}
 
 /// Splits "mom on my phone" into ("mom", "my phone") — the trailing device
 /// the user named. Returns null when there is no device suffix. "on the …"

@@ -138,6 +138,112 @@ void main() {
     });
   });
 
+  group('file-fetch without a device name resolves from what is known', () {
+    AgentDeviceSnapshot peer(
+      String id,
+      String name, {
+      required bool online,
+      String platform = 'linux',
+    }) =>
+        AgentDeviceSnapshot(
+          id: id,
+          name: name,
+          online: online,
+          platform: platform,
+        );
+
+    CommandService serviceWith(
+      List<AgentDeviceSnapshot> peers, {
+      Map<String, dynamic> defaults = const {},
+    }) =>
+        CommandService(
+          devices: () => peers,
+          memory: AgentMemory(defaults: defaults),
+        );
+
+    test('one online peer: the fetch fires, no question', () {
+      final service = serviceWith([peer('pc1', 'My PC', online: true)]);
+      final result = service.execute('get report.pdf');
+      expect(result.status, AgentResultStatus.succeeded);
+      final message = result.dispatch! as AgentMessage;
+      expect(message.action, AgentActions.fileFetch);
+      expect(message.arguments!['peerId'], 'pc1');
+      expect(message.arguments!['filename'], 'report.pdf');
+      // The pick is visible: the answer leads with the device it chose, so
+      // a resolution that happened behind the scenes never spooks.
+      expect(message.text, startsWith('From My PC — '));
+    });
+
+    test('zero online: the honest state of the mesh, not a failure', () {
+      final service = serviceWith([
+        peer('pc1', 'My PC', online: false),
+        peer('ph1', 'My Phone', online: false, platform: 'android'),
+      ]);
+      final result = service.execute('get report.pdf');
+      expect(result.status, AgentResultStatus.unavailable);
+      expect(result.message, 'No devices are reachable right now.');
+      expect(result.dispatch, isNull);
+    });
+
+    test('two online, no memory: it asks instead of guessing', () {
+      final service = serviceWith([
+        peer('pc1', 'My PC', online: true),
+        peer('ph1', 'My Phone', online: true, platform: 'android'),
+      ]);
+      final asked = service.execute('get report.pdf');
+      expect(asked.status, AgentResultStatus.needsInfo);
+      final clarification = asked.dispatch! as AgentClarification;
+      expect(clarification.question, contains('Which device'));
+      expect(clarification.key, 'arg:file.fetch.deviceName');
+    });
+
+    test('two online, last fetch remembered: it goes straight there', () {
+      final service = serviceWith([
+        peer('pc1', 'My PC', online: true),
+        peer('ph1', 'My Phone', online: true, platform: 'android'),
+      ]);
+      // The memory is written by the successful named fetch itself — the
+      // same write every successful fetch makes, named or not.
+      service.execute('get report.pdf from my pc');
+      final again = service.execute('get report.pdf');
+      expect(again.status, AgentResultStatus.succeeded);
+      expect((again.dispatch! as AgentMessage).arguments!['peerId'], 'pc1');
+    });
+
+    test('a remembered peer that is offline is asked about, not used', () {
+      final service = serviceWith(
+        [
+          peer('pc1', 'My PC', online: false),
+          peer('ph1', 'My Phone', online: true, platform: 'android'),
+          peer('ph2', 'Work Phone', online: true, platform: 'android'),
+        ],
+        defaults: {'file.fetch.lastPeer': 'pc1'},
+      );
+      final asked = service.execute('get report.pdf');
+      expect(asked.status, AgentResultStatus.needsInfo);
+    });
+
+    test('the follow-up "from my pc" resolves it and is remembered', () {
+      final service = serviceWith([
+        peer('pc1', 'My PC', online: true),
+        peer('ph1', 'My Phone', online: true, platform: 'android'),
+      ]);
+      final asked = service.execute('get report.pdf');
+      final key = (asked.dispatch! as AgentClarification).key;
+      final answered = service.execute('from my pc', answerTo: key);
+      expect(answered.status, AgentResultStatus.succeeded);
+      expect((answered.dispatch! as AgentMessage).arguments!['peerId'], 'pc1');
+      // The answered device becomes the last-used peer, by id.
+      expect(service.defaultsSnapshot['file.fetch.lastPeer'], 'pc1');
+
+      // And the next device-less ask uses it without asking again — the
+      // same question never comes back.
+      final again = service.execute('get report.pdf');
+      expect(again.status, AgentResultStatus.succeeded);
+      expect((again.dispatch! as AgentMessage).arguments!['peerId'], 'pc1');
+    });
+  });
+
   group('clipboard.write', () {
     test('requires approval, then produces a typed plan', () {
       final pending = service.execute('copy hello to my phone');

@@ -900,6 +900,18 @@ abstract final class FileFetchWords {
   static String fetching(String filename, String device) =>
       'Getting $filename from $device…';
 
+  /// Said when a fetch was asked for without a device and nothing on the
+  /// mesh is reachable: the honest state of the network, not a failure of
+  /// the request.
+  static const String noneReachable = 'No devices are reachable right now.';
+
+  /// The opener for a fetch the user did not name a device for: the picked
+  /// device leads, so a resolution that happened behind the scenes is
+  /// visible — the transparency that makes auto-resolution feel safe
+  /// rather than spooky.
+  static String fetchingFromResolved(String filename, String device) =>
+      'From $device — Getting $filename…';
+
   /// The live line while the pull is in flight: the same sentence as
   /// [fetching], with how much has arrived, so a large file never looks
   /// stuck. A peer that never reported a total gets the bytes alone rather
