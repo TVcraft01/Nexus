@@ -1037,6 +1037,15 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
           message: 'I couldn\'t work that out — try something like "what is 2 plus 2".',
         );
       }
+      // A sum said in words gets its answer in words — "Sixty.", the
+      // shortest thing a voice can say back. A typed expression keeps the
+      // echo, because there the user is reading as much as listening.
+      if (command.arguments['spoken'] == true) {
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(_spokenNumber(result)),
+        );
+      }
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(
@@ -1945,6 +1954,55 @@ String _formatTime(Object? kind) {
 String _formatNumber(double value) => value == value.roundToDouble()
     ? value.toInt().toString()
     : value.toString();
+
+/// The answer as a voice says it: "Sixty.", not "12*5 = 60". Whole numbers
+/// — what every two-operand sum of whole numbers produces — are spelled
+/// out; anything else (decimals, magnitudes past a billion) falls back to
+/// digits, which any text-to-speech engine reads correctly anyway.
+String _spokenNumber(double value) {
+  if (value == value.roundToDouble() && value.abs() < 1e9) {
+    final n = value.toInt();
+    final words = n < 0 ? 'minus ${_integerWords(-n)}' : _integerWords(n);
+    return '${words[0].toUpperCase()}${words.substring(1)}.';
+  }
+  return '${_formatNumber(value)}.';
+}
+
+/// A non-negative integer under a billion in words — 60 → "sixty", 345 →
+/// "three hundred forty-five". Hyphenated tens, no "and": the shortest
+/// spelling that still reads as a number aloud.
+String _integerWords(int n) {
+  const ones = [
+    'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+    'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
+    'sixteen', 'seventeen', 'eighteen', 'nineteen',
+  ];
+  const tens = [
+    '', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy',
+    'eighty', 'ninety',
+  ];
+  if (n < 20) return ones[n];
+  if (n < 100) {
+    final rest = n % 10;
+    return rest == 0 ? tens[n ~/ 10] : '${tens[n ~/ 10]}-${_integerWords(rest)}';
+  }
+  if (n < 1000) {
+    final rest = n % 100;
+    return rest == 0
+        ? '${_integerWords(n ~/ 100)} hundred'
+        : '${_integerWords(n ~/ 100)} hundred ${_integerWords(rest)}';
+  }
+  if (n < 1000000) {
+    final rest = n % 1000;
+    return rest == 0
+        ? '${_integerWords(n ~/ 1000)} thousand'
+        : '${_integerWords(n ~/ 1000)} thousand ${_integerWords(rest)}';
+  }
+  final rest = n % 1000000;
+  return rest == 0
+      ? '${_integerWords(n ~/ 1000000)} million'
+      : '${_integerWords(n ~/ 1000000)} million ${_integerWords(rest)}';
+}
 
 /// Inline unit conversion for the units Siri converts without the web:
 /// lengths, weights, temperatures, speeds. Returns null when the pair is

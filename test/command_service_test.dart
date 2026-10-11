@@ -120,9 +120,11 @@ void main() {
     });
 
     test('simple math computes locally', () {
+      // A sum said in words answers in words — "Four." — computed on this
+      // device, no mesh involved. A typed symbol expression keeps the echo.
       final result = service.execute('what is 2 plus 2');
       expect(result.status, AgentResultStatus.succeeded);
-      expect((result.dispatch! as AgentMessage).text, '2+2 = 4');
+      expect((result.dispatch! as AgentMessage).text, 'Four.');
 
       final bare = service.execute('10 / 2');
       expect(bare.status, AgentResultStatus.succeeded);
@@ -479,8 +481,9 @@ void main() {
         expect(unknown.action, AgentActions.webSearch);
         expect(unknown.arguments, containsPair('query', isNotEmpty));
 
-        // Non-personal and arithmetic paths untouched.
-        expect(ask('what is 2 plus 2').text, contains('='));
+        // Non-personal and arithmetic paths untouched (a word sum answers
+        // in words, which is still the catalog answering, not the web).
+        expect(ask('what is 2 plus 2').text, contains('Four'));
         expect(
           facts.execute('search for cats').status,
           AgentResultStatus.succeeded,

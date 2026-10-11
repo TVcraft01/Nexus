@@ -1004,7 +1004,22 @@ class CommandInterpreter {
       );
     }
 
-    // --- Math
+    // --- Math, in the words a transcript actually carries.
+    //
+    // "12 times 5" is how a voice says arithmetic; "12*5" is how a keyboard
+    // types it. The blocks below read the keyboard's shapes: they keep the
+    // typed expression intact so the echo shows what was written, and they
+    // reach word operators only by a substring translation that cannot tell
+    // the operator "x" in "12 x 5" from a letter, knows no "and", and
+    // rejects the symbols a recognizer's output really contains (×, ÷).
+    // This rule owns the spoken shape instead — one operation, two
+    // operands — and its answer is computed here on this device: no mesh
+    // round-trip, no network. Everything it declines (parentheses, chains
+    // like "7 plus 3 times 2", a second number word) falls through to the
+    // general evaluator below, exactly as before.
+    final spokenMath = _spokenMathPhrase(norm);
+    if (spokenMath != null) return InterpretResult.matched(spokenMath);
+
     // --- Paraphrase resolution — [InterpretLayer.paraphrase]. It sits inside
     // the catalogue, not after it: the command blocks above have had their
     // chance, the blocks below have not. So a rule here can add understanding
@@ -2963,6 +2978,52 @@ class CommandInterpreter {
         '',
       )
       .trim();
+
+  /// Prefixes a spoken math question may carry — the same set the generic
+  /// `what is …` reading accepts, stripped so "what is 12 times 5" and
+  /// "12 times 5" are one sentence.
+  static final RegExp _mathQuestionPrefix = RegExp(
+    r'^(?:what is|how much is|calculate|compute|work out|solve)\s+',
+  );
+
+  /// One operation between two operands, as a voice says it: word
+  /// operators (times, x, multiplied by, plus, minus, divided by, over,
+  /// percent of, and) and the symbols a transcript writes (×, ÷). Both
+  /// operands must be there and nothing else may be — a phrase with a
+  /// second operation, a trailing noun or a missing side is not this
+  /// pattern's sentence and falls through to the general evaluator. Pure
+  /// keyboard symbols ("12*5", "2 + 2") are deliberately not claimed:
+  /// those keep the existing path, whose echo shows what was typed.
+  static final RegExp _spokenMathPhrasePattern = RegExp(
+    r'^(\d+(?:\.\d+)?)\s*'
+    r'(multiplied by|divided by|percent of|% of|times|plus|minus|over|and|x|×|÷)\s*'
+    r'(\d+(?:\.\d+)?)$',
+  );
+
+  /// The math command for a spoken phrase, or null when [norm] is not one
+  /// operation between two numbers. The expression is canonical symbols
+  /// ("12*5", "50/100*80") so the evaluator and the card behind it are
+  /// unchanged; `spoken: true` is what tells the answer catalog the reply
+  /// may be words — "Sixty." — instead of the typed echo.
+  static ParsedCommand? _spokenMathPhrase(String norm) {
+    final body = norm.replaceFirst(_mathQuestionPrefix, '').trim();
+    final m = _spokenMathPhrasePattern.firstMatch(body);
+    if (m == null) return null;
+    final a = m.group(1)!;
+    final b = m.group(3)!;
+    final expr = switch (m.group(2)!) {
+      'times' || 'multiplied by' || 'x' || '×' => '$a*$b',
+      'plus' || 'and' => '$a+$b',
+      'minus' => '$a-$b',
+      'divided by' || 'over' || '÷' => '$a/$b',
+      _ => '$a/100*$b', // percent of / % of: "50 percent of 80"
+    };
+    return ParsedCommand(
+      action: AgentActions.mathCalc,
+      target: 'local',
+      arguments: {'expr': expr, 'spoken': true},
+    );
+  }
 
   String _toSymbols(String expr) {
     return expr

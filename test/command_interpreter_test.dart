@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
+import 'package:nexus/core/answers.dart';
 import 'package:nexus/core/command_interpreter.dart';
 import 'package:nexus/core/command_service.dart';
 
@@ -136,6 +137,137 @@ void main() {
       final bare = interpreter.interpret('2 + 2');
       expect(bare.command!.action, AgentActions.mathCalc);
       expect(bare.command!.arguments['expr'], '2 + 2');
+    });
+
+    group('math from the words a voice actually says', () {
+      // The answer catalog, for the phrases below: the same one the phone
+      // speaks from, with no devices in it — a sum is answered here.
+      AnswerContext noDevices() =>
+          AnswerContext(facts: [], devices: () => const [], local: null);
+
+      test('word operators and transcript symbols are one sum, computed here',
+          () {
+        // Every row is one operation between two numbers — the arithmetic a
+        // speech transcript contains. Each asserts the action AND the
+        // computed answer, not just that something matched.
+        for (final (phrase, expr, value) in [
+          ('12 times 5', '12*5', 60.0),
+          ('what is 12 times 5', '12*5', 60.0),
+          ('how much is 12 times 5', '12*5', 60.0),
+          ('12 x 5', '12*5', 60.0),
+          ('12 × 5', '12*5', 60.0),
+          ('12 multiplied by 5', '12*5', 60.0),
+          ('12*5', '12*5', 60.0),
+          ('12 plus 8', '12+8', 20.0),
+          ('12 and 8', '12+8', 20.0),
+          ('10 minus 4', '10-4', 6.0),
+          ('20 divided by 4', '20/4', 5.0),
+          ('20 ÷ 4', '20/4', 5.0),
+          ('9 over 3', '9/3', 3.0),
+          ('50 percent of 80', '50/100*80', 40.0),
+          ('15% of 80', '15/100*80', 12.0),
+          ('calculate 5 times 3', '5*3', 15.0),
+          ('compute 7 minus 9', '7-9', -2.0),
+          ('solve 8 over 2', '8/2', 4.0),
+          ('work out 2 plus 2', '2+2', 4.0),
+          ('what is 2.5 plus 3', '2.5+3', 5.5),
+        ]) {
+          final result = interpreter.interpret(phrase);
+          expect(result.outcome, InterpretOutcome.matched, reason: phrase);
+          expect(result.command!.action, AgentActions.mathCalc, reason: phrase);
+          expect(result.command!.target, 'local', reason: phrase);
+          expect(result.command!.arguments['expr'], expr, reason: phrase);
+          expect(evaluateMath(expr), value, reason: phrase);
+        }
+      });
+
+      test('the answer is the number, said short', () {
+        String textOf(String phrase) {
+          final command = interpreter.interpret(phrase).command!;
+          final result = localAnswer(command, noDevices());
+          return (result.dispatch! as AgentMessage).text;
+        }
+
+        expect(textOf('12 times 5'), 'Sixty.');
+        expect(textOf('12 x 5'), 'Sixty.');
+        expect(textOf('50 percent of 80'), 'Forty.');
+        expect(textOf('20 divided by 4'), 'Five.');
+        expect(textOf('10 minus 4'), 'Six.');
+        expect(textOf('3 minus 10'), 'Minus seven.');
+        // Decimals fall back to digits — a TTS engine reads those fine.
+        expect(textOf('2.5 plus 3'), '5.5.');
+        // A typed symbol expression keeps the echo, as it always has.
+        expect(textOf('12*5'), '12*5 = 60');
+        expect(textOf('10 / 2'), '10 / 2 = 5');
+      });
+
+      test('only a phrase said in words answers in words', () {
+        for (final phrase in [
+          '12 times 5',
+          '12 x 5',
+          '12 × 5',
+          '50 percent of 80',
+        ]) {
+          expect(
+            interpreter.interpret(phrase).command!.arguments['spoken'],
+            isTrue,
+            reason: phrase,
+          );
+        }
+        // Pure keyboard symbols carry no spoken flag: their echo format is
+        // unchanged.
+        for (final phrase in ['12*5', '2 + 2', '10 / 2']) {
+          expect(
+            interpreter.interpret(phrase).command!.arguments.containsKey(
+                  'spoken',
+                ),
+            isFalse,
+            reason: phrase,
+          );
+        }
+      });
+
+      test('a missing side or a second operation is not this rule\'s sentence',
+          () {
+        for (final phrase in [
+          '12 x', // operator with no right operand
+          'twelve times five', // number words are not understood (yet)
+          'eggs and milk', // "and" between nouns is not addition
+          '15 minutes', // a duration, not a sum
+        ]) {
+          final result = interpreter.interpret(phrase);
+          expect(
+            result.command?.action,
+            isNot(AgentActions.mathCalc),
+            reason: phrase,
+          );
+        }
+      });
+
+      test('a sum cannot steal a phrase that means something else', () {
+        // "and" is an addition operator only between two numbers; around
+        // people, items or memories it means what it always meant.
+        final call = interpreter.interpret('call mom and dad');
+        expect(call.command!.action, AgentActions.callPlace);
+        final shop = interpreter.interpret('add milk and eggs to my shopping list');
+        expect(shop.command!.action, AgentActions.shoppingListAdd);
+        final remember =
+            interpreter.interpret('remember that 12 times 5 is my code');
+        expect(remember.command!.action, AgentActions.memoryRemember);
+      });
+
+      test('typed expressions keep the general evaluator and its echo', () {
+        // Chains and parentheses were never this rule's business: they keep
+        // the legacy path, precedence included.
+        final chain = interpreter.interpret('7 plus 3 times 2');
+        expect(chain.command!.action, AgentActions.mathCalc);
+        expect(chain.command!.arguments['expr'], '7+3*2');
+        expect(evaluateMath('7+3*2'), 13, reason: 'precedence, not left-to-right');
+        final grouped = interpreter.interpret('what is (2+3)*4');
+        expect(grouped.command!.action, AgentActions.mathCalc);
+        final result = localAnswer(grouped.command!, noDevices());
+        expect((result.dispatch! as AgentMessage).text, '(2+3)*4 = 20');
+      });
     });
 
     test('a non-arithmetic "what is …" asks memory before the web', () {

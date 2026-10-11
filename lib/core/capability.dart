@@ -136,6 +136,7 @@ const List<Capability> kCapabilities = [
       helpGroup: 'Time & Math',
       helpPhrases: ['what is the date']),
   Capability(AgentActions.mathCalc, 'Math',
+      example: '12 times 5',
       helpGroup: 'Time & Math',
       helpPhrases: ['what is 12 times 8', '2 + 3', 'what is 15% of 80']),
   Capability(AgentActions.helpGet, 'Help',
