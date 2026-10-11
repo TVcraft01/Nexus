@@ -1437,6 +1437,26 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     return null;
   }
 
+  /// Forgets the session key cached for [peerId], so the next frame derives
+  /// from the secret pairing just wrote.
+  ///
+  /// The cache is keyed by peer id alone and lives as long as the service
+  /// does, which is what makes a re-pair quietly wrong: the new secret is
+  /// *stored* (the paired row is updated, `pairWith` answers ok, the code is
+  /// accepted) while every frame on the wire is still sealed with the key
+  /// derived from the old one. It stays invisible only while both ends carry
+  /// the same stale entry — and one end restarting is enough to break that.
+  /// Then the end with the fresh process derives from the new secret and the
+  /// end with the long-lived cache keeps using the old key, so neither can
+  /// prove presence to the other and encrypted frames are dropped as
+  /// unreadable, until the stale end is restarted too. That is exactly what
+  /// re-pairing a phone that had paired before does to the cable — a second
+  /// scan of the QR, or a reconnect after the peer was restarted.
+  /// Guards: test/mesh_repair_session_test.dart.
+  void _forgetSessionKey(String peerId) {
+    _sessionKeys.remove(peerId);
+  }
+
   Future<Uint8List> _sessionKeyFor(PairedDevice peer) async {
     final cached = _sessionKeys[peer.id];
     if (cached != null) return cached;
@@ -3455,6 +3475,9 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
       lastVerified: DateTime.now(),
     );
     _paired[peer.id] = peer;
+    // The secret we just stored replaces whatever this device was paired with
+    // before, so the key derived from the old one must not outlive it.
+    _forgetSessionKey(peer.id);
     store.upsertPaired(peer.toJson());
     await store.save();
     // Remember that this code is spent (until its own expiry) so the next
@@ -3616,6 +3639,9 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
                 pairingSecret: cleanCode,
                 lastVerified: DateTime.now(),
               );
+              // A re-pair mints a new secret; the key cached under the old one
+              // would keep signing frames the peer can no longer read.
+              _forgetSessionKey(msg.from);
               store.upsertPaired(_paired[msg.from]!.toJson());
               await store.save();
               _noteSeen(msg.from, verified: true);
