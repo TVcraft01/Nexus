@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -14,6 +15,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/cable_pairing.dart';
 import 'core/identity.dart';
+import 'core/llm.dart';
 import 'core/store.dart';
 import 'mesh/gateway.dart';
 import 'mesh/mesh_service.dart';
@@ -140,7 +142,16 @@ Future<void> main() async {
     await _initSystemTray();
   }
 
-  runApp(NexusApp(mesh: mesh));
+  // The model that runs inside Nexus — built at the one point every launch
+  // passes through, and warmed up in the background on purpose: a first
+  // launch has a model file to fetch (470 MB, about 1 GiB on a desktop), and
+  // that must happen while the user is doing something else, never while they
+  // are waiting for an answer. Best effort throughout: a machine that cannot
+  // fetch or run a model keeps working exactly as it did without one.
+  final llm = Llm.forThisDevice();
+  unawaited(llm.warmUp());
+
+  runApp(NexusApp(mesh: mesh, llm: llm));
 }
 
 const int _singletonPort = 51824;
@@ -226,8 +237,12 @@ class _TrayListener extends TrayListener {
 }
 
 class NexusApp extends StatefulWidget {
+  /// The in-app model, built in `main` so the first launch starts fetching it
+  /// before the first frame. Null builds one on demand — a test that never
+  /// asks it anything pays nothing for that.
+  final Llm? llm;
   final MeshService mesh;
-  const NexusApp({super.key, required this.mesh});
+  const NexusApp({super.key, required this.mesh, this.llm});
 
   @override
   State<NexusApp> createState() => _NexusAppState();
@@ -282,7 +297,7 @@ class _NexusAppState extends State<NexusApp> with WindowListener {
       builder: (context, child) => NexusTextScaling(
         child: NexusCupertinoTheme(child: child ?? const SizedBox.shrink()),
       ),
-      home: HomeShell(mesh: widget.mesh),
+      home: HomeShell(mesh: widget.mesh, llm: widget.llm),
     );
   }
 }

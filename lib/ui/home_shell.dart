@@ -12,6 +12,8 @@ import 'components/nexus_ui.dart' show NexusPressable;
 import '../core/brain.dart';
 import '../core/device_actions.dart' show gapAnswer;
 import '../core/distributed_brain.dart';
+import '../core/llm.dart';
+import '../core/local_model_brain.dart';
 import '../core/tiny_brain.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
@@ -67,7 +69,14 @@ const List<NexusDestination> kNexusDestinations = [
 
 class HomeShell extends StatefulWidget {
   final MeshService mesh;
-  const HomeShell({super.key, required this.mesh});
+
+  /// The model that runs inside this app, when the owner has one to hand
+  /// down — the real app builds it once in `main` so a first launch can start
+  /// fetching its weights before the first frame. Null builds one here, which
+  /// is what a test wants: an [Llm] that is never asked anything does no work.
+  final Llm? llm;
+
+  const HomeShell({super.key, required this.mesh, this.llm});
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -85,11 +94,17 @@ class _HomeShellState extends State<HomeShell> {
 
   ClipEntry? _lastShown;
 
-  /// The conversational brain, one per platform: desktops run a strong
-  /// local model (Ollama) and answer brain asks from paired phones; the
-  /// phone runs a tiny on-device model for everyday questions and escalates
-  /// the rest over the mesh to the PC — one assistant living everywhere,
-  /// fully offline.
+  /// The model that runs inside Nexus itself, on every platform that has one
+  /// ([Llm]): lazily loaded, unloaded when idle, shared by whichever brain
+  /// this platform uses. Null until [initState].
+  late final Llm _llm;
+
+  /// The conversational brain, one per platform: desktops answer with the
+  /// model that runs in this app (Ollama remains the fallback when this
+  /// device's model has nothing to say) and answer brain asks from paired
+  /// phones; the phone answers everyday questions with its own model and
+  /// escalates the rest over the mesh to the PC — one assistant living
+  /// everywhere, fully offline.
   late final LocalBrain? _brain;
 
   UpdateInfo? _update;
@@ -105,13 +120,17 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
+    _llm = widget.llm ?? Llm.forThisDevice();
     _brain = switch (defaultTargetPlatform) {
       TargetPlatform.linux ||
       TargetPlatform.windows ||
-      TargetPlatform.macOS => LocalBrain(),
+      TargetPlatform.macOS => LocalModelBrain(
+        llm: _llm,
+        fallback: LocalBrain(),
+      ),
       TargetPlatform.android => DistributedBrain(
         mesh: widget.mesh,
-        tiny: TinyBrain(),
+        tiny: TinyBrain(llm: _llm),
       ),
       _ => null,
     };

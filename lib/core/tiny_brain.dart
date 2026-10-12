@@ -1,13 +1,19 @@
 // The on-device model seam: a small language model that runs inside the app
 // on phones, for everyday questions — local, offline, no cloud, mirroring
-// how the mic and speaker seams are done. Real inference plugs into the
-// `dev.nexus.nexus/tiny_brain` channel on the Android side; until then the
-// platform answers honestly with null and the distributed brain escalates
-// over the mesh — a phone without a tiny model is still a full assistant.
+// how the mic and speaker seams are done.
+//
+// There are two ways a device can have one. A build that carries the in-app
+// model ([Llm], the same runtime the desktop uses) answers in Dart, on
+// whatever platform it runs on; a build with no model of its own asks the
+// platform over the `dev.nexus.nexus/tiny_brain` channel, and a platform
+// without one answers honestly with null — the distributed brain then
+// escalates over the mesh, so a phone with no tiny model is still a full
+// assistant.
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart' show MethodChannel;
 
 import 'brain.dart' show ChatTurn;
+import 'llm.dart';
 
 /// One answer from the on-device model, with the model's own confidence
 /// (0..1). A low-confidence answer is an everyday question gone sideways —
@@ -21,7 +27,12 @@ class TinyAnswer {
 }
 
 class TinyBrain {
-  const TinyBrain();
+  /// The in-app model, when this build runs one ([Llm]). Null leaves the seam
+  /// to the platform channel, exactly as it was before a model shipped inside
+  /// the app.
+  final Llm? llm;
+
+  const TinyBrain({this.llm});
 
   /// Test seam, like [SpeechInput.override]: a fake on-device model for
   /// tests, so routing is provable without hardware.
@@ -30,9 +41,11 @@ class TinyBrain {
 
   static TinyBrain get current => override?.call() ?? const TinyBrain();
 
-  /// The tiny model's name when one is installed on this device, or null —
-  /// honest: there is no on-device model yet. Never throws.
+  /// The tiny model's name when one is installed on this device, or null when
+  /// there is none to name. Never throws.
   Future<String?> modelName() async {
+    final model = llm;
+    if (model != null) return model.modelName();
     try {
       return await _channel.invokeMethod<String>('modelName');
     } catch (_) {
@@ -47,6 +60,20 @@ class TinyBrain {
     required String system,
     required List<ChatTurn> history,
   }) async {
+    final model = llm;
+    if (model != null) {
+      final text = await model.completeChat(
+        system: system,
+        history: history,
+        maxTokens: 200,
+      );
+      if (text.isEmpty) return null;
+      // A model that answered is not "unsure": the confidence gate exists to
+      // catch a tiny model that reports doubt, and this one either has an
+      // answer or has nothing. Escalation stays where it belongs — on no
+      // answer at all.
+      return TinyAnswer(text: text, confidence: 1);
+    }
     try {
       final raw = await _channel.invokeMapMethod<String, dynamic>('ask', {
         'system': system,
