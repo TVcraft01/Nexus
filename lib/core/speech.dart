@@ -18,16 +18,78 @@ import 'package:flutter/services.dart' show MethodChannel;
 /// `from`/`to <device>` that names where the file is going. A sentence that
 /// merely contains the word "dot" ("that is the dot in the middle") is left
 /// exactly as it was heard, and typed text never passes through here at all.
-String spokenToWritten(String heard) => heard.replaceAllMapped(
-  RegExp(
-    r'\s*\b(?:dot|period)\s+([A-Za-z0-9]{1,8})\b'
-    r'(?=\s+(?:from|to|onto|into)\b|$)',
-    caseSensitive: false,
+///
+/// The second repair is the other half of the same problem: a recognizer runs
+/// words together as readily as it writes them out. Measured on the phone,
+/// "get report.pdf from my pc" came back as **"Getreport.pdf from my PC"** —
+/// one token, no space — and the file-fetch grammar needs its verb separated
+/// from the name (`^(get|fetch|send me|copy) …`), so the sentence the user
+/// said could not be understood at all. [gluedVerbSplit] puts the space back.
+String spokenToWritten(String heard) => gluedVerbSplit(
+  heard.replaceAllMapped(
+    RegExp(
+      r'\s*\b(?:dot|period)\s+([A-Za-z0-9]{1,8})\b'
+      r'(?=\s+(?:from|to|onto|into)\b|$)',
+      caseSensitive: false,
+    ),
+    // Extensions are written lower-case on disk, and a recognizer capitalises
+    // whatever it likes ("Report Dot PDF"); the name it heard is left alone.
+    (match) => '.${match[1]!.toLowerCase()}',
   ),
-  // Extensions are written lower-case on disk, and a recognizer capitalises
-  // whatever it likes ("Report Dot PDF"); the name it heard is left alone.
-  (match) => '.${match[1]!.toLowerCase()}',
 );
+
+/// What a glued verb has to be written as for the file grammar to read it:
+/// the verbs are the grammar's own (`get|fetch|send me|copy`), longest first
+/// so a longer verb is never mistaken for a shorter one plus its leftovers.
+const _gluedVerbs = <String, String>{
+  'sendme': 'send me',
+  'fetch': 'fetch',
+  'copy': 'copy',
+  'get': 'get',
+};
+
+/// Collapses the double space a glue repair can leave behind.
+final _extraSpace = RegExp(r' {2,}');
+
+/// Looks like the start of a filename: something with an extension on it, so
+/// `report.pdf` yes, `weather report` no.
+final _filenameStart = RegExp(r'^[A-Za-z0-9][\w .\-]*\.[A-Za-z0-9]{1,8}\b');
+
+/// Splits a verb a recognizer glued to the next word: `Getreport.pdf …` comes
+/// back as `Get report.pdf …`, `sendme notes.txt …` as `send me notes.txt …`.
+///
+/// Only the first word is examined, only after a verb the file grammar itself
+/// accepts, and only when what follows really does look like a filename — so
+/// ordinary speech is left alone: `get weather` (no verb glued), `copy that`
+/// and `fetch` (nothing to separate) all come back exactly as heard, and a
+/// name the user happens to own that begins with a verb (`getreport.pdf` as a
+/// literal filename) is read as verb + name. That last case is the price of
+/// understanding the sentence a real recognizer produced, and it is paid only
+/// here — typed text never passes through this seam at all.
+String gluedVerbSplit(String heard) {
+  final space = heard.indexOf(' ');
+  final head = space < 0 ? heard : heard.substring(0, space);
+  final tail = space < 0 ? '' : heard.substring(space);
+  final lower = head.toLowerCase();
+  for (final entry in _gluedVerbs.entries) {
+    final glued = entry.key;
+    // Nothing glued: the word IS the verb the grammar wants ("get the
+    // weather", "copy that"). Compared against the *written* form, because
+    // "sendme" is itself the glue — the missing space is inside it.
+    if (!lower.startsWith(glued) || lower == entry.value) continue;
+    final rest = head.substring(glued.length);
+    if (!_filenameStart.hasMatch('$rest$tail'.trim())) continue;
+    // Only the missing space is added: the words keep the case they were
+    // heard in ("Sendme" is written "Send me", not "Send Me" or "send me").
+    final written = entry.value.split(' ');
+    final verb = [
+      head.substring(0, written.first.length),
+      ...written.skip(1),
+    ].join(' ');
+    return '$verb $rest$tail'.replaceAll(_extraSpace, ' ');
+  }
+  return heard;
+}
 
 class SpeechInput {
   const SpeechInput();

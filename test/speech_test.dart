@@ -48,6 +48,41 @@ void main() {
     expect(spokenToWritten(''), '');
   });
 
+  test('a verb the recognizer glued to the filename is split back apart', () {
+    // Measured on the phone (SM-A256E, 2026-10-11): a spoken "get report.pdf
+    // from my pc" came back as "Getreport.pdf from my PC" — one token, no
+    // space — and the file grammar needs its verb separated from the name,
+    // so the sentence the user said could not be understood at all.
+    expect(
+      spokenToWritten('Getreport.pdf from my PC'),
+      'Get report.pdf from my PC',
+    );
+    // The same, with the filename still spelled out as words.
+    expect(
+      spokenToWritten('getreport dot pdf from my pc'),
+      'get report.pdf from my pc',
+    );
+    // Any of the grammar's verbs — including the two-word one, which is
+    // written back as two words rather than as the runt it was heard as.
+    expect(
+      spokenToWritten('fetchnotes.txt from my laptop'),
+      'fetch notes.txt from my laptop',
+    );
+    expect(
+      spokenToWritten('sendme budget.xlsx from my desktop'),
+      'send me budget.xlsx from my desktop',
+    );
+    // Nothing else is touched: a verb with a space after it was never glued,
+    // and a word that merely begins like a verb has no filename in it.
+    expect(
+      spokenToWritten('get report.pdf from my pc'),
+      'get report.pdf from my pc',
+    );
+    expect(spokenToWritten('get the weather'), 'get the weather');
+    expect(spokenToWritten('copy that'), 'copy that');
+    expect(spokenToWritten('getweather report'), 'getweather report');
+  });
+
   test('android without a speech engine fails gracefully', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     expect(const SpeechInput().available, isTrue);
