@@ -188,23 +188,12 @@ class DevicesView extends StatelessWidget {
             ],
           ),
         ],
+        // Phone-only mode: zero peers paired. No empty graph, no counts —
+        // one node (this phone, centered) and one primary button. The app
+        // is complete on a single phone; pairing is an invitation, not a
+        // missing step. One or more peers restores the mesh picture below.
         if (paired.isEmpty)
-          NexusEmptyState(
-            icon: Icons.devices_rounded,
-            title: 'No devices yet',
-            message:
-                'Connect your first device and Nexus can work across all of '
-                'them — clipboard, files, messages and actions.',
-            action: FilledButton.icon(
-              onPressed: () => showPairSheet(context, mesh: mesh),
-              icon: const Icon(Icons.add_rounded, size: 20),
-              label: const Text('Add device'),
-            ),
-            secondaryAction: TextButton(
-              onPressed: () => showPairSheet(context, mesh: mesh),
-              child: const Text('Show my code on another device'),
-            ),
-          ),
+          _PhoneOnlyDevice(mesh: mesh),
         if (nearby.isNotEmpty) ...[
           NexusSectionHeader(
             'Nearby',
@@ -255,6 +244,41 @@ class DevicesView extends StatelessWidget {
             .map((p) => p.name)
             .firstOrNull ??
         hostId;
+  }
+}
+
+/// Phone-only mode: zero peers paired. A single node — this phone,
+/// centered — with one primary button below it. No empty graph, no counts.
+class _PhoneOnlyDevice extends StatelessWidget {
+  const _PhoneOnlyDevice({required this.mesh});
+
+  final MeshService mesh;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const SizedBox(height: NexusSpace.xxl),
+        Center(
+          child: _TopologyNode(
+            platform: mesh.identity.platform,
+            name: 'This phone',
+            state: _LinkState.online,
+            detail: platformLabel(mesh.identity.platform),
+            isSelf: true,
+          ),
+        ),
+        const SizedBox(height: NexusSpace.xl),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: () => showPairSheet(context, mesh: mesh),
+            icon: const Icon(Icons.add_rounded, size: 20),
+            label: const Text('Pair another device'),
+          ),
+        ),
+      ],
+    );
   }
 }
 

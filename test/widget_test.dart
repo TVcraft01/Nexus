@@ -61,13 +61,11 @@ void main() {
 
     expect(find.text('Devices'), findsWidgets);
     expect(find.text('Everything Nexus can work across.'), findsOneWidget);
-    expect(find.text('No devices yet'), findsOneWidget);
-    expect(
-      find.textContaining('Connect your first device'),
-      findsOneWidget,
-      reason: 'an empty screen must teach the next action',
-    );
-    expect(find.text('Add device'), findsOneWidget);
+    // Phone-only mode: nothing paired means this phone, complete on its
+    // own, plus the one way to pair — never an empty graph.
+    expect(find.text('This phone'), findsOneWidget);
+    expect(find.text('Pair another device'), findsOneWidget);
+    expect(find.text('No devices yet'), findsNothing);
 
     await mesh.stop();
   });

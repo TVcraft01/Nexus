@@ -154,8 +154,8 @@ void main() {
       await tester.pumpWidget(harness(mesh));
       await tester.pump();
 
-      // Welcome view is showing (no paired devices).
-      expect(find.textContaining('Hello! I am Nexus.'), findsOneWidget);
+      // Phone-only welcome is showing (no paired devices).
+      expect(find.textContaining('Ask me anything'), findsOneWidget);
 
       // A typo of a known command → question card offering the meaning.
       await ask(tester, 'what time is is');
@@ -201,12 +201,12 @@ void main() {
         // Whitespace-only submit must be a no-op.
         await ask(tester, '   ');
         expect(find.byTooltip('Send'), findsOneWidget);
-        expect(find.textContaining('Hello! I am Nexus.'), findsOneWidget);
+        expect(find.textContaining('Ask me anything'), findsOneWidget);
 
         // Empty submit via the send button must be a no-op too.
         await tester.tap(find.byTooltip('Send'));
         await tester.pump();
-        expect(find.textContaining('Hello! I am Nexus.'), findsOneWidget);
+        expect(find.textContaining('Ask me anything'), findsOneWidget);
 
         // Gibberish → a teach question, never a crash or fake success.
         await ask(tester, 'zzz qqq xyz');
@@ -331,21 +331,19 @@ void main() {
         await tester.pumpWidget(harness(mesh));
         await tester.pump();
 
-        // The welcome view points at the blue chips under the input.
-        await tester.tap(find.widgetWithText(ActionChip, 'what can you do'));
+        // Phone-only mode: the welcome view offers this phone's own chips.
+        // Tapping one sends it like typing it.
+        await tester.tap(find.widgetWithText(ActionChip, '12 times 5'));
         await tester.pump();
-        expect(find.textContaining('Here is what I can do:'), findsOneWidget);
+        expect(find.textContaining('Sixty.'), findsOneWidget);
 
-        // A second chip keeps working after the first exchange — and the
-        // memory chip answers honestly on a fresh store.
+        // A second chip keeps working after the first exchange — the
+        // memory chip remembers on a fresh store.
         await tester.tap(
-          find.widgetWithText(ActionChip, 'what do you know about me'),
+          find.widgetWithText(ActionChip, 'Remember something'),
         );
         await tester.pump();
-        expect(
-          find.textContaining('don\'t remember anything about you yet'),
-          findsOneWidget,
-        );
+        expect(find.textContaining('Remembered:'), findsOneWidget);
       } finally {
         QueryLog.i.resetForTest();
         await mesh.stop();
@@ -551,18 +549,17 @@ void main() {
         await mesh.stop();
       }
 
-      // No history yet — the generic discovery chips stay. A fresh State
-      // (as after a restart) reads the empty log and falls back to the
-      // catalog.
+      // No history yet — the generic phone-only chips stay. A fresh State
+      // (as after a restart) reads the empty log and falls back to what
+      // this phone runs on its own.
       final (freshStore, freshMesh) = await boot();
       QueryLog.readAllOverride = () async => const [];
       try {
         await tester.pumpWidget(harness(freshMesh, key: UniqueKey()));
         await tester.pump();
         await tester.pump();
-        // The generic discovery row is back — it opens with the catalog's
-        // first chip, not the user's routine.
-        expect(find.widgetWithText(ActionChip, 'what can you do'), findsOneWidget);
+        // The generic row is back — the phone-only set, not the routine.
+        expect(find.widgetWithText(ActionChip, 'Set a timer'), findsOneWidget);
         expect(find.widgetWithText(ActionChip, 'roll a dice'), findsNothing);
       } finally {
         QueryLog.readAllOverride = null;

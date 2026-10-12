@@ -379,8 +379,9 @@ void brainWidgetTests() {
       );
       await tester.pump();
 
-      // The status line discovers the installed model.
-      expect(find.textContaining('llama3.2:3b'), findsOneWidget);
+      // The status line discovers the installed model — with zero peers it
+      // names this device instead of the model filename (phone-only mode).
+      expect(find.textContaining('On this device'), findsOneWidget);
 
       // A phrase the interpreter doesn't know → the brain answers instead of
       // the teach card. ("tell me a joke" is a built-in command, so the
@@ -522,8 +523,9 @@ void brainWidgetTests() {
       );
       await tester.pump();
 
-      // Status line admits there is no brain.
-      expect(find.textContaining('Local brain offline'), findsOneWidget);
+      // Status line admits there is no brain — with zero peers it says so
+      // without naming a PC (phone-only mode).
+      expect(find.textContaining('No model loaded'), findsOneWidget);
 
       // An unknown phrase must fall back to the classic teach card — and the
       // proven-offline brain must not even flash a Thinking placeholder or
@@ -569,8 +571,8 @@ void brainWidgetTests() {
       expect(find.text('Thinking…'), findsNothing);
       expect(find.textContaining('don\'t understand'), findsOneWidget);
       // …but the server answered, so the brain is NOT offline.
-      expect(find.textContaining('Local brain: llama3.2:3b'), findsOneWidget);
-      expect(find.textContaining('Local brain offline'), findsNothing);
+      expect(find.textContaining('On this device'), findsOneWidget);
+      expect(find.textContaining('No model loaded'), findsNothing);
     } finally {
       QueryLog.i.resetForTest();
       await mesh.stop();
@@ -862,9 +864,9 @@ void brainWidgetTests() {
       );
       await tester.pump();
 
-      // First run, nothing paired and no thread yet: the greeting card is
-      // what a device that has never talked to Nexus would show.
-      expect(find.text('Hello! I am Nexus.'), findsOneWidget);
+      // First run, nothing paired and no thread yet: the phone-only
+      // greeting is what a device that has never talked to Nexus shows.
+      expect(find.text('Ask me anything'), findsOneWidget);
 
       // Have a conversation.
       await tester.enterText(find.byType(TextField), 'what time is it');
@@ -1287,10 +1289,11 @@ void brainWidgetTests() {
 
   testWidgets('a desktop is never shown an example it cannot run',
       (tester) async {
-    // The advertising surfaces a user actually sees on a PC: the welcome
-    // card's example line, the composer hint, and the chips. Every one of
-    // them is filtered by the registry's platform facts, so none offers a
-    // call or a flashlight on a machine that has neither.
+    // The advertising surfaces a user actually sees on a PC: the composer
+    // hint and the chips. With zero peers the chips are the phone-only
+    // set — four things this machine runs on its own — so every one of
+    // them must parse to something runnable here rather than a call or a
+    // flashlight a desktop has neither of.
     debugDefaultTargetPlatformOverride = TargetPlatform.linux;
     final store = NexusStore(
       explicitPath: '${Directory.systemTemp.createTempSync('desk').path}/s.json',
@@ -1326,12 +1329,14 @@ void brainWidgetTests() {
         );
       }
 
-      // The welcome card's example is one this system has: an email, not a
-      // call the desktop cannot place.
-      expect(find.textContaining('email mom'), findsOneWidget);
+      // The phone-only set is what a zero-peer desktop offers: nothing it
+      // cannot place.
+      expect(find.text('Set a timer'), findsOneWidget);
       expect(find.textContaining('call mom'), findsNothing);
 
-      // And the chips on offer are all real here.
+      // And the chips on offer are all real here — a chip that asks for
+      // one more detail (a timer with no length yet) still names an
+      // action this system runs.
       final chips = tester
           .widgetList<ActionChip>(find.byType(ActionChip))
           .map((chip) => (chip.label as Text).data!)
@@ -1340,7 +1345,11 @@ void brainWidgetTests() {
       expect(chips, isNot(contains('call mom')));
       for (final chip in chips) {
         final result = const CommandInterpreter().interpret(chip);
-        expect(result.outcome, InterpretOutcome.matched, reason: chip);
+        expect(
+          result.outcome,
+          anyOf(InterpretOutcome.matched, InterpretOutcome.needsInfo),
+          reason: chip,
+        );
         expect(
           capabilityAvailableOn(result.command!.action, 'linux'),
           isTrue,
@@ -1455,6 +1464,53 @@ void brainWidgetTests() {
 
         // The spoken ask became the same command a typed one would: the file
         // named the way the grammar needs it, from the pairing's PC.
+        expect(executor.lastRequest, isNotNull);
+        expect(executor.lastRequest!.action, AgentActions.fileFetch);
+        expect(executor.lastRequest!.arguments['filename'], 'report.pdf');
+        expect(executor.lastRequest!.arguments['peerId'], 'pc1');
+        expect(
+          find.textContaining('Getting report.pdf from My PC'),
+          findsOneWidget,
+        );
+      } finally {
+        SpeechInput.override = null;
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets(
+    'voice: a verb the mic glued to the filename still fetches',
+    (tester) async {
+      // The literal string the phone's on-device recognizer produced for a
+      // spoken "get report.pdf from my pc" on 2026-10-11: "Getreport.pdf from
+      // my PC" — one token where two words were said. It has to reach exactly
+      // the fetch the typed sentence reaches, without the user repeating
+      // themselves.
+      final store = NexusStore(
+        explicitPath:
+            '${Directory.systemTemp.createTempSync('avt-glued').path}/s.json',
+      )..clipboardSync = true;
+      final mesh = _PairedPcMesh(store: store);
+      final executor = _GatedFileExecutor();
+      SpeechInput.override = () => _HeardSpeech('Getreport.pdf from my PC');
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildNexusTheme(),
+            home: Scaffold(
+              body: AssistantView(mesh: mesh, executor: executor),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        await tester.tap(find.byTooltip('Speak your question'));
+        await tester.pump(); // listening
+        await tester.pump(); // the recognized words resolve
+
         expect(executor.lastRequest, isNotNull);
         expect(executor.lastRequest!.action, AgentActions.fileFetch);
         expect(executor.lastRequest!.arguments['filename'], 'report.pdf');

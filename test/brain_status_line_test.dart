@@ -101,12 +101,11 @@ void main() {
       await tester.pumpWidget(_harness(mesh, brain));
       await tester.pump();
 
-      // The model is on this device, so the line names it — and does not
-      // claim the answer will come from a PC.
-      expect(find.textContaining('Local brain: ${kPhoneModel.label}'),
-          findsOneWidget);
+      // The model is on this device and nothing is paired, so the line
+      // says so — and does not claim the answer will come from a PC.
+      expect(find.textContaining('On this device'), findsOneWidget);
       expect(find.textContaining('your PC (via mesh)'), findsNothing);
-      expect(find.textContaining('Local brain offline'), findsNothing);
+      expect(find.textContaining('No model loaded'), findsNothing);
     } finally {
       QueryLog.i.resetForTest();
       await mesh.stop();
@@ -163,9 +162,9 @@ void main() {
       await tester.pumpWidget(_harness(mesh, brain));
       await tester.pump();
 
-      // No model, no peer: the advice must be something a phone can actually
-      // do — pair a PC — and never "install Ollama", which it cannot.
-      expect(find.textContaining('pair your PC'), findsOneWidget);
+      // No model, no peer: the phone-only line says so plainly — and never
+      // "install Ollama", which a phone cannot do.
+      expect(find.textContaining('No model loaded'), findsOneWidget);
       expect(find.textContaining('install Ollama'), findsNothing);
     } finally {
       QueryLog.i.resetForTest();

@@ -1165,7 +1165,19 @@ class AssistantViewState extends State<AssistantView> {
     final totalSkillUses = (_skills ?? const <SkillUse>[])
         .fold<int>(0, (sum, skill) => sum + skill.uses);
     final List<String> suggestions;
-    if (personal.isNotEmpty) {
+    // Phone-only mode: with zero peers paired and no personal routine yet,
+    // the chips are four things this phone runs on its own — no mesh, no
+    // PC, no file-fetch. Detection is automatic (pairedDevices.isEmpty).
+    if (widget.mesh.pairedDevices.isEmpty &&
+        personal.isEmpty &&
+        totalSkillUses < 2) {
+      suggestions = const [
+        'Set a timer',
+        "What's in my Downloads",
+        '12 times 5',
+        'Remember something',
+      ];
+    } else if (personal.isNotEmpty) {
       suggestions = [
         ...personal.map((h) => h.phrase),
         ...skillExamples,
@@ -1255,7 +1267,77 @@ class AssistantViewState extends State<AssistantView> {
   /// card, because the card was the second thing the eye reached: the first
   /// thing on a blank screen should be the thing to say, not a panel about
   /// the app. The card keeps only the steps.
+  /// Phone-only welcome: zero peers paired. "Ask me anything" plus four
+  /// things this phone runs on its own. No file-fetch, no devices, no PC —
+  /// the app is complete on a single phone. One or more peers restores the
+  /// mesh greeting below.
+  Widget _phoneOnlyWelcomeView() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.lg,
+        NexusSpace.huge,
+        NexusSpace.lg,
+        NexusSpace.xxl,
+      ),
+      children: [
+        Text(
+          'Ask me anything',
+          textAlign: TextAlign.center,
+          style: NexusType.title.copyWith(
+            color: NexusColors.text,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: NexusSpace.sm),
+        Text(
+          'Type what you want, the way you would say it.',
+          textAlign: TextAlign.center,
+          style: NexusType.body.copyWith(color: NexusColors.muted),
+        ),
+        const SizedBox(height: NexusSpace.xxl),
+        _suggestionChips(wrapped: true, limit: 4),
+        const SizedBox(height: NexusSpace.xxl),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: NexusColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: NexusColors.accent.withValues(alpha: 0.35),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _firstStep(
+                Icons.touch_app_rounded,
+                'Tap a suggestion',
+                'the chips above run real things this phone can do',
+              ),
+              _firstStep(
+                Icons.timer_rounded,
+                '"Set a timer"',
+                'I count down right here',
+              ),
+              _firstStep(
+                Icons.memory_rounded,
+                '"remember that …"',
+                'a fact I keep; ask ${_quoted(_phrase(AgentActions.memoryRecall, _platform))}',
+              ),
+              Text(
+                'If I misunderstand, tell me what you meant — I learn.',
+                style: NexusType.caption.copyWith(color: NexusColors.muted),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _legacyWelcomeView() {
+    // Zero peers: the phone-only welcome. Anything else: the mesh greeting.
+    if (widget.mesh.pairedDevices.isEmpty) return _phoneOnlyWelcomeView();
     return ListView(
       padding: const EdgeInsets.fromLTRB(
         NexusSpace.lg,
@@ -2199,6 +2281,18 @@ class AssistantViewState extends State<AssistantView> {
     // old check reported as "your PC (via mesh)", telling the phone's user
     // their words went to the PC while they never left the phone.
     final viaMesh = _conversation.brainModel.startsWith('mesh:');
+    // Phone-only mode: zero peers paired and the model is this phone's own
+    // (not a mesh:… model). The line says where the answer runs, not the
+    // model filename: loaded → "On this device", otherwise "No model
+    // loaded". One or more peers restores the mesh wording below.
+    final phoneOnly =
+        widget.mesh.pairedDevices.isEmpty && !viaMesh;
+    if (phoneOnly && _conversation.brainHealth == BrainHealth.online) {
+      return _phoneOnlyStatusLine(Icons.auto_awesome_rounded, 'On this device');
+    }
+    if (phoneOnly && _conversation.brainHealth != BrainHealth.probing) {
+      return _phoneOnlyStatusLine(Icons.memory_rounded, 'No model loaded');
+    }
     // What a user with no brain can do about it still depends on the device:
     // a phone cannot run Ollama, so its honest advice is to pair a PC (the
     // dead end "install Ollama and pull a model" was shown to somebody with
@@ -2225,6 +2319,33 @@ class AssistantViewState extends State<AssistantView> {
             : 'Local brain: ${_conversation.brainModel}',
       ),
     };
+    // A pressable, not a bare GestureDetector: this strip answers the finger
+    // on touch-down and settles on a spring, where a GestureDetector only
+    // reacted once the finger came up.
+    return _brainStatusPressable(brain, icon: icon, color: color, text: text);
+  }
+
+  /// Phone-only status line: the same pressable row, with the phone-only
+  /// words. Extracted so the zero-peer branch shares the layout.
+  Widget _phoneOnlyStatusLine(IconData icon, String text) {
+    final palette = NexusPalette.of(context);
+    final color = text == 'On this device' ? palette.success : palette.warning;
+    return _brainStatusPressable(
+      widget.brain,
+      icon: icon,
+      color: color,
+      text: text,
+    );
+  }
+
+  /// The shared pressable status row. [brain] is the probe target; icon,
+  /// color and text are the resolved line to show.
+  Widget _brainStatusPressable(
+    LocalBrain? brain, {
+    required IconData icon,
+    required Color color,
+    required String text,
+  }) {
     // A pressable, not a bare GestureDetector: this strip answers the finger
     // on touch-down and settles on a spring, where a GestureDetector only
     // reacted once the finger came up.
