@@ -1808,6 +1808,69 @@ class AssistantViewState extends State<AssistantView> {
     );
   }
 
+  /// A peer's clipboard push waiting for the explicit gate — a small pill
+  /// above the composer, never a new screen. Tap pastes and dismisses;
+  /// swipe dismisses without pasting. It never pastes on its own: that is
+  /// the safety rule, so this pill is the only thing a plain-text push
+  /// ever becomes. Auto-accepted OTPs/URLs never reach it (the shell toasts
+  /// those instead).
+  Widget _clipboardPill() {
+    return ListenableBuilder(
+      listenable: widget.mesh,
+      builder: (context, _) {
+        final pending = widget.mesh.lastIncomingClip;
+        if (pending == null || pending.autoAccepted) {
+          return const SizedBox.shrink();
+        }
+        final palette = NexusPalette.of(context);
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(
+            NexusSpace.page,
+            NexusSpace.sm,
+            NexusSpace.page,
+            0,
+          ),
+          child: Dismissible(
+            key: const ValueKey('clipboard-pill'),
+            onDismissed: (_) => widget.mesh.dismissPendingClipboard(),
+            child: GestureDetector(
+              onTap: () => unawaited(widget.mesh.acceptPendingClipboard()),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: NexusSpace.lg,
+                  vertical: NexusSpace.sm,
+                ),
+                decoration: BoxDecoration(
+                  color: palette.surfaceElevated,
+                  borderRadius: NexusRadius.card,
+                  border: Border.all(color: palette.separator),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.content_paste_rounded,
+                      size: 18,
+                      color: palette.accent,
+                    ),
+                    const SizedBox(width: NexusSpace.md),
+                    Expanded(
+                      child: Text(
+                        'Clipboard from ${pending.fromName ?? 'another device'} — tap to paste.',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -1855,6 +1918,8 @@ class AssistantViewState extends State<AssistantView> {
           // screen they live inside the greeting, under it, and are not drawn
           // a second time here.
           if (!_greetingShown) _suggestionChips(),
+          // A peer's clipboard push, waiting for the tap that pastes it.
+          _clipboardPill(),
           _composer(),
         ],
       ],
@@ -3704,68 +3769,3 @@ class _DreamRowState extends State<_DreamRow> {
     );
   }
 }
-  /// A peer's clipboard push waiting for the explicit gate — a small pill
-  /// above the composer, never a new screen. Tap pastes and dismisses;
-  /// swipe dismisses without pasting. It never pastes on its own: that is
-  /// the safety rule, so this pill is the only thing a plain-text push
-  /// ever becomes. Auto-accepted OTPs/URLs never reach it (the shell toasts
-  /// those instead).
-  Widget _clipboardPill() {
-    return ListenableBuilder(
-      listenable: widget.mesh,
-      builder: (context, _) {
-        final pending = widget.mesh.lastIncomingClip;
-        if (pending == null || pending.autoAccepted) {
-          return const SizedBox.shrink();
-        }
-        final palette = NexusPalette.of(context);
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(
-            NexusSpace.page,
-            NexusSpace.sm,
-            NexusSpace.page,
-            0,
-          ),
-          child: Dismissible(
-            key: const ValueKey('clipboard-pill'),
-            onDismissed: (_) => widget.mesh.dismissPendingClipboard(),
-            child: GestureDetector(
-              onTap: () => unawaited(widget.mesh.acceptPendingClipboard()),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: NexusSpace.lg,
-                  vertical: NexusSpace.sm,
-                ),
-                decoration: BoxDecoration(
-                  color: palette.surfaceElevated,
-                  borderRadius: NexusRadius.card,
-                  border: Border.all(color: palette.separator),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.content_paste_rounded,
-                      size: 18,
-                      color: palette.accent,
-                    ),
-                    const SizedBox(width: NexusSpace.md),
-                    Expanded(
-                      child: Text(
-                        'Clipboard from ${pending.fromName ?? 'another device'} — tap to paste.',
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-          // A peer's clipboard push, waiting for the tap that pastes it.
-          _clipboardPill(),
