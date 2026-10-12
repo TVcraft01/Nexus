@@ -44,13 +44,11 @@ Works today on Linux desktop, Windows, and Android.
 
 ## Screenshots
 
-Screenshots coming after the v0.2 release.
+Screenshots coming after the v0.3 release.
 
 ## What does not work yet
 
 - **No wake word.** You open the assistant, then talk or type.
-- **No clipboard sync.** Copying on one device does not yet appear on the others.
-- **No LLM fallback.** When no paired device can answer, the assistant says so instead of guessing from a model.
 - **No USB.** Pairing and transfer run over the local network only.
 - **No macOS or iOS builds.** Published today: Linux x86_64, Windows x86_64, and Android.
 
@@ -68,7 +66,7 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | iex
 ```
 
-Android: download [nexus.apk](https://github.com/TVcraft01/Nexus/releases/download/v0.1.53/nexus.apk) from the [latest release](https://github.com/TVcraft01/Nexus/releases/latest) and install it. Newer releases replace the file under the same release page.
+Android: download [Nexus-0.2.0.apk](https://github.com/TVcraft01/Nexus/releases/download/v0.2.0/Nexus-0.2.0.apk) from the [latest release](https://github.com/TVcraft01/Nexus/releases/latest) and install it. It installs over the previous version — nothing is uninstalled, nothing is lost.
 
 Then pair two devices with a code and try `get report.pdf from my pc`. The full walkthrough is in [docs/DEMO.md](docs/DEMO.md).
 

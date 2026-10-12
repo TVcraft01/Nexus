@@ -1171,9 +1171,11 @@ class AssistantViewState extends State<AssistantView> {
     if (widget.mesh.pairedDevices.isEmpty &&
         personal.isEmpty &&
         totalSkillUses < 2) {
+      // "What's in my Downloads" was cut before v0.2.0: it parsed to a
+      // memory question the phone could not answer, and a pill that does
+      // nothing is worse than a missing pill.
       suggestions = const [
         'Set a timer',
-        "What's in my Downloads",
         '12 times 5',
         'Remember something',
       ];

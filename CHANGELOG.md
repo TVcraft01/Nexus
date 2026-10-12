@@ -5,6 +5,33 @@ it was added during the file-fetch sprint, so the oldest entry below is that
 sprint and earlier work is not listed. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — 2026-10-12
+
+### Added
+
+- **Nexus answers on its own, even offline.** Your phone and your PC each
+  carry a small AI model inside the app, so everyday questions get a real
+  answer with no connection and nothing ever leaves your devices.
+- **Talk to it.** Tap the microphone and say what you want — including
+  `get report.pdf from my pc`, which fetches the file over your own
+  network. Misheard words that used to break a request are repaired before
+  anything runs.
+- **Copy once, paste anywhere.** Text you copy on one paired device
+  appears on the others — codes and links apply themselves, everything
+  else waits for one tap.
+- **One phone is enough.** With nothing paired, Nexus is complete as it
+  is: it greets you, shows this phone in Devices, and answers on this
+  device. Pairing a second device is an invitation, never a missing step.
+- **Timers, reminders, and quick math** from the same place you ask
+  everything else.
+
+### Known limits
+
+- No wake word yet — you open the assistant, then talk or type.
+- No iPhone or macOS builds yet — Linux, Windows, and Android.
+- The small model on phones is slower than the PC's and knows less.
+- No location-based reminders yet.
+
 ## [Unreleased] — automatic reconnect
 
 ### Added

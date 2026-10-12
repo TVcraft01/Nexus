@@ -88,9 +88,11 @@ void main() {
 
       expect(find.text('Ask me anything'), findsOneWidget);
       expect(find.text('Set a timer'), findsOneWidget);
-      expect(find.text("What's in my Downloads"), findsOneWidget);
       expect(find.text('12 times 5'), findsOneWidget);
       expect(find.text('Remember something'), findsOneWidget);
+      // Cut before v0.2.0: it answered from memory instead of listing
+      // anything, and a pill that does nothing is worse than a missing one.
+      expect(find.text("What's in my Downloads"), findsNothing);
       // The solo greeting implies no mesh at all.
       expect(find.textContaining('Hello! I am Nexus.'), findsNothing);
       expect(find.textContaining('your PC'), findsNothing);
@@ -118,7 +120,6 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Set a timer'), findsNothing);
-      expect(find.text("What's in my Downloads"), findsNothing);
       expect(find.text('12 times 5'), findsNothing);
       expect(find.text('Remember something'), findsNothing);
     } finally {
