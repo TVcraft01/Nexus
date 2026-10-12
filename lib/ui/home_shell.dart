@@ -262,17 +262,22 @@ class _HomeShellState extends State<HomeShell> {
         final incoming = widget.mesh.lastIncomingClip;
         if (incoming != null && incoming != _lastShown) {
           _lastShown = incoming;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Copied on ${incoming.fromName ?? 'another device'}: '
-                  '"${incoming.text.length > 60 ? '${incoming.text.substring(0, 60)}…' : incoming.text}"',
+          // Only an auto-accepted OTP/URL toasts: it already applied itself.
+          // Plain text never toasts — it waits in the assistant's paste pill
+          // for the user's explicit tap.
+          if (incoming.autoAccepted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Copied from ${incoming.fromName ?? 'another device'}.',
+                  ),
+                  duration: const Duration(seconds: 2),
                 ),
-              ),
-            );
-          });
+              );
+            });
+          }
         }
 
         final views = [

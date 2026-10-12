@@ -125,13 +125,40 @@ class PairingSession {
   });
 }
 
-/// A clipboard message that arrived from another device — used only for the
-/// transient "Copied on …" notification. The device's own clipboard is the
-/// single source of truth; nothing is stored.
+/// A clipboard message that arrived from another device — the pending slot.
+///
+/// The safety rule is that a push never touches this device's clipboard on
+/// its own: plain text waits here until the user taps paste, and only an
+/// auto-accept payload ([isClipboardAutoAccept]) is applied immediately.
+/// v1 is current-only — one slot, never persisted.
 class ClipEntry {
   final String text;
   final String? fromName;
-  const ClipEntry({required this.text, required this.fromName});
+  final String? fromId;
+
+  /// True when the payload matched an auto-accept pattern and was already
+  /// written to the local clipboard — the UI toasts instead of showing the
+  /// paste pill.
+  final bool autoAccepted;
+  const ClipEntry({
+    required this.text,
+    required this.fromName,
+    this.fromId,
+    this.autoAccepted = false,
+  });
+}
+
+/// Whether a pushed clipboard payload may apply itself without a tap.
+///
+/// OTPs (6–8 digits) and URLs (http/https) are typed or opened on sight
+/// anyway — holding a 2FA code for a tap is what lets it expire. Everything
+/// else waits for the explicit gate ([MeshService.acceptPendingClipboard]).
+bool isClipboardAutoAccept(String text) {
+  final trimmed = text.trim();
+  if (trimmed.isEmpty) return false;
+  if (RegExp(r'^\d{6,8}$').hasMatch(trimmed)) return true;
+  final lower = trimmed.toLowerCase();
+  return lower.startsWith('http://') || lower.startsWith('https://');
 }
 
 /// One entry in a remote directory listing.
@@ -280,6 +307,9 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   final Map<String, Uint8List> _sessionKeys = {}; // peerId -> cached key
   final Set<String> _recentMessageIds = {}; // dedupe across multi-hop relays
 
+  /// The one pending clipboard slot: a peer's push waiting for the user's
+  /// tap, or an auto-accepted OTP/URL the UI toasts about. Null when
+  /// nothing is waiting.
   ClipEntry? lastIncomingClip;
 
   /// Why the last file request failed ("could not reach", "access denied",
@@ -3899,17 +3929,60 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
 
     debugPrint('NEXUS mesh: clipboard <- ${msg.from}');
 
-    if (store.clipboardSync) {
+    // Never silently overwrite the local clipboard: a push lands in the
+    // pending slot and waits for the user's tap. Only an OTP or URL
+    // applies itself — and even then only with sync enabled.
+    final fromName =
+        (msg.payload['fromName'] as String?) ?? 'Another device';
+    if (store.clipboardSync && isClipboardAutoAccept(text)) {
       _lastClipboard = text;
       _pendingClipboard = null;
       _clipboardDeliveredTo.clear();
       await clipboard.writeText(text);
+      lastIncomingClip = ClipEntry(
+        text: text,
+        fromName: fromName,
+        fromId: msg.from,
+        autoAccepted: true,
+      );
+    } else {
+      lastIncomingClip = ClipEntry(
+        text: text,
+        fromName: fromName,
+        fromId: msg.from,
+      );
     }
+    notifyListeners();
+  }
 
-    lastIncomingClip = ClipEntry(
-      text: text,
-      fromName: (msg.payload['fromName'] as String?) ?? 'Another device',
-    );
+  /// True while a peer's push is waiting for the explicit gate — the paste
+  /// pill's visibility, in one place.
+  bool get hasPendingClipboard =>
+      lastIncomingClip != null && !lastIncomingClip!.autoAccepted;
+
+  /// The user tapped the paste pill: the explicit gate. Writes the pending
+  /// text to the local clipboard and dismisses the indicator. Marks the
+  /// text seen first, so the clipboard poll does not echo it back to the
+  /// peer that sent it.
+  Future<void> acceptPendingClipboard() async {
+    final pending = lastIncomingClip;
+    lastIncomingClip = null;
+    if (pending == null || pending.autoAccepted) {
+      notifyListeners();
+      return;
+    }
+    _lastClipboard = pending.text;
+    _pendingClipboard = null;
+    _clipboardDeliveredTo.clear();
+    await clipboard.writeText(pending.text);
+    notifyListeners();
+  }
+
+  /// The user swiped the paste pill away: forget the push without touching
+  /// the local clipboard.
+  void dismissPendingClipboard() {
+    if (lastIncomingClip == null) return;
+    lastIncomingClip = null;
     notifyListeners();
   }
 

@@ -349,9 +349,10 @@ void main() {
     }
     expect(found, isTrue, reason: 'PC never received the clipboard message');
 
-    // Clipboard sync is ON by default: the text lands directly in the PC's
-    // clipboard, ready to paste anywhere.
-    expect(clipA.value, 'hello from the phone');
+    // The safety rule: a plain-text push never touches the PC's clipboard
+    // on its own — it waits in the pending slot for the user's tap.
+    expect(clipA.value, isNull);
+    expect(meshA.hasPendingClipboard, isTrue);
   });
 
   test('clipboard retries delivery after a temporary disconnect', () async {
@@ -376,9 +377,11 @@ void main() {
     var received = false;
     for (var i = 0; i < 12 && !received; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 1600));
-      received = clipA.value == 'retry me';
+      received = meshA.lastIncomingClip?.text == 'retry me';
     }
     expect(received, isTrue, reason: meshB.lastFileError);
+    // Retried delivery still only stages the push — it never applies it.
+    expect(clipA.value, isNull);
   });
 
   test(
@@ -484,9 +487,11 @@ void main() {
     var received = false;
     for (var i = 0; i < 20 && !received; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
-      received = clipA.value == 'active device text';
+      received = meshA.lastIncomingClip?.text == 'active device text';
     }
     expect(received, isTrue, reason: 'active device should receive clipboard');
+    // …as a pending push, never a silent overwrite.
+    expect(clipA.value, isNull);
   });
 
   test('isActiveDevice returns false for stale devices', () async {
