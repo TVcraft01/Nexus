@@ -2184,23 +2184,26 @@ class AssistantViewState extends State<AssistantView> {
     );
   }
 
-  /// One quiet line about the local brain: probing, offline (tap to retry
-  /// after installing Ollama or pulling a model), or the installed model.
-  /// Only shown when a brain is attached.
+  /// One quiet line about the local brain: probing, offline, or the model
+  /// that will answer. Only shown when a brain is attached.
   Widget _brainStatusLine() {
     final palette = NexusPalette.of(context);
     final brain = widget.brain;
-    // A mesh model ("mesh:…") means the brain lives on a paired device —
-    // say so in words the phone user understands, and never tell them to
-    // install Ollama.
+    // Where the next answer will come from, and what to do when there is no
+    // brain at all — two different questions that used to share one answer.
     //
-    // A phone is that case even before anything is paired: its brain *is* a
-    // [DistributedBrain], because Android cannot run Ollama at all. The phone
-    // showed a dead end ("install Ollama and pull a model") to somebody with
-    // no way to install it; what they can actually do is pair their PC.
-    final viaMesh =
-        widget.brain is DistributedBrain ||
-        _conversation.brainModel.startsWith('mesh:');
+    // A paired device is the source only when the model's own name says so (a
+    // "mesh:…" name). The brain's *type* is not evidence: on Android the brain
+    // is always a [DistributedBrain], and since the model now ships inside
+    // the app, that brain answers with this device's own model — which the
+    // old check reported as "your PC (via mesh)", telling the phone's user
+    // their words went to the PC while they never left the phone.
+    final viaMesh = _conversation.brainModel.startsWith('mesh:');
+    // What a user with no brain can do about it still depends on the device:
+    // a phone cannot run Ollama, so its honest advice is to pair a PC (the
+    // dead end "install Ollama and pull a model" was shown to somebody with
+    // no way to install it).
+    final advisePairing = viaMesh || widget.brain is DistributedBrain;
     final (icon, color, text) = switch (_conversation.brainHealth) {
       BrainHealth.probing => (
         Icons.sync_rounded,
@@ -2210,7 +2213,7 @@ class AssistantViewState extends State<AssistantView> {
       BrainHealth.offline => (
         Icons.memory_rounded,
         palette.warning,
-        viaMesh
+        advisePairing
             ? 'No brain reachable — pair your PC to share its brain (tap to retry)'
             : 'Local brain offline — install Ollama and pull a model (tap to retry)',
       ),
