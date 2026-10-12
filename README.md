@@ -1,151 +1,93 @@
 # Nexus
 
-### Your devices, one system.
+Nexus runs on the devices you already own, keeps everything local, and never asks for an account.
 
-**Nexus** connects your phone, PC, and other devices into a single, private mesh.
-No cloud. No accounts. No one in the middle.
+## The problem
 
-> Copy text on your phone. Paste it on your PC.
-> Browse files across devices. Send commands from one to another.
-> All encrypted. All direct. All yours.
+Your devices hold pieces of your life, but they do not talk to each other. Instead, they send your data to servers owned by someone else, and charge you for the return trip. Nexus pairs your own devices directly, so asking one of them reaches what the others hold.
 
----
+## Why it is not a $3,499 box
 
-## Why Nexus
+Ghost is a $3,499 screenless box from Ghost.ai, backed by an $11M seed round led by a16z: an RTX Pro 4000 with 64 GB of RAM and a 1 TB SSD that runs Qwen-3.8 and Gemma-4-31B in your home, controlled from a phone app, shipping the last week of October 2026. Nexus starts from the opposite assumption: the phone and laptop you already have are enough, so there is nothing new to buy, nothing to plug in, and nothing to replace. It is free and open source, and your devices talk to each other directly instead of through a central box.
 
-Today, your devices don't talk to each other. They talk to servers — someone else's computers — and hope for the best.
+## What works today
 
-Nexus changes that. Your devices find each other, pair in seconds, and communicate directly. Everything stays on your hardware. No subscriptions. No telemetry. No fine print.
+- **Ask for a file by name.** Type or say `get report.pdf from my pc` on a paired device and the file arrives in your Downloads folder. The transfer stays on your local network.
 
----
+  <img src="docs/screenshots/file-fetch.png" alt="File fetch" width="600">
 
-## What It Does
+  Screenshot to come.
 
-**Copy once, paste everywhere.**
-Copy text on any paired device and it lands on every other device's clipboard. Encrypted, instant, automatic.
+- **Talk instead of typing.** Speech recognition runs on the device, and what you say goes through the same assistant as what you type.
 
-**Your files, across all your devices.**
-Browse, copy, rename, and delete files on any paired device from any other. No cloud drive needed.
+  <img src="docs/screenshots/voice-input.png" alt="Voice input" width="600">
 
-**Pairs in seconds.**
-Show a code. Enter it. Done. The code *is* the encryption key — no account, no server, no setup wizard.
+  Screenshot to come.
 
-**Honest presence.**
-A device shows "Online" only when it's actually reachable — not when it was "seen on the network five minutes ago."
+- **Hear the answer.** Spoken replies are read aloud with on-device text to speech.
 
-**Works anywhere.**
-LAN, VPN, Tailscale — Nexus adapts to your network. Your devices can talk from the same room or across the world.
+  <img src="docs/screenshots/voice-reply.png" alt="Spoken reply" width="600">
 
----
+  Screenshot to come.
+
+- **Plain arithmetic.** Ask `what is 18 percent of 240` and Nexus answers with the number.
+
+  <img src="docs/screenshots/math.png" alt="Math from words" width="600">
+
+  Screenshot to come.
+
+- **Reconnects by itself.** A paired device that sleeps, changes Wi-Fi, or drops off the network shows as reconnecting and comes back on its own. Nothing to re-pair, nothing to tap.
+
+  <img src="docs/screenshots/reconnecting.png" alt="Reconnecting state" width="600">
+
+  Screenshot to come.
+
+- **Encrypted between your devices.** Every message and file travels under AES-GCM with keys derived by HKDF. The pairing code is the key. There is no server that can read it.
+
+  <img src="docs/screenshots/pairing.png" alt="Pairing" width="600">
+
+  Screenshot to come.
+
+- **No cloud, no account.** Discovery, pairing, and transfer all happen between your devices. Turning off the internet and keeping local Wi-Fi is enough.
+
+  <img src="docs/screenshots/devices.png" alt="Paired devices" width="600">
+
+  Screenshot to come.
+
+Works today on Linux desktop, Windows, and Android.
+
+## What does not work yet
+
+- **No wake word.** You open the assistant, then talk or type.
+- **No clipboard sync.** Copying on one device does not yet appear on the others.
+- **No LLM fallback.** When no paired device can answer, the assistant says so instead of guessing from a model.
+- **No USB.** Pairing and transfer run over the local network only.
+- **No macOS or iOS builds.** Published today: Linux x86_64, Windows x86_64, and Android.
 
 ## Install
 
-**One command. Two platforms.**
-
-Linux (x86_64) in a terminal:
+Linux (x86_64):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.sh | bash
 ```
 
-Windows (PowerShell — no bash needed):
+Windows (PowerShell):
 
 ```powershell
 irm https://raw.githubusercontent.com/TVcraft01/Nexus/main/tools/install.ps1 | iex
 ```
 
-Both download the latest release and install it under `~/.nexus/` — no Flutter, no SDK, no account. To update later, run the same command again.
+Android: download [nexus.apk](https://github.com/TVcraft01/Nexus/releases/download/v0.1.53/nexus.apk) from the [latest release](https://github.com/TVcraft01/Nexus/releases/latest) and install it. Newer releases replace the file under the same release page.
 
-> **Not published yet:** macOS and ARM (Apple Silicon / Windows-on-ARM / Linux-on-ARM) builds. The installers refuse those cleanly instead of failing mid-download — the published builds are Linux x86_64, Windows x86_64, and Android.
+Then pair two devices with a code and try `get report.pdf from my pc`. The full walkthrough is in [docs/DEMO.md](docs/DEMO.md).
 
-After install, look for **Nexus** in your app menu (Linux) or Start menu (Windows). It runs in the system tray — close the window and it keeps running.
+## Learn more
 
-**Or build from source** (Linux):
-
-```bash
-git clone https://github.com/TVcraft01/Nexus.git && cd Nexus && flutter pub get && flutter run
-```
-
-Windows PowerShell can't use `&&` — either PowerShell 7 or separate lines:
-
-```powershell
-git clone https://github.com/TVcraft01/Nexus.git
-cd Nexus
-flutter pub get
-flutter run
-```
-
-**Try it on one machine:**
-
-```bash
-~/.nexus/nexus &  NEXUS_DATA_DIR=/tmp/nexus2 ~/.nexus/nexus
-```
-
-Both windows discover each other and pair. Copy something. Watch it appear.
-
----
-
-## Build from Source
-
-```bash
-flutter pub get
-flutter build linux --release    # Linux
-flutter build apk --release      # Android
-flutter build windows --release  # Windows (creates the Windows runner first)
-```
-
----
-
-## How It Works
-
-```
-  Phone                    PC                    Tablet
-    │                       │                       │
-    │◄──── encrypted ──────►│◄──── encrypted ──────►│
-    │       TCP mesh        │       TCP mesh        │
-    │                       │                       │
-    └─────── direct ────────┴─────── direct ────────┘
-              No server. No cloud. Just your devices.
-```
-
-1. **Discover** — devices find each other on the network (UDP multicast + direct unicast).
-2. **Pair** — scan a QR or enter a code. The code becomes the encryption key.
-3. **Connect** — all traffic is encrypted end-to-end with AES-GCM. The mesh is just the transport.
-
----
-
-## What's Inside
-
-- **End-to-end encryption** — AES-GCM + HKDF. Every message, file, and clipboard sync.
-- **No cloud** — your data stays on your device. Period.
-- **Auto-update** — Linux and Android update from GitHub releases on startup; Windows re-runs the one-line installer.
-- **File manager mount** (Linux) — paired devices appear as folders in your file manager.
-- **System tray** (Linux) — keeps running when you close the window.
-
----
-
-## Roadmap
-
-- ✅ Mesh networking, pairing, encrypted messaging
-- ✅ Clipboard sync across devices
-- ✅ Cross-device file access
-- ✅ Windows support (installer + Start-menu shortcut)
-- 🔜 Local AI assistant
-- 🔜 Voice interface
-- 🔜 Smart reminders and memory
-
----
-
-## Contributing
-
-Contributions are welcome. Open an issue or submit a pull request.
-
-```bash
-flutter analyze && flutter test
-```
-
----
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how Nexus is shaped and where a change lands.
+- [docs/DEMO.md](docs/DEMO.md) — the file-fetch demo, step by step.
+- [CHANGELOG.md](CHANGELOG.md) — what changed, newest first.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Open source under the MIT license. Free, like the app itself.
