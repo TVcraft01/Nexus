@@ -218,6 +218,22 @@ class Updater {
         return asset['browser_download_url'] as String?;
       }
     }
+    // Release assets carry the version in the name now (Nexus-0.2.0.apk),
+    // so the exact name from one release stops matching the next. For an
+    // APK, anything ending in .apk whose name contains nexus
+    // (case-insensitive) is this platform's build — which is what keeps
+    // the next versioned release findable without renaming anything.
+    if (assetName.toLowerCase().endsWith('.apk')) {
+      for (final asset in assets) {
+        final name = asset is Map ? asset['name'] : null;
+        if (name is String) {
+          final lower = name.toLowerCase();
+          if (lower.endsWith('.apk') && lower.contains('nexus')) {
+            return (asset as Map)['browser_download_url'] as String?;
+          }
+        }
+      }
+    }
     return null;
   }
 

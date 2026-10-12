@@ -118,6 +118,21 @@ void main() {
       expect(check.failure, contains('could not reach GitHub'));
     });
 
+    test('a versioned APK asset is found whatever its case or version',
+        () async {
+      // v0.2.0 shipped Nexus-0.2.0.apk and the updater only knew the exact
+      // name nexus.apk — so the release it was meant to find read as
+      // missing. latestApkUrl is platform-independent, which is what makes
+      // the versioned name assertable on any host.
+      const body = '{"tag_name":"v0.2.0","assets":['
+          '{"name":"Nexus-0.2.0.apk",'
+          '"browser_download_url":"https://example.com/Nexus-0.2.0.apk"}]}';
+      final url = await Updater.latestApkUrl(
+        fetch: (_) async => UpdateResponse(200, body),
+      );
+      expect(url, 'https://example.com/Nexus-0.2.0.apk');
+    });
+
     test('a release without this platform\'s build says so', () async {
       final check = await checked(release('v0.2.0', assets: []), '0.1.1');
       expect(check.info, isNull);
