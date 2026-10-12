@@ -12,9 +12,15 @@ set -euo pipefail
 #
 # Or download and run:
 #   bash install.sh
+#
+# Already installed and the app will not start? The same check the install runs:
+#   bash install.sh --check-deps [install-dir]
 
 REPO="TVcraft01/Nexus"
 INSTALL_DIR="${NEXUS_INSTALL_DIR:-$HOME/.nexus}"
+
+# Sonames check_system_libraries found missing (empty when the app can load).
+MISSING_LIBS=""
 
 # Colors
 RED='\033[0;31m'
@@ -65,6 +71,116 @@ download() {
     elif command -v wget &>/dev/null; then
         wget -qO "$dest" "$url"
     fi
+}
+
+# --- System library check ----------------------------------------------------
+#
+# The archive carries Flutter's own libraries and Nexus's bundled plugins, but
+# not the desktop libraries those plugins link against — the tray icon needs
+# libayatana-appindicator, and no archive can ship it. When one is missing the
+# dynamic loader refuses to start the app with
+#
+#   error while loading shared libraries: libayatana-indicator3.so.7: cannot
+#   open shared object file
+#
+# a message that names a file and no package. This check makes the same load
+# happen ahead of time, in a terminal, and names the package instead.
+#
+# It installs nothing: printing the command is help; running sudo for somebody
+# is not this script's to do.
+
+# The package that provides one missing soname, ordered apt|dnf|pacman.
+soname_package() {
+    case "$1" in
+        libayatana-indicator3.so.*|libayatana-ido3-0.4.so.*|libayatana-appindicator3.so.*)
+            echo 'libayatana-appindicator3-1|libayatana-appindicator-gtk3|libayatana-appindicator'
+            ;;
+        libappindicator3.so.1|libappindicator1)
+            echo 'libappindicator3-1|libappindicator-gtk3|libappindicator'
+            ;;
+        *)
+            echo ''
+            ;;
+    esac
+}
+
+# The command that installs one package here, or an empty string when this is
+# not a package manager we can name a command for (then say so, honestly).
+install_command_for() {
+    local apt dnf pacman
+    IFS='|' read -r apt dnf pacman <<<"$1"
+    if command -v apt-get &>/dev/null; then
+        echo "sudo apt install ${apt}"
+    elif command -v dnf &>/dev/null; then
+        echo "sudo dnf install ${dnf}"
+    elif command -v pacman &>/dev/null; then
+        echo "sudo pacman -S ${pacman}"
+    else
+        echo ''
+    fi
+}
+
+# Fills MISSING_LIBS and, when it is not empty, explains what to install.
+#
+# Always returns 0: a missing library is something to tell the user, not a
+# failed download — the files are worth installing either way, and the only
+# thing this script may not do is install system packages.
+check_system_libraries() {
+    local dir="${1:-$INSTALL_DIR}"
+    local lib_dir="$dir/lib"
+    local f line soname missing=""
+
+    [ -d "$lib_dir" ] || return 0
+    command -v ldd &>/dev/null || return 0
+
+    # The launcher *and* the Flutter plugins. This build links its plugins into
+    # the launcher, so the launcher's chain already covers them; another build
+    # dlopens them, which is why each one is checked as well. The rest of the
+    # bundle is deliberately out of scope: the JNI bridge and the llama runtime
+    # (with its GPU backend) are loaded only when something asks for them, so a
+    # machine with no JVM and no Vulkan still runs Nexus — on the CPU.
+    for f in "$dir/nexus" "$lib_dir"/*_plugin.so "$lib_dir"/*_plugin.dll; do
+        [ -f "$f" ] || continue
+        while IFS= read -r line; do
+            soname="${line%% *}"
+            # A library the archive already ships resolves at runtime; only a
+            # soname that is nowhere in the bundle is this machine's to add.
+            [ -e "$lib_dir/$(basename "$soname")" ] && continue
+            case "$missing" in
+                *"$soname"*) ;;
+                *) missing="${missing}${soname}"$'\n' ;;
+            esac
+        done < <(LD_LIBRARY_PATH="$lib_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            ldd "$f" 2>/dev/null \
+            | sed -n 's/^[[:space:]]*\([^[:space:]]*\) => not found.*/\1/p')
+    done
+
+    MISSING_LIBS="$missing"
+    [ -n "$missing" ] || return 0
+
+    echo ""
+    warn "Nexus is installed, but it will not start yet — this system is missing:"
+    echo ""
+    while IFS= read -r soname; do
+        local pkg cmd
+        [ -n "$soname" ] || continue
+        pkg=$(soname_package "$soname")
+        echo -e "    ${CYAN}${soname}${NC}"
+        if [ -z "$pkg" ]; then
+            echo "      install the package that provides it on your distribution"
+            continue
+        fi
+        cmd=$(install_command_for "$pkg")
+        if [ -n "$cmd" ]; then
+            echo -e "      install it with:  ${YELLOW}${cmd}${NC}"
+        else
+            echo "      install the package that provides it — Debian/Ubuntu:"
+            echo "      ${pkg%%|*}; Fedora: $(echo "$pkg" | cut -d'|' -f2); Arch: $(echo "$pkg" | cut -d'|' -f3)"
+        fi
+    done <<<"$missing"
+    echo ""
+    info "Nothing was installed for you — run the command above, then start Nexus again."
+    return 0
 }
 
 # Main install
@@ -139,6 +255,10 @@ main() {
             ;;
     esac
 
+    # Unpacked: check that this machine provides the libraries the app links
+    # against and the archive cannot carry, before anything says it is ready.
+    check_system_libraries "$INSTALL_DIR"
+
     # Add to PATH if not already there
     local shell_profile=""
     if [ -f "$HOME/.bashrc" ]; then
@@ -175,6 +295,14 @@ DESKTOP
 
     ok "Installed to $INSTALL_DIR/nexus"
     echo ""
+    if [ -n "$MISSING_LIBS" ]; then
+        # The warning above named the package and the command; following it
+        # with "To run now" would contradict it — the app cannot start yet.
+        echo -e "  ${YELLOW}Install the library above, then start Nexus:${NC}"
+        echo -e "    ${CYAN}$INSTALL_DIR/nexus${NC}"
+        echo ""
+        return 0
+    fi
     echo -e "  ${GREEN}To run now:${NC}"
     echo -e "    ${CYAN}$INSTALL_DIR/nexus${NC}"
     echo ""
@@ -187,5 +315,14 @@ DESKTOP
     echo -e "  The app runs in the system tray — close the window and it keeps running."
     echo ""
 }
+
+# The check on its own: no download, no writes. Run it on a machine where
+# Nexus is already installed to see exactly what the app will find at startup.
+case "${1:-}" in
+    --check-deps)
+        check_system_libraries "${2:-$INSTALL_DIR}"
+        exit 0
+        ;;
+esac
 
 main "$@"
