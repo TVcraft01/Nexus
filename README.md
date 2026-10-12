@@ -14,47 +14,37 @@ Ghost is a $3,499 screenless box from Ghost.ai, backed by an $11M seed round led
 
 - **Ask for a file by name.** Type or say `get report.pdf from my pc` on a paired device and the file arrives in your Downloads folder. The transfer stays on your local network.
 
-  <img src="docs/screenshots/file-fetch.png" alt="File fetch" width="600">
 
-  Screenshot to come.
 
 - **Talk instead of typing.** Speech recognition runs on the device, and what you say goes through the same assistant as what you type.
 
-  <img src="docs/screenshots/voice-input.png" alt="Voice input" width="600">
 
-  Screenshot to come.
 
 - **Hear the answer.** Spoken replies are read aloud with on-device text to speech.
 
-  <img src="docs/screenshots/voice-reply.png" alt="Spoken reply" width="600">
 
-  Screenshot to come.
 
 - **Plain arithmetic.** Ask `what is 18 percent of 240` and Nexus answers with the number.
 
-  <img src="docs/screenshots/math.png" alt="Math from words" width="600">
 
-  Screenshot to come.
 
 - **Reconnects by itself.** A paired device that sleeps, changes Wi-Fi, or drops off the network shows as reconnecting and comes back on its own. Nothing to re-pair, nothing to tap.
 
-  <img src="docs/screenshots/reconnecting.png" alt="Reconnecting state" width="600">
 
-  Screenshot to come.
 
 - **Encrypted between your devices.** Every message and file travels under AES-GCM with keys derived by HKDF. The pairing code is the key. There is no server that can read it.
 
-  <img src="docs/screenshots/pairing.png" alt="Pairing" width="600">
 
-  Screenshot to come.
 
 - **No cloud, no account.** Discovery, pairing, and transfer all happen between your devices. Turning off the internet and keeping local Wi-Fi is enough.
 
-  <img src="docs/screenshots/devices.png" alt="Paired devices" width="600">
 
-  Screenshot to come.
 
 Works today on Linux desktop, Windows, and Android.
+
+## Screenshots
+
+Screenshots coming after the v0.2 release.
 
 ## What does not work yet
 
@@ -90,4 +80,4 @@ Then pair two devices with a code and try `get report.pdf from my pc`. The full 
 
 ## License
 
-Open source under the MIT license. Free, like the app itself.
+Open source under the [MIT license](LICENSE). Free, like the app itself.
