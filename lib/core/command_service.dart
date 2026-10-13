@@ -1472,6 +1472,40 @@ class CommandService {
     );
   }
 
+  /// The fetch behind a model-chosen `get_file`. The model named a file, and
+  /// maybe a device; this answers the same plan a typed "get report.pdf"
+  /// would — same registry, same rules: the named device, the only reachable
+  /// peer, or the one the last fetch ran against — so the tool path cannot
+  /// drift from the typed one. A device-less ask that genuinely has to be
+  /// asked about answers with the same question the interpreter raises, and
+  /// the loop relays it.
+  AgentDispatchResult toolFileFetch({
+    required String filename,
+    String? from,
+  }) {
+    final named = from?.trim() ?? '';
+    final command = ParsedCommand(
+      action: AgentActions.fileFetch,
+      target: 'remote',
+      arguments: {
+        'filename': filename.trim(),
+        if (named.isNotEmpty) 'deviceName': named,
+      },
+    );
+    if (named.isNotEmpty) return _fileFetch(command);
+    final resolved = _autoResolveFetch(
+      command,
+      AgentApproval.required,
+      'tool-fetch',
+      filename,
+    );
+    if (resolved != null) return resolved;
+    return AgentDispatchResult(
+      status: AgentResultStatus.needsInfo,
+      message: 'Which device should I get ${filename.trim()} from?',
+    );
+  }
+
   /// The fetch behind a device-less "get report.pdf", resolved from what is
   /// already known — or null when the device genuinely has to be asked for.
   ///

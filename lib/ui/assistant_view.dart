@@ -10,6 +10,7 @@ import 'package:flutter/services.dart'
     show Clipboard, ClipboardData, HapticFeedback;
 
 import '../core/agent_contract.dart';
+import '../core/agent_tools.dart';
 import '../core/brain.dart';
 import '../core/capability.dart';
 import '../core/command_service.dart';
@@ -182,6 +183,53 @@ class AssistantViewState extends State<AssistantView> {
     // starts here rather than in whichever card happens to show the result.
     executor.onFileFetched = _rememberFetched;
     return executor;
+  }
+
+  /// The two read-only tools the model may run: a folder listing on this
+  /// device and the existing fetch from a paired one. Both are the product's
+  /// real paths — [localFolders] resolves the same storage every save uses,
+  /// and [_fetchFileForTool] runs the fetch the executor already owns — so a
+  /// tool-initiated fetch lands, is remembered, and reports exactly like a
+  /// typed one.
+  late final LocalToolRunner _tools = LocalToolRunner(
+    fetch: _fetchFileForTool,
+  );
+
+  /// The model's `get_file`: resolve the peer the way a typed fetch does,
+  /// then pull the file through the same executor. What comes back is the
+  /// observation handed to the model — the fetch's own sentence.
+  Future<String> _fetchFileForTool(String name, String? from) async {
+    final plan = _service.toolFileFetch(filename: name, from: from);
+    final message = switch (plan.dispatch) {
+      final AgentMessage m when m.action == AgentActions.fileFetch => m,
+      _ => null,
+    };
+    final args = message?.arguments;
+    if (message == null || args == null) {
+      // Nothing runnable — no paired device, no reachable one, or a question
+      // about which device. The service's own sentence is the observation.
+      return plan.message.isEmpty ? "I couldn't fetch that file." : plan.message;
+    }
+    try {
+      final outcome = await _executor.run(
+        AgentRequest(
+          requestId: 'tool-${DateTime.now().microsecondsSinceEpoch}',
+          target: widget.mesh.identity.id,
+          action: AgentActions.fileFetch,
+          arguments: args,
+        ),
+      );
+      return outcome.message;
+    } catch (error) {
+      // A throw is still a result the model has to be told about.
+      return 'That fetch failed: $error';
+    } finally {
+      // The live line belonged to the fetch that just ended — a finished
+      // pull must not leave its percentage standing in for the story.
+      if (mounted && _fetchProgress != null) {
+        setState(() => _fetchProgress = null);
+      }
+    }
   }
 
   /// Mirrors a landed fetch into the store's Recent list. The store is this
@@ -544,6 +592,7 @@ class AssistantViewState extends State<AssistantView> {
           brain: brain,
           input: input,
           original: original,
+          tools: _tools,
           context: _memoryContext,
           onBrainAnswered: (stale) {
             // The brain owns this phrase now — drop the service's stale teach
