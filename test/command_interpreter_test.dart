@@ -615,6 +615,36 @@ void main() {
       expect(unknown.command!.arguments['kind'], 'who');
     });
 
+    test('"who is X" resolves per phrase: people to memory, online to devices',
+        () {
+      // (a)(b): person questions, marked so unknown names fall through.
+      for (final phrase in ['who is albert einstein', 'who is john']) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.memoryQuestion, reason: phrase);
+        expect(r.command!.arguments['kind'], 'who', reason: phrase);
+      }
+      // (c): no intent claims it — the LLM fallback owns it.
+      expect(
+        interpreter.interpret('why can i be a cat').outcome,
+        InterpretOutcome.unknown,
+      );
+      // (d): the fleet question is the device list, never a person lookup.
+      for (final phrase in ['who is online', "who's online"]) {
+        final r = interpreter.interpret(phrase);
+        expect(r.outcome, InterpretOutcome.matched, reason: phrase);
+        expect(r.command!.action, AgentActions.deviceList, reason: phrase);
+      }
+      // ...but only the exact phrase: anything longer is a sentence.
+      final longer = interpreter.interpret('who is online right now');
+      expect(longer.command!.action, AgentActions.memoryQuestion);
+      // (e): a name, resolved against the registry by the service.
+      final pc = interpreter.interpret('who is my pc');
+      expect(pc.command!.action, AgentActions.memoryQuestion);
+      expect(pc.command!.arguments['topic'], 'pc');
+      expect(pc.command!.arguments['kind'], 'who');
+    });
+
     test("the assistant asks back for personal facts instead of searching the web", () {
       // "what is my name" / "what is my wifi password" must ask the user
       // for the answer (and remember it), never search the web for their

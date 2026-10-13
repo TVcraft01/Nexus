@@ -733,6 +733,17 @@ class CommandInterpreter {
       );
     }
 
+    // "Who is online" asks about the fleet, not a person: the device list,
+    // answered from the live registry with each device's state. It is an
+    // exact match on purpose — anything longer ("who is online now guys")
+    // is a sentence for the brain, and anything else starting with "who
+    // is" belongs to the person rule further down.
+    if (_oneOf(norm, const ['who is online', "who's online"])) {
+      return InterpretResult.matched(
+        const ParsedCommand(action: AgentActions.deviceList, target: 'local'),
+      );
+    }
+
     // --- Device list
     // A question about the devices Nexus is paired with must be answered by
     // Nexus, never by the web search further down that claims the verb

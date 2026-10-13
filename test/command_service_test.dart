@@ -944,6 +944,40 @@ void main() {
       expect(device.action, isNull);
     });
 
+    test('"who is online" lists the fleet, "who is my pc" needs the pc', () {
+      // (d): the device list, with or without anything paired — never the
+      // brain, never the web.
+      for (final devices in [
+        const <AgentDeviceSnapshot>[],
+        const [AgentDeviceSnapshot(id: 'pc', name: 'My PC', online: true)],
+      ]) {
+        final service = CommandService(devices: () => devices);
+        final result = service.execute('who is online');
+        expect(result.status, AgentResultStatus.succeeded);
+        final list = result.dispatch! as AgentDeviceList;
+        expect(list.devices, hasLength(devices.length));
+      }
+
+      // (e): the pc paired → answered about itself; missing → the teach
+      // card, which hands the phrase to the local brain.
+      final paired = CommandService(
+        devices: () => const [
+          AgentDeviceSnapshot(id: 'pc', name: 'My PC', online: true),
+        ],
+      );
+      final mine = paired.execute('who is my pc').dispatch! as AgentMessage;
+      expect(mine.text, contains('My PC'));
+      expect(mine.action, isNull);
+
+      final lonely = CommandService(devices: () => const []);
+      final lost = lonely.execute('who is my pc');
+      expect(lost.status, AgentResultStatus.needsInfo);
+      expect(
+        (lost.dispatch! as AgentClarification).key,
+        startsWith('teach:'),
+      );
+    });
+
     test('every ask-back in the catalog is a question, never a failure', () {
       // Called directly, because these are the rows of the catalog that ask
       // for a missing argument — the shape "Who should I call?" arrives in.
