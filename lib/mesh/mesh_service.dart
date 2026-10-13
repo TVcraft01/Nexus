@@ -5,7 +5,12 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart'
-    show ChangeNotifier, TargetPlatform, debugPrint, defaultTargetPlatform;
+    show
+        ChangeNotifier,
+        TargetPlatform,
+        debugPrint,
+        defaultTargetPlatform,
+        visibleForTesting;
 import 'package:flutter/services.dart'
     show Clipboard, ClipboardData;
 
@@ -1439,32 +1444,70 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
 
     add(peer.address);
     peer.addresses.forEach(add);
+    // Our own addresses, so we never dial ourselves: a peer's address list
+    // can contain our own LAN IP (same-host instances share every interface
+    // address), and the canonical-first order below would otherwise walk
+    // straight into our own listener. Cached for minutes, like the payload
+    // scan, so this costs nothing per dial.
+    final ownIps = await _myIps();
     for (final address in candidates) {
-      // A loopback candidate on OUR OWN mesh port is a self-connection, not
-      // a route to the peer — it can happen after tunnel pairing, where the
-      // peer's announced port matches ours and its "address" was the
-      // tunnel's local endpoint. Skip it so we fall through to a real
-      // address (the peer's LAN IP). Loopback on any OTHER port is a genuine
-      // tunnel route (adb reverse) and must stay.
-      if (_isLoopback(address) && peer.port == store.port) {
-        continue;
-      }
-      try {
-        final socket = await Socket.connect(
-          address,
-          peer.port,
-          timeout: connectTimeout,
-        );
-        _outbound[peer.id] = socket;
-        _inboundPeer[socket] =
-            peer.id; // so replies on this socket are attributed
-        _onClientSocket(socket);
-        return socket;
-      } catch (_) {
-        // Unreachable via this address — try the next one.
+      for (final port in dialPortsFor(
+        storedPort: peer.port,
+        loopback: _isLoopback(address),
+      )) {
+        // A candidate on our own mesh port is a self-connection, not a route
+        // to the peer — it happens after tunnel pairing (the peer's announced
+        // port matches ours and its "address" was the tunnel's local
+        // endpoint) and on shared LAN IPs (same-host instances). Skip it so
+        // we fall through to a real route. Any OTHER port stays: on loopback
+        // it is a genuine tunnel route (adb reverse).
+        if (port == store.port &&
+            (_isLoopback(address) || ownIps.contains(address))) {
+          continue;
+        }
+        try {
+          final socket = await Socket.connect(
+            address,
+            port,
+            timeout: connectTimeout,
+          );
+          _outbound[peer.id] = socket;
+          _inboundPeer[socket] =
+              peer.id; // so replies on this socket are attributed
+          _onClientSocket(socket);
+          return socket;
+        } catch (_) {
+          // Unreachable via this address and port — try the next one.
+        }
       }
     }
     return null;
+  }
+
+  /// The ports to try, in order, when dialling one address of a peer: the
+  /// canonical mesh port first, then the peer's announced (stored) port.
+  ///
+  /// A device that restarted reclaims the canonical port while our stored
+  /// route can still name the ephemeral port it used while 51820 was held by
+  /// a dead listener — dialling the stored port first would keep hitting that
+  /// stale route. The announced port stays as the fallback for when 51820 on
+  /// the peer is genuinely occupied by something else.
+  ///
+  /// A loopback address is a tunnel endpoint (adb reverse) or self: its
+  /// stored port IS the whole route, and 51820 there is us or another local
+  /// instance, so only the stored port is tried — exactly the old behaviour.
+  @visibleForTesting
+  static List<int> dialPortsFor({
+    required int storedPort,
+    required bool loopback,
+  }) {
+    final ports = <int>[];
+    if (!loopback) ports.add(defaultPort);
+    ports.add(storedPort);
+    return ports
+        .where((port) => port > 0 && port <= 65535)
+        .toSet()
+        .toList();
   }
 
   /// Forgets the session key cached for [peerId], so the next frame derives
@@ -4011,6 +4054,13 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
 
   Future<void> stop() async {
     _started = false;
+    // The listener goes first: on engine detach the isolate may not live
+    // long enough to finish the whole teardown below, and the socket is the
+    // one resource a recreated engine in this process cannot reclaim. (Close
+    // is fire-and-forget, as before — it just happens before the awaits.)
+    final server = _server;
+    _server = null;
+    server?.close();
     // Nothing may be redialled after the mesh has gone.
     await _supervisor?.stop();
     _heartbeatTimer?.cancel();
@@ -4023,7 +4073,6 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     // With the mesh gone the foreground service has nothing left to keep
     // alive; stopping it releases the multicast lock and the notification.
     await SyncService.stop();
-    _server?.close();
     for (final socket in _outbound.values.toList()) {
       try {
         socket.destroy();

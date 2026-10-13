@@ -18,6 +18,7 @@ import 'core/identity.dart';
 import 'core/llm.dart';
 import 'core/store.dart';
 import 'mesh/gateway.dart';
+import 'mesh/mesh_lifecycle.dart';
 import 'mesh/mesh_service.dart';
 import 'ui/components/nexus_ui.dart' show NexusCupertinoTheme, NexusTextScaling;
 import 'ui/home_shell.dart';
@@ -249,7 +250,7 @@ class NexusApp extends StatefulWidget {
 }
 
 class _NexusAppState extends State<NexusApp> with WindowListener {
-  late final AppLifecycleListener _lifecycle;
+  late final MeshLifecycleObserver _meshLifecycle;
 
   @override
   void initState() {
@@ -258,15 +259,21 @@ class _NexusAppState extends State<NexusApp> with WindowListener {
       windowManager.addListener(this);
       windowManager.setPreventClose(true);
     }
-    _lifecycle = AppLifecycleListener(
-      onStateChange: (state) =>
-          widget.mesh.setForeground(state == AppLifecycleState.resumed),
-    );
+    // Owns the mesh's socket lifetime: on engine detach (Activity
+    // recreation in the same process) the old listener must go away, or the
+    // new engine misses the canonical port and peers keep a stale route.
+    _meshLifecycle = MeshLifecycleObserver(widget.mesh);
+    WidgetsBinding.instance.addObserver(_meshLifecycle);
   }
 
   @override
   void dispose() {
-    _lifecycle.dispose();
+    WidgetsBinding.instance.removeObserver(_meshLifecycle);
+    // The engine is going away with this widget: release the listener so a
+    // recreated engine in this process reclaims 51820. (Desktop quit exits
+    // the process, which releases sockets by itself; a hidden window keeps
+    // the mesh intentionally, so this must not run on window hide.)
+    unawaited(widget.mesh.stop());
     if (defaultTargetPlatform == TargetPlatform.linux) {
       windowManager.removeListener(this);
     }
