@@ -1268,15 +1268,29 @@ class CommandInterpreter {
           ),
         );
       }
-      // General knowledge the assistant can't answer: ask memory first;
-      // the service falls back to the web honestly when memory has nothing.
-      return InterpretResult.matched(
-        ParsedCommand(
-          action: AgentActions.memoryQuestion,
-          target: 'local',
-          arguments: {'topic': topic},
-        ),
-      );
+      // "what's in my downloads" asks about this device's own storage, not
+      // about a fact the user told us. Memory has no entry for the phrase
+      // "in my downloads", so the fallback below searched the web for it and
+      // the browser answered a question about the phone's own folder. No
+      // intent claims this shape — it falls through to the local brain,
+      // whose list_local_files tool reads the folder, which is that tool's
+      // own example sentence (see agent_tools.dart).
+      final folderAsk = RegExp(
+        r'^(?:in|inside) (?:my |the )?'
+        r'(?:downloads?|documents?|docs?|pictures?|photos?)'
+        r'(?: folder| directory)?$',
+      ).hasMatch(topic);
+      if (!folderAsk) {
+        // General knowledge the assistant can't answer: ask memory first;
+        // the service falls back to the web honestly when memory has nothing.
+        return InterpretResult.matched(
+          ParsedCommand(
+            action: AgentActions.memoryQuestion,
+            target: 'local',
+            arguments: {'topic': topic},
+          ),
+        );
+      }
     }
     // Bare arithmetic: "2 + 2", "15 percent of 80" (via _toSymbols), and
     // "15% of 80". Spaced expressions stay untouched so the echo shows

@@ -605,6 +605,37 @@ void main() {
       }
     });
 
+    test('folder questions reach the assistant, never the web', () {
+      // "what's in my downloads" is the local brain's own example sentence
+      // (list_local_files). The "what is X" memory rule used to claim it,
+      // find no fact about the phrase "in my downloads", and search the web
+      // for it — the browser answering a question about this phone's folder.
+      // Nothing claims the shape now: it falls through to the model.
+      for (final phrase in [
+        "what's in my downloads",
+        'what is in my downloads',
+        'what is in my documents',
+        "what's in the pictures folder",
+        'what is inside my downloads',
+      ]) {
+        expect(
+          interpreter.interpret(phrase).outcome,
+          InterpretOutcome.unknown,
+          reason: phrase,
+        );
+      }
+      // The memory family is untouched: general knowledge still asks memory
+      // first and the ask-back for personal facts still asks.
+      expect(
+        interpreter.interpret('what is the capital of france').command!.action,
+        AgentActions.memoryQuestion,
+      );
+      expect(
+        interpreter.interpret('what is my wifi password').outcome,
+        InterpretOutcome.needsInfo,
+      );
+    });
+
     test('"who is" marks a person question for the brain fallback', () {
       final known = interpreter.interpret('who is mom');
       expect(known.command!.action, AgentActions.memoryQuestion);
