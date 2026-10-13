@@ -319,6 +319,38 @@ void main() {
     expect(lines.single.fired, isTrue);
   });
 
+  test('notification ids are stable, valid, and distinct per reminder', () {
+    // The platform matches fences by this id across launches; Dart's
+    // String.hashCode is re-seeded every run, so the derivation must not
+    // use it — same string, same id, forever.
+    final first = LocationGeofences.notificationId('p-abc');
+    expect(LocationGeofences.notificationId('p-abc'), first);
+    expect(first >= 0 && first <= 0x7fffffff, isTrue);
+    expect(LocationGeofences.notificationId('p-abd'), isNot(first));
+  });
+
+  test('removeIds retires fences by id', () async {
+    final channel = const MethodChannel('dev.nexus.nexus/location');
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+    // An unknown fire's retirement: the id the store never held still
+    // leaves the platform, or it rings on every arrival.
+    await LocationGeofences(channel: channel).removeIds(['p-gone']);
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'removeLocationGeofences');
+    expect((calls.single.arguments as Map)['ids'], ['p-gone']);
+    await LocationGeofences(channel: channel).removeIds(const []);
+    expect(calls, hasLength(1), reason: 'nothing to retire, no call');
+  });
+
   test('a torn place line refuses itself, never a fence nowhere', () {
     expect(LocationReminder.fromJson(null), isNull);
     expect(LocationReminder.fromJson({'id': 'p-1'}), isNull);

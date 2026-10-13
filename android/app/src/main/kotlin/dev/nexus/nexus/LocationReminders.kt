@@ -59,7 +59,22 @@ class LocationReminders(private val activity: MainActivity) {
             fence: Map<String, Any?>,
             id: String,
         ): Int = (fence["notificationId"] as? Number)?.toInt()
-            ?: (id.hashCode() and 0x7fffffff)
+            ?: stableId(id)
+
+        /// DJB2 over UTF-16 units, masked to 31 bits — the same arithmetic
+        /// as Dart's LocationGeofences.notificationId, so both sides derive
+        /// the same id for the same reminder string. Long arithmetic on
+        /// purpose: Kotlin Ints wrap on overflow while Dart's 64-bit ints
+        /// do not, so masking a wrapped value would answer differently.
+        /// Stability matters because the platform matches fences by the
+        /// request code below: a re-seeded id orphans yesterday's fence.
+        fun stableId(id: String): Int {
+            var hash = 5381L
+            for (c in id) {
+                hash = ((hash shl 5) + hash + c.code) and 0x7fffffffL
+            }
+            return hash.toInt()
+        }
 
         fun recordFired(context: Context, id: String) {
             if (id.isEmpty()) return
@@ -193,11 +208,24 @@ class LocationReminders(private val activity: MainActivity) {
             putExtra("placeName", fence["placeName"]?.toString().orEmpty())
             putExtra("notificationId", fenceNotificationId(fence, id))
         }
+        // Mutable on purpose: the system fills in KEY_PROXIMITY_ENTERING
+        // on delivery, which an immutable intent rejects — the fence then
+        // never arms ("pending intent must be mutable"). FLAG_MUTABLE
+        // exists only from Android 12; below that intents are mutable by
+        // default. (The exact-alarm intents stay immutable: nothing writes
+        // into those.)
+        val flags =
+            PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE
+            } else {
+                0
+            }
         return PendingIntent.getBroadcast(
             activity,
-            id.hashCode() and 0x7fffffff,
+            stableId(id),
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            flags,
         )
     }
 
@@ -208,7 +236,7 @@ class LocationReminders(private val activity: MainActivity) {
             return emptyList()
         }
         val fired = prefs.getStringSet(KEY_FIRED, emptySet()).orEmpty().toList()
-        if (fired.isNotEmpty) {
+        if (fired.isNotEmpty()) {
             prefs.edit().remove(KEY_FIRED).apply()
         }
         return fired

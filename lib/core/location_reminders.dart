@@ -250,7 +250,20 @@ class LocationGeofences {
   /// One stable notification id per reminder, shared by the fence post
   /// and the in-app post — computed in Dart so both sides agree without
   /// a round trip.
-  static int notificationId(String id) => id.hashCode & 0x7fffffff;
+  ///
+  /// Stable ON PURPOSE (DJB2, not [String.hashCode]): the platform
+  /// matches fences by the request code derived from this id, and
+  /// Dart's hash is re-seeded every launch. A re-seeded id orphans
+  /// yesterday's fence — it keeps firing beside today's, and no removal
+  /// by id can ever match it again. The native side computes the same
+  /// DJB2 (see LocationReminders.stableId) for the fallback path.
+  static int notificationId(String id) {
+    var hash = 5381;
+    for (final unit in id.codeUnits) {
+      hash = ((hash << 5) + hash + unit) & 0x7fffffff;
+    }
+    return hash;
+  }
 
   /// Hands every unfired reminder to the platform and removes fences
   /// whose reminders are gone or spent.
@@ -260,12 +273,7 @@ class LocationGeofences {
       if (!reminder.fired) pending[reminder.id] = reminder;
     }
     final stale = _synced.where((id) => !pending.containsKey(id)).toList();
-    if (stale.isNotEmpty) {
-      _synced.removeAll(stale);
-      await _call('removeLocationGeofences', {
-        'ids': stale,
-      });
-    }
+    await removeIds(stale);
     if (pending.isEmpty) return;
     _synced.addAll(pending.keys);
     await _call('syncLocationGeofences', {
@@ -299,6 +307,18 @@ class LocationGeofences {
     } catch (_) {
       return const [];
     }
+  }
+
+  /// Drops fences by id — spent ones, deleted ones, and fires the store
+  /// never held (a fence armed by a run whose reminders are gone still
+  /// rings on entry; collecting its unknown id is the moment to retire
+  /// it, or it fires on every arrival forever).
+  Future<void> removeIds(List<String> ids) async {
+    if (ids.isEmpty) return;
+    _synced.removeAll(ids);
+    await _call('removeLocationGeofences', {
+      'ids': ids,
+    });
   }
 
   /// Forgets everything without touching the platform: the owner was

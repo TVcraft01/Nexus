@@ -241,6 +241,15 @@ class AssistantViewState extends State<AssistantView> {
   Future<void> _collectFiredPlaces() async {
     final ids = await _geofences.takeFiredIds();
     if (ids.isEmpty || !mounted) return;
+    // Fires the store never held: a fence armed by a run whose reminders
+    // are gone (deleted while closed, a replaced store). Retire them now
+    // — an unknown id that is only cleared refires on every arrival.
+    final unknown = ids
+        .where((id) => _placeReminders.every((r) => r.id != id))
+        .toList();
+    if (unknown.isNotEmpty) {
+      await _geofences.removeIds(unknown);
+    }
     var changed = false;
     for (final id in ids) {
       final index = _placeReminders.indexWhere((r) => r.id == id);
