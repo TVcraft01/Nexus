@@ -36,10 +36,14 @@ class NexusStore {
 
   set port(int value) => _settings()['port'] = value;
 
+  /// Whether clipboard text is pushed to paired devices. Off on a fresh
+  /// install — copying is private until the user chooses otherwise in
+  /// Settings › Capabilities. A stored value always wins: an existing user
+  /// who already had sync on keeps it.
   bool get clipboardSync =>
       ((_data['settings'] as Map<String, dynamic>?)?['clipboardSync']
           as bool?) ??
-      true;
+      false;
 
   set clipboardSync(bool value) => _settings()['clipboardSync'] = value;
 
@@ -60,13 +64,80 @@ class NexusStore {
 
   /// When true, clipboard changes are pushed immediately to all paired
   /// devices. When false, the smart delayed sync is used (3 s delay +
-  /// activity filter). Defaults to true so clipboard sync is reliable
-  /// out of the box.
+  /// activity filter). Only matters while [clipboardSync] is on.
   bool get alwaysMerge =>
       ((_data['settings'] as Map<String, dynamic>?)?['alwaysMerge'] as bool?) ??
       true;
 
   set alwaysMerge(bool value) => _settings()['alwaysMerge'] = value;
+
+  /// Whether place reminders may exist on this device. Off on a fresh
+  /// install: location is the most sensitive thing Nexus can ask for, so
+  /// the set_location_reminder tool refuses while this is off and no
+  /// lookup ever happens.
+  bool get locationReminders =>
+      ((_data['settings'] as Map<String, dynamic>?)?['locationReminders']
+          as bool?) ??
+      false;
+
+  set locationReminders(bool value) =>
+      _settings()['locationReminders'] = value;
+
+  /// Place reminders ("milk at the store"), stored beside the switch that
+  /// gates them. Raw maps — [LocationReminder] converts — under a key of
+  /// its own: 'locationReminders' is the bool switch, this is the list.
+  List<Map<String, dynamic>> get placeReminders => [
+    for (final raw
+        in (_data['settings'] as Map<String, dynamic>?)?['placeReminders']
+            as List? ??
+            const [])
+      if (raw is Map<String, dynamic>)
+        raw
+      else if (raw is Map)
+        Map<String, dynamic>.from(raw),
+  ];
+
+  void addPlaceReminder(Map<String, dynamic> json) {
+    final list = placeReminders..add(Map<String, dynamic>.from(json));
+    _settings()['placeReminders'] = list;
+  }
+
+  /// Marks the fired fence spent. True when the id was there: a fire the
+  /// platform reported but the store never held is a log line, not a
+  /// silent write.
+  bool markPlaceReminderFired(String id) {
+    final list = placeReminders;
+    final index = list.indexWhere((raw) => raw['id']?.toString() == id);
+    if (index < 0) return false;
+    list[index] = {...list[index], 'fired': true};
+    _settings()['placeReminders'] = list;
+    return true;
+  }
+
+  /// Whether the microphone button listens. Off on a fresh install;
+  /// enabling asks for the microphone the same way it always did.
+  bool get voiceInput =>
+      ((_data['settings'] as Map<String, dynamic>?)?['voiceInput']
+          as bool?) ??
+      false;
+
+  set voiceInput(bool value) => _settings()['voiceInput'] = value;
+
+  /// A saved place ("home", "work"): latitude and longitude cached
+  /// on-device, set once by standing there. Null until saved.
+  (double, double)? savedPlace(String name) {
+    final raw =
+        (_data['settings'] as Map<String, dynamic>?)?['place:$name'];
+    if (raw is! Map) return null;
+    final lat = (raw['lat'] as num?)?.toDouble();
+    final lng = (raw['lng'] as num?)?.toDouble();
+    if (lat == null || lng == null) return null;
+    return (lat, lng);
+  }
+
+  void savePlace(String name, double lat, double lng) {
+    _settings()['place:$name'] = {'lat': lat, 'lng': lng};
+  }
 
   /// How the Files listing is ordered: 'name', 'date' or 'size'. Anything else
   /// — a value from a newer build, a hand-edited store — reads as the default

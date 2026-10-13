@@ -19,6 +19,7 @@ import '../core/conversation_engine.dart';
 import '../core/device_actions.dart';
 import '../core/distributed_brain.dart';
 import '../core/dream.dart';
+import '../core/location_reminders.dart';
 import '../core/predictions.dart';
 import '../core/profile.dart';
 import '../core/query_log.dart';
@@ -187,15 +188,20 @@ class AssistantViewState extends State<AssistantView> {
   }
 
   /// The tools the model may run: a folder listing on this device, the
-  /// existing fetch from a paired one, and a reminder through the engine
-  /// below. All three are the product's real paths — [localFolders]
-  /// resolves the same storage every save uses, [_fetchFileForTool] runs
-  /// the fetch the executor already owns, and [_remindForTool] registers
-  /// with the same engine a typed "remind me" feeds — so a tool-initiated
-  /// reminder fires, persists, and syncs exactly like a typed one.
+  /// existing fetch from a paired one, a time reminder through the engine
+  /// below, and a place reminder through the fence beside it. All four
+  /// are the product's real paths — [localFolders] resolves the same
+  /// storage every save uses, [_fetchFileForTool] runs the fetch the
+  /// executor already owns, [_remindForTool] registers with the same
+  /// engine a typed "remind me" feeds, and [_remindAtPlaceForTool]
+  /// fences through the same setup — gated by the capability switch, so
+  /// a tool-initiated place reminder works exactly like a Settings-made
+  /// one, and refuses exactly like one when the switch is off.
   late final LocalToolRunner _tools = LocalToolRunner(
     fetch: _fetchFileForTool,
     remind: _remindForTool,
+    locationRemindersAllowed: () => widget.mesh.store.locationReminders,
+    remindAtPlace: _remindAtPlaceForTool,
   );
 
   /// The model's `set_reminder`: the same engine a typed reminder feeds,
@@ -206,10 +212,78 @@ class AssistantViewState extends State<AssistantView> {
     return 'Reminder set for ${reminderClockLabel(when)} — I\'ll tell you then.';
   }
 
+  /// The model's `set_location_reminder`: gated by the capability switch,
+  /// resolved once through OpenStreetMap, fenced on the platform. What
+  /// comes back is the observation handed to the model — the setup's own
+  /// sentence, refusal included.
+  Future<String> _remindAtPlaceForTool(String what, String where) async {
+    final setup = LocationReminderSetup(geofences: _geofences);
+    final answer = await setup.register(
+      allowed: widget.mesh.store.locationReminders,
+      what: what,
+      where: where,
+      known: _placeReminders,
+      onPersist: (reminder) {
+        _placeReminders.add(reminder);
+        widget.mesh.store.addPlaceReminder(reminder.toJson());
+        unawaited(widget.mesh.store.save());
+      },
+    );
+    if (mounted) setState(() {});
+    return answer;
+  }
+
+  /// Collects fence fires the platform recorded — including while Nexus
+  /// was closed — marks each spent in the store, and says it in the
+  /// thread. Each id is collected exactly once: the bridge clears the
+  /// native set on read, and the store mark survives a restart, so a
+  /// fire is never said twice and its fence never re-armed.
+  Future<void> _collectFiredPlaces() async {
+    final ids = await _geofences.takeFiredIds();
+    if (ids.isEmpty || !mounted) return;
+    var changed = false;
+    for (final id in ids) {
+      final index = _placeReminders.indexWhere((r) => r.id == id);
+      if (index < 0) continue;
+      final reminder = _placeReminders[index];
+      if (reminder.fired) continue;
+      _placeReminders[index] = reminder.markFired();
+      if (widget.mesh.store.markPlaceReminderFired(id)) changed = true;
+      _conversation.appendResult(
+        AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(
+            'Reminder: ${reminder.what} — you arrived at '
+            '${reminder.placeName}.',
+          ),
+        ),
+      );
+    }
+    if (changed) {
+      unawaited(widget.mesh.store.save());
+      unawaited(_geofences.sync(_placeReminders));
+      setState(() {});
+    }
+  }
+
   /// The exact alarms behind the engine's pending reminders (Android).
   /// Synced on every engine change and at startup; the engine's own timer
   /// covers the app-open case, the alarms cover everything else.
   final ReminderAlarms _alarms = ReminderAlarms();
+
+  /// The native fence behind every pending place reminder (Android).
+  /// Synced at startup and whenever the list changes; fires the platform
+  /// collected while closed are picked up on the poll below.
+  final LocationGeofences _geofences = LocationGeofences();
+
+  /// This device's place reminders, seeded from the store. The store is
+  /// the truth; this list is the working copy the setup fences with.
+  final List<LocationReminder> _placeReminders = [];
+
+  /// Collects platform fence fires, on the same cadence as the time
+  /// engine's own tick — a fire while the app is open is said within
+  /// seconds, not whenever the user next opens the thread.
+  Timer? _placePoll;
 
   /// The model's `get_file`: resolve the peer the way a typed fetch does,
   /// then pull the file through the same executor. What comes back is the
@@ -416,6 +490,21 @@ class AssistantViewState extends State<AssistantView> {
     // reminder set before a restart rings even when the app never opens
     // its thread again.
     unawaited(_alarms.sync(_reminderEngine.reminders));
+    // Place reminders seed from the store like time ones do: a fence set
+    // before a restart arms again even when the thread never opens. Fires
+    // the platform collected while closed are marked spent first, so they
+    // are said once, never re-fenced.
+    _placeReminders.addAll(
+      widget.mesh.store.placeReminders
+          .map(LocationReminder.fromJson)
+          .whereType<LocationReminder>(),
+    );
+    unawaited(_collectFiredPlaces());
+    unawaited(_geofences.sync(_placeReminders));
+    _placePoll ??= Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _collectFiredPlaces(),
+    );
     // Listen after seeding, so the engine's first notify can't setState
     // mid-initState.
     _reminderEngine.addListener(_onRemindersChanged);
@@ -458,6 +547,9 @@ class AssistantViewState extends State<AssistantView> {
     widget.mesh.onReminderReceived = null;
     _reminderEngine.removeListener(_onRemindersChanged);
     _reminderEngine.dispose();
+    _placePoll?.cancel();
+    _placePoll = null;
+    _geofences.reset();
     _conversation.removeListener(_onConversationChanged);
     _conversation.dispose();
     _controller.dispose();

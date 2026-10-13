@@ -5,6 +5,31 @@ it was added during the file-fetch sprint, so the oldest entry below is that
 sprint and earlier work is not listed. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Capabilities: Nexus proposes, you decide.** Settings has a new
+  "Capabilities" section where every optional feature is a choice with a
+  plain-English description and an on/off switch — never on by default,
+  no bundled consent. Location reminders, clipboard sync, and voice input
+  all start off on a fresh install; mesh pairing and the local model stay
+  on (without them the app does nothing) and are explained in the list
+  itself instead of toggled.
+- **Location reminders.** Say "remind me to take milk at the store" and
+  Nexus asks for Always location, resolves the place with a single
+  OpenStreetMap lookup, and rings when you arrive — even with the app
+  closed. The row says the price before the toggle can move; turning it
+  off means no lookup ever happens.
+
+### Honest note
+
+- Nexus asks before it does anything optional. If you turn off location,
+  no location lookup ever happens. If you turn off clipboard sync, nothing
+  you copy leaves this device. The two things that stay on by default are
+  the local model and mesh pairing, because without them the app does
+  nothing — those two are explained on first launch.
+
 ## [0.4.0] — 2026-10-13
 
 ### Added

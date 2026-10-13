@@ -3,13 +3,15 @@
 // safety gate that decides whether the user's ask implied it, and the runner
 // that does the real work.
 //
-// Two of the three tools are read-only — a folder listing and a file
+// Two of the four tools are read-only — a folder listing and a file
 // fetch — and that is the boundary, not a promise: there is no delete, no
-// move, no write, and no way for the model to invent one. The third tool
-// sets a reminder, which is the one action the model may take beyond
-// reading. The second boundary is [toolRefusal]: a
-// tool runs only when the user's own message asked for the thing it does, so
-// even a model that reaches for a tool on "delete everything" gets nothing.
+// move, no write, and no way for the model to invent one. The other two
+// set reminders (one for a time, one for a place), which are the only
+// actions the model may take beyond reading — and the place one runs only
+// when the user flipped its capability switch. The second boundary is
+// [toolRefusal]: a tool runs only when the user's own message asked for
+// the thing it does, so even a model that reaches for a tool on "delete
+// everything" gets nothing.
 //
 // The protocol is a prompt template rather than native function calling,
 // because the seam the loop runs against ([LocalBrain.reply]) is one text
@@ -45,7 +47,13 @@ enum NexusTool {
   /// catch — the existing reminder engine, run from the model's side.
   /// Time only: a "when" the parser cannot place in time asks the user
   /// to clarify instead of setting a wrong reminder.
-  setReminder('set_reminder');
+  setReminder('set_reminder'),
+
+  /// "remind me to take milk at the store" — a reminder fenced to a
+  /// place, resolved once through OpenStreetMap and fired on arrival.
+  /// Runs only when the user turned location reminders on; otherwise the
+  /// runner answers with the refusal instead of looking anything up.
+  setLocationReminder('set_location_reminder');
 
   const NexusTool(this.name);
 
@@ -116,6 +124,9 @@ class ToolCall {
     NexusTool.listLocalFiles => 'Looking in ${folder ?? 'your files'}…',
     NexusTool.getFile => file.isEmpty ? 'Fetching your file…' : 'Fetching $file…',
     NexusTool.setReminder => 'Setting your reminder…',
+    NexusTool.setLocationReminder => where.isEmpty
+        ? 'Setting your place reminder…'
+        : 'Setting a reminder for $where…',
   };
 
   /// What to be reminded about: "take milk".
@@ -127,6 +138,15 @@ class ToolCall {
   /// [parseReminderWhen]; empty when the model named none.
   String get reminderWhen =>
       (arguments['when'] ?? arguments['at'] ?? '').toString().trim();
+
+  /// Where the place reminder should fire, in the model's own words:
+  /// "grocery store", "home", "Main St station". Resolved once
+  /// through OpenStreetMap; empty when the model named none.
+  String get reminderWhere =>
+      (arguments['where'] ?? arguments['place'] ?? '').toString().trim();
+
+  /// The place name, for the running card.
+  String get where => reminderWhere;
 }
 
 /// One model reply, read as a possible tool call: [call] is the tool it asked
@@ -208,9 +228,10 @@ String toolSystemPrompt(String system, {List<String> pairedDevices = const []}) 
   return '''
 $system
 
-You can also run $fileCount on this device when the user asks, plus set a reminder:
+You can also run $fileCount on this device when the user asks, plus two reminder tools:
 - list_local_files {"dir": "Downloads"} — lists what is in one of the user's folders. "dir" is exactly one of: Downloads, Documents, Pictures.$getFileLine
 - set_reminder {"what": "take milk", "when": "18:00"} — sets a reminder that fires a notification at that time. "when" is a time today like "18:00" or "6pm", a relative time like "in 20 minutes" or "in 2 hours", or "tomorrow at 9".
+- set_location_reminder {"what": "take milk", "where": "grocery store"} — sets a reminder that fires a notification when the user arrives at that place. "where" is a place name, a landmark, or "home" or "work". Only call this when the ask names a PLACE; a time ("at 6pm") is set_reminder. If location reminders are off, do not call it — say they are off and where to turn them on.
 
 To run one, reply with exactly one line and nothing else:
 TOOL:<name> {"arg": "value"}
@@ -220,6 +241,9 @@ TOOL:list_local_files {"dir": "Downloads"}
 
 For example, the user asks "remind me to take milk at 6pm" — reply exactly:
 TOOL:set_reminder {"what": "take milk", "when": "18:00"}
+
+For example, the user asks "remind me to buy milk when I get to the grocery store" — reply exactly:
+TOOL:set_location_reminder {"what": "buy milk", "where": "grocery store"}
 
 Call a tool only when the user's message asks for it. If no tool is needed, just answer normally. After a tool runs you will be told what it found; then answer the user in one or two short sentences from that result. Never invent file names. You cannot delete, move or change anything — say so if asked.''';
 }
@@ -328,9 +352,19 @@ final RegExp _namedFile = RegExp(r'\b[\w-]+\.[a-z0-9]{1,8}\b');
 /// "delete everything" implies nothing that exists here, so no tool runs no
 /// matter what the model wrote. The check is deliberately generous — a missed
 /// implication costs a conversational answer, not an action — because the
-/// real boundary is the tool set itself: two tools only read, and the
-/// reminder tool only promises.
+/// real boundary is the tool set itself: two tools only read, the time
+/// reminder tool only promises, and the place reminder tool additionally
+/// needs its capability switch.
 final RegExp _remindWords = RegExp(r'\bremind\b');
+
+/// Arrival language: the ask names a place to fire at, not a time. Kept
+/// generous on purpose — a missed implication costs a conversational
+/// answer, while a time ask routed here is refused below.
+final RegExp _placeCue = RegExp(
+  r'\b(arriv\w*|when i (get|arrive|reach|am)|at the|leav\w+ \w+|near|'
+  r'store\w*|shop\w*|market|mall|office|home|work|gym|school|airport|'
+  r'station|pharmacy|bank|post office)\b',
+);
 
 String? toolRefusal(ToolCall call, String ask) {
   final text = ask.toLowerCase();
@@ -348,6 +382,13 @@ String? toolRefusal(ToolCall call, String ask) {
       if (!_remindWords.hasMatch(text)) {
         return 'the ask does not ask for a reminder';
       }
+    case NexusTool.setLocationReminder:
+      if (!_remindWords.hasMatch(text)) {
+        return 'the ask does not ask for a reminder';
+      }
+      if (!_placeCue.hasMatch(text)) {
+        return 'the ask names no place to remind at';
+      }
   }
   return null;
 }
@@ -359,21 +400,27 @@ abstract class ToolRunner {
 }
 
 /// The tools, done for real: a folder listed on this device, a file
-/// fetched from a paired one through the *existing* fetch, and a reminder
-/// registered with the *existing* engine.
+/// fetched from a paired one through the *existing* fetch, a time reminder
+/// registered with the *existing* engine, and a place reminder fenced
+/// through the *existing* setup.
 ///
-/// All three are seams. [roots] resolves where the three folders are (a test
+/// All four are seams. [roots] resolves where the three folders are (a test
 /// points them at a temp directory; the product uses [localFolders]),
 /// [fetch] runs the fetch the view hands in — the same resolution and the
 /// same executor a typed "get report.pdf" runs, so the tool path cannot
-/// drift from the typed one — and [remind] registers with the reminder
+/// drift from the typed one — [remind] registers with the reminder
 /// engine the view owns, so a tool-set reminder fires, persists, and syncs
-/// exactly like a typed one.
+/// exactly like a typed one — and [remindAtPlace] registers with the
+/// place-reminder setup the view owns, gated by [locationRemindersAllowed].
+/// A null [remindAtPlace] (or a denied gate) answers instead of fencing,
+/// so the prompt and the gate stay testable without an engine.
 class LocalToolRunner implements ToolRunner {
   LocalToolRunner({
     required this.fetch,
     Future<Map<String, String>> Function()? roots,
     this.remind,
+    this.locationRemindersAllowed,
+    this.remindAtPlace,
   }) : _roots = roots ?? localFolders;
 
   /// Fetches [name] (possibly from [from]) and answers what the fetch said.
@@ -384,6 +431,16 @@ class LocalToolRunner implements ToolRunner {
   /// then confirms without registering, so the prompt and the gate stay
   /// testable without an engine.
   final Future<String> Function(String what, DateTime when)? remind;
+
+  /// Whether the user turned location reminders on. The product reads the
+  /// capability switch; a test answers directly.
+  final bool Function()? locationRemindersAllowed;
+
+  /// Registers a reminder for [what] at [where] and answers what the
+  /// setup said. Null in tests that never fence places — a
+  /// set_location_reminder call then refuses honestly, so the prompt and
+  /// the gate stay testable without a map.
+  final Future<String> Function(String what, String where)? remindAtPlace;
 
   final Future<Map<String, String>> Function() _roots;
 
@@ -419,6 +476,24 @@ class LocalToolRunner implements ToolRunner {
               "I'll tell you then.";
         }
         return register(what, when);
+      case NexusTool.setLocationReminder:
+        final what = call.reminderWhat;
+        if (what.isEmpty) return 'What should I remind you about?';
+        final where = call.reminderWhere;
+        if (where.isEmpty) {
+          return 'Which place should remind you to $what? Name somewhere '
+              '— a store, a street, home or work.';
+        }
+        // The gate: an off switch answers, never fences. The model is
+        // told the user has not turned it on — not a failure, a choice.
+        final registerAt = remindAtPlace;
+        if (registerAt == null ||
+            !(locationRemindersAllowed?.call() ?? false)) {
+          return 'Location reminders are off — the user has not turned '
+              'them on in Settings › Capabilities. Ask them to flip the '
+              'switch first; I looked nothing up.';
+        }
+        return registerAt(what, where);
     }
   }
 

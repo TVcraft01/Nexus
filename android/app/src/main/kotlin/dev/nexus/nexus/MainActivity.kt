@@ -126,6 +126,14 @@ class MainActivity : FlutterActivity() {
         finishLocation(null)
     }
 
+    // Place reminders: arriving must fire while Nexus is closed, so the
+    // toggle asks for foreground AND background location together. The
+    // result is held across both dialogs; a declined grant answers
+    // honestly with {ok: false} and the toggle stays off.
+    private val REQUEST_REMINDER_LOCATION_PERMISSIONS = 42609
+    private var pendingReminderLocationResult: MethodChannel.Result? = null
+    private var pendingReminderLocationBgStage = false
+
     // Voice input: RECORD_AUDIO is requested at runtime on first use, with
     // the MethodChannel result held across the dialog like the call flow.
     private val SPEECH_CHANNEL = "dev.nexus.nexus/speech"
@@ -377,6 +385,12 @@ class MainActivity : FlutterActivity() {
                     )
                 } else if (call.method == "location") {
                     requestLocation(result)
+                } else if (call.method == "openAppSettings") {
+                    // A capability row's "Needs:" line, or a denied
+                    // permission's way back: this app's system page, where
+                    // the location and microphone toggles live.
+                    openAppSettings()
+                    result.success(null)
                 } else if (call.method == "calendarRead") {
                     // Reading the next events needs READ_CALENDAR, requested on
                     // first use — the result is held across the dialog.
@@ -403,6 +417,16 @@ class MainActivity : FlutterActivity() {
             MethodChannel(
                 flutterEngine.dartExecutor.binaryMessenger,
                 "dev.nexus.nexus/reminders",
+            ),
+        )
+
+        // Place reminders: the fence behind "remind me at the store" —
+        // proximity alerts, the current fix for biasing a lookup, and the
+        // permission ask the capability toggle makes.
+        LocationReminders(this).registerChannels(
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                "dev.nexus.nexus/location",
             ),
         )
 
@@ -673,6 +697,43 @@ class MainActivity : FlutterActivity() {
             if (result == null) return
             if (granted(Manifest.permission.ACCESS_COARSE_LOCATION)) resolveLocation(result)
             else result.success(null) // honest: no location → IP fallback
+        }
+        if (requestCode == REQUEST_REMINDER_LOCATION_PERMISSIONS) {
+            val result = pendingReminderLocationResult
+            if (result == null) return
+            val fine = Manifest.permission.ACCESS_FINE_LOCATION
+            if (!granted(fine) &&
+                !granted(Manifest.permission.ACCESS_COARSE_LOCATION)
+            ) {
+                pendingReminderLocationResult = null
+                pendingReminderLocationBgStage = false
+                result.success(
+                    mapOf(
+                        "ok" to false,
+                        "permanentlyDenied" to
+                            !shouldShowRequestPermissionRationale(fine),
+                    ),
+                )
+                return
+            }
+            if (!pendingReminderLocationBgStage) {
+                // Foreground granted — now the background half, with the
+                // same result held across it.
+                requestReminderBackground(result)
+                return
+            }
+            pendingReminderLocationResult = null
+            pendingReminderLocationBgStage = false
+            val bg = Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            val bgOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                granted(bg)
+            result.success(
+                mapOf(
+                    "ok" to bgOk,
+                    "permanentlyDenied" to
+                        (!bgOk && !shouldShowRequestPermissionRationale(bg)),
+                ),
+            )
         }
         if (requestCode == REQUEST_SPEECH_PERMISSIONS) {
             val result = pendingSpeechResult
@@ -1179,6 +1240,57 @@ class MainActivity : FlutterActivity() {
             Log.e(TAG, "location resolve failed", e)
             result.success(null)
         }
+    }
+
+    /// The location-reminder toggle's ask: foreground first, then the
+    /// background half on Android 10+, with one result held across both
+    /// dialogs. Resolves {ok} only when Nexus may take a fix with the app
+    /// closed; anything less is an honest {ok: false} and the toggle
+    /// stays off. Called from the location channel (see LocationReminders).
+    fun requestReminderLocation(result: MethodChannel.Result) {
+        val fine = Manifest.permission.ACCESS_FINE_LOCATION
+        if (checkSelfPermission(fine) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingReminderLocationResult = result
+            pendingReminderLocationBgStage = false
+            requestPermissions(
+                arrayOf(
+                    fine,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+                REQUEST_REMINDER_LOCATION_PERMISSIONS,
+            )
+            return
+        }
+        requestReminderBackground(result)
+    }
+
+    private fun requestReminderBackground(result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val bg = Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            if (checkSelfPermission(bg) != PackageManager.PERMISSION_GRANTED) {
+                pendingReminderLocationResult = result
+                pendingReminderLocationBgStage = true
+                requestPermissions(
+                    arrayOf(bg),
+                    REQUEST_REMINDER_LOCATION_PERMISSIONS,
+                )
+                return
+            }
+        }
+        result.success(mapOf("ok" to true))
+    }
+
+    /// This app's system details page — where the location and microphone
+    /// toggles live. The destination of a capability row's "Needs:" line
+    /// and of a denied permission's way back.
+    fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(Uri.parse("package:$packageName"))
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
     }
 
     private val locationListener = object : LocationListener {

@@ -23,8 +23,14 @@ import 'package:nexus/ui/settings_view.dart';
 import 'package:nexus/ui/theme.dart';
 
 /// Every switch on the settings screen, by the name a user reads.
+///
+/// "Location reminders" is deliberately absent: its row asks the system
+/// for permission first, so tapping the name does not always flip it —
+/// that row is walked in capabilities_test.dart instead, denied and
+/// granted.
 const _toggles = [
-  'Sync clipboard across devices',
+  'Clipboard sync',
+  'Voice input',
   'Always merge clipboard',
   'Broadcast discovery',
   'Check for updates automatically',
@@ -274,7 +280,17 @@ void main() {
       await tester.pump();
 
       // The one Android-only row is here, as a setting among settings.
-      expect(find.text('Show your files to paired devices'), findsOneWidget);
+      // The Capabilities section grew the list, so the row sits below the
+      // fold until reached the way a user reaches it — the list builds
+      // lazily, exactly like the toggle walk above assumes.
+      final filesRow = find.text('Show your files to paired devices');
+      await tester.scrollUntilVisible(
+        filesRow,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pump();
+      expect(filesRow, findsOneWidget);
       expect(find.byType(FilledButton), findsNothing);
       expect(find.byType(OutlinedButton), findsNothing);
       expect(find.byType(TextButton), findsNothing);

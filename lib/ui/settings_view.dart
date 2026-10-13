@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
+import '../core/capabilities.dart';
+import '../core/location_access.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
@@ -58,6 +60,35 @@ class _SettingsViewState extends State<SettingsView> {
   void _setBool(void Function() change) {
     setState(change);
     mesh.store.save();
+  }
+
+  /// The location toggle is a promise first, a switch second. Turning it
+  /// on asks the system once; a denial leaves the switch off and says
+  /// why, with a way back to system settings. Turning it off asks
+  /// nothing and forgets nothing - the saved places stay, silent.
+  Future<void> _setLocationReminders(bool on) async {
+    if (!on) {
+      _setBool(() => mesh.store.locationReminders = false);
+      return;
+    }
+    final result = await ReminderLocation.requestAlways();
+    if (!mounted) return;
+    if (result.granted) {
+      _setBool(() => mesh.store.locationReminders = true);
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.message ??
+              'Location reminders need \'Always\' location permission.',
+        ),
+        action: SnackBarAction(
+          label: 'Open Settings',
+          onPressed: ReminderLocation.openAppSettings,
+        ),
+      ),
+    );
   }
 
   Future<void> _checkForUpdate() async {
@@ -126,14 +157,50 @@ class _SettingsViewState extends State<SettingsView> {
           ],
         ),
 
-        const NexusSectionHeader('Devices'),
+        // What Nexus may do: every optional feature is a choice the user
+        // makes here, never a default. The two that stay on (mesh pairing,
+        // local model) are explanations, not switches - without them the
+        // app does nothing.
+        const NexusSectionHeader(
+          'Capabilities',
+          detail: 'Nexus proposes. You decide.',
+        ),
         NexusGroup(
           children: [
-            NexusSwitchRow(
-              title: 'Sync clipboard across devices',
-              value: mesh.store.clipboardSync,
-              onChanged: (v) => _setBool(() => mesh.store.clipboardSync = v),
-            ),
+            for (final (capability, info) in CapabilityInfo.all())
+              if (info.alwaysOn)
+                NexusRow(
+                  title: info.title,
+                  subtitle: '${info.description} ${info.needs}.',
+                  leading: Icon(
+                    Icons.check_circle_outline_rounded,
+                    size: 20,
+                    color: palette.success,
+                  ),
+                )
+              else if (capability == Capability.locationReminders)
+                _CapabilityRow(
+                  info: info,
+                  value: mesh.store.locationReminders,
+                  onChanged: _setLocationReminders,
+                  needsTap: ReminderLocation.openAppSettings,
+                )
+              else if (capability == Capability.clipboardSync)
+                _CapabilityRow(
+                  info: info,
+                  value: mesh.store.clipboardSync,
+                  onChanged: (v) =>
+                      _setBool(() => mesh.store.clipboardSync = v),
+                )
+              else
+                _CapabilityRow(
+                  info: info,
+                  value: mesh.store.voiceInput,
+                  onChanged: (v) => _setBool(() => mesh.store.voiceInput = v),
+                  needsTap: capability == Capability.voiceInput
+                      ? ReminderLocation.openAppSettings
+                      : null,
+                ),
             NexusSwitchRow(
               title: 'Always merge clipboard',
               subtitle: 'Off waits 3 s in case you paste it here.',
@@ -259,5 +326,57 @@ class _SettingsViewState extends State<SettingsView> {
       default:
         return 'Device';
     }
+  }
+}
+
+/// One capability row: the toggle, and - only when the capability spends
+/// something beyond this phone (a permission, a network call, disk) - a
+/// small tappable line that opens the system screen where that spend is
+/// granted. The disclosure is above the switch in reading order, never
+/// behind it.
+class _CapabilityRow extends StatelessWidget {
+  const _CapabilityRow({
+    required this.info,
+    required this.value,
+    required this.onChanged,
+    this.needsTap,
+  });
+
+  final CapabilityInfo info;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final Future<void> Function()? needsTap;
+
+  /// The "Needs:" line shows only when the capability spends something
+  /// beyond this phone. "Needs: nothing" is silence, not a row.
+  bool get _showsNeeds => info.needs != 'Needs: nothing';
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        NexusSwitchRow(
+          title: info.title,
+          subtitle: info.description,
+          value: value,
+          onChanged: onChanged,
+        ),
+        if (_showsNeeds)
+          GestureDetector(
+            onTap: needsTap == null ? null : () => needsTap!(),              child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                '${info.needs} - tap to open system settings.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: palette.accent,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 }
