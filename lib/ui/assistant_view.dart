@@ -593,6 +593,9 @@ class AssistantViewState extends State<AssistantView> {
           input: input,
           original: original,
           tools: _tools,
+          pairedDevices: [
+            for (final d in widget.mesh.pairedDevices) d.name,
+          ],
           context: _memoryContext,
           onBrainAnswered: (stale) {
             // The brain owns this phrase now — drop the service's stale teach

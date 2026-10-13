@@ -269,6 +269,7 @@ class ConversationEngine extends ChangeNotifier {
     required ConversationContext Function() context,
     ToolRunner? tools,
     void Function(String? teachKey)? onBrainAnswered,
+    List<String> pairedDevices = const [],
   }) async {
     if (_disposed) return;
     // Proven offline by the last probe? Stay classic — no Thinking flash,
@@ -309,6 +310,7 @@ class ConversationEngine extends ChangeNotifier {
         system: system,
         ask: input,
         history: history,
+        pairedDevices: pairedDevices,
         onRunning: (call) {
           if (_disposed) return;
           card = _swapCard(

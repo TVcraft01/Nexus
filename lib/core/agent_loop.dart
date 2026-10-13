@@ -57,6 +57,7 @@ class ToolLoop {
     double temperature = 0.7,
     int maxTokens = 300,
     void Function(ToolCall call)? onRunning,
+    List<String> pairedDevices = const [],
   }) async {
     final runner = tools;
     final turns = [...history];
@@ -67,7 +68,9 @@ class ToolLoop {
         // The tool block is added here, not by the caller: the words the
         // model is told and the parser that reads it back are one file's
         // business.
-        system: runner == null ? system : toolSystemPrompt(system),
+        system: runner == null
+            ? system
+            : toolSystemPrompt(system, pairedDevices: pairedDevices),
         history: turns,
         temperature: temperature,
         maxTokens: maxTokens,

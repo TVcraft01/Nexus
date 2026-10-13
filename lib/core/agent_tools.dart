@@ -170,12 +170,26 @@ ToolCall? _callIn(String rest) {
 /// The tool block appended to the assistant's own system prompt, with the
 /// protocol the loop parses. Kept beside the parser on purpose: the words the
 /// model is told and the words it is read by cannot drift apart in one file.
-String toolSystemPrompt(String system) => '''
+///
+/// [pairedDevices] are the user's real paired device names, read at prompt
+/// time. The get_file example names one of them — never a hardcoded example
+/// a small model would copy verbatim — and with zero paired devices the
+/// get_file tool is not offered at all: a tool for a capability the user
+/// doesn't have is a lie the model hallucinates around.
+String toolSystemPrompt(String system, {List<String> pairedDevices = const []}) {
+  final names = <String>[
+    for (final raw in pairedDevices)
+      if (raw.trim().isNotEmpty) raw.trim(),
+  ];
+  final getFileLine = names.isEmpty
+      ? ''
+      : '\n- get_file {"name": "report.pdf", "from": "${names.first}"} — fetches a file the user named from one of their paired devices. Your paired devices: ${names.join(', ')}. "from" may be left out.';
+  final count = names.isEmpty ? 'one read-only tool' : 'two read-only tools';
+  return '''
 $system
 
-You can also run two read-only tools on this device when the user asks:
-- list_local_files {"dir": "Downloads"} — lists what is in one of the user's folders. "dir" is exactly one of: Downloads, Documents, Pictures.
-- get_file {"name": "report.pdf", "from": "My PC"} — fetches a file the user named from one of their paired devices. "from" may be left out.
+You can also run $count on this device when the user asks:
+- list_local_files {"dir": "Downloads"} — lists what is in one of the user's folders. "dir" is exactly one of: Downloads, Documents, Pictures.$getFileLine
 
 To run one, reply with exactly one line and nothing else:
 TOOL:<name> {"arg": "value"}
@@ -184,6 +198,7 @@ For example, the user asks "what's in my Downloads?" — reply exactly:
 TOOL:list_local_files {"dir": "Downloads"}
 
 Call a tool only when the user's message asks for it. If no tool is needed, just answer normally. After a tool runs you will be told what it found; then answer the user in one or two short sentences from that result. Never invent file names. You cannot delete, move or change anything — say so if asked.''';
+}
 
 /// A folder or a file named in the ask: "what's in my downloads" implies a
 /// listing, and a word with an extension implies a file.
