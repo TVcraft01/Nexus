@@ -5,9 +5,11 @@
 // each other, and the teach flow survives every brain failure. Pure Dart
 // plus [ChangeNotifier], so the whole state machine is unit-testable without
 // a widget tree.
-import 'package:flutter/foundation.dart' show ChangeNotifier;
+import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
 
 import 'agent_contract.dart';
+import 'agent_loop.dart';
+import 'agent_tools.dart';
 import 'brain.dart';
 import 'conversation.dart';
 
@@ -167,15 +169,31 @@ class ConversationEngine extends ChangeNotifier {
     AgentDispatchResult result, {
     String? teachKey,
   }) {
-    final index = _entries.indexOf(entry);
-    if (index == -1) return;
+    _swapCard(entry, result, teachKey: teachKey);
+  }
+
+  /// Swaps [card] for [result] where it sits, answering the entry now in the
+  /// thread — null when the card is gone, because a superseded exchange must
+  /// not resurrect itself. The handle matters: one exchange may swap its card
+  /// more than once (Thinking → the tool it is running → the answer), and each
+  /// swap invalidates the previous entry object.
+  ConversationEntry? _swapCard(
+    ConversationEntry card,
+    AgentDispatchResult result, {
+    String? teachKey,
+    bool pending = false,
+  }) {
+    final index = _entries.indexOf(card);
+    if (index == -1) return null;
     // The replacement answers the same ask as the card it replaces — its
     // spoken attribution carries over, even when that card sits mid-thread.
-    _entries[index] = ConversationEntry.result(
+    final next = ConversationEntry.result(
       result,
       teachKey: teachKey,
-      spokenAsk: entry.spokenAsk,
+      spokenAsk: card.spokenAsk,
+      pending: pending,
     );
+    _entries[index] = next;
     if (index == _entries.length - 1) {
       _pendingKey = switch (result.dispatch) {
         final AgentClarification clarification => clarification.key,
@@ -183,6 +201,7 @@ class ConversationEngine extends ChangeNotifier {
       };
     }
     _notify();
+    return next;
   }
 
   /// Starts a new conversation: the thread goes, and the open question with
@@ -238,11 +257,17 @@ class ConversationEngine extends ChangeNotifier {
   /// call time so the memory (profile, facts, skills) is always current.
   /// [onBrainAnswered] fires with the superseded teach key on success, so
   /// the caller can drop the service's stale question.
+  ///
+  /// [tools] is what the model may *do* rather than only say: with a runner
+  /// wired, the exchange runs through [ToolLoop] and the card names the tool
+  /// while it runs — "Looking in Downloads…" — before the answer replaces
+  /// it. Without one, this is the plain single call it always was.
   Future<void> converse({
     required LocalBrain brain,
     required String input,
     required AgentDispatchResult original,
     required ConversationContext Function() context,
+    ToolRunner? tools,
     void Function(String? teachKey)? onBrainAnswered,
   }) async {
     if (_disposed) return;
@@ -270,26 +295,75 @@ class ConversationEngine extends ChangeNotifier {
       ),
       replaceLast: true,
     );
-    final thinking = _entries.last;
-    final reply = await brain.reply(system: system, history: history);
+    // The card this exchange owns. Each swap carries the handle forward, so
+    // the reply always lands on the card the user is looking at — Thinking →
+    // “Looking in Downloads…” → the answer.
+    var card = _entries.last;
+    // Never throws: a brain that fails answers null, which is the seam's
+    // own contract — but a brain that THROWS would otherwise escape as an
+    // unhandled async error and leave the Thinking card up forever. A
+    // thrown exchange is a failure with a message, like every other one.
+    ToolLoopReply? reply;
+    try {
+      reply = await ToolLoop(brain: brain, tools: tools).run(
+        system: system,
+        ask: input,
+        history: history,
+        onRunning: (call) {
+          if (_disposed) return;
+          card = _swapCard(
+                card,
+                AgentDispatchResult(
+                  status: AgentResultStatus.succeeded,
+                  dispatch: AgentMessage(call.runningLabel),
+                ),
+                // Work in flight: the card says what is happening instead of
+                // wearing a finished status, and the live line of a running
+                // fetch has somewhere to show.
+                pending: true,
+              ) ??
+              card;
+        },
+      );
+    } on Object catch (e) {
+      debugPrint('NEXUS converse: brain threw ($e)');
+      reply = null;
+    }
     if (_disposed) return;
-    if (reply.text == null) {
-      // The teach card returns on THIS card — a newer exchange's card is
-      // never touched. Only a failed latest exchange, and only an
-      // unreachable one, marks the brain offline: a quiet empty reply is
-      // not evidence of an outage.
-      replaceEntry(thinking, original);
-      if (seq == _converseSeq && !reply.reachable) {
+    final text = reply?.text;
+    if (text == null) {
+      // Every failure path produces a message — never the silent teach-card
+      // restore, never a stuck Thinking card. The brain owned this phrase
+      // (it tried), so the service's stale teach question is dropped, like
+      // on success. Only a failed latest exchange, and only an unreachable
+      // one, marks the brain offline: a quiet empty reply — and a throw —
+      // are not evidence of an outage.
+      final reachable = reply?.reachable ?? true;
+      final message = reply == null
+          ? 'Something went wrong while I was thinking — please try again.'
+          : reachable
+              ? 'I couldn\'t come up with an answer — could you rephrase that?'
+              : 'The model isn\'t ready yet — it may still be downloading on '
+                  'first launch. Try again in a bit.';
+      _swapCard(
+        card,
+        AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage(message),
+        ),
+      );
+      onBrainAnswered?.call(teachKeyOf(original));
+      if (seq == _converseSeq && reply != null && !reply.reachable) {
         _brainHealth = BrainHealth.offline;
         _notify();
       }
     } else {
       final stale = teachKeyOf(original);
-      replaceEntry(
-        thinking,
+      _swapCard(
+        card,
         AgentDispatchResult(
           status: AgentResultStatus.succeeded,
-          dispatch: AgentMessage(reply.text!),
+          dispatch: AgentMessage(text),
         ),
         teachKey: stale,
       );

@@ -1439,7 +1439,15 @@ class CommandInterpreter {
           ),
         );
       }
-      // "open calculator" / "open youtube" -> app open
+      // "open calculator" / "open youtube" -> app open, but ONLY for an
+      // app the assistant can actually open (see knownOpenTargets).
+      // Anything else — "open the navigator" — is not an app open: fall
+      // through to the conversational brain instead of fuzzy-launching
+      // whatever the platform guesses.
+      final appName = target
+          .replaceFirst(RegExp(r'^(?:the |my )'), '')
+          .replaceFirst(RegExp(r' (?:app|application)$'), '');
+      if (!knownOpenTargets.contains(appName)) return InterpretResult.unknown();
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.appOpen,

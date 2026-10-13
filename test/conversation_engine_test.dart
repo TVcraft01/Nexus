@@ -55,6 +55,23 @@ class _FakeBrain extends LocalBrain {
   }
 }
 
+/// A brain that blows up: proves a throwing exchange becomes a message,
+/// never an unhandled async error or a stuck Thinking card.
+class _ThrowingBrain extends LocalBrain {
+  @override
+  Future<String?> availableModel({bool refresh = false}) async => 'llama3.2:3b';
+
+  @override
+  Future<BrainReply> reply({
+    required String system,
+    required List<ChatTurn> history,
+    double temperature = 0.7,
+    int maxTokens = 300,
+  }) {
+    throw StateError('model exploded');
+  }
+}
+
 /// A brain whose replies the test releases by hand, in order.
 class _GatedBrain extends LocalBrain {
   final List<Completer<BrainReply>> gates = [];
@@ -191,11 +208,12 @@ void main() {
       expect(engine.pendingKey, isNull);
     });
 
-    test('an unreachable brain restores the teach card and flips offline',
+    test('an unreachable brain says the model is not ready, and flips offline',
         () async {
       final brain = _FakeBrain()..replyText = null..reachable = false;
       final engine = ConversationEngine();
-      await engine.probe(brain);
+      // No probe: health is still probing, so the attempt is really made
+      // (a probe would mark offline and skip the exchange entirely).
       engine.appendResult(_teachResult, asUser: 'x');
 
       await engine.converse(
@@ -205,8 +223,14 @@ void main() {
         context: () => const ConversationContext(),
       );
 
-      expect(engine.entries.last.result, same(_teachResult));
-      expect(engine.pendingKey, 'teach:x');
+      // Every failure path produces a message — never a silent restore.
+      final dispatch = engine.entries.last.result!.dispatch;
+      expect(dispatch, isA<AgentMessage>());
+      expect(
+        (dispatch as AgentMessage).text,
+        contains("isn't ready yet"),
+      );
+      expect(engine.pendingKey, isNull);
       expect(engine.brainHealth, BrainHealth.offline);
     });
 
@@ -248,8 +272,7 @@ void main() {
       );
     });
 
-    test('an empty but reachable reply restores the card and stays online',
-        () async {
+    test('an empty but reachable reply says so, and stays online', () async {
       final brain = _FakeBrain()..replyText = null..reachable = true;
       final engine = ConversationEngine();
       await engine.probe(brain);
@@ -262,7 +285,38 @@ void main() {
         context: () => const ConversationContext(),
       );
 
-      expect(engine.entries.last.result, same(_teachResult));
+      final dispatch = engine.entries.last.result!.dispatch;
+      expect(dispatch, isA<AgentMessage>());
+      expect(
+        (dispatch as AgentMessage).text,
+        contains("couldn't come up with"),
+      );
+      expect(engine.brainHealth, BrainHealth.online);
+    });
+
+    test('a brain that throws leaves a message, not a stuck Thinking card',
+        () async {
+      final engine = ConversationEngine();
+      await engine.probe(_FakeBrain());
+      engine.appendResult(_teachResult, asUser: 'x');
+
+      // converse() must not throw: the Thinking card it owns must resolve
+      // to an honest message instead.
+      await engine.converse(
+        brain: _ThrowingBrain(),
+        input: 'x',
+        original: _teachResult,
+        context: () => const ConversationContext(),
+      );
+
+      final dispatch = engine.entries.last.result!.dispatch;
+      expect(dispatch, isA<AgentMessage>());
+      expect(
+        (dispatch as AgentMessage).text,
+        contains('went wrong'),
+      );
+      // A throw is not evidence of an outage: health stays as the probe
+      // left it.
       expect(engine.brainHealth, BrainHealth.online);
     });
 

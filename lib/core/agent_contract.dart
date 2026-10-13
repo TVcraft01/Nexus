@@ -132,6 +132,82 @@ const Map<String, (String, String)> calendarApps = {
       ('Outlook Calendar', 'https://outlook.live.com/calendar/0/deeplink/compose?subject='),
 };
 
+/// Every target `open <app>` (and its "launch" / "start" / "go to"
+/// variants) may name without asking the brain first: the union of the
+/// voice-routed stores above and the apps the executor can actually launch
+/// (Android package aliases and desktop site shortcuts in
+/// `device_executor.dart`, plus the system basics). Anything else —
+/// "open the navigator" — is not an app open; the interpreter returns unknown so
+/// the phrase falls through to the conversational brain instead of
+/// fuzzy-launching whatever the platform guesses.
+const Set<String> knownOpenTargets = {
+  // Voice-routed stores.
+  'spotify',
+  'deezer',
+  'youtube music',
+  'yt music',
+  'youtube',
+  'apple music',
+  'amazon music',
+  'tidal',
+  'soundcloud',
+  'pandora',
+  'waze',
+  'google maps',
+  'maps',
+  'apple maps',
+  'google',
+  'outlook',
+  // Apps the executor can launch or open in the browser.
+  'chrome',
+  'browser',
+  'gmail',
+  'email',
+  'mail',
+  'camera',
+  'photos',
+  'gallery',
+  'calendar',
+  'clock',
+  'calculator',
+  'settings',
+  'messages',
+  'sms',
+  'phone',
+  'dialer',
+  'contacts',
+  'files',
+  'music',
+  'netflix',
+  'instagram',
+  'twitter',
+  'x',
+  'facebook',
+  'whatsapp',
+  'telegram',
+  'discord',
+  'slack',
+  'teams',
+  'zoom',
+  'tiktok',
+  'reddit',
+  'pinterest',
+  'snapchat',
+  'linkedin',
+  'podcast',
+  'news',
+  'drive',
+  'docs',
+  'sheets',
+  'slides',
+  'keep',
+  'wallet',
+  'play store',
+  'playstore',
+  'store',
+  'github',
+};
+
 class ParsedCommand {
   final String action;
   final String target;

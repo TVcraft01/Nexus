@@ -460,6 +460,37 @@ void main() {
       expect(modeOf('make it quieter'), (AgentActions.volumeSet, 'down'));
     });
 
+    test('"open" only fires for an app the assistant can open', () {
+      // "open the navigator" must fall through to the brain (unknown),
+      // never fuzzy-launch whatever the platform guesses. Known apps keep
+      // their fast path; URLs keep theirs.
+      for (final phrase in [
+        'open the navigator',
+        'open navigator',
+        'launch the navigator',
+        'open my spaceship',
+      ]) {
+        expect(
+          interpreter.interpret(phrase).outcome,
+          InterpretOutcome.unknown,
+          reason: phrase,
+        );
+      }
+      for (final phrase in [
+        'open youtube',
+        'open the calendar',
+        'open calculator',
+        'launch spotify',
+        'open github.com',
+      ]) {
+        expect(
+          interpreter.interpret(phrase).outcome,
+          InterpretOutcome.matched,
+          reason: phrase,
+        );
+      }
+    });
+
     test('unadvertised smart-home phrases stay teachable', () {
       // No fake "home control" action exists — these stay teachable
       // (unknown), never a pretend success. Navigation is real now.

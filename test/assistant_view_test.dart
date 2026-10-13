@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show SystemChannels;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
+import 'package:nexus/core/agent_loop.dart' show toolResultPrefix;
 import 'package:nexus/core/brain.dart';
 import 'package:nexus/core/capability.dart';
 import 'package:nexus/core/command_interpreter.dart';
@@ -338,6 +339,38 @@ class _RecordingBrain extends LocalBrain {
   }
 }
 
+/// A brain scripted like an exchange with a tool: it asks for one first, then
+/// answers from the observation it is handed back — the loop's round trip, in
+/// the shape a widget test can drive.
+class _ToolBrain extends LocalBrain {
+  _ToolBrain(this.toolLine);
+
+  final String toolLine;
+
+  /// How many times the model was asked: two per tool exchange (the call and
+  /// the answer built from the result).
+  int asks = 0;
+
+  @override
+  Future<String?> availableModel({bool refresh = false}) async => 'qwen2.5';
+
+  @override
+  Future<BrainReply> reply({
+    required String system,
+    required List<ChatTurn> history,
+    double temperature = 0.7,
+    int maxTokens = 300,
+  }) async {
+    asks++;
+    if (asks == 1) return (text: toolLine, reachable: true);
+    final line = history.last.content.split('\n').first;
+    return (
+      text: 'All done — ${line.substring(toolResultPrefix.length)}',
+      reachable: true,
+    );
+  }
+}
+
 /// A brain whose replies the test releases by hand, in any order — the
 /// concurrency race is driven deterministically through [gates].
 class _GateBrain extends LocalBrain {
@@ -543,8 +576,8 @@ void brainWidgetTests() {
     }
   });
 
-  testWidgets('an empty model reply restores the teach card but keeps the '
-      'brain online', (tester) async {
+  testWidgets('an empty model reply says so, and keeps the brain online',
+      (tester) async {
     final store = NexusStore(
       explicitPath: '${Directory.systemTemp.createTempSync('avt_empty').path}/s.json',
     )..clipboardSync = true;
@@ -567,9 +600,10 @@ void brainWidgetTests() {
       await tester.pump();
       await tester.pump();
 
-      // Nothing to show → the teach card returns…
+      // Nothing to show → an honest message, never a silent restore…
       expect(find.text('Thinking…'), findsNothing);
-      expect(find.textContaining('don\'t understand'), findsOneWidget);
+      expect(find.textContaining('don\'t understand'), findsNothing);
+      expect(find.textContaining('couldn\'t come up with'), findsOneWidget);
       // …but the server answered, so the brain is NOT offline.
       expect(find.textContaining('On this device'), findsOneWidget);
       expect(find.textContaining('No model loaded'), findsNothing);
@@ -1521,6 +1555,142 @@ void brainWidgetTests() {
         );
       } finally {
         SpeechInput.override = null;
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets(
+    'a typed fetch belongs to the parser, so the model is never asked',
+    (tester) async {
+      // "get report.pdf" is a command the interpreter understands, and the
+      // interpreter stays first: the fetch resolves through the service and
+      // runs through the executor exactly as it did before a brain existed,
+      // and the model is not consulted at all. A model asked to answer while
+      // the file was already arriving would be talking about a request that
+      // had already been carried out.
+      final store = NexusStore(
+        explicitPath:
+            '${Directory.systemTemp.createTempSync('avt-parser-first').path}/s.json',
+      )..clipboardSync = true;
+      final mesh = _PairedPcMesh(store: store);
+      final executor = _GatedFileExecutor();
+      final brain = _RecordingBrain();
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildNexusTheme(),
+            home: Scaffold(
+              body: AssistantView(
+                mesh: mesh,
+                executor: executor,
+                brain: brain,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        await tester.enterText(find.byType(TextField), 'get report.pdf');
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pump();
+
+        // The fetch the sentence asked for, with the paired PC resolved for a
+        // device the user never named.
+        expect(executor.lastRequest!.action, AgentActions.fileFetch);
+        expect(executor.lastRequest!.arguments['filename'], 'report.pdf');
+        expect(executor.lastRequest!.arguments['peerId'], 'pc1');
+        expect(
+          find.textContaining('From My PC — Getting report.pdf'),
+          findsOneWidget,
+        );
+        expect(brain.asks, 0, reason: 'the parser owns this sentence');
+
+        executor.finish(
+          const ActionResult(true, 'Saved report.pdf from My PC to /tmp/r.pdf.'),
+        );
+        await tester.pump();
+        await tester.pump();
+        expect(brain.asks, 0, reason: 'the outcome is not a brain ask either');
+      } finally {
+        QueryLog.i.resetForTest();
+        await mesh.stop();
+      }
+    },
+  );
+
+  testWidgets(
+    'a fetch the model asked for runs through the real executor',
+    (tester) async {
+      // The whole tool vertical, through the product's own wiring: an ask the
+      // interpreter does not know reaches the brain, the brain asks for
+      // get_file, the view resolves the peer and runs the fetch through the
+      // same executor a typed fetch uses, the result is handed back to the
+      // model, and the model's answer lands on the card that named the tool.
+      final store = NexusStore(
+        explicitPath:
+            '${Directory.systemTemp.createTempSync('avt-tool-fetch').path}/s.json',
+      )..clipboardSync = true;
+      final mesh = _PairedPcMesh(store: store);
+      final executor = _GatedFileExecutor();
+      final brain = _ToolBrain(
+        'TOOL:get_file {"name": "report.pdf", "from": "my pc"}',
+      );
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildNexusTheme(),
+            home: Scaffold(
+              body: AssistantView(
+                mesh: mesh,
+                executor: executor,
+                brain: brain,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        await tester.enterText(
+          find.byType(TextField),
+          'could you grab my report.pdf off the pc',
+        );
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        // The card says which tool is running, and the fetch is a real one:
+        // the same action, peer and file a typed fetch would use.
+        expect(find.textContaining('Fetching report.pdf'), findsOneWidget);
+        expect(find.text('Working'), findsOneWidget);
+        expect(executor.lastRequest!.action, AgentActions.fileFetch);
+        expect(executor.lastRequest!.arguments['peerId'], 'pc1');
+        expect(executor.lastRequest!.arguments['filename'], 'report.pdf');
+
+        executor.finish(
+          const ActionResult(
+            true,
+            'Saved report.pdf from My PC to /tmp/report.pdf.',
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        // The model's answer is built from what the fetch said, and it landed
+        // on the tool's own card — Done, not Working.
+        expect(
+          find.textContaining('Saved report.pdf from My PC'),
+          findsOneWidget,
+        );
+        expect(find.text('Done'), findsOneWidget);
+        expect(find.text('Working'), findsNothing);
+        expect(brain.asks, 2);
+      } finally {
         QueryLog.i.resetForTest();
         await mesh.stop();
       }
