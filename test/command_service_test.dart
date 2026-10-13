@@ -914,6 +914,36 @@ void main() {
       expect(msg.action, AgentActions.webSearch);
     });
 
+    test('unknown "who is" reaches the brain, known names and devices do not',
+        () {
+      final service = CommandService(devices: () => const []);
+      // Nobody known by these names: the teach card, never a web search —
+      // the card is what hands the phrase to the local brain.
+      for (final phrase in ['who is albert einstein', 'who is john']) {
+        final result = service.execute(phrase);
+        expect(result.status, AgentResultStatus.needsInfo, reason: phrase);
+        final ask = result.dispatch! as AgentClarification;
+        expect(ask.key.startsWith('teach:'), isTrue, reason: phrase);
+      }
+
+      // A taught name is still memory's own answer, never the brain.
+      service.execute('remember that john is john 0612345678');
+      final known = service.execute('who is john').dispatch! as AgentMessage;
+      expect(known.text, contains('0612345678'));
+      expect(known.action, isNot(AgentActions.webSearch));
+
+      // A paired device is answered about itself, not searched, not asked.
+      final paired = CommandService(
+        devices: () => const [
+          AgentDeviceSnapshot(id: 'nova', name: 'Nova', online: true),
+        ],
+      );
+      final device = paired.execute('who is nova').dispatch! as AgentMessage;
+      expect(device.text, contains('Nova'));
+      expect(device.text, contains('online'));
+      expect(device.action, isNull);
+    });
+
     test('every ask-back in the catalog is a question, never a failure', () {
       // Called directly, because these are the rows of the catalog that ask
       // for a missing argument — the shape "Who should I call?" arrives in.

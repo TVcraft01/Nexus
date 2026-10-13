@@ -1575,14 +1575,17 @@ class CommandInterpreter {
       );
     }
     // Short personal questions: "who is mom", "who's my mechanic". Same
-    // memory-first routing as the "what is" family.
+    // memory-first routing as the "what is" family — but marked as a
+    // person question, so the service can tell a name nobody taught us
+    // (a general-knowledge "who is albert einstein") from a fact question
+    // and hand the unknown name to the local brain instead of the web.
     final whoIs = RegExp(r"^who(?: is|'s) (?:my |the )?(.+)$").firstMatch(norm);
     if (whoIs != null) {
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.memoryQuestion,
           target: 'local',
-          arguments: {'topic': whoIs.group(1)!.trim()},
+          arguments: {'topic': whoIs.group(1)!.trim(), 'kind': 'who'},
         ),
       );
     }

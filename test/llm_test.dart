@@ -433,6 +433,47 @@ void main() {
       expect(teachKey.startsWith('teach:'), isFalse);
     });
 
+    test('unknown "who is" and "why" questions reach the model', () async {
+      // Both reported failures, end to end: the command layer must raise
+      // the teach card (never a web search), and the conversation must hand
+      // the exact phrase to the model.
+      for (final phrase in [
+        'why can i be a cat',
+        'who is albert einstein',
+        'who is john',
+      ]) {
+        final runtime = _FakeRuntime(reply: 'An answer from the model.');
+        final brain = LocalModelBrain(llm: _llmWith(runtime));
+        final engine = ConversationEngine();
+        await engine.probe(brain);
+
+        final service = CommandService(devices: () => const []);
+        final result = service.execute(phrase);
+        final dispatch = result.dispatch;
+        expect(dispatch, isA<AgentClarification>(), reason: phrase);
+        expect(
+          (dispatch as AgentClarification).key.startsWith('teach:'),
+          isTrue,
+          reason: phrase,
+        );
+
+        engine.appendResult(result, asUser: phrase);
+        await engine.converse(
+          brain: brain,
+          input: phrase,
+          original: result,
+          context: () => const ConversationContext(),
+        );
+        expect(runtime.prompts, hasLength(1), reason: phrase);
+        expect(runtime.prompts.single.last.content, phrase, reason: phrase);
+        expect(
+          (engine.entries.last.result!.dispatch as AgentMessage).text,
+          'An answer from the model.',
+          reason: phrase,
+        );
+      }
+    });
+
     test('the model is handed the persona, the history, and the token cap',
         () async {
       final runtime = _FakeRuntime(reply: 'ok');

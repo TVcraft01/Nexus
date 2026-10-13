@@ -625,6 +625,13 @@ List<MemoryFact> _factsAbout(Iterable<MemoryFact> facts, String topic) {
   return hits;
 }
 
+/// Whether any stored fact answers to [topic], by the same loose matching
+/// the catalog answers with. The service asks before memory speaks, so a
+/// "who is X" nobody taught us about can reach the local brain instead of
+/// a web search — one matcher, so the check and the answer cannot disagree.
+bool memoryKnowsAbout(Iterable<MemoryFact> facts, String topic) =>
+    _factsAbout(facts, topic).isNotEmpty;
+
 /// The answer to "why do you know that?" / "why do you know about X" —
 /// built from the stored stamp of whatever fact matches, never from a canned
 /// sentence. It says plainly when nothing matches instead of falling back to

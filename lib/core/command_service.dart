@@ -966,6 +966,18 @@ class CommandService {
       // needed (desktops open mailto: directly).
       return localAnswer(command, _answerContext);
     }
+    // "Who is X" names a person, not a fact the user taught: when nobody
+    // known answers to the name — no fact, no paired device — memory has
+    // nothing to say, and a web search is not the assistant answering. So
+    // the unknown name becomes the teach card that hands the phrase to the
+    // local brain, the same card an uninterpreted sentence gets. Known
+    // names never arrive here: facts answer first, devices about
+    // themselves. Every other memory question keeps its web fallback.
+    if (action == AgentActions.memoryQuestion) {
+      final brainBound = _whoIsKnownToNone(command, rawInput);
+      if (brainBound != null) return brainBound;
+      return localAnswer(command, _answerContext);
+    }
     if (        action == AgentActions.greet ||
         action == AgentActions.intro ||
         action == AgentActions.timeGet ||
@@ -1024,11 +1036,70 @@ class CommandService {
         action == AgentActions.deviceRestart ||
         action == AgentActions.memoryRemember ||
         action == AgentActions.memoryRecall ||
-        action == AgentActions.memoryForget ||
-        action == AgentActions.memoryQuestion) {
+        action == AgentActions.memoryForget) {
       return localAnswer(command, _answerContext);
     }
     return _unwired(command);
+  }
+
+  /// The "who is X" redirect: a person question memory cannot answer. Null
+  /// when memory owns the name, so known names keep their exact current
+  /// answers. A paired device (or this one) is answered about itself;
+  /// anything else becomes the teach card — registered like an
+  /// uninterpreted sentence, so the assistant view hands it to the local
+  /// brain, and so the teach flow still works when no brain is wired up.
+  AgentDispatchResult? _whoIsKnownToNone(
+    ParsedCommand command,
+    String? rawInput,
+  ) {
+    if (command.arguments['kind'] != 'who') return null;
+    final topic = (command.arguments['topic'] as String? ?? '').trim();
+    if (topic.isEmpty) return null;
+    if (memoryKnowsAbout(_facts, topic)) return null;
+    final device = _deviceCalled(topic);
+    if (device != null) {
+      if (identical(device, local)) {
+        return AgentDispatchResult(
+          status: AgentResultStatus.succeeded,
+          dispatch: AgentMessage('${device.name} is this device.'),
+        );
+      }
+      final state = device.online ? 'online now' : 'offline right now';
+      return AgentDispatchResult(
+        status: AgentResultStatus.succeeded,
+        dispatch: AgentMessage(
+          '${device.name} is one of your paired devices — $state.',
+        ),
+      );
+    }
+    final normalized = CommandInterpreter.normalizePhrase(
+      rawInput ?? 'who is $topic',
+    );
+    _pendingContext['teach:$normalized'] = normalized;
+    return AgentDispatchResult(
+      status: AgentResultStatus.needsInfo,
+      dispatch: AgentClarification(
+        question: 'I don\'t know "$topic" yet.',
+        key: 'teach:$normalized',
+        hint:
+            'Teach me what it should mean — or tap "what can you do" below to see everything I know.',
+      ),
+    );
+  }
+
+  /// A paired device (or this one) called [topic]: the full name, or the
+  /// name without a leading "my" — because "who is my phone" asks about
+  /// "My Phone".
+  AgentDeviceSnapshot? _deviceCalled(String topic) {
+    final want = topic.toLowerCase();
+    for (final device in _allDevices()) {
+      final name = device.name.toLowerCase();
+      if (name == want ||
+          name.replaceFirst(RegExp(r'^(my|the) '), '') == want) {
+        return device;
+      }
+    }
+    return null;
   }
 
   AgentDispatchResult _unwired(ParsedCommand command) {

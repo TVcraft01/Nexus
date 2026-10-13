@@ -581,6 +581,40 @@ void main() {
       );
     });
 
+    test('general "why" questions match nothing; the assistant asks the AI',
+        () {
+      for (final phrase in ['why can i be a cat', 'why is the sky blue']) {
+        expect(
+          interpreter.interpret(phrase).outcome,
+          InterpretOutcome.unknown,
+          reason: phrase,
+        );
+      }
+      // The special why-questions keep their owners: the record, the last
+      // failure, and memory's provenance.
+      for (final phrase in [
+        'why did you do that',
+        "why can't you do this",
+        'why do you know that',
+      ]) {
+        expect(
+          interpreter.interpret(phrase).outcome,
+          InterpretOutcome.matched,
+          reason: phrase,
+        );
+      }
+    });
+
+    test('"who is" marks a person question for the brain fallback', () {
+      final known = interpreter.interpret('who is mom');
+      expect(known.command!.action, AgentActions.memoryQuestion);
+      expect(known.command!.arguments['topic'], 'mom');
+      expect(known.command!.arguments['kind'], 'who');
+      final unknown = interpreter.interpret('who is albert einstein');
+      expect(unknown.command!.action, AgentActions.memoryQuestion);
+      expect(unknown.command!.arguments['kind'], 'who');
+    });
+
     test("the assistant asks back for personal facts instead of searching the web", () {
       // "what is my name" / "what is my wifi password" must ask the user
       // for the answer (and remember it), never search the web for their
