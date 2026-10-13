@@ -125,11 +125,16 @@ Three runs to get there, and the failures are the interesting part:
   asked), and a model-asked fetch running through the real executor.
 - `flutter analyze` — **60 issues, all pre-existing infos, 0 errors, 0
   warnings** (this pass adds none).
-- `git status` — note for whoever reads the tree: another thread's uncommitted
-  work was present while this pass ran (`knownOpenTargets` in
-  `agent_contract.dart`, the empty-reply wording and throw handling in
-  `conversation_engine.dart`). It is *not* in this pass's commit; the commit
-  contains this pass's hunks only, verified green in a throwaway worktree.
+- `git status` — clean apart from the parked `test/clip_probe_driver.dart`
+  (untracked before this pass, untouched by it).
+- Commits: this pass is `2b2af10`, on top of `183c5a9`. Two threads shared
+  this checkout, and `183c5a9` ("open" falls through…) *swept in* this pass's
+  `conversation_engine.dart` wiring and its two view tests while they were
+  still uncommitted — and left `lib/core/agent_loop.dart` and
+  `lib/core/agent_tools.dart` untracked, so the engine it committed imported
+  two files that were not in the tree. `2b2af10` lands them, the service and
+  view side, the tests and this note; main compiles and passes again. The
+  interleaving is a property of a shared checkout, not of the change.
 
 ## Honest limits
 
