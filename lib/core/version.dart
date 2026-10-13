@@ -10,4 +10,4 @@
 ///
 /// test/version_test.dart now fails when the two drift apart again, and proves
 /// the shipped version never reads as an update to itself.
-const String appVersion = '0.2.1';
+const String appVersion = '0.3.0';

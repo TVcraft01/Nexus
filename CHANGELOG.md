@@ -5,6 +5,38 @@ it was added during the file-fetch sprint, so the oldest entry below is that
 sprint and earlier work is not listed. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-10-13
+
+### Added
+
+- **The AI can act now.** Ask "what's in my Downloads" and it lists your
+  real files; ask for `report.pdf` from a paired device and it fetches the
+  file over your own local network.
+
+### Fixed
+
+- **"Who is X" and "why…" questions reach the AI** instead of opening a
+  browser search.
+- **Folder questions no longer get swallowed by the memory rule.** Asking
+  about Downloads, Documents, or Pictures lists the folder instead of
+  recalling an unrelated memory.
+- **The update banner no longer nags on the current version.** The shipped
+  version is read correctly, so Nexus only offers an update when a newer
+  one actually exists.
+- **The mesh releases its port on restart**, so restarting Nexus rejoins
+  the network cleanly instead of colliding with its own old socket.
+- **The Linux installer names the missing system library** instead of
+  failing silently when it is absent.
+
+### Known limits
+
+- The phone model is small: answers are slow and it forgets details — it
+  reads, it doesn't remember.
+- Tools are read-only: listing folders and fetching files only, no
+  deleting, moving, or changing anything.
+- A tool fetch reports back in words; there is no tappable file card for
+  it yet.
+
 ## [0.2.0] — 2026-10-12
 
 ### Added
