@@ -835,6 +835,9 @@ class _FilesViewState extends State<FilesView> {
                 icon: const Icon(Icons.upload_file_rounded, size: 18),
                 label: const Text('Send file…'),
               ),
+              // Measured 0 px on the phone: two 48dp targets sharing an
+              // edge read as one blob to a thumb.
+              const SizedBox(width: NexusSpace.sm),
               IconButton(
                 tooltip: 'More',
                 onPressed: _loading ? null : _showOverflow,
@@ -940,14 +943,18 @@ class _FilesViewState extends State<FilesView> {
               else
                 // The crumb keeps its text's width and the row's full height,
                 // so the first one starts on the page margin — where the path
-                // line it replaced started.
+                // line it replaced started. A one-letter folder still gets
+                // the full minimum width: a target is a target.
                 NexusPressable(
                   borderRadius: BorderRadius.circular(NexusRadius.xs),
                   onTap: crumb.open,
                   child: Center(
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: NexusSpace.md),
-                      child: Text(crumb.label, style: style),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(minWidth: 44),
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: NexusSpace.md),
+                        child: Text(crumb.label, style: style),
+                      ),
                     ),
                   ),
                 ),
@@ -1430,6 +1437,10 @@ class _FilesViewState extends State<FilesView> {
             onPressed: _downloadPicked,
             icon: Icon(Icons.download_rounded, color: palette.textSecondary),
           ),
+          // Edge-to-edge 48dp targets read as one blob to a thumb: the full
+          // minimum gap between each, so Download, Delete and More land
+          // separately even at speed.
+          const SizedBox(width: NexusSpace.sm),
           IconButton(
             tooltip: 'Delete',
             onPressed: _deletePicked,
@@ -1440,11 +1451,13 @@ class _FilesViewState extends State<FilesView> {
           // Move to….
           // Not "More": the toolbar already has one of those, and two controls
           // with one name is one name a screen reader cannot tell apart.
+          const SizedBox(width: NexusSpace.sm),
           IconButton(
             tooltip: 'More actions',
             onPressed: _showPickedActions,
             icon: Icon(Icons.more_horiz_rounded, color: palette.textSecondary),
           ),
+          const SizedBox(width: NexusSpace.sm),
           TextButton(onPressed: _clearPicks, child: const Text('Cancel')),
         ],
       ),
@@ -2075,8 +2088,13 @@ class _SwipeVerb extends StatelessWidget {
       container: true,
       button: true,
       label: label,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
+      child: NexusPressable(
+        // A pressable, not a bare detector: the swipe that revealed the verb
+        // was the answer to the swipe, but the tap on the verb is its own
+        // gesture and gets its own touch-down answer. The tint is faint on
+        // purpose — the verb stays a flat wash of colour, not a button.
+        borderRadius: BorderRadius.zero,
+        tint: color.withValues(alpha: 0.22),
         onTap: onPressed,
         child: ColoredBox(
           color: color.withValues(alpha: 0.14),

@@ -1307,9 +1307,9 @@ class AssistantViewState extends State<AssistantView> {
       );
     }
     // A chip is a tap target a thumb has to hit one-handed, so its row is the
-    // full [NexusSize.minTouch] tall and the chip is centred in it: the
-    // measured target on the phone was 40dp, under both Android's 48dp and
-    // this app's own minimum.
+    // full [NexusSize.minTouch] tall and the chip is centred in it. Measured
+    // on hardware (uiautomator, 420 dpi): 126 px tall = exactly 48dp —
+    // Material's padded tap target holds, whatever the pill draws.
     return SizedBox(
       height: NexusSize.minTouch,
       child: ListView(
@@ -2000,7 +2000,10 @@ class AssistantViewState extends State<AssistantView> {
           child: Dismissible(
             key: const ValueKey('clipboard-pill'),
             onDismissed: (_) => widget.mesh.dismissPendingClipboard(),
-            child: GestureDetector(
+            child: NexusPressable(
+              // A pressable, not a bare detector: the pill used to answer
+              // with nothing until the paste landed, a thumb-press into
+              // silence. Now it lights on touch-down like every row.
               onTap: () => unawaited(widget.mesh.acceptPendingClipboard()),
               child: Container(
                 padding: const EdgeInsets.symmetric(
@@ -2056,6 +2059,10 @@ class AssistantViewState extends State<AssistantView> {
             0,
           ),
           child: InkWell(
+            // The menu opens on tap as well as on long press: a long-press
+            // alone has no tap equivalent, and a thumb should not need two
+            // hands to find what the header can do.
+            onTap: () => unawaited(_showConversationMenu()),
             onLongPress: () => unawaited(_showConversationMenu()),
             borderRadius: NexusRadius.row,
             child: NexusPresence(
@@ -2185,9 +2192,13 @@ class AssistantViewState extends State<AssistantView> {
             ),
             // The app's primary action: labelled for screen readers, filled
             // so it is unmistakably the thing to press, with its own 48dp
-            // target.
+            // target and a full 8dp from the microphone — a thumb must not
+            // be able to cover both at once.
             Padding(
-              padding: const EdgeInsets.only(right: NexusSpace.xs),
+              padding: const EdgeInsets.only(
+                left: NexusSpace.sm,
+                right: NexusSpace.sm,
+              ),
               child: IconButton.filled(
                 tooltip: 'Send',
                 icon: const Icon(Icons.arrow_upward_rounded, size: 20),
@@ -2477,7 +2488,9 @@ class AssistantViewState extends State<AssistantView> {
         borderRadius: BorderRadius.circular(NexusRadius.xs),
         onTap: () => unawaited(_teachThis(phrase, entry)),
         child: Padding(
-          padding: const EdgeInsets.only(top: 8),
+          // A text link still has to be a target: 14dp above and below the
+          // line makes the pressable a full 48dp tall.
+          padding: const EdgeInsets.symmetric(vertical: 14),
           child: Text(
             'Or teach me what this means',
             style: NexusType.caption1.copyWith(
@@ -2614,8 +2627,10 @@ class AssistantViewState extends State<AssistantView> {
     return Semantics(
       container: true,
       label: 'File ${file.name}, $subtitle. Tap to open it.',
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
+      child: NexusPressable(
+        // A pressable, not a bare detector: the card used to sit dead under
+        // the finger until the viewer opened. Same gestures, now with the
+        // touch-down answer every other surface gives.
         onTap: () => _openFetched(file),
         onLongPress: () => _fetchedFileActions(entry, file: file),
         child: Container(

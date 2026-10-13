@@ -136,17 +136,18 @@ class DevicesView extends StatelessWidget {
     final remoteSerial = mesh.remoteSerialDevices;
 
     return NexusPage(
-      pinnedBottom: paired.isEmpty
-          ? null
-          // The one action that matters on this screen, in reach of a thumb.
-          : SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: () => showPairSheet(context, mesh: mesh),
-                icon: const Icon(Icons.add_rounded, size: 20),
-                label: const Text('Add device'),
-              ),
-            ),
+      // The one action that matters on this screen, pinned in reach of a
+      // thumb in both states: adding when there are devices, pairing the
+      // first one when the phone stands alone (an inline button mid-screen
+      // is a stretch on a tall phone).
+      pinnedBottom: SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          onPressed: () => showPairSheet(context, mesh: mesh),
+          icon: const Icon(Icons.add_rounded, size: 20),
+          label: Text(paired.isEmpty ? 'Pair another device' : 'Add device'),
+        ),
+      ),
       children: [
         const NexusPageHeader(
           title: 'Devices',
@@ -269,14 +270,6 @@ class _PhoneOnlyDevice extends StatelessWidget {
           ),
         ),
         const SizedBox(height: NexusSpace.xl),
-        SizedBox(
-          width: double.infinity,
-          child: FilledButton.icon(
-            onPressed: () => showPairSheet(context, mesh: mesh),
-            icon: const Icon(Icons.add_rounded, size: 20),
-            label: const Text('Pair another device'),
-          ),
-        ),
       ],
     );
   }
