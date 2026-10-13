@@ -22,6 +22,7 @@ import '../core/dream.dart';
 import '../core/predictions.dart';
 import '../core/profile.dart';
 import '../core/query_log.dart';
+import '../core/reminder_alarms.dart';
 import '../core/reminders.dart';
 import '../core/skills.dart';
 import '../core/speech.dart';
@@ -185,15 +186,30 @@ class AssistantViewState extends State<AssistantView> {
     return executor;
   }
 
-  /// The two read-only tools the model may run: a folder listing on this
-  /// device and the existing fetch from a paired one. Both are the product's
-  /// real paths — [localFolders] resolves the same storage every save uses,
-  /// and [_fetchFileForTool] runs the fetch the executor already owns — so a
-  /// tool-initiated fetch lands, is remembered, and reports exactly like a
-  /// typed one.
+  /// The tools the model may run: a folder listing on this device, the
+  /// existing fetch from a paired one, and a reminder through the engine
+  /// below. All three are the product's real paths — [localFolders]
+  /// resolves the same storage every save uses, [_fetchFileForTool] runs
+  /// the fetch the executor already owns, and [_remindForTool] registers
+  /// with the same engine a typed "remind me" feeds — so a tool-initiated
+  /// reminder fires, persists, and syncs exactly like a typed one.
   late final LocalToolRunner _tools = LocalToolRunner(
     fetch: _fetchFileForTool,
+    remind: _remindForTool,
   );
+
+  /// The model's `set_reminder`: the same engine a typed reminder feeds,
+  /// so the same persist/broadcast/fire edges run. What comes back is the
+  /// observation handed to the model — the engine's own sentence.
+  Future<String> _remindForTool(String what, DateTime when) async {
+    _reminderEngine.register(what, when);
+    return 'Reminder set for ${reminderClockLabel(when)} — I\'ll tell you then.';
+  }
+
+  /// The exact alarms behind the engine's pending reminders (Android).
+  /// Synced on every engine change and at startup; the engine's own timer
+  /// covers the app-open case, the alarms cover everything else.
+  final ReminderAlarms _alarms = ReminderAlarms();
 
   /// The model's `get_file`: resolve the peer the way a typed fetch does,
   /// then pull the file through the same executor. What comes back is the
@@ -389,8 +405,17 @@ class AssistantViewState extends State<AssistantView> {
             dispatch: AgentMessage('Reminder: ${reminder.text}.'),
           ),
         );
+        // The in-app half of the fire: a real notification beside the
+        // thread message, under the same id the exact alarm posts — one
+        // replaces the other, never two.
+        unawaited(_alarms.notifyNow(reminder));
+        unawaited(_alarms.sync(_reminderEngine.reminders));
       }
       ..seed(widget.mesh.store.agentReminders);
+    // The exact alarms mirror the pending list from the first frame: a
+    // reminder set before a restart rings even when the app never opens
+    // its thread again.
+    unawaited(_alarms.sync(_reminderEngine.reminders));
     // Listen after seeding, so the engine's first notify can't setState
     // mid-initState.
     _reminderEngine.addListener(_onRemindersChanged);
@@ -442,7 +467,13 @@ class AssistantViewState extends State<AssistantView> {
     super.dispose();
   }
 
-  void _onRemindersChanged() => setState(() {});
+  /// Every engine change rebuilds the thread widgets and re-mirrors the
+  /// pending list into the exact alarms — scheduling is idempotent per id,
+  /// so a sync on every change cannot double-schedule.
+  void _onRemindersChanged() {
+    setState(() {});
+    unawaited(_alarms.sync(_reminderEngine.reminders));
+  }
 
   /// Every thread entry this listener has seen, by identity. A card that
   /// is not in the set is genuinely new — an append, or a replacement

@@ -5,9 +5,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_tools.dart';
 
 void main() {
-  test('zero paired devices: list_local_files only, no get_file', () {
+  test('zero paired devices: files plus reminder, no get_file', () {
     final prompt = toolSystemPrompt('You are Nexus.');
     expect(prompt, contains('list_local_files'));
+    expect(prompt, contains('set_reminder'));
     expect(prompt, isNot(contains('get_file')));
     expect(prompt, isNot(contains('My PC')));
   });
@@ -30,6 +31,22 @@ void main() {
     expect(prompt, contains('Rehearsal PC'));
     expect(prompt, contains("TVcraft01's phone"));
     expect(prompt, isNot(contains('My PC')));
+  });
+
+  test('set_reminder is always offered, with its worked example', () {
+    const example =
+        'For example, the user asks "remind me to take milk at 6pm" — reply exactly:\n'
+        'TOOL:set_reminder {"what": "take milk", "when": "18:00"}';
+    for (final devices in const [
+      <String>[],
+      ['Rehearsal PC'],
+      ['Rehearsal PC', "TVcraft01's phone"],
+    ]) {
+      expect(
+        toolSystemPrompt('You are Nexus.', pairedDevices: devices),
+        contains(example),
+      );
+    }
   });
 
   test('the list_local_files worked example is unchanged', () {

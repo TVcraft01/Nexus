@@ -810,11 +810,12 @@ void main() {
       expect(find.text('Reminder: take out the trash.'), findsWidgets);
       expect(find.byKey(const ValueKey('reminder-banner')), findsOneWidget);
 
-      // Done acknowledges it; the reminder is spent — one shot, like real.
+      // Done acknowledges it; the reminder is spent — marked, one shot.
       await tester.tap(find.byTooltip('Done'));
       await tester.pump();
       expect(find.byKey(const ValueKey('reminder-banner')), findsNothing);
-      expect(store.agentReminders, isEmpty);
+      expect(store.agentReminders, hasLength(1));
+      expect(store.agentReminders.single, contains('"fired":true'));
 
       // A pending reminder made before a restart still fires afterwards.
       store.agentReminders = [
@@ -825,7 +826,13 @@ void main() {
       await tester.pump();
       expect(find.text('Reminder: stretch.'), findsWidgets);
       expect(find.byKey(const ValueKey('reminder-banner')), findsOneWidget);
-      expect(store.agentReminders, isEmpty); // fired once, never again
+      expect(store.agentReminders, hasLength(1)); // spent, never again
+      expect(store.agentReminders.single, contains('"fired":true'));
+
+      // A spent line seeded from the store stays spent — no second ring.
+      await tester.pumpWidget(harness(mesh, key: UniqueKey()));
+      await tester.pump();
+      expect(find.text('Reminder: stretch.'), findsNothing);
     } finally {
       Reminders.nowOverride = null;
       QueryLog.i.resetForTest();

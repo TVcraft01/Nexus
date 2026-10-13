@@ -17,7 +17,7 @@ void main() {
     return e;
   }
 
-  test('a past-due register fires immediately, once, and leaves no trace', () {
+  test('a past-due register fires immediately, once, and is marked spent', () {
     Reminders.nowOverride = () => t0;
     addTearDown(() => Reminders.nowOverride = null);
     final e = engine();
@@ -32,11 +32,14 @@ void main() {
 
     expect(fired, hasLength(1), reason: 'already due -> fires immediately');
     expect(fired.single.text, 'stretch');
-    expect(e.reminders, isEmpty, reason: 'fired reminders are spent');
+    expect(fired.single.fired, isTrue, reason: 'the fired mark travels');
+    expect(e.reminders, hasLength(1), reason: 'spent stays as a mark');
+    expect(e.reminders.single.fired, isTrue);
     expect(broadcast, 1, reason: 'registered here -> told to peers');
     // Fire is visible before the persist lands, matching the old view code
     // (thread message appended, then the store write).
-    expect(persisted.last, isEmpty, reason: 'the spent list is persisted');
+    expect(persisted.last, hasLength(1));
+    expect(persisted.last.single.fired, isTrue);
   });
 
   test('a future register stays silent until the clock catches up, then '
@@ -59,7 +62,11 @@ void main() {
     Reminders.nowOverride = () => t0.add(const Duration(minutes: 6));
     e.check();
     expect(fired, hasLength(1));
-    expect(e.reminders, isEmpty, reason: 'one shot — gone after firing');
+    expect(
+      e.reminders.single.fired,
+      isTrue,
+      reason: 'one shot — marked after firing',
+    );
 
     // A later check must not re-fire anything.
     e.check();
@@ -117,7 +124,8 @@ void main() {
     // Both adopted and already due — the adopt's own check fired them.
     expect(fired.map((r) => r.text), ['first', 'second']);
     expect(e.fired?.text, 'second', reason: 'the latest fire is the banner');
-    expect(e.reminders, isEmpty);
+    expect(e.reminders, hasLength(2));
+    expect(e.reminders.every((r) => r.fired), isTrue);
   });
 
   test('acknowledge guards: clearing nothing is a no-op, clearing the '

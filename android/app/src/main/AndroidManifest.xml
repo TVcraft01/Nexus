@@ -20,6 +20,7 @@
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.READ_CALENDAR"/>
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
     <queries>
         <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="https"/></intent>
         <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="http"/></intent>
@@ -60,6 +61,9 @@
             android:name=".NexusSyncService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+        <receiver
+            android:name=".ReminderReceiver"
+            android:exported="false"/>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.updater"

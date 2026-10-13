@@ -3,9 +3,11 @@
 // safety gate that decides whether the user's ask implied it, and the runner
 // that does the real work.
 //
-// Both tools are read-only — a folder listing and a file fetch — and that is
-// the boundary, not a promise: there is no delete, no move, no write, and no
-// way for the model to invent one. The second boundary is [toolRefusal]: a
+// Two of the three tools are read-only — a folder listing and a file
+// fetch — and that is the boundary, not a promise: there is no delete, no
+// move, no write, and no way for the model to invent one. The third tool
+// sets a reminder, which is the one action the model may take beyond
+// reading. The second boundary is [toolRefusal]: a
 // tool runs only when the user's own message asked for the thing it does, so
 // even a model that reaches for a tool on "delete everything" gets nothing.
 //
@@ -23,6 +25,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory;
 
+import 'reminders.dart';
 import 'storage_roots.dart';
 
 /// The three folders a person names by name, in the words they use.
@@ -36,7 +39,13 @@ enum NexusTool {
 
   /// "get report.pdf from my pc" for phrasings the parser did not catch —
   /// the existing file fetch, run from the model's side.
-  getFile('get_file');
+  getFile('get_file'),
+
+  /// "remind me to take milk at 6" for phrasings the parser did not
+  /// catch — the existing reminder engine, run from the model's side.
+  /// Time only: a "when" the parser cannot place in time asks the user
+  /// to clarify instead of setting a wrong reminder.
+  setReminder('set_reminder');
 
   const NexusTool(this.name);
 
@@ -106,7 +115,18 @@ class ToolCall {
   String get runningLabel => switch (tool) {
     NexusTool.listLocalFiles => 'Looking in ${folder ?? 'your files'}…',
     NexusTool.getFile => file.isEmpty ? 'Fetching your file…' : 'Fetching $file…',
+    NexusTool.setReminder => 'Setting your reminder…',
   };
+
+  /// What to be reminded about: "take milk".
+  String get reminderWhat =>
+      (arguments['what'] ?? arguments['text'] ?? '').toString().trim();
+
+  /// When the reminder should fire, in the model's own words: "18:00",
+  /// "in 20 minutes", "tomorrow at 9". Placed in time by
+  /// [parseReminderWhen]; empty when the model named none.
+  String get reminderWhen =>
+      (arguments['when'] ?? arguments['at'] ?? '').toString().trim();
 }
 
 /// One model reply, read as a possible tool call: [call] is the tool it asked
@@ -184,12 +204,13 @@ String toolSystemPrompt(String system, {List<String> pairedDevices = const []}) 
   final getFileLine = names.isEmpty
       ? ''
       : '\n- get_file {"name": "report.pdf", "from": "${names.first}"} — fetches a file the user named from one of their paired devices. Your paired devices: ${names.join(', ')}. "from" may be left out.';
-  final count = names.isEmpty ? 'one read-only tool' : 'two read-only tools';
+  final fileCount = names.isEmpty ? 'one read-only tool' : 'two read-only tools';
   return '''
 $system
 
-You can also run $count on this device when the user asks:
+You can also run $fileCount on this device when the user asks, plus set a reminder:
 - list_local_files {"dir": "Downloads"} — lists what is in one of the user's folders. "dir" is exactly one of: Downloads, Documents, Pictures.$getFileLine
+- set_reminder {"what": "take milk", "when": "18:00"} — sets a reminder that fires a notification at that time. "when" is a time today like "18:00" or "6pm", a relative time like "in 20 minutes" or "in 2 hours", or "tomorrow at 9".
 
 To run one, reply with exactly one line and nothing else:
 TOOL:<name> {"arg": "value"}
@@ -197,7 +218,95 @@ TOOL:<name> {"arg": "value"}
 For example, the user asks "what's in my Downloads?" — reply exactly:
 TOOL:list_local_files {"dir": "Downloads"}
 
+For example, the user asks "remind me to take milk at 6pm" — reply exactly:
+TOOL:set_reminder {"what": "take milk", "when": "18:00"}
+
 Call a tool only when the user's message asks for it. If no tool is needed, just answer normally. After a tool runs you will be told what it found; then answer the user in one or two short sentences from that result. Never invent file names. You cannot delete, move or change anything — say so if asked.''';
+}
+
+/// Places the model's [raw] "when" in time, or null when it names no time
+/// this tool understands. Three forms, no date library — the model is told
+/// exactly these, so anything else is the model improvising and the caller
+/// asks the user to clarify rather than setting a wrong reminder:
+/// - absolute: "18:00", "6pm", "6:30pm", "18" (today; already past
+///   rolls to tomorrow — a reminder must ring in the future);
+/// - relative: "in 20 minutes", "in 2 hours";
+/// - day-anchored: "tomorrow at 9", "today at 9:30".
+DateTime? parseReminderWhen(String raw, DateTime now) {
+  var text = raw.trim().toLowerCase();
+  if (text.isEmpty) return null;
+  // A small model may keep the preposition ("at 6pm"): forgive it.
+  text = text.replaceFirst(RegExp(r'^at\s+'), '');
+
+  // "in 20 minutes" / "in 2 hours" — relative to now.
+  final rel = RegExp(
+    r'^in\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)$',
+  ).firstMatch(text);
+  if (rel != null) {
+    final n = int.tryParse(rel.group(1)!) ?? 0;
+    if (n <= 0) return null;
+    final hours = rel.group(2)!.startsWith('h');
+    return now.add(Duration(seconds: n * (hours ? 3600 : 60)));
+  }
+
+  DateTime atTime(int hour, int minute) =>
+      DateTime(now.year, now.month, now.day, hour, minute);
+
+  // "tomorrow at 9" / "tomorrow at 9:30pm" — and "today at …" the same
+  // way, without the roll-forward below (today means today).
+  final day = RegExp(
+    r'^(tomorrow|today)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$',
+  ).firstMatch(text);
+  if (day != null) {
+    final time = _clockParts(day.group(2)!, day.group(3), day.group(4));
+    if (time == null) return null;
+    final base = DateTime(now.year, now.month, now.day);
+    final anchor = day.group(1) == 'tomorrow'
+        ? base.add(const Duration(days: 1))
+        : base;
+    return DateTime(anchor.year, anchor.month, anchor.day, time.$1, time.$2);
+  }
+
+  // "18:00" / "6pm" / "6:30pm" / "18" — today, or tomorrow when that
+  // time already passed (a reminder in the past would fire at once, which
+  // is never what "remind me at 6" meant after 6).
+  final abs = RegExp(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$').firstMatch(text);
+  if (abs != null) {
+    final time = _clockParts(abs.group(1)!, abs.group(2), abs.group(3));
+    if (time == null) return null;
+    var due = atTime(time.$1, time.$2);
+    if (!due.isAfter(now)) due = due.add(const Duration(days: 1));
+    return due;
+  }
+  return null;
+}
+
+/// An hour and minute from the model's words, or null when they are not a
+/// clock time. 12-hour words need their meridiem ("6" alone is 06:00 only
+/// when the model wrote no am/pm — bare "13" is 13:00); out-of-range is
+/// out, never wrapped.
+(int, int)? _clockParts(String hourRaw, String? minuteRaw, String? meridiemRaw) {
+  final hourIn = int.tryParse(hourRaw) ?? -1;
+  final minute = minuteRaw == null ? 0 : (int.tryParse(minuteRaw) ?? -1);
+  if (minute < 0 || minute > 59) return null;
+  final meridiem = meridiemRaw?.toLowerCase();
+  if (meridiem == 'am' || meridiem == 'pm') {
+    if (hourIn < 1 || hourIn > 12) return null;
+    var hour = hourIn % 12;
+    if (meridiem == 'pm') hour += 12;
+    return (hour, minute);
+  }
+  if (hourIn < 0 || hourIn > 23) return null;
+  return (hourIn, minute);
+}
+
+/// A due time in the words the confirmation uses: "6:00pm".
+String reminderClockLabel(DateTime dueAt) {
+  final hour = dueAt.hour;
+  final meridiem = hour < 12 ? 'am' : 'pm';
+  final twelve = hour % 12 == 0 ? 12 : hour % 12;
+  final mm = dueAt.minute.toString().padLeft(2, '0');
+  return '$twelve:$mm$meridiem';
 }
 
 /// A folder or a file named in the ask: "what's in my downloads" implies a
@@ -219,7 +328,10 @@ final RegExp _namedFile = RegExp(r'\b[\w-]+\.[a-z0-9]{1,8}\b');
 /// "delete everything" implies nothing that exists here, so no tool runs no
 /// matter what the model wrote. The check is deliberately generous — a missed
 /// implication costs a conversational answer, not an action — because the
-/// real boundary is the tool set itself: both tools only read.
+/// real boundary is the tool set itself: two tools only read, and the
+/// reminder tool only promises.
+final RegExp _remindWords = RegExp(r'\bremind\b');
+
 String? toolRefusal(ToolCall call, String ask) {
   final text = ask.toLowerCase();
   switch (call.tool) {
@@ -232,6 +344,10 @@ String? toolRefusal(ToolCall call, String ask) {
       if (!_fetchVerbs.hasMatch(text) && !_namedFile.hasMatch(text)) {
         return 'the ask does not ask for a file';
       }
+    case NexusTool.setReminder:
+      if (!_remindWords.hasMatch(text)) {
+        return 'the ask does not ask for a reminder';
+      }
   }
   return null;
 }
@@ -242,22 +358,32 @@ abstract class ToolRunner {
   Future<String> run(ToolCall call);
 }
 
-/// The tools, done for real: a folder listed on this device and a file
-/// fetched from a paired one through the *existing* fetch.
+/// The tools, done for real: a folder listed on this device, a file
+/// fetched from a paired one through the *existing* fetch, and a reminder
+/// registered with the *existing* engine.
 ///
-/// Both are seams. [roots] resolves where the three folders are (a test points
-/// them at a temp directory; the product uses [localFolders]), and [fetch]
-/// runs the fetch the view hands in — the same resolution and the same
-/// executor a typed "get report.pdf" runs, so the tool path cannot drift from
-/// the typed one.
+/// All three are seams. [roots] resolves where the three folders are (a test
+/// points them at a temp directory; the product uses [localFolders]),
+/// [fetch] runs the fetch the view hands in — the same resolution and the
+/// same executor a typed "get report.pdf" runs, so the tool path cannot
+/// drift from the typed one — and [remind] registers with the reminder
+/// engine the view owns, so a tool-set reminder fires, persists, and syncs
+/// exactly like a typed one.
 class LocalToolRunner implements ToolRunner {
   LocalToolRunner({
     required this.fetch,
     Future<Map<String, String>> Function()? roots,
+    this.remind,
   }) : _roots = roots ?? localFolders;
 
   /// Fetches [name] (possibly from [from]) and answers what the fetch said.
   final Future<String> Function(String name, String? from) fetch;
+
+  /// Registers a reminder for [what] at [when] and answers what the engine
+  /// said. Null in tests that never set reminders — a set_reminder call
+  /// then confirms without registering, so the prompt and the gate stay
+  /// testable without an engine.
+  final Future<String> Function(String what, DateTime when)? remind;
 
   final Future<Map<String, String>> Function() _roots;
 
@@ -276,6 +402,23 @@ class LocalToolRunner implements ToolRunner {
         if (file.isEmpty) return 'Which file should I get?';
         final from = call.from;
         return fetch(file, from.isEmpty ? null : from);
+      case NexusTool.setReminder:
+        final what = call.reminderWhat;
+        if (what.isEmpty) return 'What should I remind you about?';
+        final when = parseReminderWhen(call.reminderWhen, Reminders.now());
+        if (when == null) {
+          // The model named a time this tool cannot place — a wrong
+          // reminder is worse than a question, so ask for the time in
+          // words the parser understands.
+          return 'What time should I remind you to $what? '
+              'A time like 6pm, in 20 minutes, or tomorrow at 9.';
+        }
+        final register = remind;
+        if (register == null) {
+          return 'Reminder set for ${reminderClockLabel(when)} — '
+              "I'll tell you then.";
+        }
+        return register(what, when);
     }
   }
 

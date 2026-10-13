@@ -11,20 +11,34 @@ import 'package:flutter/foundation.dart'
     show ChangeNotifier, visibleForTesting;
 
 /// One reminder the assistant promised to say back to the user later.
+///
+/// A fired reminder stays in the list with [fired] set — spent, never
+/// re-fired, and pruned after a week — so the store always tells the truth
+/// about what already rang, including across a restart the firing itself
+/// did not survive.
 class Reminder {
   final String id;
   final String text;
   final DateTime dueAt;
+  final bool fired;
 
-  const Reminder({required this.id, required this.text, required this.dueAt});
+  const Reminder({
+    required this.id,
+    required this.text,
+    required this.dueAt,
+    this.fired = false,
+  });
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'text': text,
     'dueAt': dueAt.toIso8601String(),
+    'fired': fired,
   };
 
-  /// A torn or foreign line never breaks a reminder.
+  /// A torn or foreign line never breaks a reminder. Lines written before
+  /// the fired flag existed read as unfired — they never rang under the
+  /// new semantics, so treating them as spent would lose them silently.
   static Reminder? fromJsonLine(String line) {
     try {
       final data = jsonDecode(line) as Map<String, dynamic>?;
@@ -33,7 +47,7 @@ class Reminder {
       final text = data['text']?.toString();
       final dueAt = DateTime.tryParse(data['dueAt']?.toString() ?? '');
       if (id == null || text == null || dueAt == null) return null;
-      return Reminder(id: id, text: text, dueAt: dueAt);
+      return Reminder(id: id, text: text, dueAt: dueAt, fired: data['fired'] == true);
     } catch (_) {
       return null;
     }
@@ -94,9 +108,10 @@ class Reminders {
     return null;
   }
 
-  /// The reminders whose time has come, oldest due first.
+  /// The reminders whose time has come, oldest due first. Spent ones never
+  /// come: a fired reminder is history, not a promise.
   List<Reminder> dueNow(Iterable<Reminder> all, DateTime now) {
-    final out = all.where((r) => !r.dueAt.isAfter(now)).toList()
+    final out = all.where((r) => !r.fired && !r.dueAt.isAfter(now)).toList()
       ..sort((a, b) => a.dueAt.compareTo(b.dueAt));
     return out;
   }
@@ -135,10 +150,12 @@ class ReminderEngine extends ChangeNotifier {
 
   /// Seeds this device's copy from the store (a promise made before a
   /// restart still fires). The store already holds these — no persist.
+  /// Spent lines are not seeded: they rang, and the engine holds promises,
+  /// not history.
   void seed(Iterable<String> lines) {
     for (final line in lines) {
       final reminder = Reminder.fromJsonLine(line);
-      if (reminder == null) continue;
+      if (reminder == null || reminder.fired) continue;
       if (_reminders.any((r) => r.id == reminder.id)) continue;
       _reminders.add(reminder);
     }
@@ -169,10 +186,11 @@ class ReminderEngine extends ChangeNotifier {
   }
 
   /// Adopts a reminder set on a paired device, live (no restart needed).
-  /// The mesh already persisted it when no assistant was listening.
+  /// The mesh already persisted it when no assistant was listening. A spent
+  /// line is not adopted: it rang on the peer, and must not ring here.
   void adopt(String line) {
     final reminder = Reminder.fromJsonLine(line);
-    if (reminder == null) return;
+    if (reminder == null || reminder.fired) return;
     if (_reminders.any((r) => r.id == reminder.id)) return;
     _add(reminder);
     check();
@@ -191,17 +209,44 @@ class ReminderEngine extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// How long a spent reminder is kept before it is pruned. The mark must
+  /// outlive a restart (so a firing the restart interrupted is never
+  /// repeated), but history is not a log — a week is enough to be sure.
+  static const spentKeep = Duration(days: 7);
+
   /// Fires every reminder whose time has come — an assistant message in the
   /// thread and a banner until acknowledged, all without anyone asking. A
-  /// fired reminder is spent: gone from the list and the store (one shot,
-  /// like a real reminder).
+  /// fired reminder is spent: marked, persisted as spent, and never fired
+  /// again (one shot, like a real reminder).
   void check() {
-    final due = const Reminders().dueNow(_reminders, Reminders.now());
-    if (due.isEmpty) return;
+    final now = Reminders.now();
+    final due = const Reminders().dueNow(_reminders, now);
+    // Spent lines older than a week are history nobody needs. Pruning is a
+    // change too, so the store hears about it even when nothing fires.
+    final before = _reminders.length;
+    _reminders.removeWhere(
+      (r) => r.fired && r.dueAt.isBefore(now.subtract(spentKeep)),
+    );
+    if (due.isEmpty) {
+      if (_reminders.length != before) {
+        onPersist?.call(_reminders);
+        notifyListeners();
+      }
+      return;
+    }
     for (final reminder in due) {
-      _reminders.removeWhere((r) => r.id == reminder.id);
-      fired = reminder;
-      onFired?.call(reminder);
+      final spent = Reminder(
+        id: reminder.id,
+        text: reminder.text,
+        dueAt: reminder.dueAt,
+        fired: true,
+      );
+      final index = _reminders.indexWhere((r) => r.id == reminder.id);
+      if (index >= 0) {
+        _reminders[index] = spent;
+      }
+      fired = spent;
+      onFired?.call(spent);
     }
     onPersist?.call(_reminders);
     notifyListeners();

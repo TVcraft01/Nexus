@@ -397,6 +397,15 @@ class MainActivity : FlutterActivity() {
             PROVISION_CHANNEL,
         )
 
+        // Reminders: exact alarms plus the notification, for reminders set
+        // while the app is open that must ring while it is closed.
+        ReminderAlarms(this).registerChannels(
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                "dev.nexus.nexus/reminders",
+            ),
+        )
+
         // USB-OTG serial: microcontrollers (ESP32, …) plugged into the phone.
         usbSerial = UsbSerialBridge(this)
         usbSerial.registerChannels(
