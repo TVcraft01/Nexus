@@ -5,6 +5,22 @@ it was added during the file-fetch sprint, so the oldest entry below is that
 sprint and earlier work is not listed. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] — 2026-10-13
+
+### Added
+
+- **Reminders.** Say "remind me to take milk at 6" and Nexus rings a real
+  notification at 6 — on this device, and on every paired device. Works
+  offline: a reminder set in airplane mode still fires.
+
+### Known limits
+
+- Reminders are time only — no location reminders yet ("remind me at the
+  store" comes later).
+- The phone model is small and slow: it reads, it doesn't remember.
+- Tools are read-only, except reminders: listing folders, fetching files,
+  and setting reminders. Nothing is ever deleted, moved, or changed.
+
 ## [0.3.0] — 2026-10-13
 
 ### Added
