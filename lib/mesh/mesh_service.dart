@@ -24,6 +24,7 @@ import '../core/identity.dart';
 import '../core/memory.dart';
 import '../core/network_info.dart';
 import '../core/pair_payload.dart';
+import '../core/qr_pairing.dart';
 import '../core/protocol.dart';
 import '../core/query_log.dart';
 import '../core/serial_transport.dart';
@@ -353,6 +354,22 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
 
   String? pendingCode;
   DateTime? pendingCodeExpiry;
+
+  /// Currently shown v2 QR token (Device A). Null when not showing.
+  QrPairingToken? qrShown;
+
+  /// Single-use guard: pids already consumed (accepted, rejected, expired).
+  final Set<String> _usedQrPids = {};
+
+  /// Inbound QR requests awaiting the shower's explicit tap (pid -> request).
+  final Map<String, QrInboundRequest> _qrInbound = {};
+
+  /// Inbound QR requests, newest last. The pair sheet renders this.
+  List<QrInboundRequest> get pendingQrRequests {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _qrInbound.removeWhere((_, r) => now >= r.expiryMs);
+    return _qrInbound.values.toList();
+  }
   String? lastNotice; // honest operational notices ("port was busy, using X")
 
   ServerSocket? _server;
@@ -1357,6 +1374,42 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   /// duplicate can be refused with a reason instead of silence — see
   /// [_rejectPairing].
   Future<void> _tryPairingFrame(Socket socket, String enc) async {
+    // v2 QR handshake first: the shown token's pid|nonce key. A scan only
+    // ever stages a request for explicit accept — never pairs on receipt.
+    final shown = qrShown;
+    if (shown != null && !shown.expired && !_usedQrPids.contains(shown.pairingId)) {
+      try {
+        final qrKey = await derivePairingKey(qrSecretFor(shown));
+        final qrClear = await decryptFromB64(enc, qrKey);
+        final qrMsg = NexusMessage.fromJson(
+          jsonDecode(utf8.decode(qrClear)) as Map<String, dynamic>,
+        );
+        if (qrMsg.type == NexusMessage.pairRequest) {
+          await _handleQrRequest(qrMsg, socket, shown, qrKey);
+          return;
+        }
+      } catch (_) {}
+      // A replay of a consumed pid still decrypts: refuse with a reason.
+    }
+    if (shown != null && _usedQrPids.contains(shown.pairingId)) {
+      try {
+        final spentKey = await derivePairingKey(qrSecretFor(shown));
+        final spentClear = await decryptFromB64(enc, spentKey);
+        final spentMsg = NexusMessage.fromJson(
+          jsonDecode(utf8.decode(spentClear)) as Map<String, dynamic>,
+        );
+        if (spentMsg.type == NexusMessage.pairRequest) {
+          debugPrint('NEXUS mesh: qr-request <- ${spentMsg.from} (pid spent)');
+          await _rejectPairing(
+            socket,
+            spentKey,
+            spentMsg.from,
+            'That QR was already used. Show a fresh code and try again.',
+          );
+          return;
+        }
+      } catch (_) {}
+    }
     final active = pendingCodeActive;
     final code = active ? pendingCode : _spentCode;
     if (code == null) return;
@@ -2074,6 +2127,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
     if (peer == null || req is! String) return;
+    if (!store.fileShare) {
+      await _sendFileError(peer, req, 'File sharing is off on this device.');
+      return;
+    }
     final path = msg.payload['path'] as String? ?? '';
     final root = await _servedRoot();
     final resolved = _resolveServedPath(path, root);
@@ -2168,6 +2225,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
     if (peer == null || req is! String) return;
+    if (!store.fileShare) {
+      await _sendFileError(peer, req, 'File sharing is off on this device.');
+      return;
+    }
     final path = msg.payload['path'] as String? ?? '';
     final root = await _servedRoot();
     final resolved = _resolveServedPath(path, root);
@@ -2362,6 +2423,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
     if (peer == null || req is! String) return;
+    if (!store.fileShare) {
+      await _sendFileError(peer, req, 'File sharing is off on this device.');
+      return;
+    }
     var push = _incomingPushes[req];
     if (push == null) {
       final name = (msg.payload['name'] as String?) ?? '';
@@ -2552,6 +2617,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
     if (peer == null || req is! String) return;
+    if (!store.fileShare) {
+      await _sendFileError(peer, req, 'File sharing is off on this device.');
+      return;
+    }
     final operation = msg.payload['operation'] as String?;
     final source = msg.payload['source'] as String? ?? '';
     final destination = msg.payload['destination'] as String? ?? '';
@@ -2689,6 +2758,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
     if (peer == null || req is! String) return;
+    if (!store.fileShare) {
+      await _sendFileError(peer, req, 'File sharing is off on this device.');
+      return;
+    }
     final path = msg.payload['path'] as String? ?? '';
     final root = await _servedRoot();
     final resolved = _resolveServedPath(path, root);
@@ -3465,6 +3538,156 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     );
   }
 
+  /// Starts "show my QR": a minimal single-use v2 token valid ~120s.
+  ///
+  /// Showing is explicit consent to be scanned, NOT consent to pair: a scan
+  /// only lets the other device send a request, and pairing happens solely
+  /// through [acceptQrPairing]. The payload carries no name, contacts,
+  /// files, clipboard, location, history, or stable device id.
+  PairingSession beginQrPairing() {
+    final previous = qrShown;
+    if (previous != null) _markQrUsed(previous.pairingId);
+    final ips = knownIps;
+    final token = QrPairingToken.generate(
+      address: ips.isNotEmpty ? ips.first : null,
+      port: store.port,
+    );
+    qrShown = token;
+    debugPrint(
+      'NEXUS mesh: qr-shown pid=${token.pairingId} '
+      'code=${token.code} exp=${token.expiryMs}',
+    );
+    // Audit-only, no save here: showing happens on the UI thread (and in
+    // widget tests under a fake clock where real file I/O never lands),
+    // so a fire-and-forget write could wedge the store chain that stop()
+    // flushes. The event persists with the next save (accept/deny/pair).
+    store.logPairingEvent('qr-shown', 'pid=${token.pairingId}');
+    notifyListeners();
+    return PairingSession(
+      code: token.code,
+      qrPayload: token.encode(),
+      expiresAt: DateTime.fromMillisecondsSinceEpoch(token.expiryMs),
+    );
+  }
+
+  bool get qrShownActive {
+    final shown = qrShown;
+    if (shown == null) return false;
+    if (shown.expired) return false;
+    return !_usedQrPids.contains(shown.pairingId);
+  }
+
+  /// Whether a pid may still be used (unexpired, unconsumed).
+  @visibleForTesting
+  bool qrPidUsable(String pid, int expiryMs) {
+    if (_usedQrPids.contains(pid)) return false;
+    return DateTime.now().millisecondsSinceEpoch < expiryMs;
+  }
+
+  void _markQrUsed(String pid) => _usedQrPids.add(pid);
+
+  /// Device A explicitly accepts an inbound QR request: the ONLY path that
+  /// pairs from a QR scan. Marks the pid single-use, stores the peer,
+  /// answers accept on the request socket's key, and audit-logs.
+  Future<bool> acceptQrPairing(String pid) async {
+    final req = _qrInbound[pid];
+    if (req == null || req.expired) {
+      _qrInbound.remove(pid);
+      return false;
+    }
+    final shown = qrShown;
+    if (shown == null || shown.pairingId != pid || shown.expired) {
+      return false;
+    }
+    final socket = _qrSockets[pid];
+    final msg = _qrMsgs[pid];
+    final key = _qrKeys[pid];
+    if (socket != null && msg != null && key != null) {
+      _qrInbound.remove(pid);
+      _qrSockets.remove(pid);
+      _qrMsgs.remove(pid);
+      _qrKeys.remove(pid);
+      store.logPairingEvent('qr-accepted', 'pid=$pid');
+      await _completeQrAccept(msg, socket, shown, key);
+      return true;
+    }
+    _markQrUsed(pid);
+    _qrInbound.remove(pid);
+    final secret = _qrSecret(shown);
+    final peer = PairedDevice(
+      id: req.fromDeviceLabel,
+      name: 'Paired device',
+      platform: 'other',
+      address: req.address,
+      port: req.port,
+      pairingSecret: secret,
+      lastVerified: DateTime.now(),
+    );
+    // The tap raced ahead of the socket: reserve the accept so the request
+    // completes the moment it arrives (see _handleQrRequest). Notify first
+    // so the sheet redraws spent state on the next frame. No save here
+    // (same reason as beginQrPairing): the accept persists when the socket
+    // lands in _completeQrAccept.
+    _pendingQrAccept[pid] = peer;
+    store.logPairingEvent('qr-accepted', 'pid=$pid');
+    notifyListeners();
+    return true;
+  }
+
+  /// Device A explicitly denies an inbound QR request. Single-use: the pid
+  /// can never pair afterwards.
+  Future<void> rejectQrPairing(String pid, [String reason = 'Denied']) async {
+    _markQrUsed(pid);
+    _qrInbound.remove(pid);
+    _pendingQrAccept.remove(pid);
+    final socket = _qrSockets.remove(pid);
+    final msg = _qrMsgs.remove(pid);
+    final key = _qrKeys.remove(pid);
+    if (socket != null && msg != null && key != null) {
+      await _rejectPairing(socket, key, msg.from, reason);
+    }
+    store.logPairingEvent('qr-denied', 'pid=$pid $reason');
+    notifyListeners();
+  }
+
+  /// Pids the shower accepted but whose request socket has not arrived yet.
+  final Map<String, PairedDevice> _pendingQrAccept = {};
+
+  /// Live inbound QR request sockets, kept so the explicit Allow tap can
+  /// answer on the same connection the scanner is waiting on.
+  final Map<String, Socket> _qrSockets = {};
+  final Map<String, NexusMessage> _qrMsgs = {};
+  final Map<String, Uint8List> _qrKeys = {};
+
+  /// Shared handshake secret for a QR token, known to shower (generated it)
+  /// and scanner (read it) and nobody else.
+  static String qrSecretFor(QrPairingToken token) =>
+      'qr:${token.pairingId}:${token.nonce}';
+
+  String _qrSecret(QrPairingToken token) => qrSecretFor(token);
+
+  /// Test seam: stages an inbound QR request without sockets, so widget
+  /// tests can prove the confirmation prompt without real I/O in a fake
+  /// async zone. Production always stages via [_handleQrRequest].
+  @visibleForTesting
+  void stageInboundQrForTest(QrInboundRequest req) {
+    _qrInbound[req.pairingId] = req;
+    notifyListeners();
+  }
+
+  /// Either side revokes a pairing at any time. Clears keys/routes and
+  /// audit-logs. Revoking an unknown id is a no-op that still logs.
+  Future<void> revokePairing(String id) async {
+    await forgetDevice(id);
+    store.logPairingEvent('revoked', 'id=$id');
+    await store.save();
+  }
+
+  void _audit(String event, [String detail = '']) {
+    store.logPairingEvent(event, detail);
+    unawaited(store.save());
+  }
+
   /// Our own non-loopback IPv4 addresses as last resolved by [_myIps], without
   /// touching the interfaces. Empty until the first scan finishes — heartbeats
   /// call [_myIps] within seconds of start, so the QR usually has them already.
@@ -3513,6 +3736,124 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         DateTime.now().isBefore(expiry);
   }
 
+  /// A v2 QR request arrived on the shown token's key. Stage it for the
+  /// shower's explicit tap — NEVER pair here. A scan is a request, not
+  /// consent.
+  Future<void> _handleQrRequest(
+    NexusMessage msg,
+    Socket socket,
+    QrPairingToken shown,
+    Uint8List key,
+  ) async {
+    debugPrint(
+      'NEXUS mesh: qr-request raw from=${msg.from} pid=${shown.pairingId}',
+    );
+    if (!store.pairingEnabled) {
+      debugPrint('NEXUS mesh: qr-request refused (pairing off)');
+      await _rejectPairing(
+        socket,
+        key,
+        msg.from,
+        'Pairing is off on this device.',
+      );
+      return;
+    }
+    final payload = msg.payload;
+    if (payload['qrPid'] != shown.pairingId ||
+        payload['qrNonce'] != shown.nonce ||
+        payload['qrCode'] != shown.code) {
+      debugPrint('NEXUS mesh: qr-request pid/nonce/code mismatch — dropped');
+      return;
+    }
+    final peerPort = (payload['port'] as num?)?.toInt() ?? store.port;
+    final req = QrInboundRequest(
+      pairingId: shown.pairingId,
+      fromDeviceLabel: msg.from,
+      code: shown.code,
+      expiryMs: shown.expiryMs,
+      address: socket.remoteAddress.address,
+      port: peerPort,
+    );
+    _qrInbound[shown.pairingId] = req;
+    _qrSockets[shown.pairingId] = socket;
+    _qrMsgs[shown.pairingId] = msg;
+    _qrKeys[shown.pairingId] = key;
+    _audit('qr-request-got', 'pid=${shown.pairingId} from=${msg.from}');
+    debugPrint(
+      'NEXUS mesh: qr-request staged pid=${shown.pairingId} '
+      'code=${shown.code} awaiting-confirm',
+    );
+    // If A already tapped Allow before the socket arrived, complete now.
+    final pre = _pendingQrAccept.remove(shown.pairingId);
+    if (pre != null) {
+      await _completeQrAccept(msg, socket, shown, key);
+      return;
+    }
+    notifyListeners();
+  }
+
+  /// Completes an accepted QR pairing on the request socket: stores the peer
+  /// and answers accept on the same key. Only called from [_tryPairingFrame]
+  /// after [acceptQrPairing] (explicit tap) — or immediately when the tap
+  /// raced ahead of the socket.
+  Future<void> _completeQrAccept(
+    NexusMessage msg,
+    Socket socket,
+    QrPairingToken shown,
+    Uint8List key,
+  ) async {
+    _markQrUsed(shown.pairingId);
+    _qrInbound.remove(shown.pairingId);
+    _qrSockets.remove(shown.pairingId);
+    _qrMsgs.remove(shown.pairingId);
+    _qrKeys.remove(shown.pairingId);
+    final payload = msg.payload;
+    final name = (payload['name'] as String?) ?? 'Paired device';
+    final platform = (payload['platform'] as String?) ?? 'other';
+    final peerPort = (payload['port'] as num?)?.toInt() ?? store.port;
+    final secret = qrSecretFor(shown);
+    final peer = PairedDevice(
+      id: msg.from,
+      name: name,
+      platform: platform,
+      address: socket.remoteAddress.address,
+      port: peerPort,
+      pairingSecret: secret,
+      lastVerified: DateTime.now(),
+    );
+    _paired[peer.id] = peer;
+    _forgetSessionKey(peer.id);
+    store.upsertPaired(peer.toJson());
+    await store.save();
+    qrShown = null;
+    _noteSeen(peer.id, verified: true);
+    _audit('paired', 'pid=${shown.pairingId} peer=${peer.id}');
+    debugPrint(
+      'NEXUS mesh: qr-accept -> ${peer.id} pid=${shown.pairingId}',
+    );
+    final reply = NexusMessage(
+      type: NexusMessage.pairAccept,
+      from: identity.id,
+      to: msg.from,
+      payload: {
+        'name': identity.name,
+        'platform': identity.platform,
+        'port': store.port,
+        'qrPid': shown.pairingId,
+      },
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    );
+    try {
+      final enc = await encryptToB64(encodeJson(reply.toJson()), key);
+      socket.add(FrameDecoder.encodeFrame(encodeJson({'enc': enc})));
+      await socket.flush();
+    } catch (_) {
+      _dropSocket(socket);
+    }
+    notifyListeners();
+  }
+
   /// The other side: verify the pairing request and accept it.
   Future<void> _handlePairRequest(
     NexusMessage msg,
@@ -3524,6 +3865,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     // currently on screen; only [_tryPairingFrame] can establish that.
     if (!provenByCode) {
       debugPrint('NEXUS mesh: refused unproven pair-request <- ${msg.from}');
+      return;
+    }
+    if (!store.pairingEnabled) {
+      debugPrint('NEXUS mesh: pair-request refused (pairing off)');
       return;
     }
     if (!pendingCodeActive) {
@@ -3560,6 +3905,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     pendingCode = null;
     pendingCodeExpiry = null;
     _noteSeen(peer.id, verified: true);
+    _audit('paired', 'code peer=${peer.id}');
 
     // Reply on the same socket, encrypted with the same code-derived key.
     final reply = NexusMessage(
@@ -3623,11 +3969,212 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     );
   }
 
+  /// Device B sends a QR pairing REQUEST (never a pairing itself). The scan
+  /// only builds this request: A must still tap Allow ([acceptQrPairing])
+  /// and only the accept stores a session on either side. Returns ok when
+  /// the request was delivered AND accepted; a delivered-but-unanswered
+  /// request reports `reached:true` so callers show "waiting for confirm".
+  Future<PairResult> pairWithQrCandidates({
+    required QrPairingToken token,
+    required List<String> addresses,
+  }) async {
+    if (!store.pairingEnabled) {
+      return PairResult.failure(
+        'Pairing is off on this device. Turn on Mesh pairing in Settings to pair.',
+      );
+    }
+    if (token.expired) {
+      _audit('qr-expired', 'pid=${token.pairingId}');
+      return PairResult.failure(
+        'That QR expired. Ask the other device to show a fresh code.',
+      );
+    }
+    final tried = <String>[];
+    PairResult? last;
+    for (final raw in addresses) {
+      final address = raw.trim();
+      if (address.isEmpty || tried.contains(address)) continue;
+      tried.add(address);
+      final result = await pairWithQr(token: token, address: address);
+      if (result.ok || result.reached) return result;
+      last = result;
+    }
+    if (tried.isEmpty) {
+      return PairResult.failure(
+        'That QR has no address to connect to — ask the other device to show a fresh code.',
+      );
+    }
+    if (tried.length == 1) return last!;
+    return PairResult.failure(
+      'Could not reach the device on any of its addresses '
+      '(${tried.join(', ')}) port ${token.port}. Check VPN/firewall/AP isolation.',
+    );
+  }
+
+  /// Sends one QR pairing request. See [pairWithQrCandidates].
+  Future<PairResult> pairWithQr({
+    required QrPairingToken token,
+    required String address,
+  }) async {
+    if (!store.pairingEnabled) {
+      return PairResult.failure(
+        'Pairing is off on this device. Turn on Mesh pairing in Settings to pair.',
+      );
+    }
+    if (token.expired) {
+      _audit('qr-expired', 'pid=${token.pairingId}');
+      return PairResult.failure(
+        'That QR expired. Ask the other device to show a fresh code.',
+      );
+    }
+    debugPrint(
+      'NEXUS mesh: qr-request -> $address:${token.port} '
+      'pid=${token.pairingId} code=${token.code}',
+    );
+    final key = await derivePairingKey(qrSecretFor(token));
+    Socket socket;
+    try {
+      socket = await Socket.connect(address, token.port, timeout: connectTimeout);
+    } catch (_) {
+      debugPrint('NEXUS mesh: qr-request no-route $address:${token.port}');
+      return PairResult.failure(
+        'Could not reach $address:${token.port}. Same Wi-Fi? VPN or AP isolation may block it.',
+      );
+    }
+    final completer = Completer<PairResult>();
+    final request = NexusMessage(
+      type: NexusMessage.pairRequest,
+      from: identity.id,
+      payload: {
+        'name': identity.name,
+        'platform': identity.platform,
+        'port': store.port,
+        'qrPid': token.pairingId,
+        'qrPub': token.publicKey,
+        'qrNonce': token.nonce,
+        'qrCode': token.code,
+      },
+      id: _newId(),
+      ts: DateTime.now().millisecondsSinceEpoch,
+    );
+    String? pendingEnc;
+    try {
+      pendingEnc = await encryptToB64(encodeJson(request.toJson()), key);
+    } catch (_) {
+      socket.destroy();
+      return PairResult.failure('Could not prepare the pairing request.',
+          reached: true);
+    }
+    final decoder = FrameDecoder();
+    final timeout = Timer(const Duration(seconds: 12), () {
+      if (!completer.isCompleted) {
+        _audit('qr-request-sent', 'pid=${token.pairingId} (awaiting confirm)');
+        completer.complete(
+          PairResult.failure(
+            'Request sent — waiting for the other device to tap Allow (code ${token.code}).',
+            reached: true,
+          ),
+        );
+        socket.destroy();
+      }
+    });
+    Future<void> handleChunk(List<int> chunk) async {
+      decoder.add(chunk);
+      final frames = decoder.takeFrames();
+      if (frames == null) return;
+      for (final frame in frames) {
+        try {
+          final json = jsonDecode(utf8.decode(frame));
+          if (json is! Map<String, dynamic> || json['enc'] is! String) continue;
+          final clear = await decryptFromB64(json['enc'] as String, key);
+          final msg = NexusMessage.fromJson(
+            jsonDecode(utf8.decode(clear)) as Map<String, dynamic>,
+          );
+          if (msg.type == NexusMessage.pairAccept) {
+            debugPrint(
+              'NEXUS mesh: qr-accept <- ${msg.from} pid=${token.pairingId}',
+            );
+            if (!completer.isCompleted) {
+              _paired[msg.from] = PairedDevice(
+                id: msg.from,
+                name: (msg.payload['name'] as String?) ?? 'Paired device',
+                platform: (msg.payload['platform'] as String?) ?? 'other',
+                address: address,
+                port: token.port,
+                pairingSecret: qrSecretFor(token),
+                lastVerified: DateTime.now(),
+              );
+              _forgetSessionKey(msg.from);
+              store.upsertPaired(_paired[msg.from]!.toJson());
+              await store.save();
+              _noteSeen(msg.from, verified: true);
+              _audit('paired', 'pid=${token.pairingId} peer=${msg.from}');
+              completer.complete(PairResult.ok(_paired[msg.from]!.name));
+            }
+            return;
+          } else if (msg.type == NexusMessage.pairReject) {
+            if (!completer.isCompleted) {
+              _audit('qr-denied', 'pid=${token.pairingId}');
+              completer.complete(
+                PairResult.failure(
+                  (msg.payload['reason'] as String?) ??
+                      'The other device declined.',
+                  reached: true,
+                ),
+              );
+            }
+            return;
+          }
+        } catch (_) {}
+      }
+    }
+    socket.listen(
+      handleChunk,
+      onError: (_) {
+        if (!completer.isCompleted) {
+          completer.complete(
+            PairResult.failure('Connection lost before confirm.', reached: true),
+          );
+        }
+      },
+      onDone: () {
+        if (!completer.isCompleted) {
+          completer.complete(
+            PairResult.failure(
+              'The other device stopped answering. Its code may have expired.',
+              reached: true,
+            ),
+          );
+        }
+      },
+    );
+    try {
+      socket.add(FrameDecoder.encodeFrame(encodeJson({'enc': pendingEnc})));
+      await socket.flush();
+    } catch (_) {
+      timeout.cancel();
+      socket.destroy();
+      return PairResult.failure('Could not send the pairing request.',
+          reached: true);
+    }
+    final result = await completer.future;
+    timeout.cancel();
+    socket.destroy();
+    notifyListeners();
+    return result;
+  }
+
   Future<PairResult> pairWith({
     required String address,
     required int port,
     required String code,
   }) async {
+    if (!store.pairingEnabled) {
+      debugPrint('NEXUS mesh: pairWith refused (pairing off)');
+      return PairResult.failure(
+        'Pairing is off on this device. Turn on Mesh pairing in Settings to pair.',
+      );
+    }
     final cleanCode = code.trim().toUpperCase();
     final key = await derivePairingKey(cleanCode);
 

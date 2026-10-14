@@ -3,10 +3,11 @@
 // words, and discloses what it costs (a permission, a network call, disk)
 // BEFORE the toggle can move - no dark patterns, no bundled consent.
 //
-// Only two things stay on: mesh pairing and the local model, because
-// without them the app does nothing - and those two are explained on first
-// launch instead of toggled. Everything else is off on a fresh install;
-// a stored value always wins, so an existing user keeps what they had.
+// Only the local model stays on: without it the app does nothing, and it is
+// explained on first launch instead of toggled. Pairing itself is an explicit
+// opt-in (off on a fresh install), and every post-pairing capability —
+// clipboard, files, notifications, location — is a separate toggle, all
+// default OFF. A stored value always wins, so an existing user keeps theirs.
 import 'store.dart';
 
 // One optional thing Nexus can do.
@@ -17,9 +18,15 @@ enum Capability {
   // Copy here, paste on a paired device. Costs nothing but privacy: paired
   // devices see what is copied while this is on.
   clipboardSync,
+  // Paired devices may browse files shared from this device.
+  fileShare,
+  // Paired devices may trigger notifications on this device.
+  notificationShare,
+  // This device shares its location with paired devices.
+  locationShare,
   // The microphone button listens. Audio never leaves this phone.
   voiceInput,
-  // Nearby devices can find this one and pair with it.
+  // Nearby devices can find this one and pair with it. Explicit opt-in.
   meshPairing,
   // The model that answers offline. Costs ~470MB on first download.
   localModel,
@@ -44,8 +51,8 @@ class CapabilityInfo {
   // "Needs: nothing"). Tapping it opens the relevant system screen.
   final String needs;
 
-  // True for the two that stay on (mesh pairing, local model): rendered
-  // as an explanation, never a switch.
+  // True for the one that stays on (local model): rendered as an
+  // explanation, never a switch.
   final bool alwaysOn;
 
   final bool Function(NexusStore store) read;
@@ -80,6 +87,44 @@ class CapabilityInfo {
       ),
     ),
     (
+      Capability.fileShare,
+      CapabilityInfo(
+        title: 'File sharing',
+        description:
+            'Let paired devices browse files you share. Nothing is shared '
+            'until you turn this on.',
+        needs: 'Needs: storage access',
+        alwaysOn: false,
+        read: (s) => s.fileShare,
+        write: (s, v) => s.fileShare = v,
+      ),
+    ),
+    (
+      Capability.notificationShare,
+      CapabilityInfo(
+        title: 'Notifications',
+        description:
+            'Let paired devices show notifications here. Off means silent.',
+        needs: 'Needs: notification permission',
+        alwaysOn: false,
+        read: (s) => s.notificationShare,
+        write: (s, v) => s.notificationShare = v,
+      ),
+    ),
+    (
+      Capability.locationShare,
+      CapabilityInfo(
+        title: 'Location sharing',
+        description:
+            'Share this device\'s location with paired devices. Off means '
+            'no location ever leaves this phone.',
+        needs: 'Needs: location permission',
+        alwaysOn: false,
+        read: (s) => s.locationShare,
+        write: (s, v) => s.locationShare = v,
+      ),
+    ),
+    (
       Capability.voiceInput,
       CapabilityInfo(
         title: 'Voice input',
@@ -98,11 +143,13 @@ class CapabilityInfo {
         title: 'Mesh pairing',
         description:
             'Let this phone talk to your other devices. Everything stays '
-            'on your own network - no cloud, no account.',
+            'on your own network - no cloud, no account. Pairing is '
+            'explicit: showing or scanning a code is consent, and every '
+            'request needs a tap to accept.',
         needs: 'Needs: nearby-devices discovery',
-        alwaysOn: true,
-        read: (_) => true,
-        write: (_, _) {},
+        alwaysOn: false,
+        read: (s) => s.pairingEnabled,
+        write: (s, v) => s.pairingEnabled = v,
       ),
     ),
     (

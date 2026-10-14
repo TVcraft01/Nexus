@@ -52,10 +52,14 @@ void main() {
     tmp = await Directory.systemTemp.createTemp('nexus_test');
     storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
       ..port = 53210
-      ..clipboardSync = true;
+      ..clipboardSync = true
+      ..pairingEnabled = true
+      ..fileShare = true;
     storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
       ..port = 53211
-      ..clipboardSync = true;
+      ..clipboardSync = true
+      ..pairingEnabled = true
+      ..fileShare = true;
     await storeA.save();
     await storeB.save();
 
@@ -140,7 +144,9 @@ void main() {
   });
 
   test('a second device reusing a spent code is refused, not ignored', () async {
-    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212;
+    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212
+        ..pairingEnabled = true
+        ..fileShare = true;
     await storeC.save();
     final meshC = MeshService(
       identity: DeviceInfo(id: 'device-c', name: 'Phone C', platform: 'android'),
@@ -194,8 +200,12 @@ void main() {
   });
 
   test('a third device joins without displacing the first two', () async {
-    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212;
-    final storeD = NexusStore(explicitPath: '${tmp.path}/d.json')..port = 53213;
+    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212
+        ..pairingEnabled = true
+        ..fileShare = true;
+    final storeD = NexusStore(explicitPath: '${tmp.path}/d.json')..port = 53213
+        ..pairingEnabled = true
+        ..fileShare = true;
     await storeC.save();
     await storeD.save();
     final meshC = MeshService(

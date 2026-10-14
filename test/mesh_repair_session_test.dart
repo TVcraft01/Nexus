@@ -44,6 +44,7 @@ Future<MeshService> _service({
   final store = NexusStore(explicitPath: storePath);
   await store.load();
   store.port = port;
+  store.pairingEnabled = true;
   await store.save();
   final mesh = MeshService(
     identity: DeviceInfo(id: id, name: name, platform: platform),

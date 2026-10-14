@@ -128,7 +128,12 @@ void main() {
       rows[Capability.localModel]!.description,
       contains('470MB'),
     );
-    expect(rows[Capability.meshPairing]!.alwaysOn, isTrue);
+    // Pairing is explicit opt-in (QR pairing mission): only the local model
+    // stays on; every sharing capability starts off (covered above).
+    expect(rows[Capability.meshPairing]!.alwaysOn, isFalse);
+    expect(rows[Capability.fileShare]!.alwaysOn, isFalse);
+    expect(rows[Capability.notificationShare]!.alwaysOn, isFalse);
+    expect(rows[Capability.locationShare]!.alwaysOn, isFalse);
     expect(rows[Capability.localModel]!.alwaysOn, isTrue);
   });
 

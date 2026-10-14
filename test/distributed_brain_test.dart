@@ -100,10 +100,12 @@ void main() {
     final tmp = await Directory.systemTemp.createTemp('brain_mesh');
     final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
       ..port = 53230
-      ..clipboardSync = true;
+      ..clipboardSync = true
+      ..pairingEnabled = true;
     final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
       ..port = 53231
-      ..clipboardSync = true;
+      ..clipboardSync = true
+      ..pairingEnabled = true;
     await storeA.save();
     await storeB.save();
     final brain = peerBrain ?? _FakePeerBrain();

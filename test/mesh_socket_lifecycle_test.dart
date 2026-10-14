@@ -96,7 +96,8 @@ void main() {
       }
       final ephemeral = await _freePort();
       final store = NexusStore(explicitPath: '${tmp.path}/s.json')
-        ..port = ephemeral;
+        ..port = ephemeral
+        ..pairingEnabled = true;
       await store.save();
 
       final engine1 = _mesh('engine-1', store);
@@ -191,9 +192,11 @@ void main() {
     }
 
     final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
-      ..port = await _freePort();
+      ..port = await _freePort()
+      ..pairingEnabled = true;
     final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
-      ..port = await _freePort();
+      ..port = await _freePort()
+      ..pairingEnabled = true;
     await storeA.save();
     await storeB.save();
     final meshA = _mesh(

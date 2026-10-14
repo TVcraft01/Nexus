@@ -65,6 +65,7 @@ Future<NexusStore> openPeerStore(String path) async {
   final store = NexusStore(explicitPath: path);
   await store.load();
   store.port = _port;
+  store.pairingEnabled = true;
   await store.save();
   return store;
 }

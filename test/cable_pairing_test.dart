@@ -181,9 +181,11 @@ void main() {
     setUp(() async {
       tmp = await Directory.systemTemp.createTemp('nexus_cable_test');
       final storePc = NexusStore(explicitPath: '${tmp.path}/pc.json')
-        ..port = 53220;
+        ..port = 53220
+        ..pairingEnabled = true;
       final storePhone = NexusStore(explicitPath: '${tmp.path}/phone.json')
-        ..port = 53221;
+        ..port = 53221
+        ..pairingEnabled = true;
       await storePc.save();
       await storePhone.save();
 

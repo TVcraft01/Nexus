@@ -493,7 +493,9 @@ void main() {
         final storeA = NexusStore(explicitPath: '${tmp.path}/a.json');
         final storeB = NexusStore(explicitPath: '${tmp.path}/b.json');
         storeA.port = await loopbackPort();
+        storeA.pairingEnabled = true;
         storeB.port = await loopbackPort();
+        storeB.pairingEnabled = true;
         await storeA.save();
         await storeB.save();
 
@@ -614,6 +616,7 @@ void main() {
         final store = NexusStore(explicitPath: '${tmp.path}/state.json');
         await store.load();
         store.port = await loopbackPort();
+        store.pairingEnabled = true;
         // Paired before the mesh starts, so it is a link the supervisor
         // watches from its very first tick.
         store.upsertPaired({

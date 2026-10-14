@@ -654,7 +654,7 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
                   onPressed: () async {
                     final confirmed = await _confirmForget(context, device);
                     if (confirmed != true || !context.mounted) return;
-                    await mesh.forgetDevice(device.id);
+                    await mesh.revokePairing(device.id);
                     if (context.mounted) Navigator.pop(context);
                   },
                 ),
@@ -875,7 +875,7 @@ class _TopologyGraphState extends State<_TopologyGraph>
         // The same confirmation the detail sheet uses, because forgetting is
         // the same act wherever it is reached from.
         final confirmed = await _confirmForget(context, device);
-        if (confirmed == true) await widget.mesh.forgetDevice(device.id);
+        if (confirmed == true) await widget.mesh.revokePairing(device.id);
     }
   }
 

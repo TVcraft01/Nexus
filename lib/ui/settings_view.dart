@@ -158,9 +158,8 @@ class _SettingsViewState extends State<SettingsView> {
         ),
 
         // What Nexus may do: every optional feature is a choice the user
-        // makes here, never a default. The two that stay on (mesh pairing,
-        // local model) are explanations, not switches - without them the
-        // app does nothing.
+        // makes here, never a default. Only the local model stays on; mesh
+        // pairing and every post-pairing capability are explicit opt-ins.
         const NexusSectionHeader(
           'Capabilities',
           detail: 'Nexus proposes. You decide.',
@@ -191,6 +190,34 @@ class _SettingsViewState extends State<SettingsView> {
                   value: mesh.store.clipboardSync,
                   onChanged: (v) =>
                       _setBool(() => mesh.store.clipboardSync = v),
+                )
+              else if (capability == Capability.meshPairing)
+                _CapabilityRow(
+                  info: info,
+                  value: mesh.store.pairingEnabled,
+                  onChanged: (v) =>
+                      _setBool(() => mesh.store.pairingEnabled = v),
+                )
+              else if (capability == Capability.fileShare)
+                _CapabilityRow(
+                  info: info,
+                  value: mesh.store.fileShare,
+                  onChanged: (v) => _setBool(() => mesh.store.fileShare = v),
+                )
+              else if (capability == Capability.notificationShare)
+                _CapabilityRow(
+                  info: info,
+                  value: mesh.store.notificationShare,
+                  onChanged: (v) =>
+                      _setBool(() => mesh.store.notificationShare = v),
+                )
+              else if (capability == Capability.locationShare)
+                _CapabilityRow(
+                  info: info,
+                  value: mesh.store.locationShare,
+                  onChanged: (v) =>
+                      _setBool(() => mesh.store.locationShare = v),
+                  needsTap: ReminderLocation.openAppSettings,
                 )
               else
                 _CapabilityRow(

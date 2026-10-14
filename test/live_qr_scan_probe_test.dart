@@ -26,9 +26,11 @@ void main() {
 
     final tmp = await Directory.systemTemp.createTemp('nexus_qr_probe');
     final showStore = NexusStore(explicitPath: '${tmp.path}/show.json')
-      ..port = 53240;
+      ..port = 53240
+      ..pairingEnabled = true;
     final scanStore = NexusStore(explicitPath: '${tmp.path}/scan.json')
-      ..port = 53241;
+      ..port = 53241
+      ..pairingEnabled = true;
     await showStore.save();
     await scanStore.save();
 

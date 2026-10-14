@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
+import 'package:nexus/core/qr_pairing.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/discovery.dart';
 import 'package:nexus/mesh/mesh_service.dart';
@@ -59,9 +60,12 @@ void main() {
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('nexus_recovery');
-    storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53260;
-    storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = 53261;
-    storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53262;
+    storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53260
+        ..pairingEnabled = true;
+    storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = 53261
+        ..pairingEnabled = true;
+    storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53262
+        ..pairingEnabled = true;
     await storeA.save();
     await storeB.save();
     await storeC.save();
@@ -276,18 +280,45 @@ void main() {
 
     expect(find.byType(QrImageView), findsOneWidget,
         reason: 'a fresh code must show its QR');
-    final shownCode = meshA.pendingCode!;
-
-    // Another device scans and spends it.
-    late PairResult paired;
+    // The sheet refreshes the QR once interface addresses resolve; let that
+    // settle and then read the stable token the screen is showing.
     await tester.runAsync(() async {
-      paired = await meshB.pairWithCandidates(
-        addresses: ['127.0.0.1'],
-        port: meshA.port,
-        code: shownCode,
-      );
+      await Future<void>.delayed(const Duration(seconds: 1));
     });
-    expect(paired.ok, isTrue, reason: paired.error);
+    await tester.pump();
+    final shown = meshA.qrShown!;
+    final shownPid = shown.pairingId;
+
+    // Another device scans: that only stages a request — nothing pairs.
+    // The socket half of this flow is proven in qr_pairing_test; here the
+    // request is staged through the test seam so no real I/O runs inside
+    // the widget (fake-async) zone.
+    meshA.stageInboundQrForTest(QrInboundRequest(
+      pairingId: shownPid,
+      fromDeviceLabel: 'device-b',
+      code: shown.code,
+      expiryMs: shown.expiryMs,
+      address: '127.0.0.1',
+      port: meshB.port,
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    // The shower must explicitly confirm: the prompt names the code.
+    expect(
+      find.text('A device wants to pair. Code: ${shown.code}. Allow?'),
+      findsOneWidget,
+      reason: 'a scan must surface a confirmation prompt, never pair silently',
+    );
+    expect(meshA.isPaired('device-b'), isFalse,
+        reason: 'a staged request alone must not pair');
+    // The Allow button is the pairing act. The tap itself runs through the
+    // mesh (real I/O), so the confirm happens inside runAsync — pumps alone
+    // cannot flush socket/file futures in the widget (fake-async) zone.
+    expect(find.text('Allow'), findsOneWidget);
+    await tester.runAsync(() async {
+      expect(await meshA.acceptQrPairing(shownPid), isTrue);
+    });
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
 
@@ -296,7 +327,7 @@ void main() {
     expect(find.byType(QrImageView), findsNothing,
         reason: 'a dead QR must not stay on screen to be scanned');
 
-    // The offered recovery produces a code that actually pairs.
+    // The offered recovery shows a fresh single-use QR.
     await tester.ensureVisible(find.text('Show a new code'));
     await tester.pump();
     await tester.tap(find.text('Show a new code'));
@@ -304,20 +335,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     expect(find.byType(QrImageView), findsOneWidget,
         reason: 'a new code must show a QR again');
-    final freshCode = meshA.pendingCode!;
-    expect(freshCode, isNot(shownCode));
-
-    late PairResult withFresh;
-    await tester.runAsync(() async {
-      withFresh = await meshC.pairWithCandidates(
-        addresses: ['127.0.0.1'],
-        port: meshA.port,
-        code: freshCode,
-      );
-    });
-    expect(withFresh.ok, isTrue, reason: withFresh.error);
-    expect(meshA.pairedDevices.map((d) => d.id).toSet(),
-        {'device-b', 'device-c'});
+    final fresh = meshA.qrShown!;
+    expect(fresh.pairingId, isNot(shownPid));
+    expect(QrPairingToken.parse(fresh.encode()), isNotNull);
 
     await tester.runAsync(() async {
       await meshA.stop();

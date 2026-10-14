@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../core/pair_payload.dart';
+import '../core/qr_pairing.dart';
 import 'theme.dart';
 
 /// Full-screen camera view that scans a Nexus pairing QR and pops with the
@@ -48,10 +49,26 @@ class _ScanQrPageState extends State<ScanQrPage> {
 
   void _onDetect(BarcodeCapture capture) {
     for (final barcode in capture.barcodes) {
-      final raw = barcode.rawValue;
+      // rawValue is the source of truth: some scanner builds hand back a
+      // parsed URL/display string instead — log both and prefer raw.
+      final raw = barcode.rawValue ?? barcode.displayValue;
+      debugPrint(
+        'NEXUS scan: raw=${raw == null ? '<null>' : raw.length > 120 ? '${raw.substring(0, 120)}…' : raw} '
+        'format=${barcode.format} type=${barcode.type}',
+      );
       if (raw == null) continue;
+      final qr = QrPairingToken.parse(raw);
+      if (qr != null) {
+        debugPrint(
+          'NEXUS scan: v2 qr pid=${qr.pairingId} code=${qr.code} '
+          '(request only — no data read, no pairing yet)',
+        );
+        Navigator.pop(context, qr);
+        return;
+      }
       final payload = PairPayload.parse(raw);
       if (payload != null) {
+        debugPrint('NEXUS scan: legacy v1 code (manual-entry path)');
         Navigator.pop(context, payload);
         return;
       }
@@ -84,7 +101,9 @@ class _ScanQrPageState extends State<ScanQrPage> {
           MobileScanner(
             controller: _controller,
             onDetect: _onDetect,
-            errorBuilder: (context, error) => Center(
+            errorBuilder: (context, error) {
+              debugPrint('NEXUS scan: camera error $error');
+              return Center(
               child: Padding(
                 padding: const EdgeInsets.all(NexusSpace.xxl),
                 child: Column(
@@ -118,7 +137,8 @@ class _ScanQrPageState extends State<ScanQrPage> {
                   ],
                 ),
               ),
-            ),
+              );
+            },
           ),
           if (_notice != null)
             Positioned(

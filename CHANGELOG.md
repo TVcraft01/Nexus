@@ -9,13 +9,24 @@ sprint and earlier work is not listed. The format follows
 
 ### Added
 
+- **Secure QR pairing.** Showing a QR starts a single-use request that
+  expires in ~120 s — it never pairs anything by itself. The scanning
+  device sends a request, the showing device taps Allow on a prompt that
+  names the 4-digit code both sides display, and only then is a session
+  established. The QR carries just version, pairing id, ephemeral public
+  key, expiry, and nonce (plus the address needed to reach back); no
+  contacts, files, clipboard, location, history, or device names. Pairing
+  events (shown, requested, accepted, denied, revoked, expired) are kept
+  in an on-device audit log, and either side can revoke at any time.
 - **Capabilities: Nexus proposes, you decide.** Settings has a new
   "Capabilities" section where every optional feature is a choice with a
   plain-English description and an on/off switch — never on by default,
-  no bundled consent. Location reminders, clipboard sync, and voice input
-  all start off on a fresh install; mesh pairing and the local model stay
-  on (without them the app does nothing) and are explained in the list
-  itself instead of toggled.
+  no bundled consent. Location reminders, clipboard sync, voice input,
+  file sharing, notification sharing, and location sharing all start off
+  on a fresh install. Mesh pairing itself is now an explicit opt-in
+  toggle (off on a fresh install) instead of always-on; only the local
+  model stays on (without it the app does nothing) and is explained in
+  the list itself instead of toggled.
 - **Location reminders.** Say "remind me to take milk at the store" and
   Nexus asks for Always location, resolves the place with a single
   OpenStreetMap lookup, and rings when you arrive — even with the app
@@ -26,9 +37,11 @@ sprint and earlier work is not listed. The format follows
 
 - Nexus asks before it does anything optional. If you turn off location,
   no location lookup ever happens. If you turn off clipboard sync, nothing
-  you copy leaves this device. The two things that stay on by default are
-  the local model and mesh pairing, because without them the app does
-  nothing — those two are explained on first launch.
+  you copy leaves this device. If file sharing is off, paired devices are
+  told so instead of seeing your files. Scanning a QR never reads the
+  other device's data and never pairs without both sides confirming. The
+  one thing that stays on by default is the local model, because without
+  it the app does nothing — it is explained on first launch.
 
 ## [0.4.0] — 2026-10-13
 

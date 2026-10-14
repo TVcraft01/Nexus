@@ -84,10 +84,12 @@ void main() {
       tmp = await Directory.systemTemp.createTemp('nexus_clip_sync');
       storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
         ..port = 53220
-        ..clipboardSync = true;
+        ..clipboardSync = true
+        ..pairingEnabled = true;
       storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
         ..port = 53221
-        ..clipboardSync = true;
+        ..clipboardSync = true
+        ..pairingEnabled = true;
       await storeA.save();
       await storeB.save();
       clipA = _MemoryClipboard();

@@ -11,6 +11,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/network_info.dart';
 import '../core/pair_payload.dart';
+import '../core/qr_pairing.dart';
 import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
 import 'cable_pair_page.dart';
@@ -158,7 +159,7 @@ class _PairSheetState extends State<_PairSheet> {
     // The code is spent by the first device that pairs with it. Rebuild when
     // that happens so the sheet stops offering a code that no longer works.
     widget.mesh.addListener(_onMeshChanged);
-    _session = widget.mesh.beginPairing();
+    _session = widget.mesh.beginQrPairing();
     _codeController = TextEditingController();
     _addressController = TextEditingController(
       text: widget.nearby?.address ?? '',
@@ -186,31 +187,34 @@ class _PairSheetState extends State<_PairSheet> {
   }
 
   Future<void> _refreshQrWithIp() async {
-    final ips = await detectAllIpv4s();
+    // The token is minted from the IP cache, which fills in seconds after
+    // start. If it was empty, mint once more so the QR carries an address.
+    // No artificial delay: a pending timer outlives widget tests (and the
+    // sheet itself) and fails them on dispose.
     if (!mounted) return;
+    if (widget.mesh.qrShown?.address?.isNotEmpty == true) return;
+    final ips = await detectAllIpv4s();
+    if (!mounted || ips.isEmpty) return;
     setState(() {
-      _session = PairingSession(
-        code: _session.code,
-        qrPayload: PairPayload.build(
-          id: widget.mesh.identity.id,
-          name: widget.mesh.identity.name,
-          port: widget.mesh.port,
-          code: _session.code,
-          ip: ips.isNotEmpty ? ips.first : null,
-          ips: ips,
-        ),
-        expiresAt: _session.expiresAt,
-      );
+      _session = widget.mesh.beginQrPairing();
     });
   }
 
-  /// Opens the camera, parses a scanned Nexus QR, and pairs immediately.
+  /// Opens the camera and scans. A v2 QR only SENDS a pairing request —
+  /// the other device must still tap Allow, and nothing is read from it.
+  /// A legacy v1 QR falls back to the manual-code path.
   Future<void> _scanQr() async {
-    final payload = await Navigator.push<PairPayload>(
+    final scanned = await Navigator.push(
       context,
       CupertinoPageRoute(builder: (_) => const ScanQrPage()),
     );
-    if (payload == null || !mounted) return;
+    if (scanned == null || !mounted) return;
+    if (scanned is QrPairingToken) {
+      await _pairWithQrToken(scanned);
+      return;
+    }
+    if (scanned is! PairPayload) return;
+    final payload = scanned;
     if (payload.id == widget.mesh.identity.id) {
       setState(
         () =>
@@ -245,14 +249,54 @@ class _PairSheetState extends State<_PairSheet> {
     await _pair(addresses: candidates);
   }
 
+  /// Sends a v2 QR pairing request after the scanner's explicit confirm.
+  /// Shows the 4-digit code so both users compare the same value.
+  Future<void> _pairWithQrToken(QrPairingToken token) async {
+    if (token.expired) {
+      setState(() => _error = 'That QR expired — ask for a fresh one.');
+      return;
+    }
+    final addresses = <String>[];
+    void add(String a) {
+      if (a.isNotEmpty && !addresses.contains(a)) addresses.add(a);
+    }
+    add(token.address ?? '');
+    setState(() {
+      _pairing = true;
+      _error = null;
+    });
+    final result = await widget.mesh.pairWithQrCandidates(
+      token: token,
+      addresses: addresses,
+    );
+    if (!mounted) return;
+    setState(() => _pairing = false);
+    if (result.ok) {
+      HapticFeedback.lightImpact();
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Paired with ${result.peerName ?? 'device'}. 🎉')),
+      );
+    } else {
+      // "reached" means the request landed and waits for Allow on the
+      // other side — that is the flow working, not an error to hide.
+      setState(
+        () => _error = result.reached
+            ? 'Request sent — ask the other device to tap Allow (code ${token.code}).'
+            : result.error,
+      );
+    }
+  }
+
   void _onMeshChanged() {
     if (mounted) setState(() {});
   }
 
-  /// Issues a new code so the next device has something that works.
+  /// Issues a new QR so the next device has something that works.
+  /// Single-use: the old pid can never pair afterwards.
   void _newCode() {
     setState(() {
-      _session = widget.mesh.beginPairing();
+      _session = widget.mesh.beginQrPairing();
       _error = null;
     });
     HapticFeedback.selectionClick();
@@ -483,7 +527,7 @@ class _PairSheetState extends State<_PairSheet> {
   }
 
   Widget _buildShowTab(BuildContext context) {
-    final valid = widget.mesh.pendingCodeActive;
+    final valid = widget.mesh.qrShownActive;
     return SingleChildScrollView(
       controller: widget.scroll,
       child: Column(
@@ -503,6 +547,9 @@ class _PairSheetState extends State<_PairSheet> {
                   data: _session.qrPayload,
                   size: 200,
                   backgroundColor: Colors.white,
+                  // Dense QRs fail on cheap cameras: Q stays readable while
+                  // keeping the minimal v2 payload small.
+                  errorCorrectionLevel: QrErrorCorrectLevel.Q,
                   eyeStyle: const QrEyeStyle(
                     eyeShape: QrEyeShape.square,
                     color: Color(0xFF0B0F14),
@@ -557,8 +604,8 @@ class _PairSheetState extends State<_PairSheet> {
           const SizedBox(height: 8),
           Text(
             valid
-                ? 'Code expires in 5 minutes. It is the only secret needed to '
-                    'pair — don’t share it with strangers.'
+                ? 'Code expires in 2 minutes and works once. Scanning only '
+                    'sends a request — nothing pairs until you tap Allow below.'
                 : 'Each code pairs one device. Show a new code for the next one.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodySmall
@@ -580,8 +627,81 @@ class _PairSheetState extends State<_PairSheet> {
               icon: const Icon(Icons.refresh_rounded, size: 18),
               label: const Text('Show a new code'),
             ),
+          const SizedBox(height: 14),
+          _buildInboundRequests(context),
         ],
       ),
+    );
+  }
+
+  /// Inbound QR requests: "Device wants to pair. Code: XXXX. Allow?"
+  /// Nothing here paired anything — Allow is the pairing act.
+  Widget _buildInboundRequests(BuildContext context) {
+    final reqs = widget.mesh.pendingQrRequests;
+    if (reqs.isEmpty) {
+      return Text(
+        'No pairing requests yet. When the other device scans, its request '
+        'appears here for you to allow.',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: NexusColors.muted,
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final req in reqs)
+          Container(
+            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(bottom: 8),
+            decoration: BoxDecoration(
+              color: NexusColors.accent.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: NexusColors.accent.withValues(alpha: 0.3),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'A device wants to pair. Code: ${req.code}. Allow?',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () async {
+                          final ok = await widget.mesh.acceptQrPairing(
+                            req.pairingId,
+                          );
+                          if (!mounted) return;
+                          setState(
+                            () => _error = ok
+                                ? null
+                                : 'That request expired — ask for a fresh scan.',
+                          );
+                        },
+                        child: const Text('Allow'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () =>
+                            widget.mesh.rejectQrPairing(req.pairingId),
+                        child: const Text('Deny'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 

@@ -94,8 +94,10 @@ Future<_Pair> _pair({
   Duration heartbeat = const Duration(seconds: 30),
 }) async {
   final tmp = await Directory.systemTemp.createTemp('nexus_presence');
-  final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = portA;
-  final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = portB;
+  final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = portA
+      ..pairingEnabled = true;
+  final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = portB
+      ..pairingEnabled = true;
   await storeA.save();
   await storeB.save();
 
@@ -294,8 +296,10 @@ void main() {
   group('pairing cannot be hijacked', () {
     test('a stranger cannot pair by claiming, nor burn the code', () async {
       final tmp = await Directory.systemTemp.createTemp('nexus_pairdoor');
-      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53430;
-      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = 53431;
+      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53430
+          ..pairingEnabled = true;
+      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = 53431
+          ..pairingEnabled = true;
       await storeA.save();
       await storeB.save();
 
@@ -352,7 +356,8 @@ void main() {
   group('discovery keeps working while distrusting', () {
     test('an unpaired device is still heard, just not trusted', () async {
       final tmp = await Directory.systemTemp.createTemp('nexus_discover');
-      final store = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53440;
+      final store = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53440
+          ..pairingEnabled = true;
       await store.save();
       final a = MeshService(
         identity: DeviceInfo(id: 'device-a', name: 'PC', platform: 'linux'),
@@ -389,7 +394,8 @@ void main() {
   group('frames are processed once', () {
     test('a replayed plaintext frame is dropped', () async {
       final tmp = await Directory.systemTemp.createTemp('nexus_replay');
-      final store = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53450;
+      final store = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53450
+          ..pairingEnabled = true;
       await store.save();
       final a = MeshService(
         identity: DeviceInfo(id: 'device-a', name: 'PC', platform: 'linux'),
@@ -480,9 +486,12 @@ void main() {
     Future<({MeshService a, MeshService b, MeshService c, Directory tmp})>
     pairedWithTwo({required int portA, required int portB, required int portC}) async {
       final tmp = await Directory.systemTemp.createTemp('nexus_impostor');
-      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = portA;
-      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = portB;
-      final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = portC;
+      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = portA
+          ..pairingEnabled = true;
+      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = portB
+          ..pairingEnabled = true;
+      final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = portC
+          ..pairingEnabled = true;
       await storeA.save();
       await storeB.save();
       await storeC.save();

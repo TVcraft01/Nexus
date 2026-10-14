@@ -48,10 +48,12 @@ void main() {
     final tmp = await Directory.systemTemp.createTemp('e2e');
     final storePc = NexusStore(explicitPath: '${tmp.path}/pc.json')
       ..port = 53240
-      ..clipboardSync = true;
+      ..clipboardSync = true
+      ..pairingEnabled = true;
     final storePhone = NexusStore(explicitPath: '${tmp.path}/phone.json')
       ..port = 53241
-      ..clipboardSync = true;
+      ..clipboardSync = true
+      ..pairingEnabled = true;
     await storePc.save();
     await storePhone.save();
 

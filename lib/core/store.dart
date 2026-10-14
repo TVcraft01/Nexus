@@ -55,6 +55,72 @@ class NexusStore {
   set broadcastDiscovery(bool value) =>
       _settings()['broadcastDiscovery'] = value;
 
+  /// Whether this device may pair with new devices. OFF on a fresh install:
+  /// pairing is explicit and user-controlled — showing a QR / typing a code
+  /// is consent, but nothing pairs silently and no inbound request is
+  /// accepted while this is off. A stored value always wins.
+  bool get pairingEnabled =>
+      ((_data['settings'] as Map<String, dynamic>?)?['pairingEnabled']
+          as bool?) ??
+      false;
+
+  set pairingEnabled(bool value) => _settings()['pairingEnabled'] = value;
+
+  /// Whether paired devices may browse files on this device. OFF on a fresh
+  /// install; the Files UI and the mesh file handlers both gate on this.
+  bool get fileShare =>
+      ((_data['settings'] as Map<String, dynamic>?)?['fileShare']
+          as bool?) ??
+      false;
+
+  set fileShare(bool value) => _settings()['fileShare'] = value;
+
+  /// Whether paired devices may trigger notifications on this device.
+  /// OFF on a fresh install.
+  bool get notificationShare =>
+      ((_data['settings'] as Map<String, dynamic>?)?['notificationShare']
+          as bool?) ??
+      false;
+
+  set notificationShare(bool value) =>
+      _settings()['notificationShare'] = value;
+
+  /// Whether this device shares its location with paired devices.
+  /// OFF on a fresh install. Distinct from [locationReminders] (which gates
+  /// on-device place reminders): this gates sharing location outward.
+  bool get locationShare =>
+      ((_data['settings'] as Map<String, dynamic>?)?['locationShare']
+          as bool?) ??
+      false;
+
+  set locationShare(bool value) => _settings()['locationShare'] = value;
+
+  /// Pairing audit log: newest last, capped at 100 entries. Each entry is
+  /// `{t, event, detail}` — e.g. qr-shown, qr-request-sent, qr-request-got,
+  /// qr-accepted, qr-denied, paired, revoked, expired.
+  List<Map<String, dynamic>> get pairingAudit => [
+    for (final raw
+        in (_data['settings'] as Map<String, dynamic>?)?['pairingAudit']
+            as List? ??
+            const [])
+      if (raw is Map<String, dynamic>)
+        raw
+      else if (raw is Map)
+        Map<String, dynamic>.from(raw),
+  ];
+
+  /// Appends one audit event, capped at the latest 100.
+  void logPairingEvent(String event, [String detail = '']) {
+    final list = pairingAudit
+      ..add({
+        't': DateTime.now().toIso8601String(),
+        'event': event,
+        if (detail.isNotEmpty) 'detail': detail,
+      });
+    _settings()['pairingAudit'] =
+        list.length > 100 ? list.sublist(list.length - 100) : list;
+  }
+
   /// Whether the app checks GitHub for a newer release on startup.
   bool get autoUpdate =>
       ((_data['settings'] as Map<String, dynamic>?)?['autoUpdate'] as bool?) ??
