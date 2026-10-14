@@ -28,6 +28,7 @@ import '../core/reminders.dart';
 import '../core/skills.dart';
 import '../core/speech.dart';
 import '../mesh/mesh_service.dart';
+import '../mesh/wake_word.dart';
 import 'components/nexus_ui.dart';
 import 'device_executor.dart';
 import 'local_files.dart';
@@ -545,10 +546,39 @@ class AssistantViewState extends State<AssistantView> {
     if (brain != null) {
       unawaited(_conversation.probe(brain));
     }
+    // The wake word: when the toggle is on (Settings › Capabilities), the
+    // shared controller is already running or starts now; detections land
+    // here and arm the same mic the button owns. Nothing here records or
+    // uploads — the controller scores audio on-device and only reports
+    // that the name was heard.
+    final wake = WakeWord.ensure();
+    wake.onWake = _onWakeWord;
+    wake.onSilenceTimeout = _onWakeSilence;
+    if (widget.mesh.store.wakeWord) unawaited(wake.start());
+  }
+
+  /// The wake word fired: bring the app forward so the Listening state is
+  /// visible, arm the mic through the existing push-to-talk path, and start
+  /// the 5-second window — silence returns to idle with nothing said.
+  void _onWakeWord() {
+    unawaited(WakeWord.ensure().platform.bringToFront());
+    unawaited(_listen());
+    WakeWord.ensure().beginUtteranceWindow();
+  }
+
+  /// The wake window expired with no speech: stop waiting, silently.
+  void _onWakeSilence() {
+    unawaited(_stopListening());
   }
 
   @override
   void dispose() {
+    // The wake controller is app-wide (Settings owns the toggle); this
+    // view only unbinds its callbacks, never stops someone else's loop —
+    // cleared unconditionally, like the mesh callbacks below.
+    WakeWord.ensure()
+      ..onWake = null
+      ..onSilenceTimeout = null;
     widget.mesh.onLearnedPhraseReceived = null;
     widget.mesh.onFactReceived = null;
     widget.mesh.onDefaultReceived = null;
@@ -990,6 +1020,9 @@ class AssistantViewState extends State<AssistantView> {
     // dismiss. Silence gave Nexus nothing to answer, and a "sorry?" card for
     // every stray tap would turn the thread into a log of missed attempts.
     if (text.isEmpty) return;
+    // Speech arrived: a wake window waiting on this utterance served its
+    // purpose (a mic-button tap has no window, so this is a no-op there).
+    WakeWord.ensure().heardSpeech();
     _controller.text = text;
     _onSubmit(voice: true);
   }

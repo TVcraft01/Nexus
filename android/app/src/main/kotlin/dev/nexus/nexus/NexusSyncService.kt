@@ -85,6 +85,10 @@ class NexusSyncService : Service() {
     }
 
     override fun onDestroy() {
+        // The wake loop borrows this service's process priority while the
+        // mic is open — no second service — so it dies here too. The
+        // activity stops it as well when it goes away; both are idempotent.
+        WakeWordAudio.stop(this)
         releaseMulticastLock()
         running = false
         super.onDestroy()

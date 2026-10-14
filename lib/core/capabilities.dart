@@ -26,6 +26,8 @@ enum Capability {
   locationShare,
   // The microphone button listens. Audio never leaves this phone.
   voiceInput,
+  // Say the name to start listening. Audio never leaves this phone.
+  wakeWord,
   // Nearby devices can find this one and pair with it. Explicit opt-in.
   meshPairing,
   // The model that answers offline. Costs ~470MB on first download.
@@ -122,6 +124,20 @@ class CapabilityInfo {
         alwaysOn: false,
         read: (s) => s.locationShare,
         write: (s, v) => s.locationShare = v,
+      ),
+    ),
+    (
+      Capability.wakeWord,
+      CapabilityInfo(
+        title: 'Wake word',
+        description:
+            'Say \'Hey Jarvis\' to start listening. Audio is processed '
+            'on this phone, never sent anywhere. Uses more battery when '
+            'enabled. (Custom wake word coming in a future build.)',
+        needs: 'Needs: Microphone',
+        alwaysOn: false,
+        read: (s) => s.wakeWord,
+        write: (s, v) => s.wakeWord = v,
       ),
     ),
     (

@@ -23,6 +23,7 @@ dependencies:
   url_launcher: ^6.2.0
   web_socket_channel: ^3.0.0
   llamadart: ^0.11.1
+  open_wake_word: ^0.3.0
 
 dev_dependencies:
   flutter_test:
@@ -35,6 +36,9 @@ flutter:
 
   assets:
     - assets/tray_icon.png
+    - assets/wake/melspectrogram.onnx
+    - assets/wake/embedding_model.onnx
+    - assets/wake/hey_jarvis_v0.1.onnx
 
 # What the llamadart build hook fetches for the native inference runtime: the
 # llama.cpp runtime alone. The package can also carry LiteRT-LM (for

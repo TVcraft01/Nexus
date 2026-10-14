@@ -189,6 +189,17 @@ class NexusStore {
 
   set voiceInput(bool value) => _settings()['voiceInput'] = value;
 
+  /// Whether the phone listens for the wake word. OFF on a fresh install:
+  /// an always-on microphone is the most privacy-sensitive thing Nexus can
+  /// do, so it starts disabled, shows a persistent notification while on,
+  /// and processes everything on-device. A stored value always wins.
+  bool get wakeWord =>
+      ((_data['settings'] as Map<String, dynamic>?)?['wakeWord']
+          as bool?) ??
+      false;
+
+  set wakeWord(bool value) => _settings()['wakeWord'] = value;
+
   /// A saved place ("home", "work"): latitude and longitude cached
   /// on-device, set once by standing there. Null until saved.
   (double, double)? savedPlace(String name) {

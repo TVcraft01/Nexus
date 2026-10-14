@@ -46,6 +46,21 @@ import java.io.File
 import java.util.Calendar
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        // The live activity, if any — held so the wake-word notification's
+        // "Stop listening" button can silence an utterance even though the
+        // receiver only gets an application context. Set on engine attach,
+        // cleared in onDestroy, never leaked past the activity's life.
+        @Volatile private var live: MainActivity? = null
+
+        /// One tap, total silence: ends the utterance in flight (its pending
+        /// `listen` answers nothing-heard) as well as the wake loop, which
+        /// the receiver already stopped. No-op when Nexus is not on screen.
+        fun silenceFromNotification() {
+            live?.silenceVoice()
+        }
+    }
+
     private val CHANNEL = "dev.nexus.nexus/installer"
     private val TAG = "NexusInstaller"
     private val REQUEST_INSTALL_PERMISSION = 42601
@@ -140,6 +155,17 @@ class MainActivity : FlutterActivity() {
     private val REQUEST_SPEECH_PERMISSIONS = 42605
     private var pendingSpeechResult: MethodChannel.Result? = null
 
+    // Wake word: "Hey Jarvis" arms the assistant hands-free. RECORD_AUDIO
+    // is requested on enable with the MethodChannel result held across the
+    // dialog, like the speech flow; a refusal answers false and the toggle
+    // stays off. The PCM sink below is the Dart engine's microphone — the
+    // loop stops itself if it ever breaks.
+    private val WAKE_CHANNEL = "dev.nexus.nexus/wake_word"
+    private val WAKE_AUDIO_CHANNEL = "dev.nexus.nexus/wake_word_audio"
+    private val REQUEST_WAKE_WORD_PERMISSIONS = 42611
+    private var pendingWakeResult: MethodChannel.Result? = null
+    private var wakeSink: EventChannel.EventSink? = null
+
     // The recognition session in flight, held so a second tap on the mic can
     // end it. A recognizer that never hears its own end-of-speech would
     // otherwise leave the composer listening with no way out but leaving the
@@ -196,6 +222,11 @@ class MainActivity : FlutterActivity() {
         // A recognizer in flight dies with the screen: leaving Nexus must not
         // leave the microphone listening in the background.
         releaseRecognizer()
+        // The wake loop's engine is Dart: with the activity gone nobody
+        // scores, so the loop stops too (the service also stops it in its
+        // own onDestroy — whichever comes first, both are idempotent).
+        WakeWordAudio.stop(this)
+        if (live === this) live = null
         // The in-app preview must die with the activity — otherwise the
         // audio keeps playing after Nexus is closed, and reopening stacks a
         // second player over the ghost.
@@ -221,6 +252,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        live = this
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -284,6 +316,33 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // Wake word: Dart arms the mic (Settings toggle, assistant startup)
+        // and scores the PCM the audio channel streams. `bringToFront`
+        // shows the Listening state on detection — best-effort, the mic is
+        // armed either way. Everything is released on `stop` or disable.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WAKE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> startWakeLoop(result)
+                    "stop" -> {
+                        WakeWordAudio.stop(this)
+                        result.success(true)
+                    }
+                    "bringToFront" -> result.success(bringWakeToFront())
+                    else -> result.notImplemented()
+                }
+            }
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, WAKE_AUDIO_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    wakeSink = events
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    wakeSink = null
+                }
+            })
 
         // Voice output: reads the assistant's reply out loud through the
         // system text-to-speech engine — on-device, offline, no permission.
@@ -741,6 +800,14 @@ class MainActivity : FlutterActivity() {
             if (result == null) return
             if (granted(Manifest.permission.RECORD_AUDIO)) startSpeech(result)
             else result.success(null) // honest: nothing was recognized
+        }
+        if (requestCode == REQUEST_WAKE_WORD_PERMISSIONS) {
+            val result = pendingWakeResult
+            pendingWakeResult = null
+            if (result == null) return
+            // A refused mic leaves the toggle off: false, not a hang.
+            if (granted(Manifest.permission.RECORD_AUDIO)) beginWakeLoop(result)
+            else result.success(false)
         }
         if (requestCode == REQUEST_CALENDAR_PERMISSIONS) {
             val result = pendingCalendarResult
@@ -1516,6 +1583,65 @@ class MainActivity : FlutterActivity() {
             return
         }
         startSpeech(result)
+    }
+
+    /// Wake word: RECORD_AUDIO is requested on enable, then the AudioRecord
+    /// loop starts with the service keeping the process alive behind it.
+    /// The result is held across the permission dialog; a declined grant
+    /// answers false so Dart leaves the toggle off.
+    private fun startWakeLoop(result: MethodChannel.Result) {
+        if (!WakeWordAudio.hasPermission(this)) {
+            pendingWakeResult = result
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                REQUEST_WAKE_WORD_PERMISSIONS,
+            )
+            return
+        }
+        beginWakeLoop(result)
+    }
+
+    /// The loop runs behind the mesh's foreground service — no second
+    /// service, just process priority while the mic is open. The sink may
+    /// be null if Dart never listened; then there is no engine to score,
+    /// so starting answers false instead of capturing for nobody.
+    private fun beginWakeLoop(result: MethodChannel.Result) {
+        NexusSyncService.start(this)
+        val sink = wakeSink
+        if (sink == null) {
+            Log.w(TAG, "wake: no audio sink, not starting")
+            result.success(false)
+            return
+        }
+        result.success(WakeWordAudio.start(this, sink))
+    }
+
+    /// Shows the Listening state on detection. Best-effort: when the app is
+    /// already front it is a no-op true; when the system refuses, Dart arms
+    /// the mic anyway and the user hears the recognition, not silence.
+    private fun bringWakeToFront(): Boolean {
+        return try {
+            val intent = packageManager
+                .getLaunchIntentForPackage(packageName)
+                ?.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                ?: return false
+            startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "wake: bringToFront refused", e)
+            false
+        }
+    }
+
+    /// Ends the utterance in flight without answering twice: the pending
+    /// `listen` resolves nothing-heard, exactly like the user tapping the
+    /// mic to take back its microphone.
+    private fun silenceVoice() {
+        releaseRecognizer()
+        val result = pendingSpeechResult
+        pendingSpeechResult = null
+        result?.success(null)
     }
 
     /// Voice output: says [text] through the system text-to-speech engine.

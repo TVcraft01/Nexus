@@ -2,6 +2,7 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
@@ -68,7 +69,14 @@
         <service
             android:name=".NexusSyncService"
             android:exported="false"
-            android:foregroundServiceType="dataSync"/>
+            android:foregroundServiceType="dataSync|microphone"/>
+        <receiver
+            android:name=".WakeWordSilenceReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="dev.nexus.nexus.WAKE_SILENCE"/>
+            </intent-filter>
+        </receiver>
         <receiver
             android:name=".ReminderReceiver"
             android:exported="false"/>

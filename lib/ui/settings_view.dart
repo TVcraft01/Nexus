@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../core/capabilities.dart';
 import '../core/location_access.dart';
+import '../mesh/wake_word.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
@@ -86,6 +87,33 @@ class _SettingsViewState extends State<SettingsView> {
         action: SnackBarAction(
           label: 'Open Settings',
           onPressed: ReminderLocation.openAppSettings,
+        ),
+      ),
+    );
+  }
+
+  /// The wake-word toggle is a promise first, a switch second, like
+  /// location: turning it on starts the on-device loop (which asks for the
+  /// microphone on the platform side); a refusal leaves the switch off and
+  /// says why. Turning it off releases the engine and dismisses the
+  /// persistent notification. The store only records an on that runs.
+  Future<void> _setWakeWord(bool on) async {
+    if (!on) {
+      await WakeWord.ensure().stop();
+      if (!mounted) return;
+      _setBool(() => mesh.store.wakeWord = false);
+      return;
+    }
+    final started = await WakeWord.ensure().start();
+    if (!mounted) return;
+    if (started) {
+      _setBool(() => mesh.store.wakeWord = true);
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Wake word needs microphone permission — allow it and try again.',
         ),
       ),
     );
@@ -210,6 +238,12 @@ class _SettingsViewState extends State<SettingsView> {
                   value: mesh.store.notificationShare,
                   onChanged: (v) =>
                       _setBool(() => mesh.store.notificationShare = v),
+                )
+              else if (capability == Capability.wakeWord)
+                _CapabilityRow(
+                  info: info,
+                  value: mesh.store.wakeWord,
+                  onChanged: _setWakeWord,
                 )
               else if (capability == Capability.locationShare)
                 _CapabilityRow(
