@@ -3,6 +3,7 @@ package dev.nexus.nexus
 import android.Manifest
 import android.app.ActivityManager
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -76,6 +77,11 @@ class MainActivity : FlutterActivity() {
     private val PROVISION_CHANNEL = "dev.nexus.nexus/provisioning"
     private val NETWORK_CHANNEL = "dev.nexus.nexus/network"
     private val NETWORK_EVENTS_CHANNEL = "dev.nexus.nexus/network_events"
+
+    // The launcher icon is a manifest component, not an image, so switching it
+    // means enabling one activity alias and disabling the other. Dart owns the
+    // choice and persists it; this channel only performs the switch.
+    private val ICON_CHANNEL = "dev.nexus.nexus/app_icon"
 
     // Tag for the reconnect-observability lines below. Deliberately the same
     // name the Dart side prefixes its supervisor lines with (see
@@ -354,6 +360,31 @@ class MainActivity : FlutterActivity() {
                     speakText(call.argument<String>("text") ?: "", result)
                 } else {
                     result.notImplemented()
+                }
+            }
+
+        // App icon: Light or Dark, which on Android means which launcher alias
+        // is enabled (see the two activity-alias entries in
+        // AndroidManifest.xml). `setIcon` takes the chosen mode, `currentIcon`
+        // answers which alias is actually on, so the settings row shows the
+        // truth rather than the stored preference. Auto is decided in Dart.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ICON_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "setIcon" -> {
+                        val mode = call.argument<String>("mode")?.trim()?.lowercase()
+                        if (mode != null && enableLauncherIcon(mode)) {
+                            result.success(true)
+                        } else {
+                            result.error(
+                                "ICON_UNKNOWN_MODE",
+                                "No launcher alias for icon mode: $mode",
+                                null,
+                            )
+                        }
+                    }
+                    "currentIcon" -> result.success(currentLauncherIcon())
+                    else -> result.notImplemented()
                 }
             }
 
@@ -2358,6 +2389,58 @@ class MainActivity : FlutterActivity() {
             false
         }
     }
+
+    /// Turns [mode] on: enables that alias first, then disables the other.
+    ///
+    /// The order matters. Enabling the destination before disabling the current
+    /// one means an interruption between the two calls leaves two launcher
+    /// icons for a moment — visible, harmless, and fixed by any later switch —
+    /// rather than none, which would look like the app had uninstalled itself.
+    /// Returns false for a mode this build has no alias for.
+    private fun enableLauncherIcon(mode: String): Boolean {
+        val target = iconAliasComponent(packageName, mode) ?: return false
+        packageManager.setComponentEnabledSetting(
+            ComponentName(packageName, target),
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+        for (other in otherIconAliases(mode)) {
+            val alias = iconAliasComponent(packageName, other) ?: continue
+            packageManager.setComponentEnabledSetting(
+                ComponentName(packageName, alias),
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP,
+            )
+        }
+        Log.i(TAG, "launcher icon -> $mode")
+        return true
+    }
+
+    /// Which alias is on right now, or null if the platform reports neither.
+    private fun currentLauncherIcon(): String? = LAUNCHER_ICON_ALIASES
+        .firstOrNull { launcherAliasEnabled(iconAliasComponent(packageName, it.first)) }
+        ?.first
+
+    private fun launcherAliasEnabled(alias: String?): Boolean {
+        if (alias == null) return false
+        val component = ComponentName(packageName, alias)
+        return when (packageManager.getComponentEnabledSetting(component)) {
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED -> true
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED -> false
+            // Never switched on this install: the manifest decides, and the
+            // two aliases ship with opposite android:enabled values. A
+            // disabled component can only be described if we ask for it, hence
+            // the flag.
+            else -> try {
+                packageManager.getActivityInfo(
+                    component,
+                    PackageManager.MATCH_DISABLED_COMPONENTS,
+                ).enabled
+            } catch (_: PackageManager.NameNotFoundException) {
+                false
+            }
+        }
+    }
 }
 
 /// ISO-3166 alpha-2 country codes (lowercase) to international calling
@@ -2457,3 +2540,27 @@ fun rankedContactMatches(candidates: List<String>, query: String, limit: Int = 3
 /// Pure, so the boundary is pinned by a JVM test without a device.
 fun needsNotificationPermission(sdkInt: Int, alreadyGranted: Boolean): Boolean =
     sdkInt >= Build.VERSION_CODES.TIRAMISU && !alreadyGranted
+
+/// The launcher aliases this build ships, light first, as mode -> manifest
+/// name. The names are load-bearing: PackageManager switches between exactly
+/// these components, and an alias in here that is not in AndroidManifest.xml
+/// is a NameNotFoundException at runtime.
+val LAUNCHER_ICON_ALIASES: List<Pair<String, String>> = listOf(
+    "light" to ".IconLight",
+    "dark" to ".IconDark",
+)
+
+/// The component PackageManager wants for one icon mode — the *alias*, fully
+/// qualified, never the activity it targets. Null when this build has no such
+/// mode, which the caller turns into a channel error rather than a crash.
+/// Pure, so the mapping Dart and the manifest both depend on is pinned by a
+/// JVM test without a device.
+fun iconAliasComponent(packageName: String, mode: String): String? {
+    val alias = LAUNCHER_ICON_ALIASES.firstOrNull { it.first == mode }?.second ?: return null
+    return packageName + alias
+}
+
+/// Every icon mode except [mode] — the aliases that have to go off for the
+/// chosen one to be the only launcher entry.
+fun otherIconAliases(mode: String): List<String> =
+    LAUNCHER_ICON_ALIASES.map { it.first }.filter { it != mode }

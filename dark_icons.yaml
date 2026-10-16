@@ -1,0 +1,23 @@
+# The dark half of Nexus's launcher icon.
+#
+# Run it with the light set (see pubspec.yaml and the App icon row in
+# lib/ui/settings_view.dart):
+#
+#   dart run flutter_launcher_icons                      # ic_launcher_light
+#   dart run flutter_launcher_icons -f dark_icons.yaml   # ic_launcher_dark
+#
+# The filename deliberately avoids the `flutter_launcher_icons-<flavor>.yaml`
+# pattern, which the tool treats as a flavor config instead of one set.
+#
+# Both runs rewrite every `android:icon` line in AndroidManifest.xml to their
+# own icon name (flutter_launcher_icons 0.14.4, lib/android.dart:377 — it maps
+# over every line, not only the application element). Because this dark set is
+# the one that runs second, it points the application and the .IconLight alias
+# at @mipmap/ic_launcher_dark as well, which also drops the light artwork from
+# the APK since nothing references it any more. Check the three icon lines in
+# the manifest after regenerating: test/launcher_icons_test.dart pins them, so
+# `flutter test test/launcher_icons_test.dart` answers it in a second.
+flutter_launcher_icons:
+  android: "ic_launcher_dark"
+  ios: false
+  image_path: "assets/icon/icon_dark.png"

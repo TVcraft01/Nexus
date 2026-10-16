@@ -13,14 +13,18 @@ import 'dart:io';
 import 'package:flutter/cupertino.dart' show CupertinoSwitch;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart';
+import 'package:nexus/core/services/icon_service.dart';
 import 'package:nexus/core/version.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/mesh/updater.dart';
+import 'package:nexus/ui/components/nexus_ui.dart';
 import 'package:nexus/ui/settings_view.dart';
 import 'package:nexus/ui/theme.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Every switch on the settings screen, by the name a user reads.
 ///
@@ -244,6 +248,144 @@ void main() {
             reason: '"$fact" moved to About, it was not dropped');
       }
     } finally {
+      await tester.runAsync(mesh.stop);
+    }
+  });
+
+  // The App icon row was built in the standalone preview shell, where only the
+  // people running `flutter run -t lib/main_ui.dart` could ever see it: the
+  // manifest carried three launcher aliases and the switch that flips them, and
+  // the shipping settings screen had no row to flip them from. The row lives
+  // here now, and this is the guard that it did not slide back into the shell:
+  // the choice is stored, the row says so, and Android is told which alias to
+  // enable.
+  testWidgets('the App icon row picks one of three marks and tells Android', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    const MethodChannel iconChannel =
+        MethodChannel('dev.nexus.nexus/app_icon');
+    final List<MethodCall> calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(iconChannel, (MethodCall call) async {
+      calls.add(call);
+      return switch (call.method) {
+        'currentIcon' => 'light',
+        'setIcon' => true,
+        _ => null,
+      };
+    });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(iconChannel, null),
+    );
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    // The service is a singleton that outlives a test, so this one states where
+    // it starts instead of inheriting whatever ran before it.
+    await IconService.instance.setMode(IconMode.light);
+
+    late MeshService mesh;
+    await tester.runAsync(() async {
+      final store = NexusStore(
+        explicitPath:
+            '${Directory.systemTemp.createTempSync('settings-icon').path}/s.json',
+      );
+      store.broadcastDiscovery = false;
+      await store.save();
+      mesh = MeshService(
+        identity: DeviceInfo(
+          id: 'settings-5',
+          name: 'Settings Phone',
+          platform: 'android',
+        ),
+        store: store,
+      );
+    });
+
+    tester.view.physicalSize = const Size(420, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildNexusTheme(),
+          home: Scaffold(body: SettingsView(mesh: mesh)),
+        ),
+      );
+      await tester.pump();
+
+      final rowName = find.text('App icon');
+      await tester.scrollUntilVisible(
+        rowName,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pump();
+      expect(rowName, findsOneWidget);
+
+      Finder iconRow() => find.ancestor(
+            of: find.text('App icon'),
+            matching: find.byType(NexusRow),
+          );
+      expect(
+        find.descendant(of: iconRow(), matching: find.text('Light')),
+        findsOneWidget,
+        reason: 'the row reports the mode the launcher is wearing',
+      );
+
+      await tester.tap(rowName);
+      await tester.pumpAndSettle();
+
+      // Three choices, each with the sentence that says what it means, and the
+      // one in force wearing the check. Everything is scoped to the open sheet:
+      // the row behind it still carries the sentence for the mode now in force,
+      // so a bare find.text matches twice.
+      Finder inSheet(Finder finder) => find.descendant(
+            of: find.byType(NexusSheetSurface),
+            matching: finder,
+          );
+      for (final String meaning in <String>[
+        'Always the light mark.',
+        'Always the dark mark.',
+        'Follows the system theme.',
+      ]) {
+        expect(
+          inSheet(find.text(meaning)),
+          findsOneWidget,
+          reason: 'the sheet offers "$meaning"',
+        );
+      }
+      expect(inSheet(find.byIcon(Icons.check_rounded)), findsOneWidget,
+          reason: 'the check marks the mode in force');
+
+      await tester.tap(inSheet(find.text('Always the dark mark.')));
+      await tester.pumpAndSettle();
+
+      // The sheet is gone, the row reports the choice, the choice is stored, and
+      // Android was told which alias to enable.
+      expect(find.byType(NexusSheetSurface), findsNothing);
+      expect(find.text('Follows the system theme.'), findsNothing);
+      expect(
+        find.descendant(of: iconRow(), matching: find.text('Dark')),
+        findsOneWidget,
+      );
+      expect(find.text('Always the dark mark.'), findsOneWidget,
+          reason: 'the row now describes the mode it is wearing');
+      expect(IconService.instance.mode, IconMode.dark);
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString(SharedPrefsIconModeStore.key), 'dark');
+      expect(
+        calls
+            .where((MethodCall call) => call.method == 'setIcon')
+            .map(
+              (MethodCall call) =>
+                  (call.arguments as Map<Object?, Object?>)['mode'],
+            ),
+        contains('dark'),
+      );
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
       await tester.runAsync(mesh.stop);
     }
   });

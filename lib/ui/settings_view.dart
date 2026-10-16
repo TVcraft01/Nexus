@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart'
     show CupertinoActivityIndicator, CupertinoPageRoute;
 import 'package:flutter/foundation.dart'
@@ -6,6 +8,7 @@ import 'package:flutter/material.dart';
 
 import '../core/capabilities.dart';
 import '../core/location_access.dart';
+import '../core/services/icon_service.dart';
 import '../mesh/wake_word.dart';
 import '../core/version.dart';
 import '../mesh/mesh_service.dart';
@@ -48,12 +51,26 @@ class _SettingsViewState extends State<SettingsView> {
   String? _checkResult;
   bool _checking = false;
 
+  /// The launcher-icon mode the row shows. Held here so a tap redraws the row at
+  /// once; the truth still lives in [IconService].
+  IconMode _iconMode = IconService.instance.mode;
+
   @override
   void initState() {
     super.initState();
     MeshService.hasAllFilesAccess().then((v) {
       if (mounted) setState(() => _allFilesAccess = v);
     });
+    // The stored icon choice arrives asynchronously (it is a preference read),
+    // so the row corrects itself from the settled service rather than staying on
+    // the default it was first built with. attach() is idempotent — the app root
+    // calls it too — and it is also what keeps Auto following the system theme
+    // for as long as Nexus runs.
+    unawaited(
+      IconService.instance.attach().then((_) {
+        if (mounted) setState(() => _iconMode = IconService.instance.mode);
+      }),
+    );
   }
 
   MeshService get mesh => widget.mesh;
@@ -145,6 +162,47 @@ class _SettingsViewState extends State<SettingsView> {
         _checking = false;
         _checkResult = 'Could not check — try again';
       });
+    }
+  }
+
+  /// What the icon row says: the chosen mode, and the one platform that can act
+  /// on it.
+  String _iconSubtitle() {
+    if (!IconService.instance.switchingSupported) {
+      return 'Light, Dark or Auto — the launcher mark switches on Android.';
+    }
+    return switch (_iconMode) {
+      IconMode.light => 'Always the light mark.',
+      IconMode.dark => 'Always the dark mark.',
+      IconMode.auto => 'Follows the system theme.',
+    };
+  }
+
+  /// The icon picker: three choices, one tap. The choice goes to [IconService],
+  /// which stores it and switches the launcher alias — this only reports the
+  /// outcome, and says so plainly when Android refuses the switch or when this
+  /// build has no icon to switch.
+  Future<void> _chooseIcon() async {
+    final IconMode? chosen = await showNexusSheet<IconMode>(
+      context: context,
+      builder: (context, scroll) =>
+          _IconModeSheet(current: _iconMode, scroll: scroll),
+    );
+    if (chosen == null || !mounted) return;
+    setState(() => _iconMode = chosen);
+    await IconService.instance.setMode(chosen);
+    if (!mounted) return;
+    final String? failure = IconService.instance.failure;
+    if (failure != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Icon not switched: $failure')));
+    } else if (!IconService.instance.switchingSupported) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Saved — the launcher mark switches on Android'),
+        ),
+      );
     }
   }
 
@@ -327,6 +385,18 @@ class _SettingsViewState extends State<SettingsView> {
               leading: Icon(Icons.dark_mode_outlined, size: 20, color: icon),
               trailing: const NexusRowValue('Dark'),
             ),
+            // Android can only show the icon of one enabled launcher alias, so
+            // this row switches which alias that is: light, dark, or whichever
+            // the system theme is asking for. The mark is part of the manifest,
+            // not of the theme, which is why it is its own setting.
+            NexusRow(
+              title: 'App icon',
+              subtitle: _iconSubtitle(),
+              leading: Icon(Icons.apps_outlined, size: 20, color: icon),
+              trailing: NexusRowValue(_iconMode.label),
+              chevron: true,
+              onTap: _chooseIcon,
+            ),
           ],
         ),
 
@@ -387,6 +457,82 @@ class _SettingsViewState extends State<SettingsView> {
       default:
         return 'Device';
     }
+  }
+}
+
+/// The three-way icon choice: Light, Dark or Auto.
+///
+/// Rows in a group, one of them checked, because that is how this app marks a
+/// selection everywhere else — and because a Nexus sheet is Cupertino
+/// throughout: [NexusSheetSurface] holds no `Material` (deliberately, so nothing
+/// in a sheet can reach for Material ink), so the Material radios this sheet
+/// started with had no surface to paint on and opening the picker threw "No
+/// Material widget found" instead of offering a choice. The whole row is the
+/// target — the words are most of it, and the words are what a finger aims at.
+/// A tap chooses and closes the sheet: the switch is applied straight away, so
+/// there is nothing left to confirm. The list is the sheet's own scrollable, so
+/// a downward drag still dismisses it: the framework reads the controller it
+/// hands the builder.
+class _IconModeSheet extends StatelessWidget {
+  const _IconModeSheet({required this.current, required this.scroll});
+
+  /// The mode in force when the sheet opened.
+  final IconMode current;
+
+  /// The sheet's scroll controller — without it a drag on this list could never
+  /// dismiss the sheet.
+  final ScrollController scroll;
+
+  /// What each choice means, in the same words the row uses.
+  static String _meaning(IconMode mode) => switch (mode) {
+    IconMode.light => 'Always the light mark.',
+    IconMode.dark => 'Always the dark mark.',
+    IconMode.auto => 'Follows the system theme.',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = NexusPalette.of(context);
+    final theme = Theme.of(context);
+    return ListView(
+      controller: scroll,
+      padding: const EdgeInsets.fromLTRB(
+        NexusSpace.lg,
+        NexusSpace.lg,
+        NexusSpace.lg,
+        NexusSpace.lg,
+      ),
+      children: [
+        Text('App icon', style: theme.textTheme.titleMedium),
+        const SizedBox(height: NexusSpace.xs),
+        Text(
+          'Android names the launcher icon in the app manifest: the switch '
+          'takes effect at once, and the phone redraws it a moment later. Only '
+          'Android can do this — the choice is remembered either way.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: NexusSpace.md),
+        NexusGroup(
+          children: [
+            for (final mode in IconMode.values)
+              NexusRow(
+                title: mode.label,
+                subtitle: _meaning(mode),
+                // The check says which mark is in force to the eye; the
+                // semantics label says it to a screen reader, which cannot
+                // see a tick.
+                semanticLabel: mode == current
+                    ? '${mode.label}. ${_meaning(mode)} Selected'
+                    : '${mode.label}. ${_meaning(mode)}',
+                trailing: mode == current
+                    ? Icon(Icons.check_rounded, size: 20, color: palette.accent)
+                    : null,
+                onTap: () => Navigator.pop(context, mode),
+              ),
+          ],
+        ),
+      ],
+    );
   }
 }
 

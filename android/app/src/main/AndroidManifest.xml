@@ -37,10 +37,25 @@
         <intent><action android:name="android.intent.action.INSERT"/><data android:mimeType="vnd.android.cursor.dir/event"/></intent>
         <intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.APP_MUSIC"/></intent>
     </queries>
+    <!-- The three android:icon lines in this file — this one and the two
+         activity aliases below — are rewritten wholesale by
+         `dart run flutter_launcher_icons`, which regex-replaces every line
+         that mentions android:icon with the icon name it was configured
+         with. Running the dark set last therefore points all three at the
+         dark mark, which silently drops the light artwork from the APK and
+         gives both aliases the same icon. test/launcher_icons_test.dart
+         pins all three, so a regeneration that does this fails the suite
+         instead of shipping. -->
     <application
         android:label="Nexus"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher_light">
+        <!-- The activity the app actually runs in. It deliberately carries no
+             MAIN/LAUNCHER filter any more: the two launcher entries below are
+             aliases of it, one per icon, and a filter here as well would put a
+             second Nexus icon in the tray next to whichever alias is enabled.
+             Every other filter it had — the nexus://pair link and USB
+             attach — stays exactly where it was. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -52,10 +67,6 @@
             android:windowSoftInputMode="adjustResize">
             <meta-data android:name="io.flutter.embedding.android.NormalTheme" android:resource="@style/NormalTheme"/>
             <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>
-            <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
@@ -66,6 +77,43 @@
             </intent-filter>
             <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/device_filter"/>
         </activity>
+
+        <!-- One launcher entry per icon. Android shows the icon of whichever
+             alias is enabled, so switching the app icon at runtime is enabling
+             one alias and disabling the other (see
+             lib/core/services/icon_service.dart, which calls
+             PackageManager.setComponentEnabledSetting on exactly these two
+             names). Exactly one of them must be enabled at any moment: light
+             ships enabled, dark ships disabled, or the tray would show two
+             Nexus icons.
+
+             enabled/exported/icon are per-alias attributes — they do not
+             inherit from the target activity — and the alias names here are
+             also the component names the Dart side switches between. -->
+        <activity-alias
+            android:name=".IconLight"
+            android:targetActivity=".MainActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_light"
+            android:label="Nexus">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconDark"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_dark"
+            android:label="Nexus">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
         <service
             android:name=".NexusSyncService"
             android:exported="false"
