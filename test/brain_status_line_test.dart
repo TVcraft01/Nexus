@@ -40,6 +40,19 @@ class _FakeRuntime implements LlmRuntime {
   }) async => 'answered locally';
 
   @override
+  Stream<String> generateStream(
+    List<ChatTurn> messages, {
+    required int maxTokens,
+    required double temperature,
+  }) async* {
+    yield await generate(
+      messages,
+      maxTokens: maxTokens,
+      temperature: temperature,
+    );
+  }
+
+  @override
   Future<void> unload() async {}
 
   @override

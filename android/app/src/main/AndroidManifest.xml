@@ -2,7 +2,6 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
@@ -114,10 +113,29 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity-alias>
+        <!-- The mesh's background service is a data-sync job and nothing else.
+             It used to be declared `dataSync|microphone`, because the wake-word
+             loop borrowed this service's process to hold the microphone open —
+             which is exactly the arrangement a store review reads as background
+             recording. The microphone type is gone with the
+             FOREGROUND_SERVICE_MICROPHONE permission above.
+
+             The attribute itself has to stay, and has to keep saying `dataSync`:
+             NexusSyncService promotes itself with
+             FOREGROUND_SERVICE_TYPE_DATA_SYNC, and since Android 14 a service
+             that calls startForeground with a type its manifest does not declare
+             throws MissingForegroundServiceTypeException. Removing the whole
+             attribute would not remove a microphone — it would break every
+             background transfer on a modern phone.
+
+             WakeWordAudio.kt is untouched. Without the microphone type it can no
+             longer open the mic while Nexus is in the background, which is the
+             behaviour this change is for; a refused AudioRecord is already
+             answered as "no wake word" rather than a crash. -->
         <service
             android:name=".NexusSyncService"
             android:exported="false"
-            android:foregroundServiceType="dataSync|microphone"/>
+            android:foregroundServiceType="dataSync"/>
         <receiver
             android:name=".WakeWordSilenceReceiver"
             android:exported="false">

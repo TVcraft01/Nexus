@@ -1,0 +1,1060 @@
+diff --git i/android/app/src/main/kotlin/dev/nexus/nexus/MainActivity.kt w/android/app/src/main/kotlin/dev/nexus/nexus/MainActivity.kt
+index 60d926e..4886a23 100644
+--- i/android/app/src/main/kotlin/dev/nexus/nexus/MainActivity.kt
++++ w/android/app/src/main/kotlin/dev/nexus/nexus/MainActivity.kt
+@@ -161,6 +161,16 @@ class MainActivity : FlutterActivity() {
+     private val REQUEST_SPEECH_PERMISSIONS = 42605
+     private var pendingSpeechResult: MethodChannel.Result? = null
+ 
++    // The composer's own ask, made before it ever starts a recognizer. It has
++    // to be separate from the speech flow above: `listen` answers "nothing
++    // heard" for a refused microphone and for a quiet room alike, so a UI that
++    // wants to disable its mic and say why needs an answer the recognizer
++    // cannot give. Deliberately its own request code — 42605 is already shared
++    // by the email and speech flows, and a third meaning for it would be a
++    // trap for whoever reads onRequestPermissionsResult next.
++    private val REQUEST_MICROPHONE_PERMISSION = 42612
++    private var pendingMicrophoneResult: MethodChannel.Result? = null
++
+     // Wake word: "Hey Jarvis" arms the assistant hands-free. RECORD_AUDIO
+     // is requested on enable with the MethodChannel result held across the
+     // dialog, like the speech flow; a refusal answers false and the toggle
+@@ -481,6 +491,9 @@ class MainActivity : FlutterActivity() {
+                     // the location and microphone toggles live.
+                     openAppSettings()
+                     result.success(null)
++                } else if (call.method == "requestMicrophone") {
++                    // The microphone, asked once, before any recognizer runs.
++                    requestMicrophone(result)
+                 } else if (call.method == "calendarRead") {
+                     // Reading the next events needs READ_CALENDAR, requested on
+                     // first use — the result is held across the dialog.
+@@ -825,6 +838,20 @@ class MainActivity : FlutterActivity() {
+                 ),
+             )
+         }
++        if (requestCode == REQUEST_MICROPHONE_PERMISSION) {
++            val result = pendingMicrophoneResult
++            pendingMicrophoneResult = null
++            if (result == null) return
++            val mic = Manifest.permission.RECORD_AUDIO
++            val ok = granted(mic)
++            result.success(
++                mapOf(
++                    "ok" to ok,
++                    "permanentlyDenied" to
++                        (!ok && !shouldShowRequestPermissionRationale(mic)),
++                ),
++            )
++        }
+         if (requestCode == REQUEST_SPEECH_PERMISSIONS) {
+             val result = pendingSpeechResult
+             pendingSpeechResult = null
+@@ -1340,6 +1367,24 @@ class MainActivity : FlutterActivity() {
+         }
+     }
+ 
++    /// The composer's ask: RECORD_AUDIO, once, before any recognizer starts.
++    ///
++    /// Answers {ok: true} when the microphone may be used and {ok: false,
++    /// permanentlyDenied} when it may not — never a hang, and never a second
++    /// dialog: Android shows none after a refusal, so the caller remembers the
++    /// answer for the rest of the session instead of asking again.
++    fun requestMicrophone(result: MethodChannel.Result) {
++        val mic = Manifest.permission.RECORD_AUDIO
++        if (ContextCompat.checkSelfPermission(this, mic) ==
++            PackageManager.PERMISSION_GRANTED
++        ) {
++            result.success(mapOf("ok" to true))
++            return
++        }
++        pendingMicrophoneResult = result
++        requestPermissions(arrayOf(mic), REQUEST_MICROPHONE_PERMISSION)
++    }
++
+     /// The location-reminder toggle's ask: foreground first, then the
+     /// background half on Android 10+, with one result held across both
+     /// dialogs. Resolves {ok} only when Nexus may take a fix with the app
+diff --git i/lib/main_ui.dart w/lib/main_ui.dart
+index c122ac9..133dbec 100644
+--- i/lib/main_ui.dart
++++ w/lib/main_ui.dart
+@@ -6,10 +6,20 @@
+ ///
+ ///     flutter run -t lib/main_ui.dart
+ ///
+-/// The one thing it does reach for is `core/services/icon_service.dart`, and
+-/// only from [CustomizationPage]: the launcher mark is a manifest component
+-/// with an owner of its own, so the page that offers it talks to that owner
+-/// rather than to a mock of it. Everything else on screen is still mock data.
++/// It reaches for real code in three places, and each is a feature whose owner
++/// lives outside the shell:
++///   * `core/services/icon_service.dart`, from [CustomizationPage] — the
++///     launcher mark is a manifest component, so the page that offers it talks
++///     to its owner rather than to a mock of it.
++///   * `core/mic_access.dart`, from the mic's first tap — the microphone
++///     permission, asked once in the open, so a refusal can disable the button
++///     and say why instead of arriving as silence.
++///   * `core/speech.dart` — one utterance on the phone's own recognizer, which
++///     comes back as text and is sent exactly like typed words. Interim words
++///     are not shown yet; see [_HomeTabState._listen] for what that would take.
++///
++/// Everything else on screen is still mock data, and the thread is still a
++/// mock thread: the mic puts a bubble in it, and nothing answers.
+ ///
+ /// What lives here:
+ ///   * [NexusUiColors] / [NexusType] / [NexusLayout] — the design tokens.
+@@ -35,7 +45,9 @@ import 'dart:async';
+ import 'package:flutter/material.dart';
+ import 'package:google_fonts/google_fonts.dart';
+ 
++import 'core/mic_access.dart';
+ import 'core/services/icon_service.dart';
++import 'core/speech.dart';
+ 
+ // ---------------------------------------------------------------------------
+ // Tokens
+@@ -898,6 +910,41 @@ class _HomeTabState extends State<HomeTab> {
+     const NexusMockMessage('What’s in my Downloads?', mine: true),
+   ];
+ 
++  /// How long a session may stay open without words from the recognizer.
++  ///
++  /// A guard, not a stopwatch: a live microphone must never outlive this
++  /// without the user having done something. Thirty seconds is longer than any
++  /// sentence this composer is for, and shorter than "the button is broken".
++  static const Duration _micTimeout = Duration(seconds: 30);
++
++  /// The live session's number, or null when the microphone is closed.
++  ///
++  /// A number rather than a bool, because three things race to end a session —
++  /// the user's tap, the guard above, and the recognizer's own answer — and a
++  /// late answer has to be recognisable as belonging to a session nobody is
++  /// waiting for any more. It lives in this state rather than in the button
++  /// because the field rebuilds on every keystroke: a rebuild must never be
++  /// able to lose the fact that the phone is listening to the room.
++  int? _micSession;
++
++  /// Session numbers, handed out in order and never reused.
++  int _micSessions = 0;
++
++  /// The microphone permission's answer: null until the first tap asks, true
++  /// when it may be used, false when the user refused.
++  ///
++  /// Asked once and remembered for the session, because Android will not show
++  /// the dialog a second time: a button that kept asking would silently do
++  /// nothing, which is the failure this whole path exists to avoid.
++  bool? _micAllowed;
++
++  /// Why the microphone is not usable, when it is not. Set exactly when the ask
++  /// came back refused, and shown wherever the button can carry a sentence.
++  String? _micRefusal;
++
++  /// True while a session is live: exactly what the button reads.
++  bool get _listening => _micSession != null;
++
+   @override
+   void initState() {
+     super.initState();
+@@ -913,6 +960,15 @@ class _HomeTabState extends State<HomeTab> {
+ 
+   @override
+   void dispose() {
++    // The screen going away must not leave the microphone open behind it, so an
++    // utterance still in flight is taken back. Only this screen's own session
++    // is stopped — an idle stop would end somebody else's.
++    //
++    // The session itself is closed by the answer or the guard that follows in
++    // [_listen], which is also where its `mic:stop` line comes from — so this
++    // stays a one-line release rather than a second place that has to remember
++    // to log. And it cannot repaint: a disposed element throws on setState.
++    if (_listening) unawaited(SpeechInput.current.stop());
+     _message
+       ..removeListener(_onChanged)
+       ..dispose();
+@@ -934,6 +990,166 @@ class _HomeTabState extends State<HomeTab> {
+     _focus.unfocus();
+   }
+ 
++  /// One utterance, then the recognized words enter through the same door as
++  /// typed ones: the field is filled and [_send] is called, so a spoken message
++  /// and a typed message are the same event with the same result.
++  ///
++  /// The microphone, not the finger, decides when a sentence is over, so this
++  /// waits on the recognizer — but never unconditionally: the wait is guarded
++  /// by [_micTimeout], and every way out of here closes the session before it
++  /// does anything else, so the button can never be left saying "listening".
++  ///
++  /// Nothing is heard and nothing happens: a mis-hear, a tap that caught no
++  /// words, the user taking the mic back, a refused microphone and a device
++  /// with no recognizer all arrive here as the same null, and none of them is
++  /// worth a card — the thread stays exactly as it was.
++  ///
++  /// What the phone hears is written verbatim. It is *not* run through the
++  /// assistant's `spokenToWritten` repair yet, because nothing in this shell
++  /// parses commands: that repair exists to make "report dot pdf" readable to
++  /// the file grammar, and there is no grammar here to read it.
++  Future<void> _listen() async {
++    if (_listening) return;
++    final speech = SpeechInput.current;
++    if (!speech.available) return; // the button is inert in this case
++    final int session = ++_micSessions;
++    setState(() => _micSession = session);
++    _logMic('mic:start ${_stamp()}');
++    try {
++      String? heard;
++      try {
++        heard = await speech.listen().timeout(_micTimeout);
++      } on TimeoutException {
++        // The recognizer went quiet without answering. The microphone is
++        // released on the platform side too, because nothing else will.
++        _endMic(session, 'timeout');
++        return;
++      } catch (_) {
++        _endMic(session, 'error');
++        return;
++      }
++      final String text = heard?.trim() ?? '';
++      // `cancelled` covers every session that closes without words: the user's
++      // tap, a tap that caught nothing, and a recognizer that answered nothing.
++      final bool ended = _endMic(
++        session,
++        text.isEmpty ? 'cancelled' : 'final',
++      );
++      // Words from a session the user already ended are nobody's: dropped, not
++      // sent. A cancelled utterance must never post a message.
++      if (!ended || text.isEmpty || !mounted) return;
++      _message.text = text;
++      _send();
++    } finally {
++      // The guarantee the button rests on. Every path above has already closed
++      // its session; this is for the one that returns early, and for the one a
++      // later edit might introduce — no exit may leave the session open.
++      if (_micSession == session) _endMic(session, 'error');
++    }
++  }
++
++  /// The tap on the mic button: ask, then listen — or, while a session is live,
++  /// end it now.
++  ///
++  /// The ask comes first and blocks the session: a recognizer is never started
++  /// for a user who has not answered, so a refusal can never be mistaken for a
++  /// quiet room.
++  Future<void> _micTapped() async {
++    // Answered from state alone, never by awaiting the microphone — so the
++    // button works while a session is live and while the platform channel has
++    // not replied to anything.
++    if (_listening) {
++      _stopListening();
++      return;
++    }
++    if (!_micUsable) return; // the button is inert in this case
++    if (!await _ensureMicAllowed()) return;
++    await _listen();
++  }
++
++  /// Asks for the microphone the first time it is wanted, and remembers the
++  /// answer for the rest of the session.
++  ///
++  /// Returns whether the microphone may be used. A refusal is counted: the
++  /// button goes inert and the composer says why, which is the difference
++  /// between a disabled control and a broken one.
++  Future<bool> _ensureMicAllowed() async {
++    final bool? known = _micAllowed;
++    if (known != null) return known;
++    final result = await MicrophoneAccess.requestOnce();
++    if (!mounted) return false;
++    setState(() {
++      _micAllowed = result.granted;
++      _micRefusal = result.granted
++          ? null
++          : (result.message ?? 'Microphone permission needed.');
++    });
++    return result.granted;
++  }
++
++  /// Whether the mic button can do anything at all: a device that can listen,
++  /// and a microphone the user has not refused.
++  bool get _micUsable =>
++      SpeechInput.current.available && _micAllowed != false;
++
++  /// What the mic button says about itself: its own name, or the reason it is
++  /// inert. A disabled button with no explanation just looks broken.
++  String get _micTooltip {
++    if (_micRefusal != null) return _micRefusal!;
++    if (!SpeechInput.current.available) {
++      return 'Voice input isn’t set up on this device';
++    }
++    return 'Voice input';
++  }
++
++  /// The second tap: end the session now, answering nothing and waiting for
++  /// nothing.
++  ///
++  /// The order here is the whole fix. The state is cleared *before* the
++  /// platform is told, and the platform's answer is never awaited — because
++  /// this seam resolves the pending listen only when the recognizer reports
++  /// back, and a recognizer that was stopped or replaced reports back to nobody
++  /// (see `releaseRecognizerIf` in MainActivity, which returns without
++  /// answering when the session it holds is no longer the live one). Waiting on
++  /// that answer is what left the button stuck on "listening", with no tap able
++  /// to end it.
++  void _stopListening() {
++    final int? session = _micSession;
++    if (session == null) return;
++    _endMic(session, 'cancelled');
++    unawaited(SpeechInput.current.stop());
++  }
++
++  /// Closes the session [session] — state, log, and (only where nothing else
++  /// will) the microphone — and answers whether it was still the live one.
++  ///
++  /// A false answer means the user, the guard or a newer session got there
++  /// first: this session is over, and its outcome, words included, must be
++  /// dropped rather than acted on.
++  bool _endMic(int session, String reason) {
++    if (_micSession != session) return false;
++    _micSession = null;
++    // Repaint only if this screen can: an answer can arrive after the screen is
++    // gone, and setState on a disposed element throws.
++    if (mounted) setState(() {});
++    _logMic('mic:stop ${_stamp()} reason=$reason');
++    if (reason == 'timeout' || reason == 'error') {
++      // Deliberately not for `final`: the recognizer already finished, and a
++      // stop sent now could land on a newer session's recognizer instead.
++      unawaited(SpeechInput.current.stop());
++    }
++    return true;
++  }
++
++  /// One line per session boundary, on the stream Flutter's own logs use —
++  /// `adb logcat | grep mic:` — because the failures worth catching here happen
++  /// on a phone with no debugger attached.
++  static void _logMic(String line) => debugPrint(line);
++
++  /// The phone's own clock, so a log line can be lined up with what is on
++  /// screen at that moment.
++  static String _stamp() => DateTime.now().toIso8601String();
++
+   @override
+   Widget build(BuildContext context) {
+     final c = context.ui;
+@@ -997,6 +1213,11 @@ class _HomeTabState extends State<HomeTab> {
+             focusNode: _focus,
+             hasText: _hasText,
+             onSend: _send,
++            listening: _listening,
++            micEnabled: _micUsable,
++            micTooltip: _micTooltip,
++            micNotice: _micRefusal,
++            onMic: () => unawaited(_micTapped()),
+           ),
+         ],
+       ),
+@@ -1081,12 +1302,19 @@ class NexusChatBubble extends StatelessWidget {
+ 
+ /// The bottom pill: rounded input, and one filled purple button that is a mic
+ /// while the field is empty and the send arrow once there is something to send.
++/// While the microphone is open the same button becomes a stop, so the only
++/// thing that can end an utterance also takes it back.
+ class _Composer extends StatelessWidget {
+   const _Composer({
+     required this.controller,
+     required this.focusNode,
+     required this.hasText,
+     required this.onSend,
++    required this.listening,
++    required this.micEnabled,
++    required this.micTooltip,
++    required this.micNotice,
++    required this.onMic,
+   });
+ 
+   final TextEditingController controller;
+@@ -1094,6 +1322,27 @@ class _Composer extends StatelessWidget {
+   final bool hasText;
+   final VoidCallback onSend;
+ 
++  /// True while the microphone is open: the trailing button stops instead of
++  /// sending, whatever the field happens to hold.
++  final bool listening;
++
++  /// False when the mic button cannot do anything here — a device that cannot
++  /// listen, or a microphone the user refused. The button is drawn inert rather
++  /// than hidden: one that disappears reads as a missing feature, not as a
++  /// permission the user declined.
++  final bool micEnabled;
++
++  /// What the mic button says about itself, including the reason it is inert.
++  final String micTooltip;
++
++  /// The refusal, when there is one. It goes where the composer's own note
++  /// goes — the one place in this pill that holds a sentence without moving
++  /// anything — so the reason is visible without a long press.
++  final String? micNotice;
++
++  /// The tap on the mic: ask, listen, or take a live session back.
++  final VoidCallback onMic;
++
+   @override
+   Widget build(BuildContext context) {
+     final c = context.ui;
+@@ -1110,7 +1359,9 @@ class _Composer extends StatelessWidget {
+               Padding(
+                 padding: const EdgeInsets.only(bottom: 8),
+                 child: Text(
+-                  'UI shell only — typing here does not reach the assistant.',
++                  micNotice ??
++                      'UI shell only — typing here does not reach the '
++                          'assistant.',
+                   textAlign: TextAlign.center,
+                   style: NexusType.rowMeta(c).copyWith(fontSize: 11.5),
+                 ),
+@@ -1165,7 +1416,15 @@ class _Composer extends StatelessWidget {
+                               child: child,
+                             ),
+                           ),
+-                      child: hasText
++                      child: listening
++                          ? _RoundAction(
++                              key: const ValueKey<String>('stop'),
++                              icon: Icons.stop_rounded,
++                              tooltip: 'Stop listening',
++                              listening: true,
++                              onTap: onMic,
++                            )
++                          : hasText
+                           ? _RoundAction(
+                               key: const ValueKey<String>('send'),
+                               icon: Icons.arrow_upward_rounded,
+@@ -1175,8 +1434,9 @@ class _Composer extends StatelessWidget {
+                           : _RoundAction(
+                               key: const ValueKey<String>('mic'),
+                               icon: Icons.mic_rounded,
+-                              tooltip: 'Voice input',
+-                              onTap: () => nexusNotWired(context, 'Voice input'),
++                              tooltip: micTooltip,
++                              enabled: micEnabled,
++                              onTap: onMic,
+                             ),
+                     ),
+                   ],
+@@ -1191,38 +1451,122 @@ class _Composer extends StatelessWidget {
+ }
+ 
+ /// The filled purple circle: the only solid accent fill in the shell.
++///
++/// Listening does not move it or recolour it — the glyph becomes a stop and a
++/// ring breathes *inside* the circle. A halo drawn outside would resize the
++/// composer every time the microphone opened, and a control that jumps on the
++/// tap that starts it is worse than no animation at all.
+ class _RoundAction extends StatelessWidget {
+   const _RoundAction({
+     super.key,
+     required this.icon,
+     required this.tooltip,
+     required this.onTap,
++    this.enabled = true,
++    this.listening = false,
+   });
+ 
+   final IconData icon;
+   final String tooltip;
+   final VoidCallback onTap;
+ 
++  /// False draws the circle neutral and refuses the tap: in this file purple
++  /// means the user can act on it, and a button that can't be pressed isn't
++  /// purple.
++  final bool enabled;
++
++  /// True while the microphone is open: a ring pulses inside the circle.
++  final bool listening;
++
+   @override
+   Widget build(BuildContext context) {
+     final c = context.ui;
+-    return Tooltip(
+-      message: tooltip,
+-      child: Material(
+-        color: c.accent,
+-        shape: const CircleBorder(),
+-        child: InkWell(
+-          onTap: onTap,
+-          customBorder: const CircleBorder(),
+-          splashColor: Colors.white.withValues(alpha: 0.2),
+-          child: SizedBox(
+-            width: 40,
+-            height: 40,
+-            child: Icon(icon, size: 20, color: c.onAccent),
++    final circle = Material(
++      color: enabled ? c.accent : c.raised,
++      shape: const CircleBorder(),
++      child: InkWell(
++        onTap: enabled ? onTap : null,
++        customBorder: const CircleBorder(),
++        splashColor: Colors.white.withValues(alpha: 0.2),
++        child: SizedBox(
++          width: 40,
++          height: 40,
++          child: Icon(
++            icon,
++            size: 20,
++            color: enabled ? c.onAccent : c.textMuted,
+           ),
+         ),
+       ),
+     );
++    return Tooltip(
++      message: tooltip,
++      child: listening ? _ListeningRing(color: c.onAccent, child: circle) : circle,
++    );
++  }
++}
++
++/// The pulse inside the mic button while it listens: a 1.5px ring that grows
++/// from behind the glyph out to the edge of the circle, fading as it goes.
++///
++/// It repeats for as long as it is in the tree, which is the point — there are
++/// no words on screen yet, so the ring is the only thing saying the phone is
++/// still listening. That also means a widget test must not `pumpAndSettle`
++/// while listening: the animation never comes to rest.
++class _ListeningRing extends StatefulWidget {
++  const _ListeningRing({required this.color, required this.child});
++
++  /// The glyph colour to pulse in (the button's [NexusUiColors.onAccent]).
++  final Color color;
++
++  final Widget child;
++
++  @override
++  State<_ListeningRing> createState() => _ListeningRingState();
++}
++
++class _ListeningRingState extends State<_ListeningRing>
++    with SingleTickerProviderStateMixin {
++  late final AnimationController _controller = AnimationController(
++    vsync: this,
++    duration: const Duration(milliseconds: 1200),
++  )..repeat();
++
++  @override
++  void dispose() {
++    _controller.dispose();
++    super.dispose();
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Stack(
++      alignment: Alignment.center,
++      children: <Widget>[
++        widget.child,
++        // The ring is decoration: it must never eat the tap that stops the
++        // utterance, so it sits above the button but out of touch.
++        IgnorePointer(
++          child: AnimatedBuilder(
++            animation: _controller,
++            builder: (BuildContext context, Widget? child) {
++              final double t = _controller.value;
++              return Container(
++                width: 12 + 26 * t,
++                height: 12 + 26 * t,
++                decoration: BoxDecoration(
++                  shape: BoxShape.circle,
++                  border: Border.all(
++                    color: widget.color.withValues(alpha: 0.5 * (1 - t)),
++                    width: 1.5,
++                  ),
++                ),
++              );
++            },
++          ),
++        ),
++      ],
++    );
+   }
+ }
+ 
+diff --git i/test/main_ui_test.dart w/test/main_ui_test.dart
+index e48c357..aa90595 100644
+--- i/test/main_ui_test.dart
++++ w/test/main_ui_test.dart
+@@ -1,13 +1,103 @@
++import 'dart:async';
++
+ import 'package:flutter/foundation.dart'
+-    show TargetPlatform, debugDefaultTargetPlatformOverride;
++    show
++        DebugPrintCallback,
++        TargetPlatform,
++        debugDefaultTargetPlatformOverride,
++        debugPrint;
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart' show MethodCall, MethodChannel;
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:google_fonts/google_fonts.dart';
++import 'package:nexus/core/mic_access.dart';
+ import 'package:nexus/core/services/icon_service.dart';
++import 'package:nexus/core/speech.dart';
+ import 'package:nexus/main_ui.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
++/// A recognizer that holds the utterance open until the engine decides the
++/// sentence is over — the shape of Android's, where the microphone, not the
++/// finger, ends the listen. [hear] is that end of speech; [stop] is the second
++/// tap on the mic, which answers the pending listen with nothing heard.
++class _FakeSpeechInput extends SpeechInput {
++  _FakeSpeechInput();
++
++  Completer<String?>? _open;
++  int stops = 0;
++
++  @override
++  bool get available => true;
++
++  @override
++  Future<String?> listen() => (_open = Completer<String?>()).future;
++
++  /// The recognizer hears [text] and closes the utterance.
++  void hear(String text) => _open?.complete(text);
++
++  @override
++  Future<void> stop() async {
++    stops++;
++    _open?.complete(null);
++    _open = null;
++  }
++}
++
++/// A recognizer for a device that cannot listen: on the phone it would be a
++/// ROM with no speech service at all.
++class _UnavailableSpeechInput extends SpeechInput {
++  const _UnavailableSpeechInput();
++
++  @override
++  bool get available => false;
++}
++
++/// The phone's answer to the one microphone ask, counting the asks so a test
++/// can prove there is only ever one.
++class _FakeMicAsk {
++  _FakeMicAsk.granted() : _granted = true, _message = null;
++
++  _FakeMicAsk.refused([String? message])
++    : _granted = false,
++      _message = message ?? 'Microphone permission needed — voice input stays '
++          'off until you allow it.';
++
++  final bool _granted;
++  final String? _message;
++  int asks = 0;
++
++  Future<MicrophonePermissionResult> call() async {
++    asks++;
++    return MicrophonePermissionResult(granted: _granted, message: _message);
++  }
++}
++
++/// A recognizer that keeps its sentence to itself — the shape of the platform
++/// seam after a stop.
++///
++/// `MainActivity.releaseRecognizerIf` answers the pending listen only when the
++/// session it holds is still the live one, and `stopSpeech` clears that before
++/// it cancels, so a stopped or replaced recognizer answers *nobody*: the Dart
++/// future stays pending for ever. [answer] is the other half of the same
++/// problem — a recognizer that reports the sentence late, to a session the user
++/// has already ended.
++class _LateAnswerSpeechInput extends SpeechInput {
++  Completer<String?>? _open;
++  int stops = 0;
++
++  @override
++  bool get available => true;
++
++  @override
++  Future<String?> listen() => (_open = Completer<String?>()).future;
++
++  /// The recognizer's answer, whenever it decides to give one.
++  void answer(String text) => _open?.complete(text);
++
++  @override
++  Future<void> stop() async => stops++;
++}
++
+ /// The UI shell is standalone, so it is tested standalone: pump [NexusUiApp],
+ /// drive it like a thumb would, and check what is actually on screen.
+ void main() {
+@@ -26,6 +116,40 @@ void main() {
+     await tester.pumpAndSettle();
+   }
+ 
++  /// Runs [body] with the shell's own mic log lines captured — the same stream
++  /// the phone's logcat shows (`adb logcat | grep mic:`), so the format these
++  /// tests pin is the format the evidence is read in.
++  ///
++  /// `debugPrint` is restored in the body, not in a tearDown: the framework
++  /// checks foundation's debug variables *before* tearDowns run, so restoring
++  /// there would be too late and would fail the next test instead.
++  Future<void> withMicLog(Future<void> Function(List<String> log) body) async {
++    final List<String> lines = <String>[];
++    final DebugPrintCallback original = debugPrint;
++    debugPrint = (String? line, {int? wrapWidth}) {
++      if (line != null && line.startsWith('mic:')) lines.add(line);
++    };
++    try {
++      await body(lines);
++    } finally {
++      debugPrint = original;
++    }
++  }
++
++  final RegExp startLine = RegExp(r'^mic:start \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}');
++  final RegExp stopLine = RegExp(
++    r'^mic:stop \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+ reason=(final|cancelled|timeout|error)$',
++  );
++
++  /// Stands in for the system dialog, granting the microphone: without this a
++  /// test that taps the mic would reach the real channel and be refused.
++  _FakeMicAsk grantMic() {
++    final ask = _FakeMicAsk.granted();
++    MicrophoneAccess.debugRequestOverride = ask.call;
++    addTearDown(() => MicrophoneAccess.debugRequestOverride = null);
++    return ask;
++  }
++
+   Finder tab(String label) => find.descendant(
+     of: find.byType(NexusTabBar),
+     matching: find.text(label),
+@@ -236,6 +360,332 @@ void main() {
+     expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 3);
+   });
+ 
++  testWidgets('the mic hears one utterance and posts it as yours', (
++    tester,
++  ) async {
++    grantMic();
++    final mic = _FakeSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++
++    final int bubblesBefore = find.byType(NexusChatBubble).evaluate().length;
++
++    await tester.tap(find.byTooltip('Voice input'));
++    // Pumped, not settled: the ring inside the button repeats for as long as
++    // the microphone is open, so there is nothing to settle to. 250ms carries
++    // past the 180ms swap, which is what retires the mic button for good.
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 250));
++
++    // Listening: one button, and it is the one that stops. Nothing is said on
++    // screen while it waits — the ring is the whole of the state.
++    expect(find.byTooltip('Stop listening'), findsOneWidget);
++    expect(find.byTooltip('Voice input'), findsNothing);
++
++    // The recognizer hears the sentence end: the words go through the same
++    // door as typing, so a bubble appears and the field is left clean.
++    mic.hear('what is in my downloads');
++    await tester.pumpAndSettle();
++
++    expect(find.byTooltip('Voice input'), findsOneWidget);
++    expect(find.byTooltip('Stop listening'), findsNothing);
++    expect(find.text('what is in my downloads'), findsOneWidget);
++    expect(find.byType(NexusChatBubble).evaluate().length, bubblesBefore + 1);
++    expect(
++      tester.widget<TextField>(find.byType(TextField)).controller!.text,
++      '',
++    );
++  });
++
++  testWidgets('the second tap takes the microphone back, and says nothing', (
++    tester,
++  ) async {
++    grantMic();
++    final mic = _FakeSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++
++    final int bubblesBefore = find.byType(NexusChatBubble).evaluate().length;
++
++    await tester.tap(find.byTooltip('Voice input'));
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 250));
++    expect(find.byTooltip('Stop listening'), findsOneWidget);
++
++    await tester.tap(find.byTooltip('Stop listening'));
++    // The ring is gone once the utterance is over, so this one can settle:
++    // what is left to animate is the swap back to the mic button.
++    await tester.pumpAndSettle();
++
++    // Stopped once, idle again, and the thread is untouched: a tap that caught
++    // no words is not an event worth a card.
++    expect(mic.stops, 1);
++    expect(find.byTooltip('Voice input'), findsOneWidget);
++    expect(find.byTooltip('Stop listening'), findsNothing);
++    expect(find.byType(NexusChatBubble).evaluate().length, bubblesBefore);
++  });
++
++  testWidgets('a device that cannot listen gets an inert mic, not a mock', (
++    tester,
++  ) async {
++    SpeechInput.override = () => const _UnavailableSpeechInput();
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++
++    // The button is still there and still says what it is — but it explains
++    // itself instead of opening a microphone this device does not have.
++    final reason = find.byTooltip('Voice input isn’t set up on this device');
++    expect(reason, findsOneWidget);
++    expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
++    expect(
++      tester
++          .widget<InkWell>(
++            find.descendant(of: reason, matching: find.byType(InkWell)),
++          )
++          .onTap,
++      isNull,
++    );
++
++    await tester.tap(reason);
++    await tester.pump();
++    expect(find.byTooltip('Stop listening'), findsNothing);
++  });
++
++  testWidgets('the second tap ends the session even when the platform never '
++      'answers', (tester) async {
++    grantMic();
++    final mic = _LateAnswerSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++    await withMicLog((List<String> log) async {
++      await tester.tap(find.byTooltip('Voice input'));
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 250));
++      expect(find.byTooltip('Stop listening'), findsOneWidget);
++
++      await tester.tap(find.byTooltip('Stop listening'));
++      await tester.pumpAndSettle();
++
++      // Idle on the very next frame. The state is cleared before the platform
++      // is told, so a channel that never answers cannot hold the button — this
++      // is the bug these tests exist for.
++      expect(find.byTooltip('Voice input'), findsOneWidget);
++      expect(find.byTooltip('Stop listening'), findsNothing);
++      expect(mic.stops, 1);
++
++      // And the guard firing thirty seconds later does not reopen anything: the
++      // session it belonged to was closed long ago, so it adds no second line.
++      await tester.pump(const Duration(seconds: 31));
++      expect(find.byTooltip('Voice input'), findsOneWidget);
++      expect(log, hasLength(2));
++      expect(log.first, matches(startLine));
++      expect(log.last, matches(stopLine));
++      expect(log.last, contains('reason=cancelled'));
++    });
++  });
++
++  testWidgets('a session nothing ever answers ends itself at the guard', (
++    tester,
++  ) async {
++    grantMic();
++    final mic = _LateAnswerSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++    await withMicLog((List<String> log) async {
++      await tester.tap(find.byTooltip('Voice input'));
++      await tester.pump();
++      expect(find.byTooltip('Stop listening'), findsOneWidget);
++
++      // Well inside the guard a live microphone is still the user's to end.
++      await tester.pump(const Duration(seconds: 20));
++      expect(find.byTooltip('Stop listening'), findsOneWidget);
++
++      // Past it the session ends by itself, the microphone is released on the
++      // platform side too, and the log says which of the four it was.
++      await tester.pump(const Duration(seconds: 11));
++      await tester.pump(const Duration(milliseconds: 250));
++      expect(find.byTooltip('Voice input'), findsOneWidget);
++      expect(mic.stops, 1);
++      expect(log.last, matches(stopLine));
++      expect(log.last, contains('reason=timeout'));
++    });
++  });
++
++  testWidgets('words that arrive after the user cancelled are dropped', (
++    tester,
++  ) async {
++    grantMic();
++    final mic = _LateAnswerSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++    final int before = find.byType(NexusChatBubble).evaluate().length;
++    await withMicLog((List<String> log) async {
++      await tester.tap(find.byTooltip('Voice input'));
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 250));
++      await tester.tap(find.byTooltip('Stop listening'));
++      await tester.pumpAndSettle();
++
++      // The recognizer finally reports the sentence it was still holding. It
++      // belongs to a session the user ended, so it is dropped, not sent.
++      mic.answer('this was cancelled');
++      await tester.pumpAndSettle();
++      expect(find.text('this was cancelled'), findsNothing);
++      expect(find.byType(NexusChatBubble).evaluate().length, before);
++      expect(log, hasLength(2));
++      expect(log.last, contains('reason=cancelled'));
++    });
++  });
++
++  testWidgets('the whole disc cancels the session, not just the glyph', (
++    tester,
++  ) async {
++    grantMic();
++    final mic = _LateAnswerSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++
++    await tester.tap(find.byTooltip('Voice input'));
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 250));
++
++    // 18px off centre: inside the 40dp disc, clear of the glyph, and right
++    // across the pulsing ring — which must be unable to eat the tap that ends
++    // the session.
++    final Rect disc = tester.getRect(find.byTooltip('Stop listening'));
++    await tester.tapAt(disc.center + const Offset(18, 0));
++    await tester.pumpAndSettle();
++
++    expect(mic.stops, 1);
++    expect(find.byTooltip('Voice input'), findsOneWidget);
++
++    // The cancelled session's guard is left to run out, since nothing else will
++    // stop it: this fake never answers, exactly like the platform one.
++    await tester.pump(const Duration(seconds: 31));
++    expect(find.byTooltip('Voice input'), findsOneWidget);
++    expect(mic.stops, 1);
++  });
++
++  testWidgets('every session logs a start and a matching stop', (tester) async {
++    grantMic();
++    final mic = _FakeSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++    await withMicLog((List<String> log) async {
++      await tester.tap(find.byTooltip('Voice input'));
++      await tester.pump();
++      mic.hear('what time is it');
++      await tester.pumpAndSettle();
++
++      // One line in, one line out, both timestamped, and the reason names the
++      // path the session actually took.
++      expect(log, hasLength(2));
++      expect(log.first, matches(startLine));
++      expect(log.last, matches(stopLine));
++      expect(log.last, contains('reason=final'));
++    });
++  });
++
++  testWidgets('the microphone is asked for once, before any recognizer starts',
++      (tester) async {
++    final ask = _FakeMicAsk.granted();
++    MicrophoneAccess.debugRequestOverride = ask.call;
++    addTearDown(() => MicrophoneAccess.debugRequestOverride = null);
++    final List<String> order = <String>[];
++    final mic = _FakeSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++
++    // The first tap asks first and listens second: the recognizer is never
++    // started for a user who has not answered.
++    order.add('asked');
++    await tester.tap(find.byTooltip('Voice input'));
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 250));
++    expect(ask.asks, 1);
++    expect(find.byTooltip('Stop listening'), findsOneWidget);
++    mic.hear('what time is it');
++    await tester.pumpAndSettle();
++    expect(find.text('what time is it'), findsOneWidget);
++
++    // And a second session does not ask again — Android would not show the
++    // dialog anyway, so asking twice would be a tap that does nothing.
++    await tester.tap(find.byTooltip('Voice input'));
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 250));
++    expect(ask.asks, 1);
++    expect(find.byTooltip('Stop listening'), findsOneWidget);
++    mic.hear('and again');
++    await tester.pumpAndSettle();
++    expect(find.text('and again'), findsOneWidget);
++  });
++
++  testWidgets('a refused microphone leaves the button inert and says why', (
++    tester,
++  ) async {
++    final ask = _FakeMicAsk.refused('Microphone permission needed — try '
++        'again from system settings.');
++    MicrophoneAccess.debugRequestOverride = ask.call;
++    addTearDown(() => MicrophoneAccess.debugRequestOverride = null);
++    final mic = _FakeSpeechInput();
++    SpeechInput.override = () => mic;
++    addTearDown(() => SpeechInput.override = null);
++    await pumpShell(tester);
++    final List<String> log = <String>[];
++    final DebugPrintCallback original = debugPrint;
++    debugPrint = (String? line, {int? wrapWidth}) {
++      if (line != null && line.startsWith('mic:')) log.add(line);
++    };
++    try {
++      await tester.tap(find.byTooltip('Voice input'));
++      await tester.pumpAndSettle();
++
++      // Asked exactly once, no session, and nothing to stop.
++      expect(ask.asks, 1);
++      expect(log, isEmpty);
++      expect(find.byTooltip('Stop listening'), findsNothing);
++
++      // The reason is on the button and in the composer, not hidden behind a
++      // long press — a disabled control that explains itself is not a broken
++      // one.
++      final reason = find.byTooltip(
++        'Microphone permission needed — try again from system settings.',
++      );
++      expect(reason, findsOneWidget);
++      expect(
++        find.text(
++          'Microphone permission needed — try again from system settings.',
++        ),
++        findsOneWidget,
++      );
++      expect(
++        tester
++            .widget<InkWell>(
++              find.descendant(of: reason, matching: find.byType(InkWell)),
++            )
++            .onTap,
++        isNull,
++      );
++
++      // And a second tap cannot re-ask or start anything.
++      await tester.tap(reason);
++      await tester.pumpAndSettle();
++      expect(ask.asks, 1);
++      expect(log, isEmpty);
++      expect(find.byTooltip('Stop listening'), findsNothing);
++    } finally {
++      debugPrint = original;
++    }
++  });
++
+   testWidgets('the shell\'s App icon row switches the launcher alias', (
+     tester,
+   ) async {

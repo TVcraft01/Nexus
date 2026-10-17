@@ -3,9 +3,21 @@
 // and an honest "not on this device" everywhere else — the same thin
 // platform split the phone and clipboard backends use. The recognized text
 // is just an ask: it runs through the exact same pipeline as typing.
+//
+// Four things cross this seam, and they are four because they answer four
+// different questions. [SpeechInput.listen] is the final transcript — what was
+// said. [SpeechInput.partials] is what the recognizer *thinks* was said while it
+// is still listening, so a composer can show the sentence forming. [SpeechInput.rms]
+// is how *loud* the room is this instant, which is what a level meter is drawn
+// from: the words say what was said, and the level says a voice is being heard at
+// all. [SpeechInput.finish]/[SpeechInput.stop] end the utterance, and the
+// difference between them is the whole point of a voice note: finish keeps the
+// words, stop throws them away.
+import 'dart:async';
+
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, visibleForTesting;
-import 'package:flutter/services.dart' show MethodChannel;
+import 'package:flutter/services.dart' show MethodCall, MethodChannel;
 
 /// What a recognizer hands back is what it *heard*, not what was meant:
 /// "report.pdf" comes back as "report dot pdf", and the file-fetch grammar
@@ -105,10 +117,32 @@ class SpeechInput {
   /// honestly that voice input isn't set up here.
   bool get available => defaultTargetPlatform == TargetPlatform.android;
 
+  /// The words the recognizer is still working on, as it revises them.
+  ///
+  /// A broadcast stream, because the shell subscribes for the length of one
+  /// session and a session is not the only thing that could ever want these.
+  /// It carries what the recognizer *guesses* — the guesses are cumulative
+  /// ("hello", then "hello world") and each one replaces the last, so a
+  /// subscriber that shows them is showing the sentence form, not a log.
+  /// Nothing is buffered: words said while nobody is listening are gone.
+  Stream<String> get partials => _partials.stream;
+
+  /// How loud the microphone is hearing right now, in the platform's own units —
+  /// Android's `onRmsChanged` reading in dB, where [kSpeechSilenceDb] is a silent
+  /// room and [kSpeechLoudDb] a raised voice ([rmsToLevel] is the mapping a meter
+  /// uses).
+  ///
+  /// Broadcast for the same reason [partials] is, and fed only while a session
+  /// is live: the platform sends a reading from inside [listen]'s session and
+  /// stops with it, so nothing is buffered and a subscriber that arrives late
+  /// hears nothing rather than the last thing the room said.
+  Stream<double> get rms => _rms.stream;
+
   /// Listens for one utterance and returns the recognized text, or null
   /// when nothing was heard, the user cancelled, or voice isn't available.
   Future<String?> listen() async {
     if (!available) return null;
+    _wireChannel();
     try {
       return await _channel.invokeMethod<String>('listen');
     } catch (_) {
@@ -116,8 +150,25 @@ class SpeechInput {
     }
   }
 
-  /// Stops the utterance in flight: the second tap on the mic, or the screen
-  /// going away. Answers like hearing nothing, so the caller has one idle path
+  /// Ends the utterance *and keeps its words*: the recognizer is asked to hand
+  /// over its best transcript now, instead of being cancelled. The pending
+  /// [listen] resolves with it.
+  ///
+  /// This is what a released hold-to-talk finger means — the sentence the user
+  /// said is the sentence they want — where [stop] is what abandoning the
+  /// gesture means. Never throws and never blocks: a seam that fails here just
+  /// leaves the recognizer to end the utterance on its own.
+  Future<void> finish() async {
+    if (!available) return;
+    try {
+      await _channel.invokeMethod<void>('finish');
+    } catch (_) {
+      // Nothing to do: the recognizer's own end-of-speech still answers.
+    }
+  }
+
+  /// Stops the utterance in flight: the finger left the button, or the screen
+  /// went away. Answers like hearing nothing, so the caller has one idle path
   /// (a pending [listen] resolves null). Never throws, never blocks on the
   /// recognizer acknowledging — the microphone is released on the platform
   /// side either way.
@@ -130,8 +181,91 @@ class SpeechInput {
     }
   }
 
+  /// One controller for every [partials] subscriber, one for every [rms]
+  /// subscriber, and one handler for the platform's calls. Installed on the
+  /// first [listen] rather than at import time, so a build that never opens the
+  /// microphone never claims the channel.
+  static final StreamController<String> _partials =
+      StreamController<String>.broadcast();
+
+  static final StreamController<double> _rms =
+      StreamController<double>.broadcast();
+
+  static bool _wired = false;
+
+  static void _wireChannel() {
+    if (_wired) return;
+    _wired = true;
+    _channel.setMethodCallHandler((MethodCall call) async {
+      final args = call.arguments;
+      // Two things arrive on this channel while an utterance is in flight, and
+      // they are shaped differently on purpose: `partial` carries words, `rms`
+      // carries one number. Anything else on this channel is not ours to guess
+      // at, and an empty one of either is not worth forwarding.
+      if (call.method == 'rms') {
+        final level = args is Map ? args['level'] : null;
+        if (level is num) _rms.add(level.toDouble());
+        return null;
+      }
+      if (call.method != 'partial') return null;
+      final text = args is Map ? args['text'] : null;
+      if (text is String && text.trim().isNotEmpty) _partials.add(text);
+      return null;
+    });
+  }
+
   static const _channel = MethodChannel('dev.nexus.nexus/speech');
 }
+
+/// Where the platform's own loudness reading stops meaning "a silent room" and
+/// starts meaning "a raised voice".
+///
+/// Android's scale, from the documentation for
+/// `RecognitionListener.onRmsChanged`: the value is in dB and "typically ranges
+/// from -2.0 to 10.0", with 0 as the reference. Those two numbers are therefore
+/// the ends of the meter, and they live here rather than in the widget so the
+/// mapping is testable without a screen.
+const double kSpeechSilenceDb = -2;
+const double kSpeechLoudDb = 10;
+
+/// Maps a reading from [SpeechInput.rms] onto 0..1 for a level meter: 0 at
+/// [kSpeechSilenceDb] and below, 1 at [kSpeechLoudDb] and above.
+///
+/// Deliberately linear and deliberately clamped. A meter that exaggerated
+/// quiet speech would look alive on a phone that was hearing nothing, which is
+/// the one thing this reading exists to rule out.
+double rmsToLevel(double rmsDb) =>
+    ((rmsDb - kSpeechSilenceDb) / (kSpeechLoudDb - kSpeechSilenceDb)).clamp(
+      0.0,
+      1.0,
+    );
+
+/// Where a live turn decides that the user has started speaking.
+///
+/// Live conversation has no finger to end it: the page opens the microphone and
+/// waits for the recognizer to say the sentence is over. That is a promise the
+/// platform does not keep on every ROM — an on-device recognizer that reports
+/// interim words will happily sit on the microphone until it is told to stop —
+/// so the shell decides for itself, from the loudness readings it already gets
+/// for the meter. Above this the room has a voice in it; below [kSpeechQuietDb]
+/// it has gone quiet again. In between is neither, which is the hysteresis that
+/// keeps a fan from ending a sentence.
+const double kSpeechVoiceDb = 2;
+
+/// Where a room counts as quiet enough for a live turn to be over — see
+/// [kSpeechVoiceDb]. Above Android's own reference level (0 dB) on purpose: a
+/// phone on a desk hums above silence, and a threshold at silence would never
+/// let a turn end.
+const double kSpeechQuietDb = 0.5;
+
+/// How long the room has to stay quiet after speech before a live turn asks the
+/// recognizer for its transcript.
+///
+/// A pause rather than a stopwatch: it restarts on every word (an interim
+/// result) and every loud reading, so it only ever fires on a speaker who has
+/// actually stopped. Short enough that the answer arrives while the user is
+/// still looking at the page, long enough to sit through a breath.
+const Duration kSpeechTurnGap = Duration(milliseconds: 1200);
 
 /// Speaking for the assistant: reads a reply out loud on devices that can.
 /// Android speaks through the system text-to-speech engine (fully on-device,

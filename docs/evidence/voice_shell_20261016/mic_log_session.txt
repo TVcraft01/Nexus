@@ -1,0 +1,5 @@
+10-16 10:47:56.441  5254  5254 I flutter : mic:start 2026-10-16T10:47:56.434094
+10-16 10:47:56.445  5254  5254 I NexusInstaller: speech: listening on-device (no network)
+10-16 10:47:58.875  5254  5254 I NexusInstaller: speech: …Girl
+10-16 10:47:59.984  5254  5254 I flutter : mic:stop 2026-10-16T10:47:59.982589 reason=cancelled
+10-16 10:48:00.032  5254  5254 I NexusInstaller: speech: stopped by the user

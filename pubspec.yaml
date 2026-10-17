@@ -25,6 +25,11 @@ dependencies:
   llamadart: ^0.11.1
   open_wake_word: ^0.3.0
   google_fonts: ^6.3.3
+  # The PC's Ollama, over HTTP on the local network — see
+  # lib/core/ollama_service.dart. Already in the tree as a transitive
+  # dependency (mobile_scanner pulls it in); declared here because the shell now
+  # talks to it directly.
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:

@@ -259,6 +259,11 @@ void main() {
   // here now, and this is the guard that it did not slide back into the shell:
   // the choice is stored, the row says so, and Android is told which alias to
   // enable.
+  //
+  // The shell is the app's entry point these days and offers the same three
+  // marks on its own Customization page, through the same [IconService] — see
+  // the matching test in main_ui_test.dart. This one still guards this screen's
+  // row, which is what the old UI ships with until it is retired.
   testWidgets('the App icon row picks one of three marks and tells Android', (
     tester,
   ) async {

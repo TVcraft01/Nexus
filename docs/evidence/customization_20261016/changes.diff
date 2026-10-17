@@ -1,0 +1,847 @@
+### lib/main.dart — the entry point now hands off to the shell
+diff --git a/lib/main.dart b/lib/main.dart
+index 9a187d0..fd40535 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -1,310 +1,23 @@
+-import 'dart:async';
+-import 'dart:convert';
+-import 'dart:io';
++/// The app's entry point: the UI shell in `main_ui.dart`, with no `-t` flag.
++///
++/// `flutter run`, `flutter run -d <device>` and `flutter build apk --release`
++/// all start the app the way `flutter run -t lib/main_ui.dart` does, because
++/// they all run this file, and this file does nothing but hand off to the
++/// shell's own `main`.
++///
++/// It hands off rather than pulling the shell's widget in and calling `runApp`
++/// itself so that there is exactly one definition of "start the shell": two
++/// entry points that render the same widget tree but configure it separately
++/// would drift, and the `-t` shortcut would quietly stop being the truth about
++/// the real app.
++///
++/// The previous entry point — store, identity, mesh, gateway, provisioning
++/// intents, the desktop tray, the on-device model and the launcher-icon settle
++/// that all of it owns — is intact in `main_old.dart`. Nothing here starts it:
++/// the shell is the front end, and wiring it back to those services is the next
++/// step rather than something this file should decide by accident.
++library;
+ 
+-import 'package:flutter/foundation.dart';
+-import 'package:flutter/material.dart';
+-import 'package:flutter/services.dart'
+-    show
+-        DeviceOrientation,
+-        MethodChannel,
+-        SystemChrome,
+-        SystemUiOverlayStyle;
+-import 'package:tray_manager/tray_manager.dart';
+-import 'package:window_manager/window_manager.dart';
++import 'main_ui.dart' as shell;
+ 
+-import 'core/cable_pairing.dart';
+-import 'core/identity.dart';
+-import 'core/llm.dart';
+-import 'core/store.dart';
+-import 'mesh/gateway.dart';
+-import 'mesh/mesh_lifecycle.dart';
+-import 'mesh/mesh_service.dart';
+-import 'ui/components/nexus_ui.dart' show NexusCupertinoTheme, NexusTextScaling;
+-import 'ui/home_shell.dart';
+-import 'ui/theme.dart';
+-
+-String _platformName(TargetPlatform platform) {
+-  switch (platform) {
+-    case TargetPlatform.android:
+-      return 'android';
+-    case TargetPlatform.linux:
+-      return 'linux';
+-    case TargetPlatform.windows:
+-      return 'windows';
+-    case TargetPlatform.macOS:
+-      return 'macos';
+-    case TargetPlatform.iOS:
+-      return 'ios';
+-    default:
+-      return 'other';
+-  }
+-}
+-
+-/// Warm-start cable provisioning: MainActivity forwards every incoming
+-/// `nexus://pair` intent here (see onNewIntent), so an already-running Nexus
+-/// completes the automatic pairing handshake exactly like a cold start.
+-/// The payload is validated strictly by CablePairing before anything fires.
+-const _provisionChannel = MethodChannel('dev.nexus.nexus/provisioning');
+-
+-Future<void> main() async {
+-  WidgetsFlutterBinding.ensureInitialized();
+-
+-  if (defaultTargetPlatform == TargetPlatform.android ||
+-      defaultTargetPlatform == TargetPlatform.iOS) {
+-    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+-  }
+-
+-  final dataDir = Platform.environment['NEXUS_DATA_DIR'];
+-
+-  if (defaultTargetPlatform == TargetPlatform.linux && dataDir == null) {
+-    if (!await _ensureSingleInstance()) {
+-      debugPrint('NEXUS: another instance is already running — showing it.');
+-      exit(0);
+-    }
+-  }
+-
+-  final store = NexusStore(
+-    explicitPath: dataDir == null
+-        ? null
+-        : '$dataDir${Platform.pathSeparator}state.json',
+-  );
+-  await store.load();
+-
+-  var identity = store.identity;
+-  if (identity.id == 'unknown') {
+-    final platform = _platformName(defaultTargetPlatform);
+-    identity = DeviceInfo(
+-      id: generateDeviceId(),
+-      name: defaultDeviceName(platform),
+-      platform: platform,
+-    );
+-    store.setIdentity(identity);
+-    await store.save();
+-  }
+-
+-  final mesh = MeshService(identity: identity, store: store);
+-  await mesh.start();
+-
+-  // A PC that has just provisioned this Android device launches Nexus with a
+-  // one-time pairing URI. Pair immediately so the user never has to copy a
+-  // code or type 127.0.0.1/port by hand. On a cold start the link arrives as
+-  // the launch route; while the app is already running it arrives through
+-  // MainActivity.onNewIntent below. Both paths share the same strict parser
+-  // and handshake, so provisioning completes however the app was started.
+-  final pairing = CablePairing.parseProvisioningUri(
+-    WidgetsBinding.instance.platformDispatcher.defaultRouteName,
+-  );
+-  if (pairing != null) {
+-    await CablePairing.attemptAutoPair(mesh, pairing);
+-  }
+-
+-  _provisionChannel.setMethodCallHandler((call) async {
+-    if (call.method == 'pairPayload' && call.arguments is String) {
+-      final payload =
+-          CablePairing.parseProvisioningUri(call.arguments as String);
+-      if (payload != null) {
+-        await CablePairing.attemptAutoPair(mesh, payload);
+-      }
+-    }
+-    return null;
+-  });
+-
+-  if (defaultTargetPlatform == TargetPlatform.linux) {
+-    final token = store.gatewayToken ?? MeshGateway.newToken();
+-    store.gatewayToken = token;
+-    await store.save();
+-    for (var port = store.gatewayPort; port < store.gatewayPort + 5; port++) {
+-      try {
+-        final gateway = MeshGateway(mesh: mesh, token: token, port: port);
+-        await gateway.start();
+-        store.gatewayPort = port;
+-        await store.save();
+-        debugPrint('NEXUS gateway: listening on 127.0.0.1:$port');
+-        break;
+-      } on SocketException {
+-        continue;
+-      }
+-    }
+-  }
+-
+-  SystemChrome.setSystemUIOverlayStyle(
+-    const SystemUiOverlayStyle(
+-      statusBarColor: NexusColors.bg,
+-      systemNavigationBarColor: NexusColors.surface,
+-      systemNavigationBarDividerColor: NexusColors.surface,
+-      statusBarIconBrightness: Brightness.light,
+-      systemNavigationBarIconBrightness: Brightness.light,
+-      systemNavigationBarContrastEnforced: false,
+-    ),
+-  );
+-
+-  if (defaultTargetPlatform == TargetPlatform.linux) {
+-    await _initSystemTray();
+-  }
+-
+-  // The model that runs inside Nexus — built at the one point every launch
+-  // passes through, and warmed up in the background on purpose: a first
+-  // launch has a model file to fetch (470 MB, about 1 GiB on a desktop), and
+-  // that must happen while the user is doing something else, never while they
+-  // are waiting for an answer. Best effort throughout: a machine that cannot
+-  // fetch or run a model keeps working exactly as it did without one.
+-  final llm = Llm.forThisDevice();
+-  unawaited(llm.warmUp());
+-
+-  runApp(NexusApp(mesh: mesh, llm: llm));
+-}
+-
+-const int _singletonPort = 51824;
+-
+-Future<bool> _ensureSingleInstance() async {
+-  try {
+-    final socket = await Socket.connect(
+-      InternetAddress.loopbackIPv4,
+-      _singletonPort,
+-      timeout: const Duration(milliseconds: 400),
+-    );
+-    socket.add(utf8.encode('show\n'));
+-    await socket.flush();
+-    socket.destroy();
+-    return false;
+-  } catch (_) {}
+-  try {
+-    final server = await ServerSocket.bind(
+-      InternetAddress.loopbackIPv4,
+-      _singletonPort,
+-    );
+-    server.listen((socket) {
+-      socket.listen(
+-        (_) {
+-          windowManager.show();
+-          windowManager.focus();
+-          _windowHidden = false;
+-          socket.destroy();
+-        },
+-        onDone: () => socket.destroy(),
+-        onError: (_) => socket.destroy(),
+-      );
+-    });
+-    return true;
+-  } catch (_) {
+-    return false;
+-  }
+-}
+-
+-Future<void> _initSystemTray() async {
+-  final tray = TrayManager.instance;
+-  await tray.setIcon('assets/tray_icon.png');
+-  try {
+-    await tray.setToolTip('Nexus — your devices, one system');
+-  } catch (_) {}
+-
+-  final menu = Menu(
+-    items: [
+-      MenuItem(label: 'Show Nexus', onClick: (_) => _showWindow()),
+-      MenuItem.separator(),
+-      MenuItem(label: 'Quit', onClick: (_) => _quitApp()),
+-    ],
+-  );
+-  await tray.setContextMenu(menu);
+-  tray.addListener(_TrayListener());
+-}
+-
+-final windowManager = WindowManager.instance;
+-bool _windowHidden = false;
+-bool _quitting = false;
+-
+-void _showWindow() {
+-  if (_windowHidden) {
+-    windowManager.show();
+-    windowManager.focus();
+-    _windowHidden = false;
+-  }
+-}
+-
+-Future<void> _quitApp() async {
+-  _quitting = true;
+-  await TrayManager.instance.destroy();
+-  await windowManager.setPreventClose(false);
+-  await windowManager.destroy();
+-  exit(0);
+-}
+-
+-class _TrayListener extends TrayListener {
+-  @override
+-  void onTrayIconMouseDown() {
+-    _showWindow();
+-  }
+-}
+-
+-class NexusApp extends StatefulWidget {
+-  /// The in-app model, built in `main` so the first launch starts fetching it
+-  /// before the first frame. Null builds one on demand — a test that never
+-  /// asks it anything pays nothing for that.
+-  final Llm? llm;
+-  final MeshService mesh;
+-  const NexusApp({super.key, required this.mesh, this.llm});
+-
+-  @override
+-  State<NexusApp> createState() => _NexusAppState();
+-}
+-
+-class _NexusAppState extends State<NexusApp> with WindowListener {
+-  late final MeshLifecycleObserver _meshLifecycle;
+-
+-  @override
+-  void initState() {
+-    super.initState();
+-    if (defaultTargetPlatform == TargetPlatform.linux) {
+-      windowManager.addListener(this);
+-      windowManager.setPreventClose(true);
+-    }
+-    // Owns the mesh's socket lifetime: on engine detach (Activity
+-    // recreation in the same process) the old listener must go away, or the
+-    // new engine misses the canonical port and peers keep a stale route.
+-    _meshLifecycle = MeshLifecycleObserver(widget.mesh);
+-    WidgetsBinding.instance.addObserver(_meshLifecycle);
+-  }
+-
+-  @override
+-  void dispose() {
+-    WidgetsBinding.instance.removeObserver(_meshLifecycle);
+-    // The engine is going away with this widget: release the listener so a
+-    // recreated engine in this process reclaims 51820. (Desktop quit exits
+-    // the process, which releases sockets by itself; a hidden window keeps
+-    // the mesh intentionally, so this must not run on window hide.)
+-    unawaited(widget.mesh.stop());
+-    if (defaultTargetPlatform == TargetPlatform.linux) {
+-      windowManager.removeListener(this);
+-    }
+-    super.dispose();
+-  }
+-
+-  @override
+-  void onWindowClose() {
+-    if (_quitting) return;
+-    windowManager.hide();
+-    _windowHidden = true;
+-  }
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    return MaterialApp(
+-      title: 'Nexus',
+-      debugShowCheckedModeBanner: false,
+-      theme: buildNexusTheme(),
+-      // The Cupertino widgets the app now builds (the tab bar, a pushed
+-      // page's navigation bar, a sheet, an iOS alert, the switches) read
+-      // their colours from a CupertinoTheme whose default is *light*. The
+-      // builder sits above the navigator, so every route inherits the app's
+-      // own dark theme instead of a black title on a black page.
+-      // Text follows the phone's text-size setting, clamped to the range the
+-      // layouts are built for (NexusType.minScale–maxScale); both wrappers sit
+-      // above the navigator so every route inherits them.
+-      builder: (context, child) => NexusTextScaling(
+-        child: NexusCupertinoTheme(child: child ?? const SizedBox.shrink()),
+-      ),
+-      home: HomeShell(mesh: widget.mesh, llm: widget.llm),
+-    );
+-  }
+-}
++void main() => shell.main();
+
+### lib/main_old.dart — the previous entry point, preserved (new file in HEAD)
+318	0	lib/main_old.dart
+
+### lib/main_ui.dart — what this change adds to the shell
+--- a/lib/main_ui.dart
++++ b/lib/main_ui.dart
+@@ -6,11 +6,18 @@
+ ///
+ ///     flutter run -t lib/main_ui.dart
+ ///
++/// The one thing it does reach for is `core/services/icon_service.dart`, and
++/// only from [CustomizationPage]: the launcher mark is a manifest component
++/// with an owner of its own, so the page that offers it talks to that owner
++/// rather than to a mock of it. Everything else on screen is still mock data.
++///
+ /// What lives here:
+ ///   * [NexusUiColors] / [NexusType] / [NexusLayout] — the design tokens.
+ ///   * [NexusTheme] — Material 3 light and dark themes built from those tokens.
+ ///   * [NexusUiApp] / [NexusShell] — the app root and the four-tab frame.
+ ///   * [HomeTab], [FilesTab], [DevicesTab], [SettingsTab] — the four screens.
++///   * [CustomizationPage] — what Settings pushes to: one row per look, the
++///     App icon first.
+ ///
+ /// The colour rule the whole file follows: purple (`#773DDC`) is painted
+ /// *only* on something the user can act on — the mic/send button, the active
+@@ -23,9 +30,13 @@
+ /// The screens are mock data only — no answer, fetch, or pair runs here yet.
+ library;
+ 
++import 'dart:async';
++
+ import 'package:flutter/material.dart';
+ import 'package:google_fonts/google_fonts.dart';
+ 
++import 'core/services/icon_service.dart';
++
+ // ---------------------------------------------------------------------------
+ // Tokens
+ // ---------------------------------------------------------------------------
+@@ -752,6 +763,7 @@
+     this.onTap,
+     this.onLongPress,
+     this.accentTitle = false,
++    this.semanticLabel,
+   });
+ 
+   final String title;
+@@ -764,6 +776,11 @@
+   /// Paints the title purple — only pass true for a row that is an action.
+   final bool accentTitle;
+ 
++  /// What a screen reader says for this row, when the row shows something the
++  /// label cannot: a tick, a colour swatch. Null leaves the row's own text to
++  /// speak for itself.
++  final String? semanticLabel;
++
+   @override
+   Widget build(BuildContext context) {
+     final c = context.ui;
+@@ -795,12 +812,27 @@
+         ],
+       ),
+     );
+-    if (onTap == null && onLongPress == null) return row;
+-    return InkWell(
+-      onTap: onTap,
+-      onLongPress: onLongPress,
+-      borderRadius: const BorderRadius.all(NexusLayout.tile),
+-      child: row,
++    if (onTap == null && onLongPress == null) return _labelled(row);
++    return _labelled(
++      InkWell(
++        onTap: onTap,
++        onLongPress: onLongPress,
++        borderRadius: const BorderRadius.all(NexusLayout.tile),
++        child: row,
++      ),
++    );
++  }
++
++  /// Adds the row's spoken label when it has one, and stays out of the way
++  /// when it does not — an unlabelled row is announced by its own text.
++  Widget _labelled(Widget child) {
++    final label = semanticLabel;
++    if (label == null) return child;
++    return Semantics(
++      container: true,
++      button: onTap != null || onLongPress != null,
++      label: label,
++      child: child,
+     );
+   }
+ }
+@@ -1614,6 +1646,17 @@
+               onChanged: widget.onDarkModeChanged,
+             ),
+           ),
++          NexusRow(
++            title: 'Customization',
++            subtitle: 'App icon — and what else you can change',
++            leading: const NexusIconTile(Icons.tune_rounded),
++            trailing: const NexusChevron(),
++            onTap: () => Navigator.of(context).push(
++              MaterialPageRoute<void>(
++                builder: (routeContext) => const CustomizationPage(),
++              ),
++            ),
++          ),
+           const NexusSectionLabel('Voice'),
+           NexusRow(
+             title: 'Voice & speech',
+@@ -1662,6 +1705,230 @@
+ 
+ }
+ 
++// ---------------------------------------------------------------------------
++// Customization
++// ---------------------------------------------------------------------------
++
++/// One group on the Customization page: the section label and the rows under
++/// it.
++///
++/// The page is a list of these rather than a hand-written column of widgets, so
++/// the options still to come — accent colour, type, motion — arrive as one more
++/// entry with a row each. The page's layout, its scrolling, the row anatomy and
++/// the way a choice is stored all stay as they are.
++@immutable
++class NexusCustomizationSection {
++  const NexusCustomizationSection({required this.label, required this.rows});
++
++  /// The group's heading, e.g. "Launcher icon".
++  final String label;
++
++  /// The rows under it, in the order they are shown.
++  final List<Widget> rows;
++}
++
++/// What each icon mode means, in the same words the row and the picker use.
++String _iconModeMeaning(IconMode mode) => switch (mode) {
++  IconMode.light => 'Always the light mark.',
++  IconMode.dark => 'Always the dark mark.',
++  IconMode.auto => 'Follows the system theme.',
++};
++
++/// Everything about how Nexus looks: what the Settings row of the same name
++/// pushes to.
++///
++/// It is the one place in the shell wired to real behaviour — [IconService],
++/// which stores the choice and tells Android which launcher alias to enable —
++/// because the launcher mark lives in the app manifest and cannot be faked in
++/// the UI layer. Every other setting on this page can be.
++class CustomizationPage extends StatefulWidget {
++  const CustomizationPage({super.key});
++
++  @override
++  State<CustomizationPage> createState() => _CustomizationPageState();
++}
++
++class _CustomizationPageState extends State<CustomizationPage> {
++  /// The mode the row shows. Held here so a tap redraws the row at once; the
++  /// truth still lives in [IconService].
++  IconMode _iconMode = IconService.instance.mode;
++
++  @override
++  void initState() {
++    super.initState();
++    // The stored choice arrives asynchronously — it is a preference read — so
++    // the row corrects itself from the settled service rather than staying on
++    // the default it was first built with. attach() is idempotent, and it is
++    // also what keeps Auto following the system theme while the app runs.
++    unawaited(
++      IconService.instance.attach().then((_) {
++        if (mounted) setState(() => _iconMode = IconService.instance.mode);
++      }),
++    );
++  }
++
++  /// What the icon row says: the chosen mode, and the one platform that can act
++  /// on it.
++  String _iconSubtitle() {
++    if (!IconService.instance.switchingSupported) {
++      return 'Light, Dark or Auto — the launcher mark switches on Android.';
++    }
++    return _iconModeMeaning(_iconMode);
++  }
++
++  /// Every group on the page, in the order it is shown: adding an option is
++  /// adding a section here and nothing else.
++  List<NexusCustomizationSection> _sections() => <NexusCustomizationSection>[
++    NexusCustomizationSection(
++      label: 'Launcher icon',
++      rows: <Widget>[
++        NexusRow(
++          title: 'App icon',
++          subtitle: _iconSubtitle(),
++          leading: const NexusIconTile(Icons.apps_outlined),
++          trailing: _IconModeValue(mode: _iconMode),
++          onTap: _chooseIcon,
++        ),
++      ],
++    ),
++  ];
++
++  /// The icon picker: three choices, one tap. The choice goes to [IconService],
++  /// which stores it and switches the launcher alias — this only reports the
++  /// outcome, and says so plainly when Android refuses the switch or when this
++  /// platform has no icon to switch.
++  Future<void> _chooseIcon() async {
++    final IconMode? chosen = await showModalBottomSheet<IconMode>(
++      context: context,
++      builder: (sheetContext) => _IconPicker(current: _iconMode),
++    );
++    if (chosen == null || !mounted) return;
++    setState(() => _iconMode = chosen);
++    await IconService.instance.setMode(chosen);
++    if (!mounted) return;
++    final String? failure = IconService.instance.failure;
++    if (failure != null) {
++      ScaffoldMessenger.of(
++        context,
++      ).showSnackBar(SnackBar(content: Text('Icon not switched: $failure')));
++    } else if (!IconService.instance.switchingSupported) {
++      ScaffoldMessenger.of(context).showSnackBar(
++        const SnackBar(
++          content: Text('Saved — the launcher mark switches on Android'),
++        ),
++      );
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final c = context.ui;
++    return Scaffold(
++      backgroundColor: c.background,
++      appBar: AppBar(title: const Text('Customization')),
++      body: ListView(
++        padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
++        children: <Widget>[
++          for (final section in _sections()) ...<Widget>[
++            NexusSectionLabel(section.label),
++            ...section.rows,
++          ],
++          Padding(
++            padding: const EdgeInsets.fromLTRB(4, 24, 4, 0),
++            child: Text(
++              'Accent colour, type and motion join this page the same way — one '
++              'row each.',
++              style: NexusType.rowMeta(c).copyWith(height: 1.5),
++            ),
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++/// The icon row's value: the mode in force, then the chevron that says the row
++/// opens something.
++class _IconModeValue extends StatelessWidget {
++  const _IconModeValue({required this.mode});
++
++  final IconMode mode;
++
++  @override
++  Widget build(BuildContext context) {
++    return Row(
++      mainAxisSize: MainAxisSize.min,
++      children: <Widget>[
++        Text(mode.label, style: NexusType.rowMeta(context.ui)),
++        const NexusChevron(),
++      ],
++    );
++  }
++}
++
++/// The icon picker: the three marks, the one in force ticked.
++///
++/// A sheet in the shell's own idiom, offering the same three choices, in the
++/// same words, to the same [IconService] the row does; only the chrome is the
++/// shell's.
++class _IconPicker extends StatelessWidget {
++  const _IconPicker({required this.current});
++
++  /// The mode in force when the sheet opened.
++  final IconMode current;
++
++  @override
++  Widget build(BuildContext context) {
++    final c = context.ui;
++    return SafeArea(
++      child: Padding(
++        padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: <Widget>[
++            Center(
++              child: Container(
++                width: 38,
++                height: 4,
++                decoration: BoxDecoration(
++                  color: c.raised,
++                  borderRadius: const BorderRadius.all(Radius.circular(2)),
++                ),
++              ),
++            ),
++            const SizedBox(height: 18),
++            Text('App icon', style: NexusType.rowTitle(c)),
++            const SizedBox(height: 6),
++            Text(
++              'Android names the launcher icon in the app manifest: the switch '
++              'takes effect at once, and the phone redraws it a moment later. '
++              'Only Android can do this — the choice is remembered either way.',
++              style: NexusType.rowMeta(c).copyWith(height: 1.5, fontSize: 11.5),
++            ),
++            const SizedBox(height: 10),
++            for (final mode in IconMode.values)
++              NexusRow(
++                title: mode.label,
++                subtitle: _iconModeMeaning(mode),
++                // The tick says which mark is in force to the eye; the
++                // semantics label says it to a screen reader, which cannot see
++                // a tick.
++                semanticLabel: mode == current
++                    ? '${mode.label}. ${_iconModeMeaning(mode)} Selected'
++                    : '${mode.label}. ${_iconModeMeaning(mode)}',
++                trailing: mode == current
++                    ? Icon(Icons.check_rounded, size: 20, color: c.accent)
++                    : null,
++                onTap: () => Navigator.of(context).pop(mode),
++              ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
+ /// The one pushed page in the shell, so the back gesture has something real to
+ /// do: the voice controls the Settings tab points at.
+ class _VoiceSettingsPage extends StatelessWidget {
+
+### test/main_ui_test.dart — three new tests (uncommitted)
+diff --git i/test/main_ui_test.dart w/test/main_ui_test.dart
+index a3c3120..e48c357 100644
+--- i/test/main_ui_test.dart
++++ w/test/main_ui_test.dart
+@@ -1,7 +1,12 @@
++import 'package:flutter/foundation.dart'
++    show TargetPlatform, debugDefaultTargetPlatformOverride;
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart' show MethodCall, MethodChannel;
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:google_fonts/google_fonts.dart';
++import 'package:nexus/core/services/icon_service.dart';
+ import 'package:nexus/main_ui.dart';
++import 'package:shared_preferences/shared_preferences.dart';
+ 
+ /// The UI shell is standalone, so it is tested standalone: pump [NexusUiApp],
+ /// drive it like a thumb would, and check what is actually on screen.
+@@ -206,4 +211,125 @@ void main() {
+     expect(find.text('Wake word'), findsNothing);
+     expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 3);
+   });
++
++  testWidgets('Settings pushes to Customization, and back returns to the tab', (
++    tester,
++  ) async {
++    await pumpShell(tester);
++    await openTab(tester, 'Settings', 3);
++
++    await tester.tap(find.text('Customization'));
++    await tester.pumpAndSettle();
++
++    // The page the row promises: its own title, the App icon group, and the
++    // honest note about the options that are not here yet.
++    expect(find.text('LAUNCHER ICON'), findsOneWidget);
++    expect(find.text('App icon'), findsOneWidget);
++    expect(
++      find.textContaining('Accent colour, type and motion join this page'),
++      findsOneWidget,
++    );
++
++    await tester.tap(find.byTooltip('Back'));
++    await tester.pumpAndSettle();
++    expect(find.text('LAUNCHER ICON'), findsNothing);
++    expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 3);
++  });
++
++  testWidgets('the shell\'s App icon row switches the launcher alias', (
++    tester,
++  ) async {
++    // The icon is the one setting in the shell that is not a mock: the row
++    // stores the choice and tells Android which launcher alias to enable, so
++    // this drives the same channel MainActivity answers.
++    SharedPreferences.setMockInitialValues(<String, Object>{});
++    const MethodChannel iconChannel =
++        MethodChannel('dev.nexus.nexus/app_icon');
++    final List<MethodCall> calls = <MethodCall>[];
++    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++        .setMockMethodCallHandler(iconChannel, (MethodCall call) async {
++          calls.add(call);
++          return switch (call.method) {
++            'currentIcon' => 'light',
++            'setIcon' => true,
++            _ => null,
++          };
++        });
++    // The platform override is cleared in the body, not in a tearDown: the
++    // framework checks its debug variables before tearDowns run.
++    debugDefaultTargetPlatformOverride = TargetPlatform.android;
++    try {
++      // The service is a singleton that outlives a test, so this one states
++      // where it starts instead of inheriting whatever ran before it.
++      await IconService.instance.setMode(IconMode.light);
++      calls.clear();
++
++      await pumpShell(tester);
++      await openTab(tester, 'Settings', 3);
++      await tester.tap(find.text('Customization'));
++      await tester.pumpAndSettle();
++
++      await tester.tap(find.text('App icon'));
++      await tester.pumpAndSettle();
++
++      // Three marks, the one in force ticked. Only the sheet carries a tick, so
++      // the check is scoped to it.
++      final sheet = find.byType(BottomSheet);
++      expect(sheet, findsOneWidget);
++      for (final mode in IconMode.values) {
++        expect(
++          find.descendant(of: sheet, matching: find.text(mode.label)),
++          findsOneWidget,
++        );
++      }
++      expect(
++        find.descendant(of: sheet, matching: find.byIcon(Icons.check_rounded)),
++        findsOneWidget,
++      );
++
++      await tester.tap(find.descendant(of: sheet, matching: find.text('Dark')));
++      await tester.pumpAndSettle();
++
++      // Android was told exactly once, and the choice was stored before it was
++      // asked — so a refused switch is retried on the next start, not forgotten.
++      expect(
++        calls
++            .where((call) => call.method == 'setIcon')
++            .map((call) => (call.arguments as Map<Object?, Object?>)['mode'])
++            .toList(),
++        <Object?>['dark'],
++      );
++      final prefs = await SharedPreferences.getInstance();
++      expect(prefs.getString(SharedPrefsIconModeStore.key), 'dark');
++
++      // And the row says what it did, without a second tap.
++      expect(find.text('Always the dark mark.'), findsOneWidget);
++      expect(find.text('Dark'), findsOneWidget);
++    } finally {
++      debugDefaultTargetPlatformOverride = null;
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++          .setMockMethodCallHandler(iconChannel, null);
++    }
++  });
++
++  testWidgets('a platform that cannot switch icons is told so, not mocked', (
++    tester,
++  ) async {
++    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
++    try {
++      await pumpShell(tester);
++      await openTab(tester, 'Settings', 3);
++      await tester.tap(find.text('Customization'));
++      await tester.pumpAndSettle();
++
++      expect(
++        find.text(
++          'Light, Dark or Auto — the launcher mark switches on Android.',
++        ),
++        findsOneWidget,
++      );
++    } finally {
++      debugDefaultTargetPlatformOverride = null;
++    }
++  });
+ }
+
+### test/settings_view_test.dart — the intent comment, made true again (uncommitted)
+diff --git i/test/settings_view_test.dart w/test/settings_view_test.dart
+index b73c82d..2283776 100644
+--- i/test/settings_view_test.dart
++++ w/test/settings_view_test.dart
+@@ -259,6 +259,11 @@ void main() {
+   // here now, and this is the guard that it did not slide back into the shell:
+   // the choice is stored, the row says so, and Android is told which alias to
+   // enable.
++  //
++  // The shell is the app's entry point these days and offers the same three
++  // marks on its own Customization page, through the same [IconService] — see
++  // the matching test in main_ui_test.dart. This one still guards this screen's
++  // row, which is what the old UI ships with until it is retired.
+   testWidgets('the App icon row picks one of three marks and tells Android', (
+     tester,
+   ) async {
+
+### uncommitted after the commit: the stranded doc line repaired
+ lib/main_ui.dart | 1 -
+ 1 file changed, 1 deletion(-)

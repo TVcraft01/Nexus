@@ -33,6 +33,14 @@ class _FakeRuntime implements LlmRuntime {
   String reply;
   Duration delay;
   bool failToLoad;
+
+  /// The pieces a streaming generation yields. Empty means "the whole reply as
+  /// one piece" — the shape a runtime with no stream to offer has.
+  List<String> chunks = const <String>[];
+
+  /// Throw after the first piece: how a model that dies mid-answer looks.
+  bool failMidStream = false;
+
   int loads = 0;
   int unloads = 0;
   int disposes = 0;
@@ -59,6 +67,24 @@ class _FakeRuntime implements LlmRuntime {
     maxTokenAsks.add(maxTokens);
     if (delay > Duration.zero) await Future<void>.delayed(delay);
     return reply;
+  }
+
+  @override
+  Stream<String> generateStream(
+    List<ChatTurn> messages, {
+    required int maxTokens,
+    required double temperature,
+  }) async* {
+    prompts.add(messages);
+    maxTokenAsks.add(maxTokens);
+    if (delay > Duration.zero) await Future<void>.delayed(delay);
+    final List<String> pieces = chunks.isEmpty ? <String>[reply] : chunks;
+    var sent = 0;
+    for (final String piece in pieces) {
+      yield piece;
+      sent++;
+      if (failMidStream && sent == 1) throw StateError('the model stopped');
+    }
   }
 
   @override
@@ -354,6 +380,68 @@ void main() {
 
       expect(hits, hasLength(1), reason: 'the file is the cache');
       expect(await llm.modelName(), isNotNull);
+    });
+  });
+
+  group('streaming', () {
+    test('an answer is handed over in pieces, in order', () async {
+      final runtime = _FakeRuntime()
+        ..chunks = <String>['Nexus ', 'streams ', 'tokens.'];
+      final llm = _llmWith(runtime);
+
+      expect(
+        await llm.completeStream('hello', system: 'system').toList(),
+        <String>['Nexus ', 'streams ', 'tokens.'],
+      );
+      expect(runtime.loads, 1);
+      // The same exchange [complete] sends: the system turn, then the words.
+      expect(runtime.prompts.single.first.role, 'system');
+      expect(runtime.prompts.single.last.content, 'hello');
+    });
+
+    test('a model that stops mid-answer fails the stream, keeping its pieces',
+        () async {
+      final runtime = _FakeRuntime()
+        ..chunks = <String>['half an ', 'answer']
+        ..failMidStream = true;
+      final llm = _llmWith(runtime);
+
+      final pieces = <String>[];
+      await expectLater(
+        llm.completeStream('hello').listen(pieces.add).asFuture<void>(),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        pieces,
+        <String>['half an '],
+        reason: 'the caller has the words it has already shown',
+      );
+    });
+
+    test('a runtime with no stream to offer answers in one piece', () async {
+      // The seam's contract has to hold for a runtime that only knows how to
+      // answer whole — which is every fake that is not about streaming.
+      final llm = _llmWith(_FakeRuntime(reply: 'whole answer'));
+      expect(
+        await llm.completeStream('hello').toList(),
+        <String>['whole answer'],
+      );
+    });
+
+    test('a stream and a one-shot answer one after the other', () async {
+      final runtime = _FakeRuntime(reply: 'the whole answer')
+        ..chunks = <String>['stream', 'ed'];
+      final llm = _llmWith(runtime);
+
+      expect(
+        await llm.completeStream('first').toList(),
+        <String>['stream', 'ed'],
+      );
+      expect(await llm.complete('second'), 'the whole answer');
+      expect(runtime.prompts.map((p) => p.last.content), <String>[
+        'first',
+        'second',
+      ]);
     });
   });
 

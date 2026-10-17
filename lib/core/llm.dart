@@ -169,6 +169,20 @@ abstract class LlmRuntime {
     required double temperature,
   });
 
+  /// The same exchange as [generate], token by token.
+  ///
+  /// It is required rather than defaulted on purpose: every implementation of
+  /// this seam is inside this repository, and a runtime that quietly answered a
+  /// stream request with one big piece would be a streaming regression nobody
+  /// could see in a passing test. A runtime that has no stream to offer yields
+  /// its whole answer as its only piece — that is a decision each fake makes in
+  /// one line, not a default that hides a missing implementation.
+  Stream<String> generateStream(
+    List<ChatTurn> messages, {
+    required int maxTokens,
+    required double temperature,
+  });
+
   /// Free the loaded model. The runtime object stays usable: a later
   /// [load] must work, because that is exactly what the idle unload does.
   Future<void> unload();
@@ -201,22 +215,46 @@ class LlamaCppRuntime implements LlmRuntime {
         'ctx $contextSize, ${threads}t');
   }
 
+  /// One answer, complete — the same stream [generateStream] hands out, joined.
+  ///
+  /// Deliberately the streaming path with a join on the end rather than
+  /// llama.cpp's own one-shot: one code path means a streaming regression cannot
+  /// hide behind a passing one-shot test, and the engine applies the model's
+  /// chat template identically either way.
   @override
   Future<String> generate(
     List<ChatTurn> messages, {
     required int maxTokens,
     required double temperature,
-  }) async {
+  }) =>
+      generateStream(
+        messages,
+        maxTokens: maxTokens,
+        temperature: temperature,
+      ).join();
+
+  @override
+  Stream<String> generateStream(
+    List<ChatTurn> messages, {
+    required int maxTokens,
+    required double temperature,
+  }) {
     final engine = _engine;
-    if (engine == null) throw StateError('generate() before load()');
-    final output = await engine.complete(
-      [
-        for (final turn in messages)
-          LlamaChatMessage.fromText(role: _role(turn.role), text: turn.content),
-      ],
-      params: GenerationParams(maxTokens: maxTokens, temp: temperature),
-    );
-    return output.text;
+    if (engine == null) throw StateError('generateStream() before load()');
+    return engine
+        .create(
+          [
+            for (final turn in messages)
+              LlamaChatMessage.fromText(
+                role: _role(turn.role),
+                text: turn.content,
+              ),
+          ],
+          params: GenerationParams(maxTokens: maxTokens, temp: temperature),
+        )
+        // The non-empty content deltas, in order — llama.cpp's raw pieces,
+        // before any caller decides how to render them.
+        .textDeltas();
   }
 
   @override
@@ -333,6 +371,26 @@ class Llm {
   /// something else, not while they are waiting for an answer. Never throws.
   Future<void> warmUp() => _prepare(waitForDownload: true);
 
+  /// Fetches the model file if it is not already cached, reporting progress
+  /// from 0 to 1 as the bytes arrive, and returns true only when a verified
+  /// file is on disk. It does not load the model: a download is something the
+  /// user starts and watches in Settings, and loading is something that happens
+  /// when a question is asked.
+  ///
+  /// A download already in flight (started by a first question or a warm-up) is
+  /// shared rather than duplicated; in that case the progress callback is not
+  /// called for this request, because the fetch on the wire belongs to the
+  /// caller who started it. Never throws — a failure is a false.
+  Future<bool> download({void Function(double progress)? onProgress}) async {
+    if (_disposed) return false;
+    final file = await _cachedFile();
+    if (file.existsSync()) {
+      onProgress?.call(1);
+      return true;
+    }
+    return _ensureFile(file, onProgress: onProgress);
+  }
+
   /// One answer to one prompt, as one user turn. [system] becomes the system
   /// turn ahead of it; the model's own template is applied by the runtime.
   Future<String> complete(
@@ -349,6 +407,64 @@ class Llm {
       maxTokens: maxTokens,
       temperature: temperature,
     );
+  }
+
+  /// One answer to one prompt, token by token — the streaming twin of
+  /// [complete], with the same queue, the same lazy load and the same idle
+  /// unload behind it. An empty stream is the honest no, exactly as '' is for
+  /// [complete]; a failure mid-answer is an error on the stream, so a caller
+  /// that has already shown words can say the answer stopped instead of
+  /// pretending it was complete.
+  Stream<String> completeStream(
+    String prompt, {
+    int maxTokens = 300,
+    String? system,
+    double temperature = 0.6,
+  }) {
+    return _stream(
+      [
+        if (system != null) (role: 'system', content: system),
+        (role: 'user', content: prompt),
+      ],
+      maxTokens: maxTokens,
+      temperature: temperature,
+    );
+  }
+
+  /// The queued, lazily-loaded generation both call shapes share.
+  ///
+  /// One generation at a time, whichever shape asked: the stream holds its
+  /// place in the same queue [complete] uses until its last token has been
+  /// handed over, so a typed question and a spoken one cannot interleave on a
+  /// runtime that allows exactly one at a time.
+  Stream<String> _stream(
+    List<ChatTurn> messages, {
+    required int maxTokens,
+    required double temperature,
+  }) async* {
+    if (!await _prepare(waitForDownload: false)) return;
+    if (_disposed) return;
+    final Completer<void> gate = Completer<void>();
+    final Future<void> previous = _tail;
+    _tail = gate.future;
+    try {
+      await previous;
+      await for (final String piece in _runtime.generateStream(
+        messages,
+        maxTokens: maxTokens,
+        temperature: temperature,
+      )) {
+        yield piece;
+      }
+    } on Object catch (e) {
+      // Thrown rather than swallowed: the caller may already be showing half
+      // an answer, and it is the only one that can say so.
+      debugPrint('LLM: streaming generation failed ($e)');
+      rethrow;
+    } finally {
+      if (!gate.isCompleted) gate.complete();
+      _scheduleIdleUnload();
+    }
   }
 
   /// One answer to a whole exchange — the shape the assistant's brain uses:
@@ -483,10 +599,10 @@ class Llm {
 
   /// One fetch per model file, however many callers ask for it: a warm-up
   /// racing a first question must not download 470 MB twice into one path.
-  Future<bool> _ensureFile(File target) {
+  Future<bool> _ensureFile(File target, {void Function(double)? onProgress}) {
     final running = _fetching;
     if (running != null) return running;
-    final work = _download(target);
+    final work = _download(target, onProgress: onProgress);
     _fetching = work;
     unawaited(work.whenComplete(() {
       if (identical(_fetching, work)) _fetching = null;
@@ -501,7 +617,10 @@ class Llm {
   /// renamed only on a match, so a killed process, a dropped connection, or a
   /// truncating proxy leaves a `.part` behind — never a half model that
   /// llama.cpp would load and answer nonsense from.
-  Future<bool> _download(File target) async {
+  Future<bool> _download(
+    File target, {
+    void Function(double)? onProgress,
+  }) async {
     if (_disposed) return false;
     final part = File('${target.path}.part');
     _status = LlmStatus.downloading;
@@ -519,6 +638,8 @@ class Llm {
       final sink = part.openWrite();
       var received = 0;
       var reported = 0;
+      var shownPercent = -1;
+      onProgress?.call(0);
       try {
         await for (final chunk in response) {
           sink.add(chunk);
@@ -530,6 +651,13 @@ class Llm {
           if (percent >= reported + 25) {
             reported = percent - percent % 25;
             debugPrint('LLM: ${model.name} $reported%');
+          }
+          // The bar is repainted per whole percent, not per socket chunk: a
+          // 470 MB fetch arrives in thousands of chunks, and a setState for
+          // each of them is work the user cannot see.
+          if (percent >= shownPercent + 1) {
+            shownPercent = percent;
+            onProgress?.call((received / model.bytes).clamp(0.0, 1.0));
           }
         }
       } finally {
@@ -547,6 +675,7 @@ class Llm {
         return false;
       }
       part.renameSync(target.path);
+      onProgress?.call(1);
       debugPrint('LLM: ${model.name} cached (${model.megabytes} MB, hash ok)');
       // A file, not a loaded model: the next question still has to load it.
       _status = LlmStatus.idle;

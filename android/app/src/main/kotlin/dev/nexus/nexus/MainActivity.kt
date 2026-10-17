@@ -161,6 +161,16 @@ class MainActivity : FlutterActivity() {
     private val REQUEST_SPEECH_PERMISSIONS = 42605
     private var pendingSpeechResult: MethodChannel.Result? = null
 
+    // The composer's own ask, made before it ever starts a recognizer. It has
+    // to be separate from the speech flow above: `listen` answers "nothing
+    // heard" for a refused microphone and for a quiet room alike, so a UI that
+    // wants to disable its mic and say why needs an answer the recognizer
+    // cannot give. Deliberately its own request code — 42605 is already shared
+    // by the email and speech flows, and a third meaning for it would be a
+    // trap for whoever reads onRequestPermissionsResult next.
+    private val REQUEST_MICROPHONE_PERMISSION = 42612
+    private var pendingMicrophoneResult: MethodChannel.Result? = null
+
     // Wake word: "Hey Jarvis" arms the assistant hands-free. RECORD_AUDIO
     // is requested on enable with the MethodChannel result held across the
     // dialog, like the speech flow; a refusal answers false and the toggle
@@ -172,11 +182,16 @@ class MainActivity : FlutterActivity() {
     private var pendingWakeResult: MethodChannel.Result? = null
     private var wakeSink: EventChannel.EventSink? = null
 
-    // The recognition session in flight, held so a second tap on the mic can
-    // end it. A recognizer that never hears its own end-of-speech would
-    // otherwise leave the composer listening with no way out but leaving the
-    // screen, and it must also be released when the activity goes away.
+    // The recognition session in flight, held so the mic can be ended and
+    // finished from Dart. A recognizer that never hears its own end-of-speech
+    // would otherwise leave the composer listening with no way out but leaving
+    // the screen, and it must also be released when the activity goes away.
     private var activeRecognizer: SpeechRecognizer? = null
+
+    // The speech channel itself, kept because the recognizer now talks back on
+    // it: every interim result is forwarded to Dart as `partial`, so the
+    // composer can show the sentence while it is still being spoken.
+    private var speechChannel: MethodChannel? = null
 
     // Voice output: the system TextToSpeech engine says the assistant's
     // reply aloud. No runtime permission needed.
@@ -311,17 +326,25 @@ class MainActivity : FlutterActivity() {
 
         // Voice input: one utterance through the system SpeechRecognizer.
         // The recognized words come back as text and run through the same
-        // assistant pipeline as typing. `stop` ends the utterance early —
-        // the composer is press-to-talk, so the button has to be able to
-        // take back its own microphone.
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SPEECH_CHANNEL)
-            .setMethodCallHandler { call, result ->
+        // assistant pipeline as typing. Three ways out of a session, and the
+        // difference between the last two is the point of hold-to-talk:
+        // `finish` asks for the transcript (the finger came up on the button),
+        // `stop` cancels it (the finger left, or the screen went away), and
+        // the channel itself carries the interim words back to Dart as
+        // `partial` while either is still being decided.
+        speechChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            SPEECH_CHANNEL,
+        ).apply {
+            setMethodCallHandler { call, result ->
                 when (call.method) {
                     "listen" -> listenSpeech(result)
+                    "finish" -> finishSpeech(result)
                     "stop" -> stopSpeech(result)
                     else -> result.notImplemented()
                 }
             }
+        }
 
         // Wake word: Dart arms the mic (Settings toggle, assistant startup)
         // and scores the PCM the audio channel streams. `bringToFront`
@@ -481,6 +504,9 @@ class MainActivity : FlutterActivity() {
                     // the location and microphone toggles live.
                     openAppSettings()
                     result.success(null)
+                } else if (call.method == "requestMicrophone") {
+                    // The microphone, asked once, before any recognizer runs.
+                    requestMicrophone(result)
                 } else if (call.method == "calendarRead") {
                     // Reading the next events needs READ_CALENDAR, requested on
                     // first use — the result is held across the dialog.
@@ -822,6 +848,20 @@ class MainActivity : FlutterActivity() {
                     "ok" to bgOk,
                     "permanentlyDenied" to
                         (!bgOk && !shouldShowRequestPermissionRationale(bg)),
+                ),
+            )
+        }
+        if (requestCode == REQUEST_MICROPHONE_PERMISSION) {
+            val result = pendingMicrophoneResult
+            pendingMicrophoneResult = null
+            if (result == null) return
+            val mic = Manifest.permission.RECORD_AUDIO
+            val ok = granted(mic)
+            result.success(
+                mapOf(
+                    "ok" to ok,
+                    "permanentlyDenied" to
+                        (!ok && !shouldShowRequestPermissionRationale(mic)),
                 ),
             )
         }
@@ -1340,6 +1380,24 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// The composer's ask: RECORD_AUDIO, once, before any recognizer starts.
+    ///
+    /// Answers {ok: true} when the microphone may be used and {ok: false,
+    /// permanentlyDenied} when it may not — never a hang, and never a second
+    /// dialog: Android shows none after a refusal, so the caller remembers the
+    /// answer for the rest of the session instead of asking again.
+    fun requestMicrophone(result: MethodChannel.Result) {
+        val mic = Manifest.permission.RECORD_AUDIO
+        if (ContextCompat.checkSelfPermission(this, mic) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            result.success(mapOf("ok" to true))
+            return
+        }
+        pendingMicrophoneResult = result
+        requestPermissions(arrayOf(mic), REQUEST_MICROPHONE_PERMISSION)
+    }
+
     /// The location-reminder toggle's ask: foreground first, then the
     /// background half on Android 10+, with one result held across both
     /// dialogs. Resolves {ok} only when Nexus may take a fix with the app
@@ -1784,19 +1842,49 @@ class MainActivity : FlutterActivity() {
             override fun onEvent(eventType: Int, params: Bundle?) {}
 
             override fun onPartialResults(partialResults: Bundle?) {
-                // Not shown — the pill's ring is the only live signal — but
-                // logged, so a device run can see the engine was hearing
-                // words while it waited for the utterance to end.
+                // The live transcript: forwarded to Dart so a held button can
+                // show the sentence forming, and logged, so a device run can
+                // see the engine was hearing words before it was told to stop.
+                // The recognition wrapper reports these cumulatively — "hello",
+                // then "hello world" — so the receiving side replaces rather
+                // than appends.
                 val partial = partialResults
                     ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull()
-                if (!partial.isNullOrBlank()) Log.i(TAG, "speech: …$partial")
+                if (partial.isNullOrBlank()) return
+                Log.i(TAG, "speech: …$partial")
+                // Only the session that still owns the microphone may speak for
+                // it: a callback arriving after a stop belongs to nobody.
+                if (activeRecognizer !== recognizer) return
+                speechChannel?.invokeMethod("partial", mapOf("text" to partial))
             }
 
             override fun onReadyForSpeech(params: Bundle?) {}
 
             override fun onRmsChanged(rmsdB: Float) {
                 if (rmsdB > peakDb) peakDb = rmsdB
+                // Every reading, with the clock beside it, on the same stream the
+                // session log uses: `adb logcat | grep rms_val` is how the meter
+                // is calibrated against real speech, and the timestamps are what
+                // say whether the platform is even delivering readings fast
+                // enough for a meter to look live. Logged before the ownership
+                // check because a stalled meter is a *cadence* question, and a
+                // reading from a dead recognizer is still evidence about the
+                // recognizer.
+                Log.i(
+                    TAG,
+                    "rms_val: $rmsdB t=${android.os.SystemClock.elapsedRealtime()}",
+                )
+                // And out to Dart, so the composer's meter can follow the actual
+                // voice instead of decorating the screen. The same ownership rule
+                // as an interim word: a reading from a recognizer that no longer
+                // holds the microphone belongs to nobody, and the last thing a
+                // dead session should do is move the next session's bars.
+                if (activeRecognizer !== recognizer) return
+                speechChannel?.invokeMethod(
+                    "rms",
+                    mapOf("level" to rmsdB.toDouble()),
+                )
             }
         })
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -1815,9 +1903,29 @@ class MainActivity : FlutterActivity() {
         recognizer.startListening(intent)
     }
 
-    /// Ends the utterance early: the user tapped the mic again. The pending
-    /// `listen` call answers null, which is the same answer as hearing
-    /// nothing — the composer goes back to idle.
+    /// Ends the utterance and keeps its words: the finger came up on the
+    /// button, so the sentence is what the user meant to send. `stopListening`
+    /// asks the recognizer to report its best transcript now (which answers the
+    /// pending `listen` through onResults), where [stopSpeech] throws the
+    /// session away instead. The active recognizer is deliberately left in place
+    /// so that answer is accepted.
+    private fun finishSpeech(result: MethodChannel.Result) {
+        val recognizer = activeRecognizer
+        Log.i(TAG, "speech: finishing for the transcript")
+        if (recognizer == null) {
+            // Nothing in flight: no words are coming, and the composer is
+            // already idle. Answering null (not a hang) is the honest reply.
+            result.success(null)
+            return
+        }
+        runCatching { recognizer.stopListening() }
+        result.success(null)
+    }
+
+    /// Ends the utterance early and throws it away: the finger left the button,
+    /// or the screen is going away. The pending `listen` call answers null,
+    /// which is the same answer as hearing nothing — the composer goes back to
+    /// idle.
     private fun stopSpeech(result: MethodChannel.Result) {
         val recognizer = activeRecognizer
         activeRecognizer = null
