@@ -2354,10 +2354,33 @@ class MainActivity : FlutterActivity() {
     /// the slider themselves.
     private fun setBrightness(mode: String, level: Int?): Map<String, Any?> {
         if (!Settings.System.canWrite(this)) {
-            return openSettingsPanel(
-                Settings.ACTION_DISPLAY_SETTINGS,
-                "I need the \"modify system settings\" access to set brightness — I opened the display settings instead.",
-            )
+            // The one switch that makes this action work, rather than a page the
+            // user has to hunt through: Android's own "Modify system settings"
+            // screen, already scoped to this app. Brightness is the only one of
+            // the four the platform *does* let an ordinary app change — Wi-Fi and
+            // Bluetooth stopped at Android 10 and 12 — so sending the user to a
+            // slider they cannot use would be the wrong sentence as well as the
+            // wrong screen.
+            return try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                        Uri.parse("package:$packageName"),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                mapOf(
+                    "ok" to true,
+                    "message" to "I need the \"modify system settings\" access to change " +
+                        "brightness — I opened the switch for Nexus. Turn it on and ask me again.",
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "write settings unavailable", e)
+                openSettingsPanel(
+                    Settings.ACTION_DISPLAY_SETTINGS,
+                    "I need the \"modify system settings\" access to set brightness — " +
+                        "I opened the display settings instead.",
+                )
+            }
         }
         val value = if (mode == "set" && level != null) {
             (level.coerceIn(0, 100) * 255) / 100
