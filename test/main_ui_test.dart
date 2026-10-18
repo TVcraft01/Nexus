@@ -13,6 +13,7 @@ import 'package:flutter/services.dart'
     show MethodCall, MethodChannel, SystemChannels;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:nexus/core/device_capabilities.dart';
 import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
 import 'package:nexus/core/mic_access.dart';
@@ -330,8 +331,16 @@ void main() {
   setUp(() {
     ollama = _FakeOllama();
     LocalAiService.override = () => ollama;
+    // The refusal memory is process-wide (it is the same fact the capability
+    // checks), so every test starts from "never asked", and no test can leave
+    // the next one with a microphone it believes is permanently refused.
+    MicrophoneAccess.debugReset();
+    DeviceCapabilities.override = null;
   });
-  tearDown(() => LocalAiService.override = null);
+  tearDown(() {
+    LocalAiService.override = null;
+    DeviceCapabilities.override = null;
+  });
 
   /// A phone-shaped surface — the layout the shell is designed against.
   Future<void> pumpShell(WidgetTester tester) async {
@@ -1663,31 +1672,174 @@ void main() {
     expect(mic.stops, 1);
   });
 
-  testWidgets('a device that cannot listen gets an inert mic, not a mock', (
+  testWidgets('a device with no microphone is not offered one at all', (
     tester,
   ) async {
+    // The iPhone this build has no recognizer for, in the shape the shell sees
+    // it: the capability says the device cannot listen, so nothing about voice
+    // is drawn. (The refusal below is the other half of the rule: a *refused*
+    // microphone is still a real button, and it explains itself.)
     SpeechInput.override = () => const _UnavailableSpeechInput();
     addTearDown(() => SpeechInput.override = null);
+    DeviceCapabilities.override = () => const DeviceCapabilities(
+      platformOverride: TargetPlatform.iOS,
+      ramBytes: 8 * 1024 * 1024 * 1024,
+    );
+    addTearDown(() => DeviceCapabilities.override = null);
     await pumpShell(tester);
 
-    // The button is still there and still says what it is — but it explains
-    // itself instead of opening a microphone this device does not have.
-    final reason = find.byTooltip('Voice input isn’t set up on this device');
-    expect(reason, findsOneWidget);
-    expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
+    // Neither button is on screen: the composer is the field and the send
+    // arrow, and the pill is shorter for it.
+    expect(find.byTooltip('Tap to dictate, hold to talk'), findsNothing);
     expect(
-      tester
-          .widget<InkWell>(
-            find.descendant(of: reason, matching: find.byType(InkWell)),
-          )
-          .onTap,
-      isNull,
+      find.byTooltip('Voice input isn’t set up on this device'),
+      findsNothing,
+    );
+    expect(find.byTooltip('Live conversation'), findsNothing);
+    expect(find.byTooltip('Live conversation isn’t available here'), findsNothing);
+    expect(find.byIcon(Icons.mic_rounded), findsNothing);
+    expect(find.byKey(kNexusLevelBars), findsNothing);
+
+    // Nothing is explained either, because there is nothing to explain: the
+    // note line is the brain's, not a refusal about a button nobody drew.
+    expect(find.textContaining('Microphone'), findsNothing);
+
+    // And the screen still works: a typed message is sent and answered, which
+    // is what a device with no voice has left.
+    await tester.enterText(find.byType(TextField), 'type it instead');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+    expect(ollama.prompts, <String>['type it instead']);
+    expect(find.text(ollama.reply), findsOneWidget);
+  });
+
+  testWidgets('a refused microphone offers the settings page that fixes it', (
+    tester,
+  ) async {
+    final ask = _FakeMicAsk.refused(
+      'Microphone permission needed — turn it on in system settings.',
+    );
+    MicrophoneAccess.debugRequestOverride = ask.call;
+    addTearDown(() => MicrophoneAccess.debugRequestOverride = null);
+    SpeechInput.override = _FakeSpeechInput.new;
+    addTearDown(() => SpeechInput.override = null);
+
+    // The platform's settings page, watched rather than opened: what the dialog
+    // promises is a call to the activity that owns it (MainActivity's
+    // `openAppSettings`).
+    final List<MethodCall> deviceCalls = <MethodCall>[];
+    const MethodChannel device = MethodChannel('dev.nexus.nexus/device');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(device, (MethodCall call) async {
+          deviceCalls.add(call);
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(device, null),
+    );
+    await pumpShell(tester);
+
+    await tapTheButton(tester, micButton());
+    await tester.pumpAndSettle();
+
+    // Asked once, refused, and the answer to the refusal is a door: the dialog
+    // names the permission and offers the one place it can be granted.
+    expect(ask.asks, 1);
+    expect(find.text('Microphone permission needed'), findsOneWidget);
+    expect(
+      find.text('Microphone permission needed — turn it on in system settings.'),
+      findsWidgets,
+    );
+    expect(find.text(kNexusOpenSettingsLabel), findsOneWidget);
+
+    // Not now: nothing is opened, and the dialog is gone.
+    await tester.tap(find.text('Not now'));
+    await tester.pumpAndSettle();
+    expect(deviceCalls, isEmpty);
+    expect(find.text(kNexusOpenSettingsLabel), findsNothing);
+
+    // And the *way out* works when it is taken: one call to the platform, which
+    // is the whole of what this shell can do about a permission. The button to
+    // press is the muted one — its tooltip is the refusal now, not the gesture —
+    // which is the same button the user is looking at.
+    await tester.tap(
+      find.byTooltip(
+        'Microphone permission needed — turn it on in system settings.',
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(kNexusOpenSettingsLabel));
+    await tester.pumpAndSettle();
+    expect(deviceCalls.map((MethodCall call) => call.method), <String>[
+      'openAppSettings',
+    ]);
+    expect(find.text(kNexusOpenSettingsLabel), findsNothing);
+  });
+
+  testWidgets('a device that cannot run the model is told so, and not sold one', (
+    tester,
+  ) async {
+    DeviceCapabilities.override = () => const DeviceCapabilities(
+      platformOverride: TargetPlatform.iOS,
+      ramBytes: 8 * 1024 * 1024 * 1024,
+    );
+    addTearDown(() => DeviceCapabilities.override = null);
+    final Directory dir = Directory.systemTemp.createTempSync('nexus_unsupported');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final OnDeviceAiService onDevice = OnDeviceAiService(
+      model: OnDeviceModel(directory: () async => dir),
     );
 
-    await tester.tap(reason);
-    await tester.pump();
-    expect(stopButton(), findsNothing);
-    expect(recordingIndicator, findsNothing);
+    await pumpBrainSettings(tester, onDevice);
+
+    // The status row stays — "where do the answers come from" still has an
+    // answer on this device — and the download half of the section is replaced
+    // by one sentence naming the other way to get one.
+    expect(find.text('AI status'), findsOneWidget);
+    expect(find.text(kNoOnDeviceAiText), findsOneWidget);
+    expect(find.text('Download model'), findsNothing);
+    expect(find.text('Delete model'), findsNothing);
+    expect(find.byKey(kNexusBrainProgress), findsNothing);
+
+    // The sentence about needing a download is gone with the button: the status
+    // detail may not point at what is not on screen.
+    expect(find.textContaining('Download the model below'), findsNothing);
+  });
+
+  testWidgets('an iPhone gets no Voice section, and no dead switches', (
+    tester,
+  ) async {
+    DeviceCapabilities.override = () => const DeviceCapabilities(
+      platformOverride: TargetPlatform.iOS,
+      ramBytes: 8 * 1024 * 1024 * 1024,
+    );
+    addTearDown(() => DeviceCapabilities.override = null);
+    final Directory dir = Directory.systemTemp.createTempSync('nexus_ios');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+
+    await pumpBrainSettings(
+      tester,
+      OnDeviceAiService(model: OnDeviceModel(directory: () async => dir)),
+    );
+
+    // Wake word and spoken replies are both Android engines in this build, so
+    // the section that holds them is not drawn: a screen of switches that
+    // cannot switch is worse than a shorter screen.
+    expect(find.text('Voice & speech'), findsNothing);
+    expect(find.text('Wake word'), findsNothing);
+    expect(find.text('Speak replies'), findsNothing);
+
+    // Nothing else was taken with it: the page is still Settings, with the
+    // Brain section it came for.
+    expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('AI status'), findsOneWidget);
   });
 
   testWidgets('a refused microphone leaves the button inert and says why', (
@@ -1707,12 +1859,17 @@ void main() {
       final TestGesture finger = await holdMic(tester);
 
       // Asked exactly once, no session, and nothing to end: the refusal is
-      // answered before any recognizer is started.
+      // answered before any recognizer is started. The answer to the refusal is
+      // a dialog with the way out in it, so it is on screen while the finger is
+      // still down — and the hold itself stays refused either way.
       expect(ask.asks, 1);
       expect(mic.listens, 0);
       expect(log, isEmpty);
       expect(stopButton(), findsNothing);
       expect(recordingIndicator, findsNothing);
+      expect(find.text('Microphone permission needed'), findsOneWidget);
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
 
       await finger.up();
       await tester.pumpAndSettle();
@@ -1720,28 +1877,26 @@ void main() {
       expect(micButton(), findsNothing);
 
       // The reason is on the button and in the composer, not hidden behind a
-      // gesture — a disabled control that explains itself is not a broken one.
+      // gesture — a muted control that explains itself is not a broken one.
       final String message =
           'Microphone permission needed — try again from '
           'system settings.';
       final reason = find.byTooltip(message);
       expect(reason, findsOneWidget);
       expect(find.text(message), findsOneWidget);
-      expect(
-        tester
-            .widget<InkWell>(
-              find.descendant(of: reason, matching: find.byType(InkWell)),
-            )
-            .onTap,
-        isNull,
-      );
 
-      // And a second hold cannot re-ask or start anything.
+      // And a second tap cannot re-ask — Android shows the dialog once — but it
+      // is not a dead end either: the tap now offers the page where the
+      // permission is turned back on (see the settings-dialog test). No
+      // session starts either way.
       await tester.tap(reason);
       await tester.pumpAndSettle();
       expect(ask.asks, 1);
       expect(mic.listens, 0);
       expect(log, isEmpty);
+      expect(find.text(kNexusOpenSettingsLabel), findsOneWidget);
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
     });
   });
 
@@ -2839,25 +2994,21 @@ void main() {
     await tester.pump(const Duration(milliseconds: 40));
   });
 
-  testWidgets('live conversation is inert where the microphone is', (
+  testWidgets('live conversation is not offered where the microphone is not', (
     tester,
   ) async {
     SpeechInput.override = () => const _UnavailableSpeechInput();
     addTearDown(() => SpeechInput.override = null);
     await pumpShell(tester);
 
-    final live = find.byTooltip('Live conversation isn’t available here');
-    expect(live, findsOneWidget);
+    // The live page is the same recognizer as dictation, so a device that cannot
+    // dictate has nothing for it to be: the button is not drawn, in either of
+    // its two states, and there is no page to open.
+    expect(find.byTooltip('Live conversation'), findsNothing);
     expect(
-      tester
-          .widget<InkWell>(
-            find.descendant(of: live, matching: find.byType(InkWell)),
-          )
-          .onTap,
-      isNull,
+      find.byTooltip('Live conversation isn’t available here'),
+      findsNothing,
     );
-    await tester.tap(live);
-    await tester.pump();
     expect(liveOverlay, findsNothing);
   });
 

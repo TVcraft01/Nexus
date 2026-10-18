@@ -11,6 +11,7 @@
 // seam in front of it, and it is deliberately the same shape as
 // `location_access.dart`: one ask, one honest result, and a refusal that is
 // never retried in a loop.
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart' show MethodChannel;
 
 /// What came back from the one microphone ask.
@@ -31,6 +32,24 @@ class MicrophoneAccess {
   /// never sets it.
   static Future<MicrophonePermissionResult> Function()? debugRequestOverride;
 
+  /// True once the system has refused for good — Android's "Don't allow" with
+  /// no dialog left to show.
+  ///
+  /// Remembered here rather than in the screen that asked, because two things
+  /// need it and neither is the asker: the composer, which goes on offering the
+  /// gesture while a refusal is only temporary, and [DeviceCapabilities], which
+  /// stops offering it at all once there is no way back except the settings
+  /// page. A plain static is the honest shape — it is one fact about one
+  /// process, and it is never true on a platform that has no such thing as a
+  /// permanent refusal.
+  static bool permanentlyDenied = false;
+
+  /// Forgets the remembered refusal. Tests use it between cases; the app never
+  /// does — a refusal that could be un-remembered at runtime would be a button
+  /// that comes back to fail again.
+  @visibleForTesting
+  static void debugReset() => permanentlyDenied = false;
+
   /// Asks for the microphone. Off Android, or with no channel — or with an ask
   /// that throws — this is an honest refusal with a reason, never a throw: a
   /// composer that crashes over a permission is worse than a mic that will not
@@ -46,6 +65,7 @@ class MicrophoneAccess {
         return const MicrophonePermissionResult(granted: true);
       }
       final permanently = raw?['permanentlyDenied'] == true;
+      if (permanently) permanentlyDenied = true;
       return MicrophonePermissionResult(
         granted: false,
         message: permanently

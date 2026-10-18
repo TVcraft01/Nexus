@@ -64,6 +64,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:google_fonts/google_fonts.dart';
 
 import 'core/ai_status.dart';
+import 'core/device_capabilities.dart';
 import 'core/local_ai_service.dart';
 import 'core/mic_access.dart';
 import 'core/ollama_service.dart';
@@ -990,6 +991,50 @@ class NexusChevron extends StatelessWidget {
   }
 }
 
+/// The label on the dialog's one action button — the way out of a refused
+/// permission. A constant because two things point at it: the dialog, and the
+/// tests that prove a user who said "don't allow" is offered the system page
+/// rather than left holding a control that cannot work.
+const String kNexusOpenSettingsLabel = 'Open settings';
+
+/// The dialog a refused permission gets: what is missing, and the one place it
+/// can be put right.
+///
+/// A dialog rather than a snack bar or a notice line, because the user has just
+/// asked for something and been told no — and the answer to "no" is a door, not
+/// a sentence. Returns true when the user asked to be taken there, false for
+/// every other way out ("Not now", the back gesture, a tap outside), so the
+/// caller decides what opening the page means on its platform.
+Future<bool> showNexusPermissionDialog(
+  BuildContext context, {
+  required String title,
+  required String message,
+}) async {
+  final c = context.ui;
+  final bool? open = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: c.surface,
+      title: Text(title, style: NexusType.rowTitle(dialogContext.ui)),
+      content: Text(
+        message,
+        style: NexusType.rowMeta(dialogContext.ui).copyWith(height: 1.4),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: Text('Not now', style: TextStyle(color: c.textMuted)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text(kNexusOpenSettingsLabel),
+        ),
+      ],
+    ),
+  );
+  return open ?? false;
+}
+
 /// A short, honest note that a control is not wired to anything yet.
 void nexusNotWired(BuildContext context, String what) {
   ScaffoldMessenger.of(context)
@@ -1723,7 +1768,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     if (_hasText) return;
     _micHeld = true;
     if (!_micUsable) return; // the button is inert in this case
-    if (!await _ensureMicAllowed()) return;
+    if (!await _ensureMicAllowed()) {
+      _offerMicSettings();
+      return;
+    }
     if (!_micHeld || !mounted) return; // released while the ask was on screen
     await _listen(_MicMode.oneShot);
   }
@@ -1740,7 +1788,15 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       _stopListening();
       return;
     }
-    if (!_micUsable) return; // the note line already says why not
+    // A microphone the user refused: the tap is the way back. Android will not
+    // show its own dialog twice, so without this the button would be a dead
+    // end — the refusal is a state the user can be in for the rest of the
+    // session, and the settings page is the only thing that can change it.
+    if (_micRefusal != null) {
+      _offerMicSettings();
+      return;
+    }
+    if (!_micUsable) return; // no microphone on this device at all
     unawaited(_micTapStart());
   }
 
@@ -1750,7 +1806,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// whichever gesture gets there first owns the session, and the other finds
   /// [_listening] already true and leaves it alone.
   Future<void> _micTapStart() async {
-    if (!await _ensureMicAllowed()) return;
+    if (!await _ensureMicAllowed()) {
+      _offerMicSettings();
+      return;
+    }
     if (!mounted || _listening) return;
     await _listen(_MicMode.continuous);
   }
@@ -1793,7 +1852,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // look at, and a keyboard sliding back over it would be the wrong answer to
     // the tap that hid it.
     _focus.unfocus();
-    if (!await _ensureMicAllowed()) return;
+    if (!await _ensureMicAllowed()) {
+      _offerMicSettings();
+      return;
+    }
     if (!mounted || _liveOpen || _listening) return;
     setState(() {
       _liveOpen = true;
@@ -2096,9 +2158,45 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     return result.granted;
   }
 
+  /// The way out of a refused permission: a dialog that says which permission
+  /// is missing and offers to open the page where it is turned back on.
+  ///
+  /// Shown after a gesture that asked and was refused, never before one: the
+  /// system's own dialog is the first ask, and this is the second — the one a
+  /// user who has said no needs, because the button they are pressing cannot do
+  /// anything from here. Android will not show its dialog twice, so a screen
+  /// that only set a notice would leave the user holding a dead control with no
+  /// way back; `openAppSettings` is that way, and it already exists on the
+  /// platform side (MainActivity), put there for the capability rows.
+  ///
+  /// Deliberately not awaited: the gesture that opened it has already ended.
+  void _offerMicSettings() {
+    if (!mounted) return;
+    unawaited(_showMicSettingsDialog());
+  }
+
+  Future<void> _showMicSettingsDialog() async {
+    final bool open = await showNexusPermissionDialog(
+      context,
+      title: 'Microphone permission needed',
+      message:
+          _micRefusal ??
+          'Nexus needs the microphone to hear you. Allow it in system '
+              'settings, then come back.',
+    );
+    if (!open) return;
+    await DeviceCapabilities.current.openAppSettings();
+  }
+
+  /// Whether this device has a microphone to offer at all — the drawing
+  /// question, answered by [DeviceCapabilities] rather than by the permission
+  /// state: a refused microphone is a button that explains itself, and no
+  /// microphone is no button.
+  bool get _voiceAvailable => DeviceCapabilities.current.microphoneAvailable;
+
   /// Whether the mic button can do anything at all: a device that can listen,
   /// and a microphone the user has not refused.
-  bool get _micUsable => SpeechInput.current.available && _micAllowed != false;
+  bool get _micUsable => _voiceAvailable && _micAllowed != false;
 
   /// What the mic button says about itself: both of its gestures when it can
   /// listen, and the reason it is inert when it cannot. A disabled button with
@@ -2114,7 +2212,11 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// The composer's note line: why the microphone cannot be used, and otherwise
   /// the shell's usual mock-thread note. Nothing here explains the gestures any
   /// more: a tap does something now, so there is nothing left to teach.
-  String? get _micNotice => _micRefusal;
+  ///
+  /// Silent on a device with no microphone, because there is nothing there to
+  /// explain: the refusal is about a button the user can see, and this is a
+  /// button that is not drawn.
+  String? get _micNotice => _voiceAvailable ? _micRefusal : null;
 
   /// What the live button says about itself. Deliberately not the dictation
   /// button's sentence, even when both are inert: two buttons reading the same
@@ -2306,6 +2408,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             listening: _listening,
             micEnabled: _micUsable,
             micTooltip: _micTooltip,
+            showVoice: _voiceAvailable,
             micNotice: _micNotice,
             level: _micLevel,
             onCancel: _cancelDictation,
@@ -2692,6 +2795,7 @@ class _Composer extends StatelessWidget {
     required this.onLiveTap,
     required this.liveEnabled,
     required this.liveTooltip,
+    required this.showVoice,
   });
 
   final TextEditingController controller;
@@ -2757,6 +2861,21 @@ class _Composer extends StatelessWidget {
 
   /// What the live button says about itself, including why it is inert.
   final String liveTooltip;
+
+  /// Whether this device has a microphone at all. False on a device that cannot
+  /// listen — an iPhone this build has no recognizer for, a desktop, a tablet
+  /// with the feature stripped — and then the mic button and the live button
+  /// are *not drawn*.
+  ///
+  /// This is the one case where hiding beats disabling. The rule the two
+  /// buttons follow when they are on screen is the opposite — a refused
+  /// microphone is drawn inert with the reason on it, because a button that
+  /// vanishes the moment the user says "don't allow" reads as a bug in a
+  /// screen they were just using. But a device with no microphone was never
+  /// going to listen, and a permanently dead control in the composer's tightest
+  /// row is a promise the app cannot keep: the pill is simply shorter, and the
+  /// field is wider for it.
+  final bool showVoice;
 
   @override
   Widget build(BuildContext context) {
@@ -2861,102 +2980,125 @@ class _Composer extends StatelessWidget {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    _HoldToTalk(
-                      // On whenever the microphone can be used at all — and
-                      // deliberately not keyed on the button's current state,
-                      // which was measured to be a bug: a recognizer that is
-                      // added and removed with the button is disposed *under the
-                      // finger* the moment its state changes, and it does change
-                      // mid-press (the long press is what opens the session, and
-                      // the first interim word is what fills the field). The
-                      // release would then land on nobody and leave the session
-                      // open until the guard swept it up. So the recognizer
-                      // stays, and the handlers decide: a press that began on the
-                      // arrow, or during somebody else's session, is refused in
-                      // [_HomeTabState._micHoldStart], and a release with no
-                      // press of its own is refused in
-                      // [_HomeTabState._micHoldEnd].
-                      enabled: micEnabled,
-                      onStart: onHoldStart,
-                      onEnd: onHoldEnd,
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 180),
-                        transitionBuilder: (child, animation) =>
-                            ScaleTransition(
-                              scale: animation,
-                              child: FadeTransition(
-                                opacity: animation,
-                                child: child,
+                    // The voice half of the pill, drawn only where there is a
+                    // microphone to open. Both buttons go together: they are
+                    // the same recognizer, so a device that cannot dictate
+                    // cannot have a live conversation either — and the live
+                    // button was already inert in that case, which is exactly
+                    // the "permanently dead control" this flag stops drawing.
+                    if (showVoice) ...<Widget>[
+                      const SizedBox(width: 8),
+                      _HoldToTalk(
+                        // On whenever the microphone can be used at all — and
+                        // deliberately not keyed on the button's current state,
+                        // which was measured to be a bug: a recognizer that is
+                        // added and removed with the button is disposed *under the
+                        // finger* the moment its state changes, and it does change
+                        // mid-press (the long press is what opens the session, and
+                        // the first interim word is what fills the field). The
+                        // release would then land on nobody and leave the session
+                        // open until the guard swept it up. So the recognizer
+                        // stays, and the handlers decide: a press that began on the
+                        // arrow, or during somebody else's session, is refused in
+                        // [_HomeTabState._micHoldStart], and a release with no
+                        // press of its own is refused in
+                        // [_HomeTabState._micHoldEnd].
+                        enabled: micEnabled,
+                        onStart: onHoldStart,
+                        onEnd: onHoldEnd,
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 180),
+                          transitionBuilder: (child, animation) =>
+                              ScaleTransition(
+                                scale: animation,
+                                child: FadeTransition(
+                                  opacity: animation,
+                                  child: child,
+                                ),
                               ),
-                            ),
-                        // The button on its way out is decoration the moment it
-                        // starts leaving, and it is decoration sitting exactly
-                        // where the incoming one is. Left able to take a pointer,
-                        // it answers for a button the user can no longer see —
-                        // measured, not imagined: a tap one frame after a swap
-                        // landed on the outgoing button (whose scale transition
-                        // had the incoming one at zero size) and opened a
-                        // microphone instead of sending the sentence that was
-                        // already in the field.
-                        layoutBuilder:
-                            (
-                              Widget? currentChild,
-                              List<Widget> previousChildren,
-                            ) => Stack(
-                              alignment: Alignment.center,
-                              children: <Widget>[
-                                for (final Widget child in previousChildren)
-                                  IgnorePointer(child: child),
-                                ?currentChild,
-                              ],
-                            ),
-                        child: listening
-                            ? _RoundAction(
-                                key: const ValueKey<String>('stop'),
-                                icon: Icons.stop_rounded,
-                                // Named for what the tap does, because a tap — not
-                                // the release of a hold — is what ends a session
-                                // the user opened with a tap.
-                                tooltip: 'Stop listening',
-                                // The ring inside this circle is the recording
-                                // indicator, and it is up for the whole of every
-                                // session, in both modes: this is the only state
-                                // the button is in while the microphone is open.
-                                listening: true,
-                                holdIsTaken: micEnabled,
-                                onTap: onMicTap,
-                              )
-                            : hasText
-                            ? _RoundAction(
-                                key: const ValueKey<String>('send'),
-                                icon: Icons.arrow_upward_rounded,
-                                tooltip: 'Send',
-                                holdIsTaken: micEnabled,
-                                onTap: onSend,
-                              )
-                            : _RoundAction(
-                                key: const ValueKey<String>('mic'),
-                                icon: Icons.mic_rounded,
-                                tooltip: micTooltip,
-                                enabled: micEnabled,
-                                holdIsTaken: micEnabled,
-                                onTap: onMicTap,
+                          // The button on its way out is decoration the moment it
+                          // starts leaving, and it is decoration sitting exactly
+                          // where the incoming one is. Left able to take a pointer,
+                          // it answers for a button the user can no longer see —
+                          // measured, not imagined: a tap one frame after a swap
+                          // landed on the outgoing button (whose scale transition
+                          // had the incoming one at zero size) and opened a
+                          // microphone instead of sending the sentence that was
+                          // already in the field.
+                          layoutBuilder:
+                              (
+                                Widget? currentChild,
+                                List<Widget> previousChildren,
+                              ) => Stack(
+                                alignment: Alignment.center,
+                                children: <Widget>[
+                                  for (final Widget child in previousChildren)
+                                    IgnorePointer(child: child),
+                                  ?currentChild,
+                                ],
                               ),
+                          child: listening
+                              ? _RoundAction(
+                                  key: const ValueKey<String>('stop'),
+                                  icon: Icons.stop_rounded,
+                                  // Named for what the tap does, because a tap — not
+                                  // the release of a hold — is what ends a session
+                                  // the user opened with a tap.
+                                  tooltip: 'Stop listening',
+                                  // The ring inside this circle is the recording
+                                  // indicator, and it is up for the whole of every
+                                  // session, in both modes: this is the only state
+                                  // the button is in while the microphone is open.
+                                  listening: true,
+                                  holdIsTaken: micEnabled,
+                                  onTap: onMicTap,
+                                )
+                              : hasText
+                              ? _RoundAction(
+                                  key: const ValueKey<String>('send'),
+                                  icon: Icons.arrow_upward_rounded,
+                                  tooltip: 'Send',
+                                  holdIsTaken: micEnabled,
+                                  onTap: onSend,
+                                )
+                              : _RoundAction(
+                                  key: const ValueKey<String>('mic'),
+                                  icon: Icons.mic_rounded,
+                                  tooltip: micTooltip,
+                                  enabled: micEnabled,
+                                  holdIsTaken: micEnabled,
+                                  onTap: onMicTap,
+                                ),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    // The second way in. It stands down while a dictation is open
-                    // — one microphone at a time — but the slot itself is always
-                    // in the row, because a child that comes and goes shifts the
-                    // row and would take the mic's hold recogniser down with it
-                    // in the middle of a press.
-                    _LiveSlot(
-                      listening: listening,
-                      enabled: liveEnabled,
-                      tooltip: liveTooltip,
-                      onTap: onLiveTap,
-                    ),
+                      const SizedBox(width: 8),
+                      // The second way in. It stands down while a dictation is open
+                      // — one microphone at a time — but the slot itself is always
+                      // in the row, because a child that comes and goes shifts the
+                      // row and would take the mic's hold recogniser down with it
+                      // in the middle of a press.
+                      _LiveSlot(
+                        listening: listening,
+                        enabled: liveEnabled,
+                        tooltip: liveTooltip,
+                        onTap: onLiveTap,
+                      ),
+                    ] else if (hasText) ...<Widget>[
+                      // No microphone on this device, so there is no hold to
+                      // take and nothing to stop: the trailing slot is the send
+                      // arrow alone, and it appears with the first character
+                      // the user types. Leaving it out entirely would have made
+                      // the one control a device with no voice still needs — the
+                      // way to send what was typed — a casualty of the feature
+                      // it has nothing to do with.
+                      const SizedBox(width: 8),
+                      _RoundAction(
+                        key: const ValueKey<String>('send'),
+                        icon: Icons.arrow_upward_rounded,
+                        tooltip: 'Send',
+                        onTap: onSend,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -3009,9 +3151,15 @@ class _RoundAction extends StatelessWidget {
   /// and the send arrow posts the field.
   final VoidCallback? onTap;
 
-  /// False draws the circle neutral and refuses the tap: in this file purple
-  /// means the user can act on it, and a button that can't be pressed isn't
-  /// purple.
+  /// False draws the circle neutral: in this file purple means the user can act
+  /// on it, and a button that will not do its job is not purple.
+  ///
+  /// It is deliberately *not* a refusal of the tap. A muted control still owes
+  /// the user an answer for why, and on a phone — where nothing hovers — the
+  /// tooltip is not one: the tap is how the reason arrives, whether that reason
+  /// is a sentence in the composer or the dialog that offers the settings page
+  /// a refused permission is turned back on in. What a tap means is the
+  /// caller's business, decided in the gesture that owns the button.
   final bool enabled;
 
   /// True while the microphone is open: a ring pulses inside the circle. That
@@ -3047,9 +3195,9 @@ class _RoundAction extends StatelessWidget {
             )
           : const CircleBorder(),
       child: InkWell(
-        // The tap is the short one: it starts nothing, it explains. The splash
-        // is the acknowledgement that the tap landed at all.
-        onTap: enabled ? onTap : null,
+        // The tap is the short gesture: it starts nothing, it explains. The
+        // splash is the acknowledgement that the tap landed at all.
+        onTap: onTap,
         customBorder: const CircleBorder(),
         splashColor: Colors.white.withValues(alpha: 0.2),
         child: SizedBox(
@@ -4505,6 +4653,53 @@ class _SettingsTabState extends State<SettingsTab> {
   bool _wakeWord = true;
   bool _spokenReplies = false;
 
+  /// Whether this device can run a model of its own at all.
+  ///
+  /// Answered by [DeviceCapabilities], so the decision is one line here and
+  /// the same line on every other screen: a device that cannot load the weights
+  /// is not offered them. What changes on such a device is the *section* — the
+  /// status row stays, because "where do the answers come from" is still a
+  /// question with a real answer (the PC, or nothing), and the download and
+  /// delete rows are replaced by one sentence naming the way out.
+  bool get _onDeviceSupported => DeviceCapabilities.current.supportsOnDeviceAi();
+
+  /// What the status row says under its label.
+  ///
+  /// [AiStatus.detail] is written for a device that could download the model,
+  /// and its "none" case points at the download button below. On a device that
+  /// has no such button, the same words would be an instruction the user cannot
+  /// follow, so the sentence is the one thing that is overridden here.
+  String get _aiDetail {
+    final AiStatus? status = _aiStatus;
+    if (status == null) return 'Checking where the answers come from…';
+    if (!_onDeviceSupported && status.source == AiSource.none) {
+      return 'No AI available. Start Ollama on your PC — this device cannot '
+          'run a model of its own.';
+    }
+    return status.detail;
+  }
+
+  /// Whether anything in the Voice section can be switched on this device. The
+  /// wake word is Android-only (openWakeWord over ONNX Runtime) and spoken
+  /// replies are the platform's own TTS, wired up for Android here; a device
+  /// with neither gets no Voice section rather than a screen of dead switches.
+  bool get _voiceSupported =>
+      DeviceCapabilities.current.supportsWakeWord ||
+      DeviceCapabilities.current.supportsSpokenReplies;
+
+  /// How many switches the Voice page will really have: one on a device whose
+  /// build only does one of the two, and the row's subtitle is written from
+  /// this rather than promising both.
+  int get _voiceSwitches =>
+      (DeviceCapabilities.current.supportsWakeWord ? 1 : 0) +
+      (DeviceCapabilities.current.supportsSpokenReplies ? 1 : 0);
+
+  /// What that lone switch is called, for the row's subtitle.
+  String get _voiceSingleSwitchName =>
+      DeviceCapabilities.current.supportsWakeWord
+      ? 'The wake word'
+      : 'Spoken replies';
+
   /// The brain the Brain section reports and manages.
   late final OnDeviceAiService _onDevice =
       widget.onDevice ?? OnDeviceAiService();
@@ -4611,27 +4806,31 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
             ),
           ),
-          const NexusSectionLabel('Voice'),
-          NexusRow(
-            title: 'Voice & speech',
-            subtitle: 'Wake word, replies, voice',
-            leading: const NexusIconTile(Icons.graphic_eq_outlined),
-            trailing: const NexusChevron(),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (routeContext) => _VoiceSettingsPage(
-                  wakeWord: _wakeWord,
-                  spokenReplies: _spokenReplies,
-                  onWakeWordChanged: (value) {
-                    setState(() => _wakeWord = value);
-                  },
-                  onSpokenRepliesChanged: (value) {
-                    setState(() => _spokenReplies = value);
-                  },
+          if (_voiceSupported) ...<Widget>[
+            const NexusSectionLabel('Voice'),
+            NexusRow(
+              title: 'Voice & speech',
+              subtitle: _voiceSwitches == 1
+                  ? _voiceSingleSwitchName
+                  : 'Wake word, replies, voice',
+              leading: const NexusIconTile(Icons.graphic_eq_outlined),
+              trailing: const NexusChevron(),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (routeContext) => _VoiceSettingsPage(
+                    wakeWord: _wakeWord,
+                    spokenReplies: _spokenReplies,
+                    onWakeWordChanged: (value) {
+                      setState(() => _wakeWord = value);
+                    },
+                    onSpokenRepliesChanged: (value) {
+                      setState(() => _spokenReplies = value);
+                    },
+                  ),
                 ),
               ),
             ),
-          ),
+          ],
           const NexusSectionLabel('Privacy'),
           NexusRow(
             title: 'Privacy',
@@ -4657,56 +4856,68 @@ class _SettingsTabState extends State<SettingsTab> {
           const NexusSectionLabel('Brain'),
           NexusRow(
             title: 'AI status',
-            subtitle: _aiStatus?.detail ??
-                'Checking where the answers come from…',
+            subtitle: _aiDetail,
             leading: const NexusIconTile(Icons.memory_rounded),
             trailing: Text(
               _aiStatus?.label ?? 'Checking…',
               style: NexusType.rowMeta(c),
             ),
           ),
-          if (_downloading)
-            _BrainProgress(
-              progress: _downloadProgress,
-              label: _onDevice.model.label,
-              megabytes: _onDevice.model.model.megabytes,
-            )
-          else if (_modelPresent)
-            NexusRow(
+          // The download half of the section, which is the half that has to be
+          // earned: a device whose platform cannot load the weights, or whose
+          // memory cannot hold them, is told so in one sentence and the button
+          // is never drawn. The sentence names the other way to get an answer,
+          // because "not supported" with nothing after it is a dead end.
+          if (!_onDeviceSupported)
+            const NexusRow(
               title: 'On-device model',
-              subtitle:
-                  '${_onDevice.model.label} — ${_megabytes(_modelBytes)} MB '
-                  'on this device',
-              leading: const NexusIconTile(Icons.download_done_rounded),
-              trailing: Text('Downloaded', style: NexusType.rowMeta(c)),
+              subtitle: kNoOnDeviceAiText,
+              leading: NexusIconTile(Icons.memory_outlined),
             )
-          else
-            NexusRow(
-              title: 'Download model',
-              subtitle:
-                  '${_onDevice.model.label} — '
-                  '${_onDevice.model.model.megabytes} MB. Runs here, no '
-                  'network, no account',
-              leading: const NexusIconTile(Icons.download_rounded),
-              trailing: const NexusChevron(),
-              onTap: _downloadModel,
-            ),
-          if (_modelPresent && !_downloading)
-            NexusRow(
-              title: 'Delete model',
-              subtitle:
-                  'Frees ${_megabytes(_modelBytes)} MB. Answers come from your '
-                  'PC instead',
-              leading: const NexusIconTile(Icons.delete_outline_rounded),
-              trailing: const NexusChevron(),
-              onTap: _deleteModel,
-            ),
-          if (_brainError != null)
-            NexusRow(
-              title: 'Download failed',
-              subtitle: _brainError,
-              leading: const NexusIconTile(Icons.warning_amber_rounded),
-            ),
+          else ...<Widget>[
+            if (_downloading)
+              _BrainProgress(
+                progress: _downloadProgress,
+                label: _onDevice.model.label,
+                megabytes: _onDevice.model.model.megabytes,
+              )
+            else if (_modelPresent)
+              NexusRow(
+                title: 'On-device model',
+                subtitle:
+                    '${_onDevice.model.label} — ${_megabytes(_modelBytes)} MB '
+                    'on this device',
+                leading: const NexusIconTile(Icons.download_done_rounded),
+                trailing: Text('Downloaded', style: NexusType.rowMeta(c)),
+              )
+            else
+              NexusRow(
+                title: 'Download model',
+                subtitle:
+                    '${_onDevice.model.label} — '
+                    '${_onDevice.model.model.megabytes} MB. Runs here, no '
+                    'network, no account',
+                leading: const NexusIconTile(Icons.download_rounded),
+                trailing: const NexusChevron(),
+                onTap: _downloadModel,
+              ),
+            if (_modelPresent && !_downloading)
+              NexusRow(
+                title: 'Delete model',
+                subtitle:
+                    'Frees ${_megabytes(_modelBytes)} MB. Answers come from your '
+                    'PC instead',
+                leading: const NexusIconTile(Icons.delete_outline_rounded),
+                trailing: const NexusChevron(),
+                onTap: _deleteModel,
+              ),
+            if (_brainError != null)
+              NexusRow(
+                title: 'Download failed',
+                subtitle: _brainError,
+                leading: const NexusIconTile(Icons.warning_amber_rounded),
+              ),
+          ],
           const NexusSectionLabel('About'),
           const NexusRow(
             title: 'Build',
@@ -5041,27 +5252,45 @@ class _VoiceSettingsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
+    // One row per switch this device can really offer. The wake word is an
+    // Android engine (openWakeWord over ONNX Runtime) and spoken replies are
+    // the platform's own text to speech, wired up for Android here — on a
+    // device with neither, the page says so instead of drawing switches that
+    // could do nothing. Both rows are gated on the same object the composer
+    // asks, so a feature is never offered in one place and denied in another.
+    final bool wakeWordHere = DeviceCapabilities.current.supportsWakeWord;
+    final bool repliesHere = DeviceCapabilities.current.supportsSpokenReplies;
     return Scaffold(
       backgroundColor: c.background,
       appBar: AppBar(title: const Text('Voice & speech')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
         children: <Widget>[
-          NexusRow(
-            title: 'Wake word',
-            subtitle: 'Listen for “Hey Nexus” while the app is open',
-            leading: const NexusIconTile(Icons.hearing_outlined),
-            trailing: Switch(value: wakeWord, onChanged: onWakeWordChanged),
-          ),
-          NexusRow(
-            title: 'Speak replies',
-            subtitle: 'Read answers out loud when they arrive',
-            leading: const NexusIconTile(Icons.volume_up_outlined),
-            trailing: Switch(
-              value: spokenReplies,
-              onChanged: onSpokenRepliesChanged,
+          if (wakeWordHere)
+            NexusRow(
+              title: 'Wake word',
+              subtitle: 'Listen for “Hey Nexus” while the app is open',
+              leading: const NexusIconTile(Icons.hearing_outlined),
+              trailing: Switch(value: wakeWord, onChanged: onWakeWordChanged),
             ),
-          ),
+          if (repliesHere)
+            NexusRow(
+              title: 'Speak replies',
+              subtitle: 'Read answers out loud when they arrive',
+              leading: const NexusIconTile(Icons.volume_up_outlined),
+              trailing: Switch(
+                value: spokenReplies,
+                onChanged: onSpokenRepliesChanged,
+              ),
+            ),
+          if (!wakeWordHere && !repliesHere)
+            const NexusRow(
+              title: 'Voice',
+              subtitle:
+                  'Wake word and spoken replies are not available on this '
+                  'device.',
+              leading: NexusIconTile(Icons.voice_over_off_outlined),
+            ),
           NexusRow(
             title: 'Voice',
             subtitle: 'Used for both listening and speaking',
