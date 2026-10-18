@@ -4156,6 +4156,36 @@ void main() {
     expect(phone.calls, isEmpty, reason: 'nothing was run for a guess');
   });
 
+  testWidgets('a settings request runs without asking the model at all', (
+    tester,
+  ) async {
+    final _FakePhoneBackend phone = _FakePhoneBackend()
+      ..reply = const ActionResult(true, 'Brightness set to 60%.');
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+
+    // The exact request that failed on the A25: it reached the model, which
+    // answered "Brightness set to 60%." and changed nothing. The vocabulary is
+    // closed and the shell has it, so the model must not be asked at all.
+    await tester.enterText(find.byType(TextField), 'set brightness to 60');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(phone.calls.single.$1, AgentActions.brightnessSet);
+    expect(phone.calls.single.$2, <String, dynamic>{
+      'mode': 'set',
+      'level': 60,
+    });
+    expect(find.byKey(kNexusSystemBubble), findsOneWidget);
+    expect(find.text('Brightness set to 60%.'), findsOneWidget);
+    expect(
+      ollama.prompts,
+      isEmpty,
+      reason: 'the shell could read the request itself',
+    );
+  });
+
   testWidgets('a refused action says why, in the phone\'s own words', (
     tester,
   ) async {
