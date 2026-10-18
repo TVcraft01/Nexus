@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:nexus/core/local_ai_service.dart' show AiTurn;
 import 'package:nexus/core/ollama_service.dart';
 
 /// The PC's Ollama, on the wire.
@@ -45,16 +46,67 @@ void main() {
     // is not the model's opinion about spacing.
     expect(answer, 'Your Downloads folder has six items.');
 
-    // The request: the documented endpoint, and the three fields the design
+    // The request: the documented endpoint, and the four fields the design
     // names — `stream: false` above all, since streaming would make the live
-    // page's "Thinking…" and the chat's placeholder both lies.
+    // page's "Thinking…" and the chat's placeholder both lies, and `system`
+    // carrying the persona and the five actions the model may ask for.
     expect(seen.method, 'POST');
     expect(seen.url.toString(), 'http://192.168.1.100:11434/api/generate');
     expect(seen.headers['Content-Type'], contains('application/json'));
     expect(jsonDecode(seen.body), <String, Object?>{
       'model': kNexusOllamaModel,
       'prompt': 'what is in Downloads?',
+      'system': kNexusOllamaSystem,
       'stream': false,
+    });
+    // The system turn is not decoration: it is where the model is told what it
+    // may ask the phone to do, so a request without it is a model that can only
+    // talk.
+    expect(kNexusOllamaSystem, contains('"action":"set_flashlight"'));
+    expect(kNexusOllamaSystem, contains('answer normally'));
+  });
+
+  test('a conversation is asked with the system turn first, then the turns',
+      () async {
+    late http.Request seen;
+    final OllamaService ollama = serviceFor((http.Request request) async {
+      seen = request;
+      return http.Response(
+        jsonEncode(<String, Object?>{
+          'message': <String, String>{'role': 'assistant', 'content': 'Sam.'},
+          'done': true,
+        }),
+        200,
+      );
+    });
+
+    final String answer = await ollama.generateResponse(
+      'what is my name?',
+      history: const <AiTurn>[
+        AiTurn.user('my name is Sam'),
+        AiTurn.assistant('Hello Sam!'),
+      ],
+    );
+
+    expect(answer, 'Sam.');
+    expect(seen.url.toString(), endsWith('/api/chat'));
+    final Map<String, dynamic> body =
+        jsonDecode(seen.body) as Map<String, dynamic>;
+    final List<dynamic> messages = body['messages'] as List<dynamic>;
+    expect(
+      messages.first,
+      <String, String>{'role': 'system', 'content': kNexusOllamaSystem},
+      reason: 'the model is told who it is and what it may ask for before it is '
+          'told what was said',
+    );
+    expect(messages[1], <String, String>{'role': 'user', 'content': 'my name is Sam'});
+    expect(messages[2], <String, String>{
+      'role': 'assistant',
+      'content': 'Hello Sam!',
+    });
+    expect(messages.last, <String, String>{
+      'role': 'user',
+      'content': 'what is my name?',
     });
   });
 

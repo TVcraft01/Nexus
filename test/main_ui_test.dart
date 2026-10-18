@@ -13,8 +13,10 @@ import 'package:flutter/services.dart'
     show MethodCall, MethodChannel, SystemChannels;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:nexus/core/agent_contract.dart' show AgentActions;
 import 'package:nexus/core/ai_status.dart';
 import 'package:nexus/core/chat_log.dart';
+import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/device_capabilities.dart';
 import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
@@ -24,6 +26,7 @@ import 'package:nexus/core/on_device_ai_service.dart';
 import 'package:nexus/core/on_device_model.dart';
 import 'package:nexus/core/services/icon_service.dart';
 import 'package:nexus/core/speech.dart';
+import 'package:nexus/core/system_actions.dart';
 import 'package:nexus/core/version.dart';
 import 'package:nexus/main_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -251,6 +254,28 @@ class _FakeSpeechOutput extends SpeechOutput {
   }
 }
 
+/// The phone's own hands, as the thread sees them: the real
+/// [DeviceSystemActions] over a recorder instead of the method channel.
+///
+/// The wording and the plan are the shipped ones — a fake of the *service* would
+/// let the bubble say one thing while the app promised another — and only the
+/// native call is replaced, which is the same move these tests already make for
+/// the brain and the microphone.
+class _FakePhoneBackend extends DeviceActionBackend {
+  final List<(String, Map<String, dynamic>)> calls =
+      <(String, Map<String, dynamic>)>[];
+
+  /// What the phone answers. The default is success with the sentence the
+  /// native side uses; a test that wants a refusal sets it.
+  ActionResult reply = const ActionResult(true, 'Done.');
+
+  @override
+  Future<ActionResult> run(String action, Map<String, dynamic> args) async {
+    calls.add((action, args));
+    return reply;
+  }
+}
+
 /// A recognizer for a device that cannot listen: on the phone it would be a
 /// ROM with no speech service at all.
 class _UnavailableSpeechInput extends SpeechInput {
@@ -364,12 +389,17 @@ void main() {
     // the next one with a microphone it believes is permanently refused.
     MicrophoneAccess.debugReset();
     DeviceCapabilities.override = null;
+    // Every test starts with a phone that has no hands. Only the tests about
+    // actions give it a recorder, so an old test can never be the reason a new
+    // one's torch came on.
+    SystemActions.override = null;
   });
   tearDown(() {
     LocalAiService.override = null;
     DeviceCapabilities.override = null;
     ChatLog.override = null;
     ChatLog.debugReset();
+    SystemActions.override = null;
   });
 
   /// A phone-shaped surface — the layout the shell is designed against.
@@ -2748,6 +2778,37 @@ void main() {
     );
   });
 
+  testWidgets('an action asked for out loud runs from the live page too', (
+    tester,
+  ) async {
+    grantMic();
+    final mic = _FakeSpeechInput();
+    SpeechInput.override = () => mic;
+    addTearDown(() => SpeechInput.override = null);
+    final _FakePhoneBackend phone = _FakePhoneBackend();
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+    await openLive(tester);
+
+    // The live page is the same brain behind a different surface: a request for
+    // the torch has to be run there too, or "it's dark in here" said out loud
+    // would answer with a JSON object in 30-point type.
+    ollama.reply = '{"action":"set_flashlight","state":"on"}';
+    mic.hear("it's dark in here");
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    expect(liveText(tester), 'Flashlight on.');
+    expect(phone.calls.single.$1, AgentActions.flashlightToggle);
+
+    // And the line joins the conversation the page closes into — as a system
+    // pill, because the shell is what did it.
+    await tester.tap(find.byKey(kNexusLiveClose));
+    await tester.pumpAndSettle();
+    expect(find.byKey(kNexusSystemBubble), findsOneWidget);
+    expect(find.text('Flashlight on.'), findsOneWidget);
+  });
+
   testWidgets('closing live conversation keeps what was said in the thread', (
     tester,
   ) async {
@@ -3845,5 +3906,116 @@ void main() {
     // that they cannot be mistaken for each other.
     expect(find.text(kNexusScanQrLabel), findsOneWidget);
     expect(find.text(kNexusShowQrLabel), findsOneWidget);
+  });
+
+  testWidgets('an action reply becomes a pill, and the JSON never shows', (
+    tester,
+  ) async {
+    final _FakePhoneBackend phone = _FakePhoneBackend();
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+
+    // What a model does when the room is dark: it asks for the torch rather
+    // than talking about it.
+    ollama.reply = '{"action":"set_flashlight","state":"on"}';
+    await tester.enterText(find.byType(TextField), "it's dark in here");
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(kNexusSystemBubble), findsOneWidget);
+    expect(find.text('Flashlight on.'), findsOneWidget);
+    expect(
+      find.textContaining('"action"'),
+      findsNothing,
+      reason: 'the request is the app\'s business, not a sentence for the user',
+    );
+    expect(phone.calls.single.$1, AgentActions.flashlightToggle);
+    expect(phone.calls.single.$2, <String, dynamic>{'mode': 'on'});
+
+    // The line is remembered as a system line, and comes back as one.
+    expect(chat.entries.last.system, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(const NexusUiApp());
+    await tester.pumpAndSettle();
+    expect(find.byKey(kNexusSystemBubble), findsOneWidget);
+    expect(find.text('Flashlight on.'), findsOneWidget);
+  });
+
+  testWidgets('a reply that is nearly an action is shown as the answer it is', (
+    tester,
+  ) async {
+    final _FakePhoneBackend phone = _FakePhoneBackend();
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+
+    // An action the app does not have: the hallucination policy is that this is
+    // text, and the thread shows it exactly as the model wrote it.
+    ollama.reply = '{"action":"launch_missiles"}';
+    await tester.enterText(find.byType(TextField), 'do something silly');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(kNexusSystemBubble), findsNothing);
+    expect(find.text(ollama.reply), findsOneWidget);
+    expect(phone.calls, isEmpty, reason: 'nothing was run for a guess');
+  });
+
+  testWidgets('a refused action says why, in the phone\'s own words', (
+    tester,
+  ) async {
+    final _FakePhoneBackend phone = _FakePhoneBackend()
+      ..reply = const ActionResult(false, 'What app should I open?');
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+
+    ollama.reply = '{"action":"open_app","app_name":"qqq"}';
+    await tester.enterText(find.byType(TextField), 'open qqq');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(find.text('What app should I open?'), findsOneWidget);
+    expect(find.byKey(kNexusSystemBubble), findsOneWidget);
+  });
+
+  testWidgets('the action line goes back to the model as the answer it was', (
+    tester,
+  ) async {
+    final _FakePhoneBackend phone = _FakePhoneBackend();
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+
+    Future<void> ask(String text) async {
+      await tester.enterText(find.byType(TextField), text);
+      await tester.pump();
+      await tapTheButton(tester, sendButton());
+      await tester.pumpAndSettle();
+    }
+
+    ollama.reply = '{"action":"set_timer","seconds":300}';
+    await ask('set a timer for five minutes');
+    expect(find.text('Timer set for 5 minutes.'), findsOneWidget);
+    expect(phone.calls.single.$1, AgentActions.timerSet);
+
+    ollama.reply = 'Anything else?';
+    await ask('thanks');
+
+    // The next question is asked with the exchange behind it, action line
+    // included: "Timer set for 5 minutes." was the reply to the question, and a
+    // model handed the question with no reply reads the next turn as a second
+    // half of the same request — measured on llama3.2, which answered "turn on
+    // the flashlight" by setting the timer again.
+    final List<AiTurn> history = ollama.histories.last;
+    expect(
+      history.map((AiTurn turn) => turn.text),
+      <String>['set a timer for five minutes', 'Timer set for 5 minutes.'],
+    );
+    expect(
+      history.last.fromUser,
+      isFalse,
+      reason: 'the shell\'s line is the answer, not another question',
+    );
   });
 }

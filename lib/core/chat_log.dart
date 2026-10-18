@@ -33,7 +33,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// promise with nobody left to keep it.
 @immutable
 class ChatEntry {
-  const ChatEntry(this.text, {this.mine = false, this.failed = false});
+  const ChatEntry(
+    this.text, {
+    this.mine = false,
+    this.failed = false,
+    this.system = false,
+    this.ok = true,
+  });
 
   /// What was said, exactly as it was said. Never empty on the way in: an empty
   /// line is not a turn, it is a gap.
@@ -47,10 +53,25 @@ class ChatEntry {
   /// back to a conversation wants to see that their question went unanswered.
   final bool failed;
 
+  /// True for a line the shell *did* something to make: "Flashlight on." It is
+  /// not the assistant speaking, so it is never handed to the model as history,
+  /// and it is stored because a resumed conversation with the action missing
+  /// would read as though nothing had happened.
+  final bool system;
+
+  /// Whether a [system] line reports a success ([true], the default and the
+  /// only value for any other kind of line) or a refusal. Drives the icon, and
+  /// nothing else.
+  final bool ok;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'text': text,
     'mine': mine,
     'failed': failed,
+    // Omitted when false/untrue so the stored shape of a plain turn is exactly
+    // what earlier builds wrote.
+    if (system) 'system': true,
+    if (!ok) 'ok': false,
   };
 
   /// Reads one stored line. Null for anything that is not one — a file half
@@ -63,6 +84,8 @@ class ChatEntry {
       text,
       mine: raw['mine'] == true,
       failed: raw['failed'] == true,
+      system: raw['system'] == true,
+      ok: raw['ok'] != false,
     );
   }
 

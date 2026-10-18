@@ -38,6 +38,27 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'local_ai_service.dart';
+import 'system_actions.dart' show kSystemActionRules;
+
+/// What the PC's model is told it is, before the action rules below.
+///
+/// The same three rules as the phone's own brain, in the same order, and with
+/// the same promise: the app acts, the model asks. The wording differs in one
+/// place — this model is not the one running on the user's phone — and that is
+/// the kind of difference a model should be told rather than made to guess.
+const String kNexusOllamaPersona =
+    'You are Nexus, a private assistant. '
+    'Answer in two or three short sentences. '
+    'Never say you did something yourself — the app does it and tells them.';
+
+/// [kNexusOllamaPersona] with the five actions this shell can run.
+///
+/// Sent as one system turn on `/api/chat` and as the `system` field on
+/// `/api/generate`, so the PC's model is offered exactly the vocabulary the
+/// phone's model is — the two brains answering differently about what they can
+/// do is a bug the user would read as one of them lying.
+const String kNexusOllamaSystem =
+    '$kNexusOllamaPersona\n\n$kSystemActionRules';
 
 /// Where Ollama is expected to be listening.
 ///
@@ -98,6 +119,7 @@ class OllamaService implements LocalAiService {
     this.model = kNexusOllamaModel,
     this.timeout = const Duration(seconds: 30),
     this.client,
+    this.system = kNexusOllamaSystem,
   });
 
   /// The PC and port, without a trailing slash (`http://192.168.1.100:11434`).
@@ -120,6 +142,13 @@ class OllamaService implements LocalAiService {
   /// and a client that outlived the app's own lifetime would be one more thing
   /// to close.
   final http.Client? client;
+
+  /// The system turn: who the model is and which actions it may ask for.
+  ///
+  /// A field rather than a constant baked into the request, because it is the
+  /// part of the prompt the shell — not the user — owns, and a test asserting
+  /// what the PC is told should not have to read it off the wire.
+  final String system;
 
   /// The whole answer as one piece.
   ///
@@ -161,7 +190,7 @@ class OllamaService implements LocalAiService {
   /// The payload is the plainest Ollama request there is:
   ///
   /// ```json
-  /// {"model": "llama3.2", "prompt": "…", "stream": false}
+  /// {"model": "llama3.2", "prompt": "…", "system": "…", "stream": false}
   /// ```
   ///
   /// — and `stream: false` matters twice over: it makes Ollama answer with a
@@ -194,6 +223,7 @@ class OllamaService implements LocalAiService {
         ? <String, Object?>{
             'model': model,
             'messages': <Map<String, String>>[
+              <String, String>{'role': 'system', 'content': system},
               for (final AiTurn turn in history)
                 <String, String>{
                   'role': turn.fromUser ? 'user' : 'assistant',
@@ -203,7 +233,12 @@ class OllamaService implements LocalAiService {
             ],
             'stream': false,
           }
-        : <String, Object?>{'model': model, 'prompt': prompt, 'stream': false};
+        : <String, Object?>{
+            'model': model,
+            'prompt': prompt,
+            'system': system,
+            'stream': false,
+          };
     http.Response response;
     try {
       response = await (client ?? http.Client())

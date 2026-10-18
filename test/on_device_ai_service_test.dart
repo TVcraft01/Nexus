@@ -227,10 +227,14 @@ void main() {
       );
       expect(device.runtime.loads, 1);
 
-      // One exchange: the persona first, then the user's words.
+      // One exchange: the persona and the action rules first, then the user's
+      // words. The rules are part of the same turn because the model has to know
+      // the five actions before it can ask for one.
       final List<ChatTurn> prompt = device.runtime.prompts.single;
       expect(prompt.first.role, 'system');
-      expect(prompt.first.content, kNexusOnDeviceSystemPrompt);
+      expect(prompt.first.content, kNexusOnDeviceSystem);
+      expect(prompt.first.content, contains(kNexusOnDeviceSystemPrompt));
+      expect(prompt.first.content, contains('"action":"set_flashlight"'));
       expect(prompt.last.role, 'user');
       expect(prompt.last.content, 'what is a mesh?');
     });

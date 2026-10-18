@@ -24,17 +24,28 @@ import 'brain.dart' show ChatTurn;
 import 'llm.dart';
 import 'local_ai_service.dart';
 import 'on_device_model.dart';
+import 'system_actions.dart' show kSystemActionRules;
 
 /// What the on-device model is told it is.
 ///
 /// Short on purpose: a 0.5B model spends its attention on the instruction, and
 /// three rules are enough for a chat shell — be brief, be private, do not claim
-/// to have done something. Actions are the command layer's job; a small model
-/// that starts inventing them is worse than one that says it does not know.
+/// to have done something. The third rule is the one [kSystemActionRules]
+/// makes possible to keep: the model may *ask* the phone to act, and the shell
+/// is what acts and says so, so the model never has to lie about its own hands.
 const String kNexusOnDeviceSystemPrompt =
     'You are Nexus, a private assistant running on this device. '
     'Answer in two or three short sentences. '
-    'Never claim to have performed an action; you can only talk.';
+    'Never say you did something yourself — the app does it and tells them.';
+
+/// The rules the model runs under: the persona above, then the five actions it
+/// may ask for.
+///
+/// One constant rather than a concatenation at each call site, because the two
+/// brains must be offered the same vocabulary — see [systemWithActions] in
+/// `system_actions.dart` for the same composition on the PC's side.
+const String kNexusOnDeviceSystem =
+    '$kNexusOnDeviceSystemPrompt\n\n$kSystemActionRules';
 
 /// A failure of the on-device brain, with a sentence fit to show.
 ///
@@ -81,7 +92,7 @@ class OnDeviceAiService implements LocalAiService {
   OnDeviceAiService({
     OnDeviceModel model = const OnDeviceModel(),
     Llm? llm,
-    this.system = kNexusOnDeviceSystemPrompt,
+    this.system = kNexusOnDeviceSystem,
     this.maxTokens = 220,
   }) : _model = model,
        _llm = llm ?? Llm(model: model.model, modelsDir: model.directoryFor);

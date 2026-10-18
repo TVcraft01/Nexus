@@ -85,6 +85,7 @@ import 'core/paired_devices.dart';
 import 'core/services/icon_service.dart';
 import 'core/version.dart';
 import 'core/speech.dart';
+import 'core/system_actions.dart';
 
 // ---------------------------------------------------------------------------
 // Tokens
@@ -204,6 +205,10 @@ const Key kNexusLivePausedIndicator = Key('nexus-live-paused-indicator');
 /// able to prove about itself, and colour is not something a widget test reads
 /// as easily as a key.
 const Key kNexusLiveOrb = Key('nexus-live-orb');
+
+/// The pill a system action settles into: "Flashlight on." Not a bubble, and
+/// keyed so a test can tell it from one.
+const Key kNexusSystemBubble = Key('nexus-system-bubble');
 
 /// The rolling waveform the live page draws the voice with, and the scrolling
 /// transcript above it.
@@ -1409,6 +1414,8 @@ class NexusMockMessage {
     this.mine = false,
     this.thinking = false,
     this.failed = false,
+    this.system = false,
+    this.ok = true,
   });
 
   final String text;
@@ -1426,6 +1433,17 @@ class NexusMockMessage {
   /// with a warning icon), it is never read out loud, and it never offers to be
   /// replayed; see [NexusErrorBubble].
   final bool failed;
+
+  /// True when this line is the shell reporting something it did rather than
+  /// something the assistant said: "Flashlight on." It draws as a grey pill
+  /// ([NexusSystemBubble]), it is not the model's words, and it is kept out of
+  /// the history the brain is shown — an action the shell took is not an answer
+  /// the model gave.
+  final bool system;
+
+  /// Whether a [system] line reports something that happened (true) or a
+  /// refusal. Only the icon changes.
+  final bool ok;
 }
 
 /// How a listening session was opened, which is the whole difference between
@@ -1865,7 +1883,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     setState(() {
       _thread.addAll(<NexusMockMessage>[
         for (final ChatEntry entry in log.entries)
-          NexusMockMessage(entry.text, mine: entry.mine, failed: entry.failed),
+          NexusMockMessage(
+            entry.text,
+            mine: entry.mine,
+            failed: entry.failed,
+            system: entry.system,
+            ok: entry.ok,
+          ),
       ]);
     });
     _scrollToLatest();
@@ -1882,7 +1906,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     ChatLog.instance.save(<ChatEntry>[
       for (final NexusMockMessage message in _thread)
         if (!message.thinking)
-          ChatEntry(message.text, mine: message.mine, failed: message.failed),
+          ChatEntry(
+            message.text,
+            mine: message.mine,
+            failed: message.failed,
+            system: message.system,
+            ok: message.ok,
+          ),
     ]);
   }
 
@@ -1905,6 +1935,14 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// travels as the prompt, and a history that ended on it would ask it twice.
   /// [trimAiHistory] caps the list, so the model's context is a conversation
   /// rather than the whole day.
+  ///
+  /// An action line travels as the assistant's own turn, because as far as the
+  /// *conversation* is concerned that is what it is: the answer to the question
+  /// that was asked. Dropping it looks harmless and is not — the model is then
+  /// handed two user turns in a row, and a 3B model reading "set a timer" with
+  /// no reply followed by "turn on the flashlight" answered the timer again.
+  /// The line stays the shell's (it is still drawn as a pill, it is still not
+  /// something the model wrote); it is only *context* that it was said.
   List<AiTurn> _historyBefore(int index) {
     final List<AiTurn> turns = <AiTurn>[
       for (final NexusMockMessage message in _thread.take(index))
@@ -1979,8 +2017,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         // alone.
         if (!mounted || index >= _thread.length) return;
         if (!shown && !_thread[index].thinking) return;
-        shown = true;
         buffer.write(piece);
+        // A reply that opens with `{` may be an action request, and half a JSON
+        // object is not a sentence: the placeholder stays until the request is
+        // whole and [_runAction] can say what happened. Prose streams exactly as
+        // it always did, so nothing that is not an action pays for this.
+        if (buffer.toString().trimLeft().startsWith('{')) continue;
+        shown = true;
         // A half-written answer is a placeholder, not a reply: the words are
         // on screen as they arrive, and the copy/speaker row waits for the
         // sentence to be whole. See [NexusChatBubble.thinking].
@@ -2012,6 +2055,19 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       reply = kNexusOllamaUnreachableText;
       failed = true;
     }
+    // An answer that is one of the five actions is not an answer: it is the
+    // model asking this phone to do something. It is run here, before anything
+    // is shown, and the thread gets the shell's line about what happened rather
+    // than the JSON that asked for it. A reply that is *nearly* an action — an
+    // unknown name, a missing argument, prose that happens to contain braces —
+    // parses to null and falls through to the bubble below, exactly as written.
+    if (!failed) {
+      final SystemActionCall? call = SystemActionCall.tryParse(reply);
+      if (call != null) {
+        await _runAction(call, index, spoken: spoken);
+        return;
+      }
+    }
     setState(() => _thread[index] = NexusMockMessage(reply, failed: failed));
     // The answer is now half of what the next question will be read against.
     _persistThread();
@@ -2027,6 +2083,35 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // apologising for itself is noise, and half a sentence read aloud is worse
     // than one that is read.
     if (!failed && spoken) unawaited(SpeechOutput.current.speak(reply));
+  }
+
+  /// Runs one action the model asked for and puts the result in the thread.
+  ///
+  /// The line that lands is the shell's, not the model's: [SystemActionOutcome]
+  /// carries what it did ("Flashlight on.") or the phone's own reason it could
+  /// not ("What app should I open?"), and both belong on Nexus's side of the
+  /// thread as a system pill instead of as an answer. A spoken question gets the
+  /// line spoken back — the user asked out loud and is owed the confirmation
+  /// out loud — which is the only difference between the two paths.
+  Future<void> _runAction(
+    SystemActionCall call,
+    int index, {
+    required bool spoken,
+  }) async {
+    final SystemActionOutcome outcome = await SystemActions.current.execute(call);
+    if (!mounted || index >= _thread.length) return;
+    setState(
+      () => _thread[index] = NexusMockMessage(
+        outcome.message,
+        system: true,
+        ok: outcome.ok,
+      ),
+    );
+    // The action is half of what the next question will be read against, and it
+    // is stored as what it is: a line the shell wrote, not an answer.
+    _persistThread();
+    _scrollToLatest();
+    if (spoken) unawaited(SpeechOutput.current.speak(outcome.message));
   }
 
   /// Appends a failure sentence to what has been streamed so far.
@@ -2504,6 +2589,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         // answer belongs to the turn that asked for it.
         if (!mounted || !_liveOpen || turn != _liveTurns) return;
         buffer.write(piece);
+        // Same rule as the thread: a reply that opens with `{` may be an action
+        // request, and the page says "Thinking…" for the half-second it takes
+        // to be whole rather than spelling raw JSON out in large type.
+        if (buffer.toString().trimLeft().startsWith('{')) continue;
         // The words are the page now: the orb keeps its working colour while
         // the answer is being written, but the large type shows the answer
         // arriving instead of leaving the screen on "Thinking…".
@@ -2532,6 +2621,31 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       spoken = false;
     }
     if (!mounted || !_liveOpen || turn != _liveTurns) return;
+    // An action asked for out loud is run here too, and its line takes the
+    // large type exactly as an answer would: a user who says "it's dark in here"
+    // to the live page should see the flashlight turn on, not a JSON object.
+    final SystemActionCall? call = spoken
+        ? SystemActionCall.tryParse(buffer.toString())
+        : null;
+    if (call != null) {
+      final SystemActionOutcome outcome = await SystemActions.current.execute(
+        call,
+      );
+      if (!mounted || !_liveOpen || turn != _liveTurns) return;
+      setState(() {
+        _liveThinking = false;
+        _liveAnswering = false;
+        _liveIdle = _LivePhase.waiting;
+        _liveSaid = outcome.message;
+        _liveAnswerText = '';
+        _addLiveTurn(
+          NexusMockMessage(outcome.message, system: true, ok: outcome.ok),
+        );
+      });
+      _syncLive();
+      unawaited(SpeechOutput.current.speak(outcome.message));
+      return;
+    }
     setState(() {
       _liveThinking = false;
       _liveAnswering = false;
@@ -2920,7 +3034,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                             // own instead of a bubble, so a red, bordered
                             // sentence with a warning sign can never be mistaken
                             // for something the assistant said.
-                            child: message.failed
+                            child: message.system
+                                ? NexusSystemBubble(
+                                    text: message.text,
+                                    ok: message.ok,
+                                    maxWidth: bubbleWidth,
+                                  )
+                                : message.failed
                                 ? NexusErrorBubble(
                                     text: message.text,
                                     maxWidth: bubbleWidth,
@@ -3165,6 +3285,75 @@ class NexusChatBubble extends StatelessWidget {
             ),
             if (!mine && !thinking) _MessageActions(text: text),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The pill that stands where an *action* was carried out.
+///
+/// Deliberately the quietest of the three: no bubble colour, no rim, no shadow.
+/// A bubble is somebody speaking and a failure notice is somebody apologising;
+/// this is the app confirming a thing it did, and it should read like a status
+/// line that happens to be in the conversation — a raised pill, one glyph, one
+/// short sentence. The glyph is the only difference between success and refusal
+/// (a tick, or an information mark), because both are the same kind of line and
+/// painting the refusal red would make a fact look like a fault.
+///
+/// It carries no copy and no speaker of its own: the sentence is short enough to
+/// read at a glance, and a user who wants it again can ask for the action again.
+class NexusSystemBubble extends StatelessWidget {
+  const NexusSystemBubble({
+    super.key,
+    required this.text,
+    this.ok = true,
+    this.maxWidth = 320,
+  });
+
+  final String text;
+
+  /// True for something that happened, false for a refusal the phone explained.
+  final bool ok;
+
+  /// Cap on the pill, the same cap a bubble gets.
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: Container(
+          key: kNexusSystemBubble,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: c.raised,
+            border: Border.all(color: c.hairline),
+            borderRadius: const BorderRadius.all(NexusLayout.pill),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(
+                ok ? Icons.check_circle_outline : Icons.info_outline,
+                size: 15,
+                color: ok ? c.accent : c.textMuted,
+              ),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Text(
+                  text,
+                  style: NexusType.rowMeta(c).copyWith(
+                    fontSize: 13,
+                    color: c.textStrong,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
