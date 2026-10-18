@@ -13,22 +13,77 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/pair_invite.dart';
 import 'package:nexus/core/paired_devices.dart';
+import 'package:nexus/core/qr_pairing.dart' show QrPairingToken;
 import 'package:nexus/main_ui.dart' show
     DevicesTab,
     kNexusConfirmAction,
     kNexusDiscoverNearby,
-    kNexusDiscoverySoon,
+    kNexusDiscoverWindow,
     kNexusForgetTitle,
     kNexusLegacyPairCodeText,
+    kNexusLivePairCodeText,
     kNexusNotAPairCodeText,
     kNexusPairTitle,
     kNexusScanQrLabel,
     kNexusShowQrLabel,
     NexusTheme,
     PairQrPage,
+    PairQrPageState,
     PairScanPage,
     debugPairScannerOverride;
+import 'package:nexus/mesh/discovery.dart' show DiscoveredDevice;
+import 'package:nexus/mesh/nearby.dart' show NearbyDevices;
 import 'package:qr_flutter/qr_flutter.dart';
+
+/// A device answering discovery, as the real announce payload describes it.
+final DiscoveredDevice _kettle = DiscoveredDevice(
+  id: 'kettle000000000000000000000000001',
+  name: 'Kitchen tablet',
+  platform: 'android',
+  address: '192.168.1.44',
+  port: 51820,
+  lastSeen: DateTime(2026, 10, 18, 12),
+);
+
+/// Discovery, without a socket.
+///
+/// A subclass rather than another interface because the point of these tests is
+/// what the *screen* does with what discovery heard — the hearing itself is
+/// pinned in test/nearby_test.dart, where a fake transport can announce.
+class _FakeNearby extends NearbyDevices {
+  _FakeNearby(this.heard);
+
+  final List<DiscoveredDevice> heard;
+  int startCalls = 0;
+
+  @override
+  bool get running => true;
+
+  @override
+  List<DiscoveredDevice> get devices => heard;
+
+  @override
+  bool hasHeard(String id) => heard.any((DiscoveredDevice d) => d.id == id);
+
+  @override
+  DiscoveredDevice? device(String id) {
+    for (final DiscoveredDevice d in heard) {
+      if (d.id == id) return d;
+    }
+    return null;
+  }
+
+  @override
+  String get status => heard.isEmpty
+      ? 'Discovery is listening; no other Nexus device has been heard yet.'
+      : 'Heard ${heard.length} Nexus device on this network.';
+
+  @override
+  Future<void> start() async => startCalls++;
+
+  @override
+  Future<void> stop() async {}
+}
 
 const PairInvite _ocean = PairInvite(
   deviceName: 'Ocean Phone',
@@ -73,6 +128,8 @@ void main() {
 
   tearDown(() {
     PairedDevices.override = null;
+    NearbyDevices.debugOverride = null;
+    NearbyDevices.debugReset();
     PairIdentity.override = null;
     PairIdentity.debugReset();
     debugPairScannerOverride = null;
@@ -139,24 +196,80 @@ void main() {
       expect(written!.map((PairedDevice d) => d.name), isNot(contains('My PC')));
     });
 
-    testWidgets('Discover Nearby Devices looks, gives up, and says which way '
-        'works today', (tester) async {
+    testWidgets('Discover Nearby Devices listens, and lists what answered', (
+      tester,
+    ) async {
+      final _FakeNearby nearby = _FakeNearby(<DiscoveredDevice>[_kettle]);
+      NearbyDevices.debugOverride = () => nearby;
+      addTearDown(NearbyDevices.debugReset);
       await _pumpDevices(tester, paired: paired);
 
-      expect(find.text(kNexusDiscoverySoon), findsNothing);
+      // Nothing heard yet: the screen says what discovery is actually doing
+      // rather than showing a cheerful spinner that never ends.
+      expect(find.text(nearby.status), findsOneWidget);
+
       await tester.tap(find.byKey(kNexusDiscoverNearby));
       await tester.pump();
 
-      // The two seconds are real work being not done yet, and the button says
-      // so rather than looking stuck.
       expect(find.text('Looking for devices…'), findsOneWidget);
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
-      await tester.pump(const Duration(seconds: 2));
+      // One announce cycle plus the unicast reply is three to six seconds; the
+      // button waits the window out rather than answering "nobody" instantly.
+      await tester.pump(kNexusDiscoverWindow);
       await tester.pumpAndSettle();
 
       expect(find.text('Discover Nearby Devices'), findsOneWidget);
-      expect(find.text(kNexusDiscoverySoon), findsOneWidget);
+      expect(nearby.startCalls, greaterThan(0));
+      // What answered is a row, not a notice that scrolls away: the name, what
+      // kind of machine it is, and the address the announcement came from.
+      expect(find.text('Kitchen tablet'), findsOneWidget);
+      expect(find.text('Phone · 192.168.1.44:51820'), findsOneWidget);
+    });
+
+    testWidgets('tapping a heard device pairs it, with the address it used', (
+      tester,
+    ) async {
+      NearbyDevices.debugOverride = () =>
+          _FakeNearby(<DiscoveredDevice>[_kettle]);
+      addTearDown(NearbyDevices.debugReset);
+      await _pumpDevices(tester, paired: paired);
+
+      // The Nearby section sits under the paired rows, below an 800x600 frame:
+      // a thumb would scroll to it, and so does this.
+      final Finder row = find.byKey(ValueKey<String>('nearby-${_kettle.id}'));
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
+      await tester.tap(row);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Paired with Kitchen tablet'), findsOneWidget);
+      expect(paired.contains(_kettle.id), isTrue);
+      final PairedDevice stored = paired.devices.firstWhere(
+        (PairedDevice d) => d.id == _kettle.id,
+      );
+      expect(stored.addresses, <String>['192.168.1.44']);
+      expect(stored.port, 51820);
+    });
+
+    testWidgets('a paired device that is being heard says so', (tester) async {
+      paired.add(
+        PairInvite(
+          deviceName: _kettle.name,
+          deviceId: _kettle.id,
+          publicKey: 'kettle-key',
+          addresses: <String>[_kettle.address],
+          port: _kettle.port,
+        ),
+      );
+      NearbyDevices.debugOverride = () =>
+          _FakeNearby(<DiscoveredDevice>[_kettle]);
+      addTearDown(NearbyDevices.debugReset);
+      await _pumpDevices(tester, paired: paired);
+
+      // The stored row said "Desktop · this room" when it was written. What is
+      // on screen now is what the network is saying now.
+      expect(find.text('Seen just now at 192.168.1.44'), findsOneWidget);
     });
   });
 
@@ -189,8 +302,8 @@ void main() {
       // `QrImageView` keeps its data private, so the page states what it drew
       // and the test parses that same string back into an invite.
       final String payload = tester
-          .widget<PairQrPage>(find.byType(PairQrPage))
-          .payload;
+          .state<PairQrPageState>(find.byType(PairQrPage))
+          .currentPayload;
       final PairInvite? parsed = PairInvite.parse(payload);
       expect(parsed, isNotNull);
       expect(parsed!.deviceName, 'This Phone');
@@ -211,10 +324,35 @@ void main() {
       await tester.pump();
 
       final PairInvite? parsed = PairInvite.parse(
-        tester.widget<PairQrPage>(find.byType(PairQrPage)).payload,
+        tester.state<PairQrPageState>(find.byType(PairQrPage)).currentPayload,
       );
       expect(parsed?.deviceId, _me.id);
       expect(find.textContaining('this'), findsWidgets);
+    });
+
+    testWidgets('the code carries the address this device is reachable at', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: NexusTheme.light(),
+          home: PairQrPage(
+            identity: _me,
+            addresses: () async => <String>['192.168.1.7', '100.64.0.9'],
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Identity, name and address in one code: who this is and where to find
+      // it, so the scanning device has nothing left to guess.
+      final PairInvite? parsed = PairInvite.parse(
+        tester.state<PairQrPageState>(find.byType(PairQrPage)).currentPayload,
+      );
+      expect(parsed?.deviceId, _me.id);
+      expect(parsed?.deviceName, 'This Phone');
+      expect(parsed?.addresses, <String>['192.168.1.7', '100.64.0.9']);
+      expect(find.text('Reachable at 192.168.1.7'), findsOneWidget);
     });
   });
 
@@ -306,13 +444,54 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('an older Nexus code is a different sentence', (tester) async {
+    testWidgets('an incomplete Nexus code is a different sentence', (
+      tester,
+    ) async {
       final _ScanHarnessState harness = await open(tester);
 
+      // A `nexus://pair` code, but the device id is three characters — a paste
+      // that lost its tail, not a device anybody can pair with.
       harness.feed('nexus://pair?v=1&id=abc&name=PC&port=51820&code=ABCD-2345');
       await tester.pump();
 
       expect(find.text(kNexusLegacyPairCodeText), findsOneWidget);
+      expect(find.text(kNexusNotAPairCodeText), findsNothing);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('the mesh\u2019s own code pairs, address and all', (tester) async {
+      final _ScanHarnessState harness = await open(tester);
+
+      // What a Nexus device with the mesh running actually shows: the id, the
+      // name, and the address it can be reached at.
+      harness.feed(
+        'nexus://pair?v=1&id=pc000000000000000000000000000001&name=Study+PC'
+        '&port=51820&code=ABCD-2345&ip=192.168.1.20&ips=192.168.1.20,100.64.0.4',
+      );
+      await tester.pumpAndSettle();
+
+      expect(harness.result?.deviceName, 'Study PC');
+      expect(harness.result?.addresses, <String>['192.168.1.20', '100.64.0.4']);
+      expect(harness.result?.port, 51820);
+      // The one-time code is kept: the pairing already happened, and asking the
+      // user to scan it again later would be asking twice for one thing.
+      expect(harness.result?.code, 'ABCD-2345');
+    });
+
+    testWidgets('a live v2 code is refused in its own words', (tester) async {
+      final _ScanHarnessState harness = await open(tester);
+      final QrPairingToken token = QrPairingToken.generate(
+        address: '192.168.1.9',
+        port: 51820,
+      );
+
+      harness.feed(token.encode());
+      await tester.pump();
+
+      // It is a real Nexus code, so it must not be called a stranger's QR — and
+      // it carries no device id by design, so there is nothing to store.
+      expect(find.text(kNexusLivePairCodeText), findsOneWidget);
       expect(find.text(kNexusNotAPairCodeText), findsNothing);
       await tester.pump(const Duration(seconds: 2));
       await tester.pumpAndSettle();

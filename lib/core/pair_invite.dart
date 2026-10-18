@@ -28,7 +28,10 @@ import 'dart:math';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, visibleForTesting;
 
+import 'dart:io' show InternetAddress, InternetAddressType, NetworkInterface;
+
 import 'identity.dart' show defaultDeviceName, generateDeviceId;
+import 'pair_payload.dart' show PairPayload;
 
 /// The `type` field every Nexus pairing code carries.
 const String kNexusPairType = 'nexus_pair';
@@ -92,6 +95,9 @@ class PairInvite {
     required this.deviceName,
     required this.deviceId,
     required this.publicKey,
+    this.addresses = const <String>[],
+    this.port = 0,
+    this.code = '',
   });
 
   /// What the other user sees on their screen — "Paired with My phone".
@@ -104,16 +110,45 @@ class PairInvite {
   /// [placeholderPublicKey] for what it is on a build with no mesh.
   final String publicKey;
 
+  /// Where the device said it could be reached, best first. Empty when the
+  /// code did not carry an address (an older `nexus_pair` payload, or a device
+  /// that did not know its own), which is a real answer rather than a failure:
+  /// a device can still be paired now and found later by discovery.
+  ///
+  /// These are IPv4/IPv6 literals on the local network — the same addresses the
+  /// mesh announces — and they are what makes a scanned device *dialable* later
+  /// without a second scan.
+  final List<String> addresses;
+
+  /// The port the other side listens on for the mesh, or 0 when the code did
+  /// not say. 51820 is the mesh's own default (see `MeshService.defaultPort`).
+  final int port;
+
+  /// The one-time pairing code from a `nexus://pair` code, or empty. The shell
+  /// keeps it so the day the mesh is wired into this screen the pairing that
+  /// was already made can be completed without asking the user to scan again.
+  final String code;
+
+  /// The first address, or null. What a row shows when it shows one address.
+  String? get address => addresses.isEmpty ? null : addresses.first;
+
   /// The exact bytes the QR carries. One definition, so the QR a device shows
   /// and the QR another device parses can never disagree about the shape.
   ///
   /// Field order is fixed (type, device_name, device_id, public_key) so the
   /// payload a test asserts on is the payload a person would read.
-  String encode() => jsonEncode(<String, String>{
+  String encode() => jsonEncode(<String, Object>{
     'type': kNexusPairType,
     'device_name': deviceName,
     'device_id': deviceId,
     'public_key': publicKey,
+    // Omitted when unknown, so the code an older build reads is byte-identical
+    // to the one it used to write — and so a device with no network does not
+    // advertise an empty address.
+    if (addresses.isNotEmpty) 'address': addresses.first,
+    if (addresses.length > 1) 'ips': addresses.join(','),
+    if (port > 0) 'port': '$port',
+    if (code.isNotEmpty) 'code': code,
   });
 
   /// Reads a scanned string, or null when it is not a Nexus pairing code.
@@ -142,13 +177,76 @@ class PairInvite {
     final String? id = _field(decoded, 'device_id');
     final String? key = _field(decoded, 'public_key');
     if (name == null || id == null || key == null) return null;
+    final List<String> addresses = _addressesOf(decoded);
+    final String? port = _field(decoded, 'port');
+    final String? code = _field(decoded, 'code');
     // A device id too short to be an id is a payload somebody typed by hand or
     // a field that lost half its value in a paste. The real id is 32
     // characters (see `generateDeviceId`), and refusing a 3-character one here
     // is the difference between "paired with a phone" and "paired with `a`".
     if (id.length < 8) return null;
-    return PairInvite(deviceName: name, deviceId: id, publicKey: key);
+    return PairInvite(
+      deviceName: name,
+      deviceId: id,
+      publicKey: key,
+      addresses: addresses,
+      port: port == null ? 0 : int.tryParse(port) ?? 0,
+      code: code ?? '',
+    );
   }
+
+  /// Every address the payload named, `address` first and `ips` after it, with
+  /// duplicates and blanks dropped. A malformed list is not a reason to refuse
+  /// the pairing — the device is still who it says it is.
+  static List<String> _addressesOf(Map<dynamic, dynamic> json) {
+    final List<String> out = <String>[];
+    void add(String? raw) {
+      for (final String part in (raw ?? '').split(',')) {
+        final String trimmed = part.trim();
+        if (trimmed.isNotEmpty && !out.contains(trimmed)) out.add(trimmed);
+      }
+    }
+
+    add(_field(json, 'address'));
+    add(_field(json, 'ips'));
+    return out;
+  }
+
+  /// Reads *any* Nexus pairing code the scanner can be pointed at.
+  ///
+  /// Two formats are in the world at once and both are honest: this shell's
+  /// `nexus_pair` JSON (used by [PairQrPage]), and the mesh's own
+  /// `nexus://pair` URI, which carries the device id, its name and the address
+  /// it can be reached at — exactly what a row needs to exist. A v2 token is
+  /// deliberately *not* here: it carries no device id by design (it is an
+  /// ephemeral, single-use handshake), so a screen with no mesh behind it has
+  /// nothing to store. The caller says so in words rather than pairing a
+  /// nameless row.
+  static PairInvite? fromAnyCode(String raw) {
+    final PairInvite? ours = parse(raw);
+    if (ours != null) return ours;
+    final PairPayload? mesh = PairPayload.parse(raw);
+    if (mesh == null) return null;
+    // The same rule the JSON path applies: a device id too short to be one is a
+    // payload somebody typed by hand or a field that lost half its value.
+    if (mesh.id.length < 8) return null;
+    return PairInvite(
+      deviceName: mesh.name,
+      deviceId: mesh.id,
+      publicKey: '',
+      addresses: <String>[
+        if (mesh.ip != null && mesh.ip!.isNotEmpty) mesh.ip!,
+        for (final String address in mesh.ips)
+          if (address.isNotEmpty && address != mesh.ip) address,
+      ],
+      port: mesh.port,
+      code: mesh.code,
+    );
+  }
+
+  @override
+  String toString() =>
+      'PairInvite($deviceName, $deviceId, ${addresses.isEmpty ? 'no address' : addresses.first})';
 
   /// One required string field, trimmed, or null when it is missing, empty, or
   /// the wrong kind.
@@ -159,8 +257,6 @@ class PairInvite {
     return trimmed.isEmpty ? null : trimmed;
   }
 
-  @override
-  String toString() => 'PairInvite($deviceName, $deviceId)';
 }
 
 /// Who this device is on the mesh, as the pairing QR says it.
@@ -175,6 +271,8 @@ class PairIdentity {
     required this.name,
     required this.id,
     required this.publicKey,
+    this.addresses = const <String>[],
+    this.port = 0,
   });
 
   /// Test seam, in the same shape as [SpeechInput.override]: a test states who
@@ -204,6 +302,56 @@ class PairIdentity {
   final String id;
   final String publicKey;
 
-  PairInvite get invite =>
-      PairInvite(deviceName: name, deviceId: id, publicKey: publicKey);
+  /// Where this device can be reached, which the QR carries so the other side
+  /// has somewhere to dial. Empty by default: the identity is built before any
+  /// network call, and an address invented here would be a claim — the page
+  /// that draws the code fills these in with the real ones when it has them.
+  final List<String> addresses;
+
+  /// The mesh port this device listens on, 0 when the identity does not know.
+  final int port;
+
+  PairInvite get invite => PairInvite(
+    deviceName: name,
+    deviceId: id,
+    publicKey: publicKey,
+    addresses: addresses,
+    port: port,
+  );
+
+  /// The same identity, with the addresses the device actually has.
+  PairIdentity withAddresses(List<String> addresses, {int? port}) =>
+      PairIdentity(
+        name: name,
+        id: id,
+        publicKey: publicKey,
+        addresses: addresses,
+        port: port ?? this.port,
+      );
+}
+
+/// This device's own non-loopback IPv4 addresses, best first.
+///
+/// The same rule the mesh uses to decide where it can be reached (`_myIps` in
+/// `mesh/mesh_service.dart`): every interface that has an IPv4 address, loopback
+/// and link-local excluded. It is read for one reason — to put an address in
+/// this device's pairing code — and a failure answers an empty list rather than
+/// an error, because a code with no address is still a valid code.
+Future<List<String>> localAddresses() async {
+  try {
+    final List<NetworkInterface> interfaces = await NetworkInterface.list(
+      type: InternetAddressType.IPv4,
+    );
+    final List<String> out = <String>[];
+    for (final NetworkInterface interface in interfaces) {
+      for (final InternetAddress address in interface.addresses) {
+        final String ip = address.address;
+        if (ip.startsWith('169.254.')) continue;
+        if (!out.contains(ip)) out.add(ip);
+      }
+    }
+    return out;
+  } catch (_) {
+    return const <String>[];
+  }
 }

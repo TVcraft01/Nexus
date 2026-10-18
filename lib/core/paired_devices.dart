@@ -30,6 +30,9 @@ class PairedDevice {
     this.detail = '',
     this.online = false,
     this.isThisDevice = false,
+    this.addresses = const <String>[],
+    this.port = 0,
+    this.code = '',
   });
 
   /// The mesh id from the pairing code — the key the list is unique on, so the
@@ -49,6 +52,12 @@ class PairedDevice {
   /// thing that is always true of a paired device instead.
   final String detail;
 
+  /// The row's second line when discovery has just heard this device: its
+  /// address, which is the one fact about it that is true right now.
+  String get reachableDetail => addresses.isEmpty
+      ? detail
+      : 'Seen at ${addresses.first}${port > 0 ? ':$port' : ''}';
+
   /// Whether the device was reachable when this row was written. See the note
   /// at the top of this file: nothing here pretends to know it live.
   final bool online;
@@ -58,11 +67,27 @@ class PairedDevice {
   /// forgotten, because a device cannot unpair from itself.
   final bool isThisDevice;
 
+  /// Where the device said it lives, from the code it was paired with, best
+  /// first. What discovery is compared against, and what a transfer would dial.
+  final List<String> addresses;
+
+  /// The mesh port from the code, 0 when the code did not carry one.
+  final int port;
+
+  /// The one-time code from a `nexus://pair` payload, empty for the shell's own
+  /// invites. Kept, not used yet: it is the half of a pairing the mesh needs,
+  /// and re-asking the user to scan a code they already scanned is not a repair
+  /// anybody should have to make.
+  final String code;
+
   PairedDevice copyWith({
     String? name,
     bool? online,
     String? publicKey,
     String? detail,
+    List<String>? addresses,
+    int? port,
+    String? code,
   }) => PairedDevice(
     id: id,
     name: name ?? this.name,
@@ -70,6 +95,9 @@ class PairedDevice {
     detail: detail ?? this.detail,
     online: online ?? this.online,
     isThisDevice: isThisDevice,
+    addresses: addresses ?? this.addresses,
+    port: port ?? this.port,
+    code: code ?? this.code,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -79,7 +107,20 @@ class PairedDevice {
     'detail': detail,
     'online': online,
     'is_this_device': isThisDevice,
+    if (addresses.isNotEmpty) 'addresses': addresses,
+    if (port > 0) 'port': port,
+    if (code.isNotEmpty) 'code': code,
   };
+
+  /// Reads one address list back, dropping anything that is not a string.
+  static List<String> _addressesFrom(Object? raw) {
+    if (raw is! List) return const <String>[];
+    final List<String> out = <String>[];
+    for (final Object? entry in raw) {
+      if (entry is String && entry.trim().isNotEmpty) out.add(entry.trim());
+    }
+    return out;
+  }
 
   /// Reads one row back, or null when it is not a row any more — a value
   /// written by another build, or a line that lost a field. Dropping a broken
@@ -99,6 +140,9 @@ class PairedDevice {
       detail: raw['detail'] is String ? raw['detail'] as String : '',
       online: raw['online'] == true,
       isThisDevice: raw['is_this_device'] == true,
+      addresses: _addressesFrom(raw['addresses']),
+      port: raw['port'] is int ? raw['port'] as int : 0,
+      code: raw['code'] is String ? raw['code'] as String : '',
     );
   }
 
@@ -111,6 +155,9 @@ class PairedDevice {
     publicKey: invite.publicKey,
     detail: 'Paired just now',
     online: true,
+    addresses: invite.addresses,
+    port: invite.port,
+    code: invite.code,
   );
 
   @override

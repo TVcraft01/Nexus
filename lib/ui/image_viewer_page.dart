@@ -14,8 +14,24 @@ import 'package:flutter/material.dart';
 /// The key on the close button, so a test can find the one control here.
 const Key kImageViewerClose = ValueKey<String>('image-viewer-close');
 
+/// The key on the "Send to…" button, drawn only when a screen passes [onSend].
+const Key kImageViewerSend = ValueKey<String>('image-viewer-send');
+
 class ImageViewerPage extends StatelessWidget {
-  const ImageViewerPage({super.key, required this.path, this.caption});
+  const ImageViewerPage({
+    super.key,
+    required this.path,
+    this.caption,
+    this.onSend,
+  });
+
+  /// What the "Send to…" button does, or null to draw no button.
+  ///
+  /// A callback rather than a call into the send sheet, because the sheet lives
+  /// in the shell (`main_ui.dart`) and this page is deliberately not part of it:
+  /// the viewer knows how to show a picture, and who can receive one is the
+  /// screen's business.
+  final VoidCallback? onSend;
 
   /// Where the file is. A path that no longer exists draws the notice below
   /// instead of an exception.
@@ -30,12 +46,13 @@ class ImageViewerPage extends StatelessWidget {
     BuildContext context,
     String path, {
     String? caption,
+    VoidCallback? onSend,
   }) {
     return Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         fullscreenDialog: true,
         builder: (BuildContext context) =>
-            ImageViewerPage(path: path, caption: caption),
+            ImageViewerPage(path: path, caption: caption, onSend: onSend),
       ),
     );
   }
@@ -72,6 +89,21 @@ class ImageViewerPage extends StatelessWidget {
                       fontSize: 13,
                       decoration: TextDecoration.none,
                     ),
+                  ),
+                ),
+              ),
+            ),
+          if (onSend != null)
+            SafeArea(
+              child: Align(
+                alignment: Alignment.bottomRight,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: FilledButton.icon(
+                    key: kImageViewerSend,
+                    onPressed: onSend,
+                    icon: const Icon(Icons.send_rounded, size: 16),
+                    label: const Text('Send to…'),
                   ),
                 ),
               ),

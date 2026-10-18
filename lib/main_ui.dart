@@ -85,6 +85,7 @@ import 'core/attachments.dart';
 import 'core/chat_log.dart';
 import 'core/device_capabilities.dart';
 import 'core/device_memory.dart';
+import 'core/file_link.dart';
 import 'core/local_ai_service.dart';
 import 'core/mic_access.dart';
 import 'core/ollama_service.dart';
@@ -93,8 +94,11 @@ import 'core/on_device_model.dart';
 import 'core/onboarding.dart';
 import 'core/pair_invite.dart';
 import 'core/paired_devices.dart';
+import 'core/qr_pairing.dart' show QrPairingToken;
 import 'core/screen_capture.dart';
 import 'core/services/icon_service.dart';
+import 'mesh/discovery.dart' show DiscoveredDevice;
+import 'mesh/nearby.dart' show NearbyDevices;
 import 'core/version.dart';
 import 'ui/camera_page.dart';
 import 'ui/image_viewer_page.dart';
@@ -1746,8 +1750,22 @@ Future<bool> showNexusConfirm(
 /// confirmation is the only thing between a mis-tap and a broken pairing.
 const String kNexusForgetTitle = 'Forget this device?';
 const Key kNexusDiscoverNearby = Key('nexus-discover-nearby');
-const String kNexusDiscoverySoon =
-    'Nearby discovery coming soon. Use QR for now.';
+
+/// How long the Discover button listens before it reports what it heard.
+///
+/// Long enough for two announce cycles (the mesh announces every three
+/// seconds) plus the unicast reply a peer sends back, short enough that nobody
+/// thinks the button has hung.
+const Duration kNexusDiscoverWindow = Duration(seconds: 7);
+
+/// The sentence a v2 pairing code gets. It is a *live* handshake — ephemeral
+/// keys, no device id, single use — so a screen with no mesh behind it has
+/// nothing it could honestly store from one.
+const String kNexusLivePairCodeText =
+    'That is a live pairing code. It pairs through the mesh, which this '
+    'screen does not run yet — use the code on the other device\u2019s Nexus '
+    'code instead.';
+
 
 /// The key on a destructive dialog's confirm button.
 const Key kNexusConfirmAction = Key('nexus-confirm-action');
@@ -3961,6 +3979,206 @@ class NexusChatBubble extends StatelessWidget {
   }
 }
 
+/// The key on the "Send to…" control in an image bubble and in the viewer.
+const Key kNexusSendTo = ValueKey<String>('send-to');
+
+/// What that control is called.
+const String kNexusSendToLabel = 'Send to…';
+
+/// The key on the send sheet's progress bar.
+const Key kNexusSendProgress = ValueKey<String>('send-progress');
+
+/// Opens the send sheet for one image: choose a paired device, watch the bar,
+/// read the result.
+///
+/// Its own sheet rather than a dialog because the middle of this flow is a
+/// device list the user may have to read carefully — which phone am I sending
+/// this to — and a dialog that grows a list is a sheet that was designed late.
+Future<void> showSendToSheet(
+  BuildContext context, {
+  required String path,
+  String? caption,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: context.ui.surface,
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (sheetContext) => _SendToSheet(
+      path: path,
+      caption: caption,
+      send: (PairedDevice device, void Function(double) onProgress) =>
+          FileLink.instance.send(
+            path: path,
+            device: device,
+            onProgress: onProgress,
+          ),
+    ),
+  );
+}
+
+/// The sheet's whole state machine: pick, send, report.
+///
+/// [send] is injected rather than called through [FileLink] directly so the
+/// sheet can be tested without writing files — the same move the rest of this
+/// file makes for the brain, the microphone and the speaker.
+class _SendToSheet extends StatefulWidget {
+  const _SendToSheet({required this.path, this.caption, required this.send});
+
+  final String path;
+  final String? caption;
+  final Future<FileSendResult> Function(
+    PairedDevice device,
+    void Function(double progress) onProgress,
+  )
+  send;
+
+  @override
+  State<_SendToSheet> createState() => _SendToSheetState();
+}
+
+class _SendToSheetState extends State<_SendToSheet> {
+  PairedDevice? _target;
+  double _progress = 0;
+  FileSendResult? _result;
+
+  bool get _sending => _target != null && _result == null;
+
+  Future<void> _send(PairedDevice device) async {
+    if (_sending) return;
+    setState(() {
+      _target = device;
+      _progress = 0;
+      _result = null;
+    });
+    final FileSendResult result = await widget.send(device, (double value) {
+      if (!mounted) return;
+      setState(() => _progress = value);
+    });
+    if (!mounted) return;
+    setState(() {
+      _progress = 1;
+      _result = result;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    final NearbyDevices nearby = NearbyDevices.instance;
+    final List<PairedDevice> devices = <PairedDevice>[
+      for (final PairedDevice device in PairedDevices.instance.devices)
+        if (!device.isThisDevice) device,
+    ];
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: c.hairline,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(kNexusSendToLabel, style: NexusType.rowTitle(c)),
+            const SizedBox(height: 4),
+            Text(
+              widget.caption ?? 'This image',
+              style: NexusType.rowMeta(c),
+            ),
+            const SizedBox(height: 14),
+            if (_target == null && devices.isEmpty)
+              Text(
+                'No other device is paired yet. Pair one by scanning its code, '
+                'or find it under Discover Nearby Devices.',
+                style: NexusType.rowMeta(c).copyWith(height: 1.5),
+              )
+            else if (_sending)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Text(
+                    'Sending to ${_target!.name}…',
+                    style: NexusType.rowMeta(c),
+                  ),
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    key: kNexusSendProgress,
+                    value: _progress,
+                    color: c.accent,
+                    backgroundColor: c.hairline,
+                  ),
+                ],
+              )
+            else if (_result case final FileSendResult result)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Icon(
+                        result.ok
+                            ? Icons.check_circle_outline
+                            : Icons.info_outline,
+                        size: 18,
+                        color: result.ok ? c.accent : c.textMuted,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          result.message,
+                          key: kNexusSendResult,
+                          style: NexusType.rowMeta(c).copyWith(height: 1.45),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: () => setState(() {
+                      _target = null;
+                      _result = null;
+                    }),
+                    child: const Text('Send to another device'),
+                  ),
+                ],
+              )
+            else
+              for (final PairedDevice device in devices) ...<Widget>[
+                NexusRow(
+                  key: ValueKey<String>('send-to-${device.id}'),
+                  title: device.name,
+                  subtitle: nearby.hasHeard(device.id)
+                      ? 'On this network now'
+                      : 'Not heard on this network',
+                  leading: const NexusIconTile(Icons.send_rounded),
+                  accentTitle: true,
+                  trailing: NexusStatusDot(online: nearby.hasHeard(device.id)),
+                  onTap: () => unawaited(_send(device)),
+                ),
+              ],
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The key on the sentence a send ends with.
+const Key kNexusSendResult = ValueKey<String>('send-result');
+
 /// A thumbnail in the thread: a photo from the camera or one screenshot of
 /// the phone, with the caption the turn carried ("Photo attached").
 ///
@@ -4011,8 +4229,17 @@ class NexusAttachmentBubble extends StatelessWidget {
           label: 'Attached image: $caption',
           child: GestureDetector(
             key: ValueKey<String>('attachment:$path'),
-            onTap: () =>
-                ImageViewerPage.open(context, path, caption: caption),
+            onTap: () => ImageViewerPage.open(
+              context,
+              path,
+              caption: caption,
+              // The full-screen page carries the same door as the bubble: a
+              // user looking closely at a photo is exactly the one who wants
+              // to send it somewhere.
+              onSend: () => unawaited(
+                showSendToSheet(context, path: path, caption: caption),
+              ),
+            ),
             child: Container(
               padding: const EdgeInsets.fromLTRB(6, 6, 6, 8),
               decoration: BoxDecoration(
@@ -4063,6 +4290,42 @@ class NexusAttachmentBubble extends StatelessWidget {
                       style: NexusType.bubble(c).copyWith(
                         fontSize: 14,
                         color: c.textMuted,
+                      ),
+                    ),
+                  ),
+                  // The way out of the bubble that is not "look at it": a
+                  // photo in a thread is usually on its way somewhere else.
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
+                    child: InkWell(
+                      key: kNexusSendTo,
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => unawaited(
+                        showSendToSheet(context, path: path, caption: caption),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 5,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Icon(
+                              Icons.send_rounded,
+                              size: 14,
+                              color: c.accent,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              kNexusSendToLabel,
+                              style: NexusType.rowMeta(c).copyWith(
+                                fontSize: 12.5,
+                                color: c.accent,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -6531,24 +6794,33 @@ class _DevicesTabState extends State<DevicesTab> {
   /// another in its place.
   PairedDevices get _paired => PairedDevices.instance;
 
-  /// True for the two seconds the "Discover nearby" button spends pretending to
-  /// look. See [_discoverNearby] for why it is a shape and not a feature.
+  /// Who is on this network, heard by the mesh's own discovery.
+  NearbyDevices get _nearby => NearbyDevices.instance;
+
+  /// True while the Discover button is in its listening window.
   bool _discovering = false;
 
   @override
   void initState() {
     super.initState();
     _paired.addListener(_onChanged);
+    _nearby.addListener(_onChanged);
     // The stored list arrives asynchronously — it is a preference read — so the
     // screen corrects itself from the settled store rather than staying on the
     // seed rows. Idempotent: a second Devices tab (or a rebuild) re-reads
     // nothing.
     unawaited(_paired.attach());
+    // Listening starts with the screen and stops with it: a socket announcing
+    // into an empty room costs battery and answers nobody. This is also what
+    // makes the Online word on a paired row true rather than remembered.
+    unawaited(_nearby.start());
   }
 
   @override
   void dispose() {
     _paired.removeListener(_onChanged);
+    _nearby.removeListener(_onChanged);
+    unawaited(_nearby.stop());
     super.dispose();
   }
 
@@ -6556,10 +6828,30 @@ class _DevicesTabState extends State<DevicesTab> {
     if (mounted) setState(() {});
   }
 
+  /// Paired rows, with presence answered by what discovery is hearing right
+  /// now: a device heard in the last minute is online, whoever said otherwise
+  /// when the row was written.
+  List<PairedDevice> get _rows => <PairedDevice>[
+    for (final PairedDevice device in _paired.devices)
+      if (device.isThisDevice)
+        device
+      else if (_nearby.running && _nearby.device(device.id) != null)
+        device.copyWith(
+          online: true,
+          detail: 'Seen just now at ${_nearby.device(device.id)!.address}',
+        )
+      else
+        device,
+  ];
+
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
-    final List<PairedDevice> devices = _paired.devices;
+    final List<PairedDevice> devices = _rows;
+    final List<DiscoveredDevice> unpaired = <DiscoveredDevice>[
+      for (final DiscoveredDevice device in _nearby.devices)
+        if (!_paired.contains(device.id)) device,
+    ];
     return NexusTabBody(
       title: 'Devices',
       subtitle: 'Paired directly, over your own network.',
@@ -6637,6 +6929,34 @@ class _DevicesTabState extends State<DevicesTab> {
             ),
           ),
           Padding(
+            padding: const EdgeInsets.fromLTRB(4, 10, 4, 0),
+            child: Text(
+              _discovering
+                  ? 'Listening on this network for other Nexus devices…'
+                  : _nearby.status,
+              key: kNexusDiscoveryStatus,
+              style: NexusType.rowMeta(c).copyWith(height: 1.4),
+            ),
+          ),
+          if (unpaired.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 20),
+            const NexusSectionLabel('Nearby'),
+            for (final DiscoveredDevice device in unpaired) ...<Widget>[
+              NexusRow(
+                key: ValueKey<String>('nearby-${device.id}'),
+                title: device.name,
+                subtitle:
+                    '${_platformWord(device.platform)} · ${device.address}'
+                    '${device.port > 0 ? ':${device.port}' : ''}',
+                leading: const NexusIconTile(Icons.wifi_tethering_rounded),
+                accentTitle: true,
+                trailing: const NexusChevron(),
+                onTap: () => unawaited(_pairNearby(device)),
+              ),
+              Divider(height: 1, thickness: 1, color: c.hairline, indent: 56),
+            ],
+          ],
+          Padding(
             padding: const EdgeInsets.fromLTRB(4, 26, 4, 0),
             child: Text(
               'Nothing about these devices is uploaded anywhere. Access '
@@ -6689,26 +7009,68 @@ class _DevicesTabState extends State<DevicesTab> {
       );
   }
 
-  /// The button at the bottom of the list: what a nearby-device hunt will one
-  /// day be.
+  /// The button at the bottom of the list, and now the real thing: it opens the
+  /// mesh's own discovery socket, listens for [kNexusDiscoverWindow], and shows
+  /// what answered.
   ///
-  /// It spends two seconds looking at nothing and then says so, and that is the
-  /// honest version of a control that has to exist before the thing behind it
-  /// does: a button that answered instantly would read as broken, and one that
-  /// claimed to have found something would be lying about the one property this
-  /// app is built on. The wait is a [Future.delayed] rather than a fake progress
-  /// loop because there is nothing being waited *for*.
+  /// The wait is a window rather than a progress fiction because discovery is a
+  /// conversation: this device announces, the others announce back, and one
+  /// announce cycle is three seconds — so a button that answered instantly
+  /// would answer "nobody" on a network with somebody on it. What it found
+  /// stays on screen afterwards as rows, not as a notice that scrolls away.
   Future<void> _discoverNearby() async {
     if (_discovering) return;
     setState(() => _discovering = true);
-    await Future<void>.delayed(const Duration(seconds: 2));
+    await _nearby.start();
+    await Future<void>.delayed(kNexusDiscoverWindow);
     if (!mounted) return;
     setState(() => _discovering = false);
+  }
+
+  /// Pairs a device that answered discovery, with no code to scan.
+  ///
+  /// What is stored is what was heard: the id it announced, the name it gave,
+  /// and the address the announcement came from. The row then behaves like any
+  /// other paired device — it is the same list, the same store, the same way to
+  /// forget it.
+  Future<void> _pairNearby(DiscoveredDevice device) async {
+    final bool added = _paired.add(
+      PairInvite(
+        deviceName: device.name,
+        deviceId: device.id,
+        publicKey: '',
+        addresses: <String>[device.address],
+        port: device.port,
+      ),
+    );
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text(kNexusDiscoverySoon)));
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            added
+                ? 'Paired with ${device.name}'
+                : '${device.name} is already paired.',
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
   }
+
+  /// What kind of machine a row is looking at, in a word.
+  static String _platformWord(String platform) => switch (platform) {
+    'android' => 'Phone',
+    'ios' => 'iPhone',
+    'macos' => 'Mac',
+    'windows' => 'Windows PC',
+    'linux' => 'Linux PC',
+    _ => 'Device',
+  };
 }
+
+/// The line under the Discover button: what discovery is doing right now.
+const Key kNexusDiscoveryStatus = Key('nexus-discovery-status');
 
 // ---------------------------------------------------------------------------
 // Pairing
@@ -6723,15 +7085,29 @@ class _DevicesTabState extends State<DevicesTab> {
 /// reading the same words the user does.
 const String kNexusNotAPairCodeText = 'This is not a Nexus device code.';
 
-/// What it says about a code that *is* Nexus's, but from a build whose pairing
-/// this shell cannot complete — the older `nexus://pair` codes, which carry a
-/// one-time secret and a port rather than an invite.
+/// What it says about a `nexus://pair` code this build cannot use: a v1 payload
+/// that lost a field, or one whose device id is too short to be an id.
 ///
 /// Deliberately different from [kNexusNotAPairCodeText]: the user is holding a
 /// Nexus device, and telling them their own device is not one would send them
 /// looking for the wrong problem.
 const String kNexusLegacyPairCodeText =
-    'That is a Nexus code from an older build — update that device to pair.';
+    'That Nexus code is incomplete — show the code again on that device.';
+
+/// The sentence for one scanned string: which of the three refusals it is.
+///
+/// One function rather than a chain inside the scanner, so the page and the
+/// tests agree about the mapping — and so a code that is *nearly* ours is never
+/// described with the words for a tourist's QR code.
+String nexusPairRefusal(String raw) {
+  final String trimmed = raw.trim();
+  if (trimmed.startsWith('nexus://pair')) {
+    return QrPairingToken.parse(trimmed) != null
+        ? kNexusLivePairCodeText
+        : kNexusLegacyPairCodeText;
+  }
+  return kNexusNotAPairCodeText;
+}
 
 /// The title on the sheet, the QR page and the scanner.
 const String kNexusPairTitle = 'Pair a device';
@@ -6877,25 +7253,63 @@ Future<void> _scanFrom(BuildContext context) async {
 /// an inverted QR is a QR that does not read — and the payload is deliberately
 /// *not* printed on screen: it is 150 characters of JSON, and the one thing a
 /// user could do with it is mistype it.
-class PairQrPage extends StatelessWidget {
-  const PairQrPage({super.key, this.identity});
+class PairQrPage extends StatefulWidget {
+  const PairQrPage({super.key, this.identity, this.addresses});
 
   /// Who this device is. Null uses [PairIdentity.current]; a test states it, so
   /// the QR it asserts on is not a random id.
   final PairIdentity? identity;
 
-  /// The string the QR carries.
-  ///
-  /// A getter rather than an inline expression in [build] because it is the one
-  /// thing about this page a test can check without a camera — `QrImageView`
-  /// keeps its data private — so the page says what it draws, in one place,
-  /// and the test parses that same string back into an invite.
-  String get payload => (identity ?? PairIdentity.current).invite.encode();
+  /// Where this device can be reached. Null reads the real interfaces
+  /// ([localAddresses]); a test states them, because a widget test host's
+  /// interfaces are not the device's.
+  final Future<List<String>> Function()? addresses;
+
+  @override
+  State<PairQrPage> createState() => PairQrPageState();
+}
+
+class PairQrPageState extends State<PairQrPage> {
+  /// The addresses read when the page opened, empty until they arrive.
+  List<String> _addresses = const <String>[];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_readAddresses());
+  }
+
+  Future<void> _readAddresses() async {
+    final List<String> found =
+        await (widget.addresses ?? localAddresses)();
+    if (!mounted) return;
+    setState(() => _addresses = found);
+  }
+
+  /// The exact string the QR currently carries — the identity, plus the
+  /// addresses once they are known. A test reads this rather than poking at the
+  /// image, because `QrImageView` keeps its data private.
+  String get currentPayload => payloadFor(_addresses);
+
+  /// The payload with [addresses] in it. The two halves are one decision: the
+  /// other device needs to know *who* this is (id, name, key) and *where* it is
+  /// (the address it just looked up), and a code carrying only the first would
+  /// pair a device nobody could dial.
+  String payloadFor(List<String> addresses) =>
+      (widget.identity ?? PairIdentity.current)
+          .withAddresses(addresses)
+          .invite
+          .encode();
+
+  /// The identity half of the code, without addresses — what the page can say
+  /// before the interface list comes back, and what an older `nexus_pair` code
+  /// carried.
+  String get payload => (widget.identity ?? PairIdentity.current).invite.encode();
 
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
-    final PairIdentity who = identity ?? PairIdentity.current;
+    final PairIdentity who = widget.identity ?? PairIdentity.current;
     return Scaffold(
       backgroundColor: c.background,
       appBar: AppBar(title: const Text(kNexusPairTitle)),
@@ -6921,7 +7335,7 @@ class PairQrPage extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: QrImageView(
-                  data: payload,
+                  data: currentPayload,
                   size: 236,
                   backgroundColor: Colors.white,
                   padding: EdgeInsets.zero,
@@ -6942,7 +7356,10 @@ class PairQrPage extends StatelessWidget {
                     Text(who.name, style: NexusType.rowTitle(c)),
                     const SizedBox(height: 2),
                     Text(
-                      'This device · ${who.id.substring(0, 6)}…',
+                      _addresses.isEmpty
+                          ? 'This device · ${who.id.substring(0, 6)}…'
+                          : 'Reachable at ${_addresses.first}',
+                      key: kNexusQrAddressLine,
                       style: NexusType.rowMeta(c),
                     ),
                   ],
@@ -6961,6 +7378,9 @@ class PairQrPage extends StatelessWidget {
     );
   }
 }
+
+/// The line under the QR's own name: the address the code now carries.
+const Key kNexusQrAddressLine = Key('nexus-qr-address');
 
 /// The camera page: full screen, one frame in the middle, and a pill that says
 /// what the last code was if it was not ours.
@@ -7006,18 +7426,20 @@ class _PairScanPageState extends State<PairScanPage> {
     });
   }
 
-  /// One scanned string: ours, or a sentence about why not.
+  /// One scanned string: a code this build can pair with, or a sentence about
+  /// why not.
+  ///
+  /// Both formats in the world are read here — this shell's own `nexus_pair`
+  /// code and the mesh's `nexus://pair` URI, which carries the device id, its
+  /// name and the address it can be reached at. Both end as the same invite, so
+  /// there is exactly one place a scanned device enters the paired list.
   void _onCode(String raw) {
-    final PairInvite? invite = PairInvite.parse(raw);
+    final PairInvite? invite = PairInvite.fromAnyCode(raw);
     if (invite != null) {
       Navigator.of(context).pop(invite);
       return;
     }
-    _showNotice(
-      raw.trim().startsWith('nexus://pair')
-          ? kNexusLegacyPairCodeText
-          : kNexusNotAPairCodeText,
-    );
+    _showNotice(nexusPairRefusal(raw));
   }
 
   @override
