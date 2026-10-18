@@ -18,6 +18,8 @@
 // file knows nothing about Ollama.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'brain.dart' show ChatTurn;
@@ -88,17 +90,32 @@ class ModelNotFoundException extends OnDeviceAiException {
 /// Construction is free: [Llm] loads lazily on the first question and drops the
 /// weights after it has been idle, so holding one of these for the life of the
 /// app costs nothing but the file check each answer starts with.
+///
+/// Two models can live on the disk, and this service follows the one selected in
+/// [ModelChoice] rather than the one it was built with: the app builds one of
+/// these for the life of the process, and a picker that only took effect after a
+/// restart would be a picker that did nothing. Switching is the one place the
+/// old engine is thrown away — leaving two sets of weights in a phone's memory
+/// is how an app gets closed by Android.
 class OnDeviceAiService implements LocalAiService {
   OnDeviceAiService({
     OnDeviceModel model = const OnDeviceModel(),
     Llm? llm,
     this.system = kNexusOnDeviceSystem,
     this.maxTokens = 220,
-  }) : _model = model,
-       _llm = llm ?? Llm(model: model.model, modelsDir: model.directoryFor);
+  }) : _deviceModel = model,
+       _fixedEngine = llm;
 
-  final OnDeviceModel _model;
-  final Llm _llm;
+  final OnDeviceModel _deviceModel;
+
+  /// An engine the caller supplied — a test's fake runtime, which must be used
+  /// for every model. Null in the app, where the engine is built per selection.
+  final Llm? _fixedEngine;
+
+  /// The engine for the model that was selected when it was built. Rebuilt
+  /// (and the old one disposed) the first time the selection changes.
+  Llm? _engine;
+  OnDeviceModelChoice? _engineChoice;
 
   /// The persona and the rules, as the model's system turn.
   final String system;
@@ -108,24 +125,70 @@ class OnDeviceAiService implements LocalAiService {
   final int maxTokens;
 
   /// The file this brain answers from — the Settings row reports the same one.
-  OnDeviceModel get model => _model;
+  OnDeviceModel get model => _deviceModel;
+
+  /// Starts reading the stored selection, without waiting for it.
+  ///
+  /// The read is a preference, which on a phone is a platform channel, and the
+  /// first question of a session must not block on one: before the read lands
+  /// this answers from the default model, which is the file the check is about
+  /// to look for anyway. `main()` starts the same read before the first frame,
+  /// so a restart answers with the picked model and not with the default — the
+  /// wait is paid at launch, where nothing is being typed.
+  void _warmChoice() {
+    unawaited(ModelChoice.instance.ensureLoaded());
+  }
+
+  /// The engine for the selected model, built on first use.
+  Future<Llm> _current() async {
+    final Llm? fixed = _fixedEngine;
+    if (fixed != null) return fixed;
+    _warmChoice();
+    final OnDeviceModelChoice choice = _deviceModel.choice;
+    final Llm? engine = _engine;
+    if (engine != null && _engineChoice == choice) return engine;
+    // A different model: free the old weights *before* loading the new ones.
+    // Both at once is 1.2 GB, which a phone answers by killing the app.
+    _engine = null;
+    _engineChoice = null;
+    if (engine != null) await engine.dispose();
+    final Llm built = Llm(model: _deviceModel.model, modelsDir: _deviceModel.directoryFor);
+    _engine = built;
+    _engineChoice = choice;
+    return built;
+  }
 
   /// True when a model file is on disk. Cheap, and never a load.
-  Future<bool> isModelPresent() => _model.isPresent();
+  Future<bool> isModelPresent() async {
+    _warmChoice();
+    return _deviceModel.isPresent();
+  }
 
   /// Fetches the model, reporting progress from 0 to 1. See
   /// [OnDeviceModel.download]: the bytes and their hash are [Llm]'s business.
-  Future<bool> download({void Function(double progress)? onProgress}) =>
-      _model.download(onProgress: onProgress);
+  Future<bool> download({void Function(double progress)? onProgress}) async {
+    _warmChoice();
+    return _deviceModel.download(onProgress: onProgress);
+  }
 
   /// Frees the weights and deletes the file, answering how many bytes went.
+  ///
+  /// Only ever the selected model's file: the picker may point this service at
+  /// either one, and "Delete model" must not take the other one with it.
   Future<int> delete() async {
-    await _llm.unload();
-    return _model.delete();
+    _warmChoice();
+    await _engine?.unload();
+    return _deviceModel.delete();
   }
 
   /// Releases the engine for good. The file stays.
-  Future<void> dispose() => _llm.dispose();
+  Future<void> dispose() async {
+    final Llm? engine = _engine;
+    _engine = null;
+    _engineChoice = null;
+    if (engine != null) await engine.dispose();
+    await _fixedEngine?.dispose();
+  }
 
   /// Answers [prompt] from this device, or throws.
   ///
@@ -136,10 +199,12 @@ class OnDeviceAiService implements LocalAiService {
   /// user's permission with the download button, not with a message.
   @override
   Future<String> generateResponse(String prompt) async {
-    if (!await _model.isPresent()) throw const ModelNotFoundException();
+    _warmChoice();
+    if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
+    final Llm llm = await _current();
     String answer;
     try {
-      answer = await _llm.complete(
+      answer = await llm.complete(
         prompt,
         system: system,
         maxTokens: maxTokens,
@@ -156,7 +221,7 @@ class OnDeviceAiService implements LocalAiService {
       // Two different silences: a model that could not come up at all, and one
       // that came up and said nothing. Only the first is worth telling the user
       // their device cannot run this.
-      throw _llm.status == LlmStatus.unavailable
+      throw llm.status == LlmStatus.unavailable
           ? const OnDeviceAiException(
               'The on-device model could not be loaded on this device.',
             )
@@ -181,7 +246,9 @@ class OnDeviceAiService implements LocalAiService {
     String prompt, {
     List<AiTurn> history = const <AiTurn>[],
   }) async* {
-    if (!await _model.isPresent()) throw const ModelNotFoundException();
+    _warmChoice();
+    if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
+    final Llm llm = await _current();
     bool answered = false;
     try {
       // With history this is a chat, not a question: the model is handed the
@@ -190,8 +257,8 @@ class OnDeviceAiService implements LocalAiService {
       // prompt it has always been — the same call, so a brain asked a single
       // question behaves exactly as it did before this parameter existed.
       final Stream<String> pieces = history.isEmpty
-          ? _llm.completeStream(prompt, system: system, maxTokens: maxTokens)
-          : _llm.completeChatStream(
+          ? llm.completeStream(prompt, system: system, maxTokens: maxTokens)
+          : llm.completeChatStream(
               system: system,
               history: <ChatTurn>[
                 for (final AiTurn turn in history) turn.chatTurn,
@@ -213,7 +280,7 @@ class OnDeviceAiService implements LocalAiService {
     if (answered) return;
     // Nothing arrived and nothing threw: the model could not come up, or it came
     // up and said nothing. Same two silences as [generateResponse].
-    throw _llm.status == LlmStatus.unavailable
+    throw llm.status == LlmStatus.unavailable
         ? const OnDeviceAiException(
             'The on-device model could not be loaded on this device.',
           )

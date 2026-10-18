@@ -71,6 +71,24 @@ const kPhoneModel = LlmModel(
   bytes: 491400032,
 );
 
+/// The second model a phone can run: Llama 3.2 1B Instruct, Q4_K_M — 770 MiB.
+///
+/// Bigger, slower and noticeably better at instructions a 0.5B model treats as
+/// suggestions, which is why it exists: the action JSON in
+/// `system_actions.dart` is a formatting rule, and formatting rules are the
+/// first thing a tiny model drops. Published by Meta under the Llama 3.2
+/// Community License, mirrored as GGUF by Unsloth; the commit is pinned and the
+/// hash is the file's, so the bytes this app installs are the bytes that were
+/// checked.
+const kLlamaModel = LlmModel(
+  name: 'llama-3.2-1b-instruct-q4_k_m',
+  url: 'https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/'
+      'b69aef112e9f895e6f98d7ae0949f72ff09aa401/'
+      'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+  sha256: '3f5a22426976ab26cfe84dba63c1d08391717abb1af893e10f1b2968d862dcc1',
+  bytes: 807694368,
+);
+
 /// The desktop model: Qwen2.5 1.5B Instruct, Q4_K_M — 1.04 GiB, which a real
 /// machine has and a phone should not be asked for.
 const kDesktopModel = LlmModel(

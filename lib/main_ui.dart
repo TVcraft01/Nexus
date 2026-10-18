@@ -80,6 +80,7 @@ import 'core/local_ai_service.dart';
 import 'core/mic_access.dart';
 import 'core/ollama_service.dart';
 import 'core/on_device_ai_service.dart';
+import 'core/on_device_model.dart';
 import 'core/pair_invite.dart';
 import 'core/paired_devices.dart';
 import 'core/services/icon_service.dart';
@@ -630,7 +631,15 @@ abstract final class NexusTheme {
 // App root
 // ---------------------------------------------------------------------------
 
-void main() => runApp(const NexusUiApp());
+void main() {
+  // The selected model is a preference, and the first question after a restart
+  // must load the model the user picked rather than the default. The read is
+  // started here — before the first frame, while nothing is being typed — and
+  // never awaited by the brain, which would stall an answer on a platform
+  // channel. See `OnDeviceAiService._warmChoice`.
+  unawaited(ModelChoice.instance.ensureLoaded());
+  runApp(const NexusUiApp());
+}
 
 /// The shell app. Holds what outlives a tab — appearance and accent — because
 /// the Settings tab changes them and the whole frame has to follow.
@@ -6372,6 +6381,18 @@ class _SettingsTabState extends State<SettingsTab> {
   double _downloadProgress = 0;
   String? _brainError;
 
+  /// Which models are on the disk, so the picker can say so before the user
+  /// taps one and waits for a download that is already there.
+  Map<OnDeviceModelChoice, bool> _present =
+      const <OnDeviceModelChoice, bool>{};
+
+  /// The selection itself, shared with the brain — not a copy of it. A switch
+  /// made here is what the next question loads.
+  late final ModelChoice _choice = ModelChoice.instance;
+
+  /// The model the rows below the picker are about: the selected one.
+  OnDeviceModel get _selectedModel => _onDevice.model.withChoice(_choice.choice);
+
   /// True from the tap on the appearance switch until the frame that paints the
   /// new theme. The switch becomes a small spinner for that window.
   ///
@@ -6392,6 +6413,7 @@ class _SettingsTabState extends State<SettingsTab> {
   @override
   void dispose() {
     _chat.removeListener(_onChatChanged);
+    _choice.removeListener(_onModelChoiceChanged);
     // Only a controller this state made is this state's to free; the shell's
     // outlives the tab it lent it to.
     if (widget.scrollController == null) _scroll.dispose();
@@ -6402,6 +6424,29 @@ class _SettingsTabState extends State<SettingsTab> {
   /// just cleared here — so the row that counts it is rebuilt.
   void _onChatChanged() {
     if (mounted) setState(() {});
+  }
+
+  /// The selection changed — here, or somewhere else that shares it — so the
+  /// rows that describe it are re-read rather than re-rendered from the old
+  /// model's size and state.
+  void _onModelChoiceChanged() {
+    if (!mounted) return;
+    setState(() {});
+    unawaited(_refreshBrain());
+  }
+
+  /// Switches the model, and re-reads what that means.
+  ///
+  /// A model that is on the disk takes over immediately: the brain reads the
+  /// selection on its next question, so there is nothing else to do. A model
+  /// that is not downloaded becomes the selection too — the download row below
+  /// the picker is then about *that* file, which is what "select it, then
+  /// download it" means.
+  Future<void> _selectModel(OnDeviceModelChoice choice) async {
+    if (_downloading || choice == _choice.choice) return;
+    await _choice.select(choice);
+    if (!mounted) return;
+    await _refreshBrain();
   }
 
   /// Flips dark mode, with the switch showing that the frame is changing.
@@ -6428,6 +6473,9 @@ class _SettingsTabState extends State<SettingsTab> {
     // idempotent.
     _chat.addListener(_onChatChanged);
     unawaited(_chat.attach());
+    // The model picker draws the selection, and anything else that changes it —
+    // a second Settings tab, a future deep link — has to move this one too.
+    _choice.addListener(_onModelChoiceChanged);
   }
 
   @override
@@ -6445,12 +6493,23 @@ class _SettingsTabState extends State<SettingsTab> {
   /// is. Both answers are cheap — a file check and one HTTP probe — and both
   /// are allowed to fail: a row that cannot be computed says the honest thing.
   Future<void> _refreshBrain() async {
-    final bool present = await _onDevice.isModelPresent();
-    final int bytes = present ? await _onDevice.model.sizeBytes() : 0;
-    final AiStatus status = await AiStatus.detect(model: _onDevice.model);
+    // The stored selection is read before anything is asked about it: a first
+    // launch can reach this screen before the preference has been loaded, and
+    // the row would otherwise describe the default model for a frame and then
+    // change under the user.
+    await _choice.ensureLoaded();
+    final Map<OnDeviceModelChoice, bool> present =
+        <OnDeviceModelChoice, bool>{};
+    for (final OnDeviceModelChoice choice in OnDeviceModelChoice.values) {
+      present[choice] = await _onDevice.model.withChoice(choice).isPresent();
+    }
+    final bool here = present[_choice.choice] ?? false;
+    final int bytes = here ? await _selectedModel.sizeBytes() : 0;
+    final AiStatus status = await AiStatus.detect(model: _selectedModel);
     if (!mounted) return;
     setState(() {
-      _modelPresent = present;
+      _present = present;
+      _modelPresent = here;
       _modelBytes = bytes;
       _aiStatus = status;
     });
@@ -6703,17 +6762,33 @@ class _SettingsTabState extends State<SettingsTab> {
               leading: NexusIconTile(Icons.memory_outlined),
             )
           else ...<Widget>[
+            // The picker: one row per model, the selected one ticked and the
+            // downloaded ones saying so. Two rather than one because the small
+            // model is not the right model for every job — it is quick, and it
+            // drops formatting rules like the action JSON, which is a trade the
+            // user is allowed to make either way.
+            //
+            // Selecting a model that is not on the disk is not an error and not
+            // a download: it makes the row below the picker a Download row for
+            // *that* model, which is the order the two decisions are made in.
+            for (final OnDeviceModelChoice choice in OnDeviceModelChoice.values)
+              _ModelChoiceRow(
+                choice: choice,
+                selected: choice == _choice.choice,
+                present: _present[choice] ?? false,
+                onTap: () => unawaited(_selectModel(choice)),
+              ),
             if (_downloading)
               _BrainProgress(
                 progress: _downloadProgress,
-                label: _onDevice.model.label,
-                megabytes: _onDevice.model.model.megabytes,
+                label: _selectedModel.label,
+                megabytes: _selectedModel.model.megabytes,
               )
             else if (_modelPresent)
               NexusRow(
                 title: 'On-device model',
                 subtitle:
-                    '${_onDevice.model.label} — ${_megabytes(_modelBytes)} MB '
+                    '${_selectedModel.label} — ${_megabytes(_modelBytes)} MB '
                     'on this device',
                 leading: const NexusIconTile(Icons.download_done_rounded),
                 trailing: Text('Downloaded', style: NexusType.rowMeta(c)),
@@ -6722,8 +6797,8 @@ class _SettingsTabState extends State<SettingsTab> {
               NexusRow(
                 title: 'Download model',
                 subtitle:
-                    '${_onDevice.model.label} — '
-                    '${_onDevice.model.model.megabytes} MB. Runs here, no '
+                    '${_selectedModel.label} — '
+                    '${_selectedModel.model.megabytes} MB. Runs here, no '
                     'network, no account',
                 leading: const NexusIconTile(Icons.download_rounded),
                 trailing: const NexusChevron(),
@@ -6763,6 +6838,51 @@ class _SettingsTabState extends State<SettingsTab> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// One model in the picker: what it is, whether it is on the disk, and whether
+/// it is the one the brain will load.
+///
+/// A row rather than a radio button in a dialog: the two models differ by size
+/// and by what that size buys, and a user choosing between 470 MB and 770 MB
+/// should be able to read both sentences at once. The tick is the selection —
+/// one of them is always selected, so this is a choice with a current answer,
+/// not a checkbox.
+class _ModelChoiceRow extends StatelessWidget {
+  const _ModelChoiceRow({
+    required this.choice,
+    required this.selected,
+    required this.present,
+    required this.onTap,
+  });
+
+  final OnDeviceModelChoice choice;
+  final bool selected;
+
+  /// Whether these weights are on this device. Drives the subtitle, not the
+  /// selection: a model that has not been downloaded yet can still be chosen.
+  final bool present;
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    final int megabytes = choice.weights.megabytes;
+    return NexusRow(
+      title: choice.label,
+      subtitle: present
+          ? '$megabytes MB · on this device\n${choice.blurb}'
+          : '$megabytes MB · not downloaded\n${choice.blurb}',
+      leading: NexusIconTile(
+        selected ? Icons.memory_rounded : Icons.memory_outlined,
+      ),
+      trailing: selected
+          ? Icon(Icons.check_circle, size: 20, color: c.accent)
+          : const NexusChevron(),
+      onTap: onTap,
     );
   }
 }

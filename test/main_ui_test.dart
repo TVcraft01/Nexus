@@ -228,7 +228,9 @@ class _FakeDownloadLlm extends Llm {
     onProgress?.call(0.25);
     await Future<void>.delayed(const Duration(milliseconds: 50));
     onProgress?.call(1);
-    File('${dir.path}/$kOnDeviceModelFileName').writeAsBytesSync(<int>[1, 2, 3]);
+    // The file the *model* names: the shell's first model is `model.gguf`, and
+    // the 1B is named after itself — one fake has to serve both.
+    File('${dir.path}/${model.name}.gguf').writeAsBytesSync(<int>[1, 2, 3]);
     return true;
   }
 
@@ -379,11 +381,18 @@ void main() {
   /// real preference store would let one test's chat turn up in the next one's
   /// welcome screen.
   late ChatLog chat;
+
+  /// Which model this test's app is set to run. One per test, in memory: the
+  /// real store is a preference, and a preference is a platform channel that a
+  /// widget test has no answer for.
+  late ModelChoice modelChoice;
   setUp(() {
     ollama = _FakeOllama();
     LocalAiService.override = () => ollama;
     chat = ChatLog(store: MemoryChatLogStore());
     ChatLog.override = () => chat;
+    modelChoice = ModelChoice(store: MemoryModelChoiceStore());
+    ModelChoice.override = () => modelChoice;
     // The refusal memory is process-wide (it is the same fact the capability
     // checks), so every test starts from "never asked", and no test can leave
     // the next one with a microphone it believes is permanently refused.
@@ -400,6 +409,8 @@ void main() {
     ChatLog.override = null;
     ChatLog.debugReset();
     SystemActions.override = null;
+    ModelChoice.override = null;
+    ModelChoice.debugReset();
   });
 
   /// A phone-shaped surface — the layout the shell is designed against.
@@ -897,6 +908,126 @@ void main() {
     expect(find.text('On-Device (Loaded)'), findsOneWidget);
     expect(find.text('Delete model'), findsOneWidget);
     expect(find.text('Download model'), findsNothing);
+  });
+
+  testWidgets('the picker offers both models, and switching one moves the rows', (
+    tester,
+  ) async {
+    final Directory dir = Directory.systemTemp.createTempSync('nexus_picker');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    File('${dir.path}/$kOnDeviceModelFileName').writeAsBytesSync(<int>[7]);
+    final OnDeviceAiService onDevice = OnDeviceAiService(
+      model: OnDeviceModel(directory: () async => dir),
+    );
+
+    await pumpBrainSettings(tester, onDevice);
+
+    // Both choices are listed, by the names the task names them.
+    expect(find.text('Qwen 2.5 0.5B'), findsOneWidget);
+    expect(find.text('Llama 3.2 1B'), findsOneWidget);
+    expect(modelChoice.choice, OnDeviceModelChoice.qwen);
+
+    // The 1B is not downloaded, but it can still be chosen: selecting it is a
+    // decision, and the Download row below is how it is honoured.
+    await tester.tap(find.text('Llama 3.2 1B'));
+    await tester.pumpAndSettle();
+
+    expect(modelChoice.choice, OnDeviceModelChoice.llama);
+    await tester.scrollUntilVisible(
+      find.text('Download model'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      find.textContaining(
+        'Llama 3.2 1B — ${kLlamaModel.megabytes} MB',
+      ),
+      findsOneWidget,
+      reason: 'the download row is about the model that is selected',
+    );
+    expect(
+      find.text('Delete model'),
+      findsNothing,
+      reason: 'the selected model is not on this device',
+    );
+  });
+
+  testWidgets('the download fetches the selected model under its own name', (
+    tester,
+  ) async {
+    final Directory dir = Directory.systemTemp.createTempSync('nexus_llama_dl');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final OnDeviceAiService onDevice = OnDeviceAiService(
+      model: OnDeviceModel(
+        directory: () async => dir,
+        engine: () => _FakeDownloadLlm(model: kLlamaModel, dir: dir),
+      ),
+    );
+    await modelChoice.select(OnDeviceModelChoice.llama);
+
+    await pumpBrainSettings(tester, onDevice);
+    await tester.scrollUntilVisible(
+      find.text('Download model'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Download model'));
+    await tester.pumpAndSettle();
+
+    expect(
+      File('${dir.path}/${OnDeviceModelChoice.llama.fileName}').existsSync(),
+      isTrue,
+    );
+    expect(
+      File('${dir.path}/$kOnDeviceModelFileName').existsSync(),
+      isFalse,
+      reason: 'the small model was never downloaded',
+    );
+    expect(find.text('Delete model'), findsOneWidget);
+  });
+
+  testWidgets('Delete removes the selected model and leaves the other one', (
+    tester,
+  ) async {
+    final Directory dir = Directory.systemTemp.createTempSync('nexus_two_models');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    File('${dir.path}/$kOnDeviceModelFileName').writeAsBytesSync(<int>[1, 2]);
+    File('${dir.path}/${OnDeviceModelChoice.llama.fileName}')
+        .writeAsBytesSync(<int>[3, 4, 5]);
+    final OnDeviceAiService onDevice = OnDeviceAiService(
+      model: OnDeviceModel(directory: () async => dir),
+    );
+    await modelChoice.select(OnDeviceModelChoice.llama);
+
+    await pumpBrainSettings(tester, onDevice);
+    await tester.scrollUntilVisible(
+      find.text('Delete model'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Delete model'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(kNexusConfirmAction));
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      File('${dir.path}/${OnDeviceModelChoice.llama.fileName}').existsSync(),
+      isFalse,
+      reason: 'the selected model is the one Delete is about',
+    );
+    expect(
+      File('${dir.path}/$kOnDeviceModelFileName').existsSync(),
+      isTrue,
+      reason: 'the other model is not the user\'s answer to this question',
+    );
+    expect(modelChoice.choice, OnDeviceModelChoice.llama);
   });
 
   testWidgets('a download that cannot start says so, and keeps no file', (
