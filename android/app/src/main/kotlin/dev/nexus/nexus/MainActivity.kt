@@ -1,6 +1,7 @@
 package dev.nexus.nexus
 
 import android.Manifest
+import android.app.Activity
 import android.app.ActivityManager
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
@@ -17,6 +18,7 @@ import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
@@ -66,6 +68,7 @@ class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "dev.nexus.nexus/installer"
     private val TAG = "NexusInstaller"
+    private val TAG_SCREEN = "NexusScreen"
     private val REQUEST_INSTALL_PERMISSION = 42601
 
     // The APK we were about to install when the unknown-sources permission
@@ -74,6 +77,7 @@ class MainActivity : FlutterActivity() {
     private var pendingInstallPath: String? = null
 
     private val STORAGE_CHANNEL = "dev.nexus.nexus/storage"
+    private val SCREEN_CHANNEL = "dev.nexus.nexus/screen"
     private val PHONE_CHANNEL = "dev.nexus.nexus/phone"
     private val DEVICE_CHANNEL = "dev.nexus.nexus/device"
     private val PROVISION_CHANNEL = "dev.nexus.nexus/provisioning"
@@ -110,6 +114,13 @@ class MainActivity : FlutterActivity() {
     // here it died in onDestroy, so backgrounded discovery went deaf the
     // moment the user left the app. NETWORK_CHANNEL below only starts and
     // stops that service.
+
+    // One screenshot: the system's own MediaProjection dialog first, then the
+    // capture service (Android 14 requires the foreground service to exist
+    // before a projection may be opened). The MethodChannel result is held
+    // across both, so Dart gets the path — or the reason there isn't one.
+    private val REQUEST_SCREEN_CAPTURE = 42606
+    private var pendingScreenResult: MethodChannel.Result? = null
 
     // "call mom" from the assistant: resolving a contact needs READ_CONTACTS
     // and placing the call needs CALL_PHONE — both requested at runtime on
@@ -288,6 +299,19 @@ class MainActivity : FlutterActivity() {
                     }
                 } else {
                     result.notImplemented()
+                }
+            }
+
+        // The composer's screen-share button: one frame of this phone, through
+        // the platform's own projection dialog. Android 14 refuses to open a
+        // projection without a foreground service of type mediaProjection, so
+        // the capture itself runs in ScreenCaptureService — this channel only
+        // asks for the grant and routes the answer back to Dart.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SCREEN_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "capture" -> startScreenCapture(result)
+                    else -> result.notImplemented()
                 }
             }
 
@@ -2576,8 +2600,59 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// Asks for the projection grant and hands the accepted intent to the
+    /// capture service. A refusal is answered here rather than left to a
+    /// timeout, because it is the most likely outcome and the user already
+    /// knows they pressed "Don't allow".
+    private fun startScreenCapture(result: MethodChannel.Result) {
+        if (pendingScreenResult != null || ScreenCaptureService.running) {
+            result.error("BUSY", "A screenshot is already being taken.", null)
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            result.error("UNSUPPORTED", "Screen capture needs Android 5 or newer.", null)
+            return
+        }
+        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        pendingScreenResult = result
+        ScreenCaptureService.onCaptured = captured@{ path, message ->
+            val pending = pendingScreenResult
+            pendingScreenResult = null
+            if (pending == null) return@captured
+            if (path != null) {
+                pending.success(path)
+            } else {
+                pending.error("CAPTURE_FAILED", message ?: "The screenshot could not be taken.", null)
+            }
+        }
+        try {
+            startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE)
+        } catch (e: Exception) {
+            Log.e(TAG_SCREEN, "projection dialog failed", e)
+            pendingScreenResult = null
+            ScreenCaptureService.onCaptured = null
+            result.error("UNAVAILABLE", "Screen capture is not available on this device.", null)
+        }
+    }
+
+    private fun finishScreenCapture(resultCode: Int, data: Intent?) {
+        val result = pendingScreenResult
+        if (result == null) return
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            pendingScreenResult = null
+            ScreenCaptureService.onCaptured = null
+            result.error("DENIED", "Screen capture was not allowed.", null)
+            return
+        }
+        ScreenCaptureService.start(this, resultCode, data)
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_SCREEN_CAPTURE) {
+            finishScreenCapture(resultCode, data)
+            return
+        }
         if (requestCode == REQUEST_INSTALL_PERMISSION) {
             val path = pendingInstallPath
             pendingInstallPath = null

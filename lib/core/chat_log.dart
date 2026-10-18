@@ -39,6 +39,7 @@ class ChatEntry {
     this.failed = false,
     this.system = false,
     this.ok = true,
+    this.imagePath,
   });
 
   /// What was said, exactly as it was said. Never empty on the way in: an empty
@@ -64,6 +65,12 @@ class ChatEntry {
   /// nothing else.
   final bool ok;
 
+  /// Where an attached photo or screenshot lives, if this line carries one.
+  /// [text] is its caption ("Photo attached"), so an attachment is stored as an
+  /// ordinary line plus one path — no second kind of entry, and a thread read
+  /// by a build that predates attachments loses the picture, not the line.
+  final String? imagePath;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'text': text,
     'mine': mine,
@@ -72,6 +79,7 @@ class ChatEntry {
     // what earlier builds wrote.
     if (system) 'system': true,
     if (!ok) 'ok': false,
+    if (imagePath != null) 'image': imagePath,
   };
 
   /// Reads one stored line. Null for anything that is not one — a file half
@@ -80,12 +88,14 @@ class ChatEntry {
     if (raw is! Map) return null;
     final Object? text = raw['text'];
     if (text is! String || text.trim().isEmpty) return null;
+    final Object? image = raw['image'];
     return ChatEntry(
       text,
       mine: raw['mine'] == true,
       failed: raw['failed'] == true,
       system: raw['system'] == true,
       ok: raw['ok'] != false,
+      imagePath: image is String && image.isNotEmpty ? image : null,
     );
   }
 

@@ -23,6 +23,13 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <!-- One screenshot, taken through the platform's own MediaProjection dialog.
+         Since Android 14 a projection may only be opened from a foreground
+         service of type mediaProjection, and that service needs this
+         permission declared as well as the type in its manifest entry — see
+         ScreenCaptureService.kt. The camera above is what the composer's photo
+         button uses. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES"/>
     <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
@@ -141,6 +148,15 @@
             android:name=".NexusSyncService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+        <!-- The one-frame screen capture. Its type is the whole reason it is a
+             service: Android 14 throws from getMediaProjection() unless a
+             mediaProjection service is already in the foreground. It stops
+             itself as soon as the frame is saved, so nothing keeps mirroring
+             the screen after the shutter. -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection"/>
         <receiver
             android:name=".WakeWordSilenceReceiver"
             android:exported="false">

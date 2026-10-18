@@ -55,6 +55,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io' show File;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart'
@@ -80,6 +81,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'core/ai_status.dart';
 import 'core/appearance.dart';
+import 'core/attachments.dart';
 import 'core/chat_log.dart';
 import 'core/device_capabilities.dart';
 import 'core/device_memory.dart';
@@ -91,8 +93,11 @@ import 'core/on_device_model.dart';
 import 'core/onboarding.dart';
 import 'core/pair_invite.dart';
 import 'core/paired_devices.dart';
+import 'core/screen_capture.dart';
 import 'core/services/icon_service.dart';
 import 'core/version.dart';
+import 'ui/camera_page.dart';
+import 'ui/image_viewer_page.dart';
 import 'core/speech.dart';
 import 'core/system_actions.dart';
 
@@ -1971,9 +1976,20 @@ class NexusMockMessage {
     this.failed = false,
     this.system = false,
     this.ok = true,
+    this.imagePath,
   });
 
   final String text;
+
+  /// Where a photo or screenshot the user attached is kept. Null for every
+  /// line that is only words.
+  ///
+  /// [text] is still the caption — "Photo attached" — so a message with an
+  /// image is a normal message that happens to carry a picture: the persistence
+  /// shape, the history the brain is shown, and the scroll behaviour are the
+  /// ones that already exist, and an image that cannot be decoded still leaves
+  /// a readable line in the thread.
+  final String? imagePath;
 
   /// True for the user's side of the thread (right, grey, tail on the left).
   final bool mine;
@@ -2436,6 +2452,78 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     unawaited(_answer(text, _thread.length - 1, spoken: spoken));
   }
 
+  /// Puts a captured photo or screenshot into the thread and asks the brain
+  /// about it.
+  ///
+  /// The picture is the user's turn, so it takes a user bubble — the thumbnail
+  /// plus a caption — and a placeholder follows it exactly as a typed question
+  /// does. What the brain is asked, though, is not the caption: it is
+  /// [AttachmentKind.prompt], a bracketed sentence that says a picture was
+  /// attached. The shipped on-device model cannot see images, and a prompt that
+  /// implied it could would be answered with an invented description.
+  void _sendAttachment(String path, AttachmentKind kind) {
+    setState(() {
+      _thread.add(
+        NexusMockMessage(kind.caption, mine: true, imagePath: path),
+      );
+      _thread.add(const NexusMockMessage(kNexusThinking, thinking: true));
+    });
+    _persistThread();
+    _focus.unfocus();
+    _scrollToLatest();
+    unawaited(_answer(kind.prompt, _thread.length - 1, spoken: false));
+  }
+
+  /// The composer's camera button: a full-screen preview, one shutter, and the
+  /// kept photo back into the thread.
+  Future<void> _openCamera() async {
+    // Closing the keyboard first: the camera page is full screen, and coming
+    // back to a raised keyboard over the thread would cover the new bubble.
+    _focus.unfocus();
+    final String? path = await CameraPage.open(context);
+    if (path == null || !mounted) return;
+    _sendAttachment(path, AttachmentKind.photo);
+  }
+
+  /// The composer's screen button: one frame of this phone through the
+  /// platform's own projection dialog.
+  Future<void> _captureScreen() async {
+    _focus.unfocus();
+    final ScreenCaptureResult result = await ScreenCapture.capture();
+    if (!mounted) return;
+    final String? path = result.path;
+    if (path == null) {
+      _say(result.message ?? 'The screenshot could not be taken.');
+      return;
+    }
+    // Kept like a camera shot, so the thumbnail survives a restart.
+    final String? kept = await AttachmentStore.instance.keep(
+      path,
+      kind: AttachmentKind.screenshot,
+    );
+    if (!mounted) return;
+    if (kept == null) {
+      _say('The screenshot could not be read back.');
+      return;
+    }
+    _sendAttachment(kept, AttachmentKind.screenshot);
+  }
+
+  /// One short sentence over the thread — what a refusal or a failed capture
+  /// gets, in the place the user is already looking.
+  void _say(String message) {
+    final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          duration: const Duration(milliseconds: 2400),
+        ),
+      );
+  }
+
   /// Puts the conversation from the last launch back on screen.
   ///
   /// [ChatLog.attach] is idempotent — the shell builds the tab once and keeps
@@ -2455,6 +2543,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             failed: entry.failed,
             system: entry.system,
             ok: entry.ok,
+            imagePath: entry.imagePath,
           ),
       ]);
     });
@@ -2478,6 +2567,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             failed: message.failed,
             system: message.system,
             ok: message.ok,
+            imagePath: message.imagePath,
           ),
     ]);
   }
@@ -3611,6 +3701,18 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                                     text: message.text,
                                     maxWidth: bubbleWidth,
                                   )
+                                // A captured photo or screenshot: the same
+                                // bubble, with a thumbnail above the caption.
+                                // The attachment shares the message's own
+                                // caption, so nothing about this line is a new
+                                // kind of entry in the thread.
+                                : message.imagePath != null
+                                ? NexusAttachmentBubble(
+                                    path: message.imagePath!,
+                                    caption: message.text,
+                                    mine: message.mine,
+                                    maxWidth: bubbleWidth,
+                                  )
                                 : NexusChatBubble(
                                     text: message.text,
                                     mine: message.mine,
@@ -3644,6 +3746,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             onLiveTap: () => unawaited(_openLive()),
             liveEnabled: _micUsable && !_listening,
             liveTooltip: _liveTooltip,
+            onCamera: () => unawaited(_openCamera()),
+            onScreenShare: () => unawaited(_captureScreen()),
           ),
         ],
       ),
@@ -3853,6 +3957,139 @@ class NexusChatBubble extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// A thumbnail in the thread: a photo from the camera or one screenshot of
+/// the phone, with the caption the turn carried ("Photo attached").
+///
+/// It is a bubble in shape and colour — the same rounded box on the user's side
+/// — because that is what it is: something the user said, with a picture in it.
+/// The picture is drawn *inside* the bubble rather than beside it so the caption
+/// and the image can never look like two messages.
+///
+/// Tapping opens [ImageViewerPage]. A file that has gone missing keeps its
+/// caption and draws a placeholder: a conversation is worth more than its
+/// pictures, and a blank gap would read as the app having lost the message too.
+class NexusAttachmentBubble extends StatelessWidget {
+  const NexusAttachmentBubble({
+    super.key,
+    required this.path,
+    required this.caption,
+    required this.mine,
+    this.maxWidth = 320,
+  });
+
+  /// Where the kept image lives.
+  final String path;
+
+  /// The line the turn carried — the same words the brain was given context
+  /// for, drawn under the picture.
+  final String caption;
+
+  /// True for the user's side. Always true today: only the user attaches
+  /// images. Kept as a parameter because a bubble that assumes its side is a
+  /// bubble somebody has to rewrite the day the assistant sends one.
+  final bool mine;
+
+  final double maxWidth;
+
+  /// The largest the thumbnail gets. A full-bleed photo in a chat makes every
+  /// other line scroll away; this is a reminder of the picture, not the picture.
+  static const double thumbnailHeight = 150;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: Semantics(
+          button: true,
+          label: 'Attached image: $caption',
+          child: GestureDetector(
+            key: ValueKey<String>('attachment:$path'),
+            onTap: () =>
+                ImageViewerPage.open(context, path, caption: caption),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(6, 6, 6, 8),
+              decoration: BoxDecoration(
+                color: mine ? c.bubbleMine : c.bubbleTheirs,
+                border: mine ? null : Border.all(color: c.hairline),
+                borderRadius: BorderRadius.only(
+                  topLeft: NexusLayout.bubble,
+                  topRight: NexusLayout.bubble,
+                  bottomLeft: mine
+                      ? NexusLayout.bubble
+                      : NexusLayout.bubbleTail,
+                  bottomRight: mine
+                      ? NexusLayout.bubbleTail
+                      : NexusLayout.bubble,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  ClipRRect(
+                    borderRadius: const BorderRadius.all(Radius.circular(14)),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxHeight: thumbnailHeight,
+                      ),
+                      // Checked before decoding rather than only in the
+                      // errorBuilder: a file that has been deleted is the
+                      // common case, the check is one stat, and the placeholder
+                      // is then on screen in the same frame as the bubble
+                      // instead of a frame later. The errorBuilder still covers
+                      // a file that exists and will not decode.
+                      child: File(path).existsSync()
+                          ? Image.file(
+                              File(path),
+                              fit: BoxFit.cover,
+                              errorBuilder:
+                                  (BuildContext context, Object error, _) =>
+                                      const _MissingThumbnail(),
+                            )
+                          : const _MissingThumbnail(),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 7, 8, 0),
+                    child: Text(
+                      caption,
+                      style: NexusType.bubble(c).copyWith(
+                        fontSize: 14,
+                        color: c.textMuted,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The grey box a missing picture leaves. Deliberately quiet: the caption under
+/// it already says what the line was.
+class _MissingThumbnail extends StatelessWidget {
+  const _MissingThumbnail();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Container(
+      width: 180,
+      height: NexusAttachmentBubble.thumbnailHeight,
+      color: c.raised,
+      alignment: Alignment.center,
+      child: Icon(Icons.broken_image_outlined, size: 26, color: c.textMuted),
     );
   }
 }
@@ -4122,7 +4359,18 @@ class _Composer extends StatelessWidget {
     required this.liveEnabled,
     required this.liveTooltip,
     required this.showVoice,
+    required this.onCamera,
+    required this.onScreenShare,
   });
+
+  /// The two attachment doors, left of the field and deliberately small: they
+  /// are the less frequent way in, and a pair of full-size round buttons
+  /// beside the send arrow would compete with the one action that matters.
+  /// Both leave the row while a dictation is open — the pill is the recording
+  /// indicator then, and a camera inside it would be a second thing to look at
+  /// in the one state where the user is looking at their voice.
+  final VoidCallback onCamera;
+  final VoidCallback onScreenShare;
 
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -4268,6 +4516,22 @@ class _Composer extends StatelessWidget {
                     // both the bars and the sentence unreadable, and the sentence
                     // is the part the user is actually reading.
                     _LevelSlot(listening: listening, level: level),
+                    if (!listening) ...<Widget>[
+                      _AttachButton(
+                        key: kAttachCamera,
+                        icon: Icons.photo_camera_rounded,
+                        tooltip: AttachmentKind.photo.action,
+                        onTap: onCamera,
+                      ),
+                      const SizedBox(width: 4),
+                      _AttachButton(
+                        key: kAttachScreen,
+                        icon: Icons.screen_share_rounded,
+                        tooltip: AttachmentKind.screenshot.action,
+                        onTap: onScreenShare,
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.only(bottom: 9),
@@ -4429,6 +4693,59 @@ class _Composer extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The key on the composer's camera button.
+const Key kAttachCamera = ValueKey<String>('attach-camera');
+
+/// The key on the composer's screen-share button.
+const Key kAttachScreen = ValueKey<String>('attach-screen');
+
+/// A small round attachment button beside the field.
+///
+/// Outlined rather than filled, and smaller than the mic/send circle: the
+/// colour rule in this file says purple means "the action here", and taking a
+/// photo is a way *into* the composer rather than the composer's action. A
+/// 30px target inside a 44px touch area is the compromise — small enough not
+/// to crowd a field that already shares its row with two voice controls, large
+/// enough to hit.
+class _AttachButton extends StatelessWidget {
+  const _AttachButton({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Tooltip(
+        message: tooltip,
+        child: InkResponse(
+          onTap: onTap,
+          radius: 22,
+          child: Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: c.raised,
+              border: Border.all(color: c.hairline),
+            ),
+            child: Icon(icon, size: 16, color: c.textMuted),
           ),
         ),
       ),
