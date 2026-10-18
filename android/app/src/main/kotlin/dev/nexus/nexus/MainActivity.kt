@@ -2365,12 +2365,33 @@ class MainActivity : FlutterActivity() {
             val cur = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128)
             (cur + if (mode == "down") -26 else 26).coerceIn(1, 255)
         }
-        Settings.System.putInt(
+        // Both writes are checked, and the value is read back: `putInt` answers
+        // false — or is silently dropped by a ROM that owns the backlight — and
+        // reporting "Brightness set" after that would be the one thing this app
+        // must never do, whatever the permissions say. The read-back is what
+        // makes the claim true rather than intended.
+        var wrote = Settings.System.putInt(
             contentResolver,
             Settings.System.SCREEN_BRIGHTNESS_MODE,
             Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL,
         )
-        Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, value)
+        wrote = Settings.System.putInt(
+            contentResolver,
+            Settings.System.SCREEN_BRIGHTNESS,
+            value,
+        ) && wrote
+        val landed = Settings.System.getInt(
+            contentResolver,
+            Settings.System.SCREEN_BRIGHTNESS,
+            -1,
+        )
+        if (!wrote || landed != value) {
+            return openSettingsPanel(
+                Settings.ACTION_DISPLAY_SETTINGS,
+                "This phone will not let an app set the brightness — I opened " +
+                    "the display settings; drag the slider there.",
+            )
+        }
         val pct = (value * 100) / 255
         return mapOf("ok" to true, "message" to "Brightness set to $pct%.")
     }

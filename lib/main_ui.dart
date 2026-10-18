@@ -79,6 +79,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'core/ai_status.dart';
+import 'core/appearance.dart';
 import 'core/chat_log.dart';
 import 'core/device_capabilities.dart';
 import 'core/device_memory.dart';
@@ -732,14 +733,29 @@ abstract final class NexusTheme {
 // App root
 // ---------------------------------------------------------------------------
 
-void main() {
-  // The selected model is a preference, and the first question after a restart
-  // must load the model the user picked rather than the default. The read is
-  // started here — before the first frame, while nothing is being typed — and
-  // never awaited by the brain, which would stall an answer on a platform
-  // channel. See `OnDeviceAiService._warmChoice`.
+void main() async {
+  // Preferences are read before the first frame: the model, so the first
+  // question after a restart loads the file the user picked, and the accent, so
+  // a custom colour does not open as the shipped purple and then swap under the
+  // user's eyes. Both reads are one file, and the model's is still not awaited
+  // by the brain — see `OnDeviceAiService._warmChoice`.
+  WidgetsFlutterBinding.ensureInitialized();
   unawaited(ModelChoice.instance.ensureLoaded());
-  runApp(const NexusUiApp());
+  final int? seed = await Appearance.accentSeed();
+  runApp(NexusUiApp(initialAccent: accentFromSeed(seed)));
+}
+
+/// The accent a stored seed stands for.
+///
+/// The shipped purple is answered by [NexusAccent.purple] rather than by
+/// `NexusAccent.custom(kNexusAccent)` on purpose: the two differ — the derived
+/// one lifts the colour for a dark page — and the app's own identity is the one
+/// accent that is painted exactly as the tokens name it.
+@visibleForTesting
+NexusAccent accentFromSeed(int? seed) {
+  if (seed == null) return NexusAccent.purple;
+  final Color colour = Color(seed);
+  return colour == kNexusAccent ? NexusAccent.purple : NexusAccent.custom(colour);
 }
 
 /// The shell app. Holds what outlives a tab — appearance and accent — because
@@ -751,7 +767,11 @@ void main() {
 /// The override is deliberately all-or-nothing (dark or light, not a third
 /// "system" switch position) because the row above it is the one that decides.
 class NexusUiApp extends StatefulWidget {
-  const NexusUiApp({super.key});
+  const NexusUiApp({super.key, this.initialAccent});
+
+  /// The accent to open with, read from the preference before the first frame.
+  /// Null is a test that does not care, and starts on the shipped purple.
+  final NexusAccent? initialAccent;
 
   @override
   State<NexusUiApp> createState() => _NexusUiAppState();
@@ -766,8 +786,9 @@ class _NexusUiAppState extends State<NexusUiApp> {
   /// The user's own choice, used only while [_followSystem] is false.
   bool _dark = false;
 
-  /// Which accent every surface paints itself with.
-  NexusAccent _accent = NexusAccent.purple;
+  /// Which accent every surface paints itself with. Read from the preference in
+  /// [main] so the first frame is already the user's colour.
+  late NexusAccent _accent = widget.initialAccent ?? NexusAccent.purple;
 
   /// Whether this device has already seen the welcome screen.
   ///
@@ -790,6 +811,17 @@ class _NexusUiAppState extends State<NexusUiApp> {
   ThemeMode get _themeMode => _followSystem
       ? ThemeMode.system
       : (_dark ? ThemeMode.dark : ThemeMode.light);
+
+  /// Paints the app in [value] and remembers it.
+  ///
+  /// The write is fire-and-forget: the frame the user is looking at must not
+  /// wait on a file, and a store that refuses the write costs them the colour
+  /// after a restart rather than the colour now.
+  void _setAccent(NexusAccent value) {
+    if (value == _accent) return;
+    setState(() => _accent = value);
+    unawaited(Appearance.setAccentSeed(value.seed.toARGB32()));
+  }
 
   /// The user left the welcome screen — by downloading a model or by skipping.
   /// The flag is already written by the time this runs; this only swaps the
@@ -815,7 +847,7 @@ class _NexusUiAppState extends State<NexusUiApp> {
           onFollowSystemChanged: (value) =>
               setState(() => _followSystem = value),
           onDarkModeChanged: (value) => setState(() => _dark = value),
-          onAccentChanged: (value) => setState(() => _accent = value),
+          onAccentChanged: _setAccent,
         ),
         false => WelcomeView(onDone: _finishOnboarding),
         // The ground the shell would paint, with nothing on it. Deliberately
