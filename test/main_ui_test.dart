@@ -24,6 +24,7 @@ import 'package:nexus/core/mic_access.dart';
 import 'package:nexus/core/ollama_service.dart';
 import 'package:nexus/core/on_device_ai_service.dart';
 import 'package:nexus/core/on_device_model.dart';
+import 'package:nexus/core/onboarding.dart';
 import 'package:nexus/core/services/icon_service.dart';
 import 'package:nexus/core/speech.dart';
 import 'package:nexus/core/system_actions.dart';
@@ -402,6 +403,13 @@ void main() {
     // actions give it a recorder, so an old test can never be the reason a new
     // one's torch came on.
     SystemActions.override = null;
+    // And every test starts with a phone that has been set up: the app root
+    // opens on the welcome screen for a fresh install now, and this file is
+    // about the shell. The first run has its own file
+    // (test/onboarding_test.dart), where the flag is the subject rather than a
+    // precondition — and the seam rather than a preference, so nothing here
+    // touches the preferences store for it.
+    Onboarding.debugOverride = true;
   });
   tearDown(() {
     LocalAiService.override = null;
@@ -411,6 +419,7 @@ void main() {
     SystemActions.override = null;
     ModelChoice.override = null;
     ModelChoice.debugReset();
+    Onboarding.debugOverride = null;
   });
 
   /// A phone-shaped surface — the layout the shell is designed against.
@@ -1677,39 +1686,93 @@ void main() {
     expect(find.textContaining('no model attached'), findsNothing);
   });
 
-  testWidgets('the accent swatches repaint the app', (tester) async {
+  testWidgets('the colour wheel repaints the app while it is being dragged', (
+    tester,
+  ) async {
     await pumpShell(tester);
     await openTab(tester, 'Settings', 3);
 
     expect(find.text('Accent colour'), findsOneWidget);
-    // Every accent is on offer, by name and as a disc.
-    for (final NexusAccent accent in NexusAccent.values) {
-      expect(
-        find.byKey(ValueKey<String>('accent-${accent.name}')),
-        findsOneWidget,
-        reason: '${accent.label} is missing from the picker',
-      );
-    }
-
+    expect(find.text('Pick a custom color'), findsOneWidget);
     expect(
       tabIconColor(tester, Icons.settings_rounded),
       NexusAccent.purple.light,
       reason: 'the shell starts on the shipped purple',
     );
 
-    await tester.tap(find.byKey(const ValueKey<String>('accent-ocean')));
+    await tester.tap(find.byKey(kNexusPickColor));
     await tester.pumpAndSettle();
 
-    // The tab bar's active icon, which is the accent everywhere in this shell.
-    expect(tabIconColor(tester, Icons.settings_rounded), NexusAccent.ocean.light);
+    // The wheel is the control: a real one, in a dialog, with the hex bar that
+    // makes a picked colour repeatable.
+    expect(find.byKey(kNexusColorWheel), findsOneWidget);
+
+    // Pick a colour by touching the wheel, which is what a user does — a tap in
+    // the ring, away from the centre where saturation is zero.
+    final Rect wheel = tester.getRect(find.byKey(kNexusColorWheel));
+    await tester.tapAt(
+      Offset(wheel.left + wheel.width * 0.78, wheel.top + wheel.height * 0.28),
+    );
+    await tester.pumpAndSettle();
+
+    // The app is already painted with it: no Apply, no Done needed.
+    final Color painted = tabIconColor(tester, Icons.settings_rounded);
+    expect(
+      painted,
+      isNot(NexusAccent.purple.light),
+      reason: 'the wheel has to change the accent, not just show one',
+    );
     // And it is not a private repaint of one widget: the whole scheme follows,
     // which is what Material's own controls read.
     expect(
-      Theme.of(
-        tester.element(find.byType(NexusTabBar)),
-      ).colorScheme.primary,
-      NexusAccent.ocean.light,
+      Theme.of(tester.element(find.byType(NexusTabBar))).colorScheme.primary,
+      painted,
     );
+
+    // The way back to the shipped purple, for a user who does not like what
+    // they found on the wheel.
+    await tester.tap(find.byKey(kNexusResetAccent));
+    await tester.pumpAndSettle();
+    expect(tabIconColor(tester, Icons.settings_rounded), NexusAccent.purple.light);
+
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(kNexusColorWheel), findsNothing);
+  });
+
+  test('a picked accent is made readable, and a legible one is left alone', () {
+    // Almost white: unusable as ink on a light page, so it is deepened until it
+    // can be read. The hue survives; only lightness moves.
+    final NexusAccent pale = NexusAccent.custom(const Color(0xFFFFF9C4));
+    expect(pale.light, isNot(const Color(0xFFFFF9C4)));
+    expect(pale.light.computeLuminance(), lessThanOrEqualTo(0.45));
+    expect(
+      HSLColor.fromColor(pale.light).hue,
+      closeTo(HSLColor.fromColor(const Color(0xFFFFF9C4)).hue, 1),
+    );
+    // Near black: already ink, so it is painted exactly as it was picked — an
+    // accent the user chose is not silently turned into a different colour.
+    const Color deep = Color(0xFF0B3D91);
+    expect(NexusAccent.custom(deep).light, deep);
+    // And on a dark page the same rule runs the other way: a colour that would
+    // disappear into the near-black surface is lifted, and one that already
+    // stands out is left exactly as it was picked.
+    const Color navy = Color(0xFF14143C);
+    expect(navy.computeLuminance(), lessThan(0.1));
+    expect(NexusAccent.custom(navy).dark, isNot(navy));
+    expect(
+      NexusAccent.custom(navy).dark.computeLuminance(),
+      greaterThan(0.2),
+    );
+    expect(NexusAccent.custom(const Color(0xFF9D6BF5)).dark, const Color(0xFF9D6BF5));
+    // And the ink that sits *on* the accent flips when the accent is too bright
+    // for white to be seen on it — which is the one place a pale pick is safe.
+    const Color paleYellow = Color(0xFFFFF176);
+    expect(
+      NexusAccent.custom(paleYellow).onAccentFor(Brightness.dark),
+      isNot(Colors.white),
+    );
+    expect(NexusAccent.purple.onAccentFor(Brightness.dark), Colors.white);
   });
 
   testWidgets('Settings opens at the top however it was left', (tester) async {

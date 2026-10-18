@@ -13,15 +13,16 @@
 //   * the model never acts. It emits a request; the shell decides to run it and
 //     writes the line that says what happened. A model that says "I turned the
 //     flashlight on" is lying, and the fix is to give it something true to say;
-//   * an action that is not one of the five, or that arrives without the
+//   * an action that is not one of the nine, or that arrives without the
 //     arguments it needs, is **not** an action — it is text, shown as the
 //     assistant's answer exactly as it was written. That is the whole of the
 //     hallucination policy: a guess costs a sentence on screen, never a torch
 //     in the dark or an alarm at 3am;
 //   * the native side is the one Android already had. `agent_contract.dart`'s
-//     five actions are wired to `dev.nexus.nexus/device` (`torch`,
-//     `setAlarm`, `setTimer`, `openApp`, `battery`), so this file adds a
-//     vocabulary and a sentence, not a second channel to keep in step.
+//     actions are wired to `dev.nexus.nexus/device` (`torch`, `wifi`,
+//     `bluetooth`, `volume`, `brightness`, `setAlarm`, `setTimer`, `openApp`,
+//     `battery`), so this file adds a vocabulary and a sentence, not a second
+//     channel to keep in step.
 library;
 
 import 'dart:convert';
@@ -31,16 +32,25 @@ import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 import 'agent_contract.dart';
 import 'device_actions.dart';
 
-/// The five actions the model may ask for, by the names it is told to use.
+/// The nine actions the model may ask for, by the names it is told to use.
 ///
 /// A closed set, deliberately: every name here has a native method behind it
 /// and a sentence in front of it, and anything else the model writes is prose.
+///
+/// The four settings actions are the ones a small model is most likely to get
+/// subtly wrong, which is why their arguments are a word (`on`/`off`) and a
+/// number in one fixed range rather than anything looser: `set_volume` with a
+/// level the phone cannot read is not a volume, it is a sentence about one.
 const Set<String> kSystemActionNames = <String>{
   'set_flashlight',
   'set_alarm',
   'set_timer',
   'open_app',
   'get_battery_level',
+  'set_wifi',
+  'set_bluetooth',
+  'set_volume',
+  'set_brightness',
 };
 
 /// The rules the model is given: what it may ask for, in what shape, and what
@@ -55,11 +65,15 @@ const String kSystemActionRules =
     'When the user asks for one of them, reply with ONLY one JSON object, '
     'with no sentence before it and none after it:\n'
     '  {"action":"set_flashlight","state":"on"}   (or "off")\n'
+    '  {"action":"set_wifi","state":"on"}   (or "off")\n'
+    '  {"action":"set_bluetooth","state":"on"}   (or "off")\n'
+    '  {"action":"set_volume","level":40}   (0 to 100)\n'
+    '  {"action":"set_brightness","level":70}   (1 to 100)\n'
     '  {"action":"set_alarm","hour":7,"minute":30}   (24-hour clock)\n'
     '  {"action":"set_timer","seconds":300}\n'
     '  {"action":"open_app","app_name":"Maps"}\n'
     '  {"action":"get_battery_level"}\n'
-    'Those five are the only actions there are. '
+    'Those nine are the only actions there are. '
     'If the user is just talking, answer normally and do not write any JSON. '
     'Never say you did something yourself — the app does it and tells them.';
 
@@ -170,10 +184,27 @@ class SystemActionCall {
 
     switch (action.trim()) {
       case 'set_flashlight':
+      case 'set_wifi':
+      case 'set_bluetooth':
         final String? state = _state(decoded['state']);
         if (state == null) return null;
-        return SystemActionCall('set_flashlight', <String, Object?>{
-          'state': state,
+        return SystemActionCall(action.trim(), <String, Object?>{'state': state});
+      case 'set_volume':
+      case 'set_brightness':
+        // One level, one range, and the same word for it in the prompt and in
+        // the parser: a model that writes `percent` or `value` is understood,
+        // because those are the near-misses a 0.5B produces, but a level that
+        // is not a whole number in range is refused rather than clamped. Silent
+        // clamping would turn "set the volume to 300" into a normal answer, and
+        // the user would never learn the model had misunderstood them.
+        final int? level = _int(decoded['level'] ?? decoded['percent']);
+        if (level == null) return null;
+        // Brightness floors at 1: 0 is a real volume and a screen the user
+        // cannot see to undo.
+        final bool brightness = action.trim() == 'set_brightness';
+        if (level < (brightness ? 1 : 0) || level > 100) return null;
+        return SystemActionCall(action.trim(), <String, Object?>{
+          'level': level,
         });
       case 'set_alarm':
         final int? hour = _int(decoded['hour']);
@@ -327,7 +358,7 @@ class DeviceSystemActions implements SystemActions {
   /// The argument names are the native side's, not the model's:
   /// `torch` reads `mode` (anything but `off` means on), `openApp` takes a
   /// `query`, and the alarm takes `hour`/`minute` in the same words. Keeping
-  /// the translation in one function is what stops one of the five drifting
+  /// the translation in one function is what stops one of the nine drifting
   /// out of step with its native method.
   (String, Map<String, dynamic>) _plan(SystemActionCall call) {
     switch (call.action) {
@@ -354,6 +385,32 @@ class DeviceSystemActions implements SystemActions {
           AgentActions.appOpen,
           <String, dynamic>{'query': call.args['app_name']},
         );
+      // The two radio switches. Both go to the native side as `mode`, the word
+      // the torch already uses, and both are best-effort: Android 10 and 12
+      // respectively stopped letting ordinary apps switch Wi-Fi and Bluetooth,
+      // so the phone answers with what it could really do — see MainActivity's
+      // `setWifi` / `setBluetooth`, which fall back to the system panel and say
+      // so.
+      case 'set_wifi':
+        return (
+          AgentActions.wifiToggle,
+          <String, dynamic>{'mode': call.args['state']},
+        );
+      case 'set_bluetooth':
+        return (
+          AgentActions.bluetoothToggle,
+          <String, dynamic>{'mode': call.args['state']},
+        );
+      case 'set_volume':
+        return (
+          AgentActions.volumeSet,
+          <String, dynamic>{'mode': 'set', 'level': call.args['level']},
+        );
+      case 'set_brightness':
+        return (
+          AgentActions.brightnessSet,
+          <String, dynamic>{'mode': 'set', 'level': call.args['level']},
+        );
       default:
         return (AgentActions.batteryGet, <String, dynamic>{});
     }
@@ -366,6 +423,13 @@ class DeviceSystemActions implements SystemActions {
   /// Battery is a reading only the phone has. Opening an app is somewhere in
   /// between: the phone says which app it resolved, which is the part the user
   /// cannot see for themselves.
+  ///
+  /// The four settings actions are deliberately **not** in here. The shell
+  /// knows what was asked for and not what happened: Android may have refused to
+  /// switch the radio and opened the settings panel instead, or refused to write
+  /// the brightness without "modify system settings" access. A sentence written
+  /// here would say "Wi-Fi on." about a Wi-Fi that is still off, which is the
+  /// one thing this file exists to prevent, so the phone's own sentence wins.
   String? _done(SystemActionCall call) {
     switch (call.action) {
       case 'set_flashlight':

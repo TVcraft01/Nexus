@@ -40,7 +40,7 @@ const String kNexusOnDeviceSystemPrompt =
     'Answer in two or three short sentences. '
     'Never say you did something yourself — the app does it and tells them.';
 
-/// The rules the model runs under: the persona above, then the five actions it
+/// The rules the model runs under: the persona above, then the nine actions it
 /// may ask for.
 ///
 /// One constant rather than a concatenation at each call site, because the two

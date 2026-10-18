@@ -15,6 +15,10 @@ import 'package:nexus/core/pair_invite.dart';
 import 'package:nexus/core/paired_devices.dart';
 import 'package:nexus/main_ui.dart' show
     DevicesTab,
+    kNexusConfirmAction,
+    kNexusDiscoverNearby,
+    kNexusDiscoverySoon,
+    kNexusForgetTitle,
     kNexusLegacyPairCodeText,
     kNexusNotAPairCodeText,
     kNexusPairTitle,
@@ -90,12 +94,29 @@ void main() {
       expect(find.text(kNexusPairTitle), findsOneWidget);
     });
 
-    testWidgets('offers Forget on peers, never on this device', (tester) async {
+    testWidgets('offers a bin on peers, never on this device', (tester) async {
       await _pumpDevices(tester, paired: paired);
 
       expect(find.byKey(const ValueKey<String>('forget-example-pc')), findsOne);
       expect(find.byKey(const ValueKey<String>('forget-example-mac')), findsOne);
       expect(find.byKey(const ValueKey<String>('forget-this-device')), findsNothing);
+    });
+
+    testWidgets('the bin asks before it breaks a pairing', (tester) async {
+      await _pumpDevices(tester, paired: paired);
+
+      await tester.tap(find.byKey(const ValueKey<String>('forget-example-pc')));
+      await tester.pumpAndSettle();
+
+      // A question, not a switch: nothing has happened yet.
+      expect(find.text(kNexusForgetTitle), findsOneWidget);
+      expect(find.text('My PC'), findsWidgets);
+
+      // And every other way out of it leaves the pairing exactly where it was.
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(find.text(kNexusForgetTitle), findsNothing);
+      expect(paired.devices.map((PairedDevice d) => d.name), contains('My PC'));
     });
 
     testWidgets('forgetting a device takes its row away and says so', (
@@ -104,6 +125,8 @@ void main() {
       await _pumpDevices(tester, paired: paired);
 
       await tester.tap(find.byKey(const ValueKey<String>('forget-example-pc')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kNexusConfirmAction));
       await tester.pumpAndSettle();
 
       expect(find.text('My PC'), findsNothing);
@@ -114,6 +137,26 @@ void main() {
       expect(store.read(), completion(isNotNull));
       final List<PairedDevice>? written = await store.read();
       expect(written!.map((PairedDevice d) => d.name), isNot(contains('My PC')));
+    });
+
+    testWidgets('Discover Nearby Devices looks, gives up, and says which way '
+        'works today', (tester) async {
+      await _pumpDevices(tester, paired: paired);
+
+      expect(find.text(kNexusDiscoverySoon), findsNothing);
+      await tester.tap(find.byKey(kNexusDiscoverNearby));
+      await tester.pump();
+
+      // The two seconds are real work being not done yet, and the button says
+      // so rather than looking stuck.
+      expect(find.text('Looking for devices…'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Discover Nearby Devices'), findsOneWidget);
+      expect(find.text(kNexusDiscoverySoon), findsOneWidget);
     });
   });
 

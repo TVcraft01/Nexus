@@ -69,6 +69,11 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/gestures.dart' show LongPressGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+// The colour wheel in Settings → Theme. A package rather than a hand-rolled
+// wheel for the obvious reason: a wheel that is nearly a colour space is worse
+// than no wheel, and this one is the HSV wheel with the hex bar under it.
+import 'package:flutter_colorpicker/flutter_colorpicker.dart'
+    show ColorPicker, ColorLabelType, PaletteType;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -76,11 +81,13 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'core/ai_status.dart';
 import 'core/chat_log.dart';
 import 'core/device_capabilities.dart';
+import 'core/device_memory.dart';
 import 'core/local_ai_service.dart';
 import 'core/mic_access.dart';
 import 'core/ollama_service.dart';
 import 'core/on_device_ai_service.dart';
 import 'core/on_device_model.dart';
+import 'core/onboarding.dart';
 import 'core/pair_invite.dart';
 import 'core/paired_devices.dart';
 import 'core/services/icon_service.dart';
@@ -99,42 +106,133 @@ import 'core/system_actions.dart';
 /// surface reads its accent from [NexusUiColors] rather than from this constant.
 const Color kNexusAccent = Color(0xFF773DDC);
 
-/// The accents Settings offers.
+/// The accent every action in the app is painted with.
 ///
-/// Two colours per accent rather than one, because an accent that reads as ink
-/// on a white page is not the same value that reads as ink on a black one: the
-/// light column is the darker, more saturated version and the dark column is the
-/// lifted one, which is why switching appearance never turns a chosen accent
-/// into a smudge. The seed for Material's own colour scheme is the light value
-/// in both cases — the scheme only needs a hue to derive from.
-enum NexusAccent {
-  purple('Nexus Purple', Color(0xFF773DDC), Color(0xFF9D6BF5)),
-  ocean('Ocean Blue', Color(0xFF1160C9), Color(0xFF5AA0FF)),
-  emerald('Emerald Green', Color(0xFF12805A), Color(0xFF4CC38A)),
-  sunset('Sunset Orange', Color(0xFFBF4E16), Color(0xFFF0854B)),
-  slate('Slate Grey', Color(0xFF4A5461), Color(0xFF9AA4B2));
+/// One colour, chosen by the user on a wheel, plus the two readable versions of
+/// it a phone needs: an accent that reads as ink on a white page is not the same
+/// value that reads as ink on a black one, so [light] and [dark] are derived
+/// from what was picked rather than painted raw. The derivation only moves
+/// lightness, and only when it has to — a colour the user picked that is already
+/// legible is painted exactly as it was picked.
+///
+/// The shipped purple is the one accent that is not derived: it is the app's own
+/// identity, and it is kept exactly as the design tokens name it.
+@immutable
+class NexusAccent {
+  const NexusAccent._(this.seed, this.light, this.dark);
 
-  const NexusAccent(this.label, this.light, this.dark);
+  /// A colour the user picked, made readable in whichever appearance is on
+  /// screen.
+  ///
+  /// A pale yellow is a reasonable thing to want from an accent picker and an
+  /// unusable thing to read a label in, and a picker that let the user choose
+  /// text they cannot see would be offering a way to break the app. So the hue
+  /// they picked is kept and its lightness is moved only as far as legibility
+  /// requires — which, for most of the wheel, is not at all.
+  factory NexusAccent.custom(Color seed) =>
+      NexusAccent._(seed, _asLightInk(seed), _asDarkInk(seed));
 
-  /// What the row says: the name the user picks from.
-  final String label;
+  /// The app's own accent: the purple it shipped with, unchanged.
+  static const NexusAccent purple = NexusAccent._(
+    kNexusAccent,
+    kNexusAccent,
+    Color(0xFF9D6BF5),
+  );
 
-  /// The accent on a light page — also the seed the colour scheme is derived
-  /// from.
+  /// What the user picked: the swatch the row draws, and the seed
+  /// `ColorScheme.fromSeed` derives the rest of Material's colours from.
+  final Color seed;
+
+  /// The accent on a light page.
   final Color light;
 
   /// The same accent lifted for a dark page.
   final Color dark;
 
-  /// The palette this accent paints, in the brightness it is being shown in.
-  NexusUiColors palette(Brightness brightness) =>
-      brightness == Brightness.dark
-      ? NexusUiColors.dark.copyWith(accent: dark, onAccent: Colors.white)
-      : NexusUiColors.light.copyWith(accent: light, onAccent: Colors.white);
-
   /// The swatch the row draws — always the light-mode value, because the row is
   /// a colour the user is choosing rather than a colour that is being applied.
   Color get swatch => light;
+
+  /// Whether this is the user's own colour rather than the shipped purple.
+  bool get isCustom => seed != kNexusAccent;
+
+  /// What the Theme row says under its title: the colour, in the hex a user who
+  /// is choosing one can compare against anything else on their phone.
+  String get label => isCustom ? 'Custom ${_hex(seed)}' : 'Nexus Purple';
+
+  /// What sits on top of the accent — a glyph on a filled button, a switch
+  /// thumb: white, or near-black when the accent is pale enough that white
+  /// would disappear into it.
+  Color onAccentFor(Brightness brightness) {
+    final Color accent = brightness == Brightness.dark ? dark : light;
+    return accent.computeLuminance() > 0.5
+        ? const Color(0xFF141414)
+        : const Color(0xFFFFFFFF);
+  }
+
+  /// The palette this accent paints, in the brightness it is being shown in.
+  NexusUiColors palette(Brightness brightness) => brightness == Brightness.dark
+      ? NexusUiColors.dark.copyWith(
+          accent: dark,
+          onAccent: onAccentFor(brightness),
+        )
+      : NexusUiColors.light.copyWith(
+          accent: light,
+          onAccent: onAccentFor(brightness),
+        );
+
+  /// [seed] as ink on a light page: the colour itself when it is already dark
+  /// enough to read, and a deepened version of it when it is not.
+  ///
+  /// Stepped, and measured by luminance rather than by lightness, because the
+  /// two are not the same question: yellow at half lightness is still the
+  /// brightest thing on the page, so a colour can be "dark" in HSL terms and
+  /// unreadable as ink. Each step moves the hue's own lightness down until the
+  /// colour actually is legible, which takes one step for a pale blue and five
+  /// for a pale yellow.
+  static Color _asLightInk(Color seed) {
+    const double ceiling = 0.45;
+    if (seed.computeLuminance() <= ceiling) return seed;
+    HSLColor hsl = HSLColor.fromColor(seed);
+    Color ink = seed;
+    for (int step = 0; step < 8; step++) {
+      hsl = hsl.withLightness((hsl.lightness - 0.12).clamp(0.0, 1.0));
+      ink = hsl.toColor();
+      if (ink.computeLuminance() <= ceiling || hsl.lightness <= 0.0) break;
+    }
+    return ink;
+  }
+
+  /// [seed] as ink on a dark page: the colour itself when it already stands out
+  /// against a near-black surface, and a lifted version of it when it does not.
+  ///
+  /// Lifted in steps rather than by one fixed amount, because how far a colour
+  /// has to travel depends on where it started: a navy picked at the bottom of
+  /// the wheel needs three steps where a mid-purple needs none. The hue never
+  /// moves — only lightness — so the accent stays the colour the user chose.
+  static Color _asDarkInk(Color seed) {
+    const double floor = 0.2;
+    if (seed.computeLuminance() >= floor) return seed;
+    HSLColor hsl = HSLColor.fromColor(seed);
+    Color lifted = seed;
+    for (int step = 0; step < 6; step++) {
+      hsl = hsl.withLightness((hsl.lightness + 0.2).clamp(0.0, 0.9));
+      lifted = hsl.toColor();
+      if (lifted.computeLuminance() >= floor || hsl.lightness >= 0.9) break;
+    }
+    return lifted;
+  }
+
+  /// The colour as `#RRGGBB`, for the row's value line.
+  static String _hex(Color color) =>
+      '#${color.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
+
+  @override
+  bool operator ==(Object other) =>
+      other is NexusAccent && other.seed == seed;
+
+  @override
+  int get hashCode => seed.hashCode;
 }
 
 /// How far a held finger may drift off the mic button and still mean "send
@@ -545,7 +643,10 @@ abstract final class NexusTheme {
     final base = ThemeData(useMaterial3: true, brightness: brightness);
     final scheme =
         ColorScheme.fromSeed(
-          seedColor: accent.swatch,
+          // The seed is what the user picked, not the readable version of it:
+          // the derived scheme only needs a hue, and every accent-bearing token
+          // is overwritten from the palette below anyway.
+          seedColor: accent.seed,
           brightness: brightness,
         ).copyWith(
           error: c.danger,
@@ -668,26 +769,331 @@ class _NexusUiAppState extends State<NexusUiApp> {
   /// Which accent every surface paints itself with.
   NexusAccent _accent = NexusAccent.purple;
 
+  /// Whether this device has already seen the welcome screen.
+  ///
+  /// Null is the one frame before the preference has been read, and it is not
+  /// the same answer as "no": the welcome screen and the shell are two different
+  /// apps to open into, and guessing would flash the wrong one at the user. The
+  /// read is one preference, so the gap is a frame on a phone — and in a test, no
+  /// gap at all: a store that cannot be reached counts as [Onboarding.isDone]'s
+  /// own answer, which is that the user has been here before.
+  bool? _onboarded;
+
+  @override
+  void initState() {
+    super.initState();
+    Onboarding.isDone().then((bool done) {
+      if (mounted) setState(() => _onboarded = done);
+    });
+  }
+
   ThemeMode get _themeMode => _followSystem
       ? ThemeMode.system
       : (_dark ? ThemeMode.dark : ThemeMode.light);
 
+  /// The user left the welcome screen — by downloading a model or by skipping.
+  /// The flag is already written by the time this runs; this only swaps the
+  /// screen, so the tap they just made moves them forward in the same frame.
+  void _finishOnboarding() {
+    if (mounted) setState(() => _onboarded = true);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final bool? onboarded = _onboarded;
     return MaterialApp(
       title: 'Nexus',
       debugShowCheckedModeBanner: false,
       theme: NexusTheme.light(accent: _accent),
       darkTheme: NexusTheme.dark(accent: _accent),
       themeMode: _themeMode,
-      home: NexusShell(
-        followSystem: _followSystem,
-        darkMode: _dark,
-        accent: _accent,
-        onFollowSystemChanged: (value) =>
-            setState(() => _followSystem = value),
-        onDarkModeChanged: (value) => setState(() => _dark = value),
-        onAccentChanged: (value) => setState(() => _accent = value),
+      home: switch (onboarded) {
+        true => NexusShell(
+          followSystem: _followSystem,
+          darkMode: _dark,
+          accent: _accent,
+          onFollowSystemChanged: (value) =>
+              setState(() => _followSystem = value),
+          onDarkModeChanged: (value) => setState(() => _dark = value),
+          onAccentChanged: (value) => setState(() => _accent = value),
+        ),
+        false => WelcomeView(onDone: _finishOnboarding),
+        // The ground the shell would paint, with nothing on it. Deliberately
+        // blank rather than a logo: a mark that appears and vanishes inside one
+        // frame is a flicker, and this window is not long enough to read one.
+        null => const _NexusBootGround(),
+      },
+    );
+  }
+}
+
+/// The one frame before the app knows which screen it is.
+class _NexusBootGround extends StatelessWidget {
+  const _NexusBootGround();
+
+  @override
+  Widget build(BuildContext context) =>
+      ColoredBox(color: context.ui.background, child: const SizedBox.expand());
+}
+
+// ---------------------------------------------------------------------------
+// First run
+// ---------------------------------------------------------------------------
+
+/// The keys the welcome screen hangs its three decisions on: the download, and
+/// the way past it. Keys rather than text so a test can point at the control the
+/// user points at, whatever the wording becomes.
+const Key kNexusWelcomeDownload = Key('nexus-welcome-download');
+const Key kNexusWelcomeSkip = Key('nexus-welcome-skip');
+const Key kNexusWelcomeProgress = Key('nexus-welcome-progress');
+
+/// The first-run screen: one question — which model — answered for the user by
+/// the only fact that predicts it, and answered *with* them rather than behind
+/// their back.
+///
+/// Why it exists at all: the app's first useful moment is a 470 MB download it
+/// cannot start without being asked, and the two models on offer are a real
+/// trade (fast and occasionally wrong about the action JSON, or slower and
+/// right). A user meeting that choice cold on the Settings screen has no way to
+/// make it; a user told "your phone has 6 GB, so this one" and offered both has.
+///
+/// What it deliberately is not: a tour, an account, a permission walk, or a
+/// wall. Every path through it — download, or skip — lands in exactly the app
+/// that was there before this screen existed, and the flag is written on the way
+/// out of either.
+class WelcomeView extends StatefulWidget {
+  const WelcomeView({super.key, this.onDevice, this.onDone, this.ramProbe});
+
+  /// The brain whose download button this screen borrows. Null builds the real
+  /// one; a test supplies one pointed at a temp directory, which is what makes
+  /// the download provable without 470 MB or a platform channel.
+  final OnDeviceAiService? onDevice;
+
+  /// Called when the user is done here — after a finished download, after
+  /// "Skip for now". The shell is what swaps the screen; this screen never
+  /// touches the app root itself.
+  final VoidCallback? onDone;
+
+  /// How much memory this device has, or null when it will not say. A test seam
+  /// in the shape the rest of the shell uses; the app probes the device.
+  final Future<int?> Function()? ramProbe;
+
+  @override
+  State<WelcomeView> createState() => _WelcomeViewState();
+}
+
+class _WelcomeViewState extends State<WelcomeView> {
+  /// The model this screen recommends, once the RAM has been read.
+  OnDeviceModelChoice _recommended = OnDeviceModelChoice.qwen;
+  int? _ram;
+  bool _probed = false;
+
+  /// True when the recommended model's file is already on disk — a phone that
+  /// downloaded the small model before this screen existed must not be asked to
+  /// download it again.
+  bool _present = false;
+
+  bool _downloading = false;
+  double _progress = 0;
+  String? _error;
+
+  late final OnDeviceAiService _onDevice = widget.onDevice ?? OnDeviceAiService();
+
+  /// Whether this device can run a model at all. Answered by the capability
+  /// registry, so the same device that is not offered the download in Settings
+  /// is not offered it here either — and is told what to do instead.
+  bool get _supported => DeviceCapabilities.current.supportsOnDeviceAi();
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_probe());
+  }
+
+  /// Reads the RAM, decides what to recommend, and asks whether that model is
+  /// already here. One pass, on mount: the answer cannot change while the screen
+  /// is open.
+  Future<void> _probe() async {
+    final int? ram = await (widget.ramProbe ?? DeviceMemory.totalBytes)();
+    final OnDeviceModelChoice choice = recommendedModel(ram);
+    bool present = false;
+    try {
+      present = await _onDevice.model.withChoice(choice).isPresent();
+    } on Object catch (error) {
+      debugPrint('WELCOME: could not look for a model ($error)');
+    }
+    if (!mounted) return;
+    setState(() {
+      _ram = ram;
+      _recommended = choice;
+      _present = present;
+      _probed = true;
+    });
+  }
+
+  /// Downloads the recommended model, then hands the user to the app.
+  ///
+  /// The selection is made first so the file lands under the name the brain will
+  /// look for and Settings' own row agrees with what just happened — one
+  /// selection, not a second one made behind it.
+  Future<void> _download() async {
+    if (_downloading) return;
+    setState(() {
+      _downloading = true;
+      _progress = 0;
+      _error = null;
+    });
+    await ModelChoice.instance.select(_recommended);
+    final bool ok = await _onDevice.download(
+      onProgress: (double progress) {
+        if (mounted) setState(() => _progress = progress);
+      },
+    );
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _downloading = false;
+        _error =
+            'The download did not finish. Check your connection and try again.';
+      });
+      return;
+    }
+    await Onboarding.complete();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('${_recommended.label} is ready. Ask away.'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    widget.onDone?.call();
+  }
+
+  /// The way past: no download, no questions, straight into the app. The
+  /// recommendation is still the selected model, so the Settings row offers
+  /// exactly the download the user just declined — the same 470 MB, one tap
+  /// away, where they now know to look for it.
+  Future<void> _skip() async {
+    await ModelChoice.instance.select(_recommended);
+    await Onboarding.complete();
+    if (!mounted) return;
+    widget.onDone?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    final OnDeviceModelChoice choice = _recommended;
+    return Scaffold(
+      backgroundColor: c.background,
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, box) {
+            final double width = box.maxWidth > NexusLayout.content
+                ? NexusLayout.content
+                : box.maxWidth;
+            return Align(
+              alignment: Alignment.topCenter,
+              child: SizedBox(
+                width: width,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 28, 20, 28),
+                  children: <Widget>[
+                    Text(
+                      'Welcome to Nexus.',
+                      style: NexusType.greeting(c),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      "Let's get your private AI set up.",
+                      style: NexusType.lede(c),
+                    ),
+                    const SizedBox(height: 26),
+                    NexusRow(
+                      title: _probed
+                          ? 'This device has ${DeviceMemory.label(_ram)} of RAM'
+                          : 'Checking this device',
+                      subtitle: _probed
+                          ? recommendationReason(_ram, choice)
+                          : 'Reading how much memory it has…',
+                      leading: const NexusIconTile(Icons.memory_rounded),
+                    ),
+                    const SizedBox(height: 8),
+                    if (_supported)
+                      NexusRow(
+                        title: _present
+                            ? '${choice.label} — already downloaded'
+                            : 'Recommended: ${choice.label}',
+                        subtitle: '${choice.megabytes} MB — ${choice.blurb}',
+                        leading: const NexusIconTile(Icons.auto_awesome_rounded),
+                        accentTitle: true,
+                      )
+                    else
+                      const NexusRow(
+                        title: 'This device cannot run a model',
+                        subtitle:
+                            'Nexus will answer from Ollama on your PC, on the '
+                            'same Wi-Fi. Everything else works without it.',
+                        leading: NexusIconTile(Icons.cloud_off_rounded),
+                      ),
+                    if (_downloading) ...<Widget>[
+                      const SizedBox(height: 14),
+                      LinearProgressIndicator(
+                        key: kNexusWelcomeProgress,
+                        value: _progress == 0 ? null : _progress,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Downloading ${choice.label} — ${(_progress * 100).round()}% '
+                        'of ${choice.megabytes} MB',
+                        style: NexusType.rowMeta(c),
+                      ),
+                    ],
+                    if (_error != null) ...<Widget>[
+                      const SizedBox(height: 14),
+                      Text(
+                        _error!,
+                        style: NexusType.rowMeta(
+                          c,
+                        ).copyWith(color: c.danger),
+                      ),
+                    ],
+                    const SizedBox(height: 26),
+                    if (_supported)
+                      FilledButton(
+                        key: kNexusWelcomeDownload,
+                        onPressed: !_probed || _downloading
+                            ? null
+                            : (_present ? _skip : _download),
+                        child: Text(
+                          _downloading
+                              ? 'Downloading…'
+                              : (_present
+                                    ? 'Start chatting'
+                                    : 'Download Recommended AI'),
+                        ),
+                      ),
+                    const SizedBox(height: 10),
+                    TextButton(
+                      key: kNexusWelcomeSkip,
+                      onPressed: _downloading ? null : _skip,
+                      child: const Text('Skip for now'),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      'Both models run entirely on this device. Nothing you say '
+                      'is sent anywhere, and you can switch or delete them in '
+                      'Settings.',
+                      style: NexusType.rowMeta(c).copyWith(height: 1.5),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -1295,101 +1701,209 @@ Future<bool> showNexusConfirm(
   return confirmed ?? false;
 }
 
+/// The title on the dialog that stands in front of the bin icon, the sentence
+/// it shows before a pairing is broken, the button that finds nearby devices
+/// before it can find any, and what that button says afterwards.
+///
+/// Constants because all four are read by tests as well as by users: the
+/// confirmation is the only thing between a mis-tap and a broken pairing.
+const String kNexusForgetTitle = 'Forget this device?';
+const Key kNexusDiscoverNearby = Key('nexus-discover-nearby');
+const String kNexusDiscoverySoon =
+    'Nearby discovery coming soon. Use QR for now.';
+
 /// The key on a destructive dialog's confirm button.
 const Key kNexusConfirmAction = Key('nexus-confirm-action');
 
-/// The accent swatches in the Theme section.
+/// The key on the Theme section's colour row, on the button that opens the
+/// wheel, on the wheel itself, and on the one way back to the shipped purple.
 ///
-/// Five discs rather than five rows: the choice is a colour, and a colour is
-/// read faster than a name list — the label is still there, as the tooltip and
-/// as the screen reader's name, so nothing about this is by-sight-only.
-class _AccentPicker extends StatelessWidget {
-  const _AccentPicker({required this.selected, required this.onSelected});
+/// The row is what the accent *is*; the button is what changes it. They are keyed
+/// apart because a test that taps the row and a test that reads its subtitle are
+/// asking about two different things.
+const Key kNexusAccentRow = Key('nexus-accent-row');
+const Key kNexusPickColor = Key('nexus-pick-color');
+const Key kNexusColorWheel = Key('nexus-color-wheel');
+const Key kNexusResetAccent = Key('nexus-reset-accent');
+
+/// The Theme section's accent control: one row that says what the app paints
+/// with, and one button that opens a colour wheel.
+///
+/// A wheel rather than a row of presets, because the presets were five colours
+/// somebody else had chosen and the point of the row is that this app is the
+/// user's. The wheel paints the app *while* the thumb drags it — the preview is
+/// the app itself — so there is nothing to confirm, and the dialog's buttons are
+/// only the way back to the shipped purple and the way out.
+class _AccentRow extends StatelessWidget {
+  const _AccentRow({required this.selected, required this.onSelected});
 
   final NexusAccent selected;
   final ValueChanged<NexusAccent>? onSelected;
 
+  Future<void> _pick(BuildContext context) async {
+    final ValueChanged<NexusAccent>? onSelected = this.onSelected;
+    if (onSelected == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) =>
+          _AccentWheelDialog(accent: selected, onChanged: onSelected),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 12, 4, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Row(
-            children: <Widget>[
-              const NexusIconTile(Icons.palette_outlined),
-              const SizedBox(width: 12),
-              Text('Accent colour', style: NexusType.rowTitle(c)),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.only(left: 44),
-            child: Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: <Widget>[
-                for (final NexusAccent accent in NexusAccent.values)
-                  _AccentSwatch(
-                    accent: accent,
-                    selected: accent == selected,
-                    onTap: onSelected == null
-                        ? null
-                        : () => onSelected!(accent),
+    // Not a [NexusRow] with a trailing button, and deliberately: a row lays its
+    // trailing control out beside the words, and "Pick a custom color" is a
+    // sentence rather than a glyph — beside the title on a 390pt phone it leaves
+    // the second line about fifty points wide and the row unreadable. So the
+    // button goes *under* the words it belongs to, at the disc's full-width
+    // indent, and the row has nothing left that can be squeezed.
+    return Semantics(
+      container: true,
+      label: 'Accent colour. ${selected.label}',
+      child: Padding(
+        key: kNexusAccentRow,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            _AccentDisc(color: selected.swatch),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text('Accent colour', style: NexusType.rowTitle(c)),
+                  const SizedBox(height: 3),
+                  Text(
+                    'Buttons, switches and the active tab — ${selected.label}',
+                    style: NexusType.rowMeta(c),
                   ),
-              ],
+                  const SizedBox(height: 4),
+                  TextButton(
+                    key: kNexusPickColor,
+                    onPressed: onSelected == null ? null : () => _pick(context),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('Pick a custom color'),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
-/// One disc of that picker: the accent in full, a ring when it is the chosen
-/// one, and a tick inside it so the state is not carried by the ring alone.
-class _AccentSwatch extends StatelessWidget {
-  const _AccentSwatch({
-    required this.accent,
-    required this.selected,
-    required this.onTap,
-  });
+/// The disc that stands where an icon tile would: the accent in full, at the
+/// same size as the tiles beside it, so the row says which colour is in force
+/// before it is read.
+class _AccentDisc extends StatelessWidget {
+  const _AccentDisc({required this.color});
 
-  final NexusAccent accent;
-  final bool selected;
-  final VoidCallback? onTap;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
-    return Semantics(
-      button: true,
-      selected: selected,
-      label: accent.label,
-      child: Tooltip(
-        message: accent.label,
-        child: InkWell(
-          key: ValueKey<String>('accent-${accent.name}'),
-          onTap: onTap,
-          customBorder: const CircleBorder(),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: accent.swatch,
-              shape: BoxShape.circle,
-              border: selected
-                  ? Border.all(color: c.textStrong, width: 2)
-                  : Border.all(color: c.hairline),
-            ),
-            child: selected
-                ? const Icon(Icons.check_rounded, size: 20, color: Colors.white)
-                : null,
-          ),
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: c.hairline),
+      ),
+    );
+  }
+}
+
+/// The colour wheel itself, in a dialog.
+///
+/// Stateful for one reason: the wheel needs to know which colour it is showing,
+/// and `flutter_colorpicker`'s widget is told rather than asked. Every call back
+/// to the app replaces the accent outright, which is what "instantly" means
+/// here — there is no Apply, because there is nothing to apply.
+class _AccentWheelDialog extends StatefulWidget {
+  const _AccentWheelDialog({required this.accent, required this.onChanged});
+
+  /// The accent in force when the dialog opened: the colour the wheel starts on.
+  final NexusAccent accent;
+
+  /// Called with every colour the thumb passes over, as the accent to paint.
+  final ValueChanged<NexusAccent> onChanged;
+
+  @override
+  State<_AccentWheelDialog> createState() => _AccentWheelDialogState();
+}
+
+class _AccentWheelDialogState extends State<_AccentWheelDialog> {
+  /// The colour on the wheel right now — already the app's accent, because the
+  /// app is what is being painted while the thumb moves.
+  late Color _color = widget.accent.seed;
+
+  /// Whether what the wheel is showing came from the user rather than from the
+  /// app. Tracked here rather than read back off [widget.accent], which is the
+  /// value that opened the dialog and does not change under it: a Reset button
+  /// that appeared only after the dialog was reopened would be a button the user
+  /// never sees when they need it.
+  late bool _custom = widget.accent.isCustom;
+
+  void _choose(Color color) {
+    setState(() {
+      _color = color;
+      _custom = NexusAccent.custom(color).isCustom;
+    });
+    widget.onChanged(NexusAccent.custom(color));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return AlertDialog(
+      backgroundColor: c.surface,
+      title: Text('Pick a custom color', style: NexusType.rowTitle(c)),
+      contentPadding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+      content: SingleChildScrollView(
+        child: ColorPicker(
+          key: kNexusColorWheel,
+          pickerColor: _color,
+          onColorChanged: _choose,
+          paletteType: PaletteType.hueWheel,
+          enableAlpha: false,
+          displayThumbColor: true,
+          hexInputBar: true,
+          labelTypes: const <ColorLabelType>[ColorLabelType.hex],
+          colorPickerWidth: 260,
         ),
       ),
+      actions: <Widget>[
+        if (_custom)
+          TextButton(
+            key: kNexusResetAccent,
+            onPressed: () {
+              setState(() {
+                _color = kNexusAccent;
+                _custom = false;
+              });
+              widget.onChanged(NexusAccent.purple);
+            },
+            child: const Text('Reset'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Done'),
+        ),
+      ],
     );
   }
 }
@@ -5657,6 +6171,10 @@ class _DevicesTabState extends State<DevicesTab> {
   /// another in its place.
   PairedDevices get _paired => PairedDevices.instance;
 
+  /// True for the two seconds the "Discover nearby" button spends pretending to
+  /// look. See [_discoverNearby] for why it is a shape and not a feature.
+  bool _discovering = false;
+
   @override
   void initState() {
     super.initState();
@@ -5715,34 +6233,25 @@ class _DevicesTabState extends State<DevicesTab> {
                   ),
                   const SizedBox(width: 8),
                   NexusStatusDot(online: device.online),
+                  // Forget, on every row but this device's own: a device cannot
+                  // unpair from itself, and offering the button there would be
+                  // offering a control that does nothing. The bin is the whole
+                  // of the control — the confirmation behind it is what makes
+                  // it safe to have no label.
+                  if (!device.isThisDevice) ...<Widget>[
+                    const SizedBox(width: 2),
+                    IconButton(
+                      key: ValueKey<String>('forget-${device.id}'),
+                      tooltip: 'Forget ${device.name}',
+                      onPressed: () => unawaited(_forget(device)),
+                      icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                      color: c.danger,
+                    ),
+                  ],
                 ],
               ),
               onTap: () => nexusNotWired(context, 'Device details'),
             ),
-            // Forget, on every row but this device's own: a device cannot
-            // unpair from itself, and offering it would be offering a button
-            // that does nothing.
-            if (!device.isThisDevice)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(56, 0, 4, 4),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton(
-                    key: ValueKey<String>('forget-${device.id}'),
-                    onPressed: () => _forget(device),
-                    style: TextButton.styleFrom(
-                      foregroundColor: c.textMuted,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: const Text('Forget'),
-                  ),
-                ),
-              ),
             Divider(height: 1, thickness: 1, color: c.hairline, indent: 56),
           ],
           NexusRow(
@@ -5751,6 +6260,21 @@ class _DevicesTabState extends State<DevicesTab> {
             leading: const NexusIconTile(Icons.add_rounded),
             accentTitle: true,
             onTap: () => unawaited(showDevicePairingSheet(context)),
+          ),
+          const SizedBox(height: 14),
+          OutlinedButton.icon(
+            key: kNexusDiscoverNearby,
+            onPressed: _discovering ? null : _discoverNearby,
+            icon: _discovering
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.radar_rounded, size: 18),
+            label: Text(
+              _discovering ? 'Looking for devices…' : 'Discover Nearby Devices',
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(4, 26, 4, 0),
@@ -5776,10 +6300,24 @@ class _DevicesTabState extends State<DevicesTab> {
     return Icons.devices_other_rounded;
   }
 
-  /// Takes a device off the list. The notice says which device went, because a
-  /// row that disappears on its own is exactly the kind of thing a user has to
-  /// ask about afterwards.
-  void _forget(PairedDevice device) {
+  /// Takes a device off the list, after asking.
+  ///
+  /// The question is not politeness. Forgetting is the only way to break a
+  /// pairing and nothing on this screen can undo it — the other device has to
+  /// pair again — so the bin icon is a door, and the dialog is what stands in
+  /// front of it. The confirm button is painted in the danger colour and says
+  /// the same word the row's tooltip did, so nobody has to translate "unpair"
+  /// to know what they are agreeing to.
+  Future<void> _forget(PairedDevice device) async {
+    final bool confirmed = await showNexusConfirm(
+      context,
+      title: kNexusForgetTitle,
+      message:
+          '${device.name} will have to pair with this device again before it '
+          'can send or receive anything.',
+      confirmLabel: 'Forget',
+    );
+    if (!confirmed || !mounted) return;
     if (!_paired.forget(device.id)) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -5789,6 +6327,26 @@ class _DevicesTabState extends State<DevicesTab> {
           duration: const Duration(seconds: 2),
         ),
       );
+  }
+
+  /// The button at the bottom of the list: what a nearby-device hunt will one
+  /// day be.
+  ///
+  /// It spends two seconds looking at nothing and then says so, and that is the
+  /// honest version of a control that has to exist before the thing behind it
+  /// does: a button that answered instantly would read as broken, and one that
+  /// claimed to have found something would be lying about the one property this
+  /// app is built on. The wait is a [Future.delayed] rather than a fake progress
+  /// loop because there is nothing being waited *for*.
+  Future<void> _discoverNearby() async {
+    if (_discovering) return;
+    setState(() => _discovering = true);
+    await Future<void>.delayed(const Duration(seconds: 2));
+    if (!mounted) return;
+    setState(() => _discovering = false);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text(kNexusDiscoverySoon)));
   }
 }
 
@@ -6659,7 +7217,7 @@ class _SettingsTabState extends State<SettingsTab> {
                     onChanged: widget.followSystem ? null : _toggleDark,
                   ),
           ),
-          _AccentPicker(
+          _AccentRow(
             selected: widget.accent,
             onSelected: widget.onAccentChanged,
           ),

@@ -43,6 +43,10 @@ void main() {
           'set_timer',
           'open_app',
           'get_battery_level',
+          'set_wifi',
+          'set_bluetooth',
+          'set_volume',
+          'set_brightness',
         },
       );
       // The prompt is the only place the model can learn the vocabulary, so
@@ -77,7 +81,7 @@ void main() {
   });
 
   group('parsing what the model wrote', () {
-    test('reads each of the five actions', () {
+    test('reads each of the nine actions', () {
       expect(
         SystemActionCall.tryParse('{"action":"set_flashlight","state":"on"}'),
         isA<SystemActionCall>()
@@ -119,6 +123,38 @@ void main() {
           'get_battery_level',
         ),
       );
+      expect(
+        SystemActionCall.tryParse('{"action":"set_wifi","state":"off"}'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'set_wifi')
+            .having((SystemActionCall c) => c.args['state'], 'state', 'off'),
+      );
+      expect(
+        SystemActionCall.tryParse('{"action":"set_bluetooth","state":"on"}'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'set_bluetooth')
+            .having((SystemActionCall c) => c.args['state'], 'state', 'on'),
+      );
+      expect(
+        SystemActionCall.tryParse('{"action":"set_volume","level":40}'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'set_volume')
+            .having((SystemActionCall c) => c.args['level'], 'level', 40),
+      );
+      expect(
+        SystemActionCall.tryParse('{"action":"set_brightness","level":"70"}'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'set_brightness')
+            .having((SystemActionCall c) => c.args['level'], 'level', 70),
+      );
+      // The near-miss a 0.5B writes for the same intent, understood rather than
+      // thrown away — refusing it would cost the user their volume for a
+      // naming quibble, exactly as `app`/`app_name` once did.
+      expect(
+        SystemActionCall.tryParse('{"action":"set_volume","percent":15}')
+            ?.args['level'],
+        15,
+      );
     });
 
     test('finds the object inside the sentence a chatty model adds', () {
@@ -156,6 +192,15 @@ void main() {
       for (final String reply in <String>[
         '{"action":"set_flashlight"}',
         '{"action":"set_flashlight","state":"maybe"}',
+        '{"action":"set_wifi"}',
+        '{"action":"set_wifi","state":"true"}',
+        '{"action":"set_bluetooth","state":"maybe"}',
+        '{"action":"set_volume"}',
+        '{"action":"set_volume","level":101}',
+        '{"action":"set_volume","level":-1}',
+        // 0 is a real volume and a screen the user cannot see to undo.
+        '{"action":"set_brightness","level":0}',
+        '{"action":"set_brightness","level":101}',
         '{"action":"set_alarm","hour":7}',
         '{"action":"set_alarm","hour":7,"minute":75}',
         '{"action":"set_alarm","hour":24,"minute":10}',
@@ -240,6 +285,74 @@ void main() {
       );
       expect(phone.calls.last.$1, AgentActions.batteryGet);
       expect(phone.calls.last.$2, isEmpty);
+
+      // The four settings actions. Each names the native method the app already
+      // had, with the arguments that method reads.
+      await withPhone.execute(
+        SystemActionCall.tryParse('{"action":"set_wifi","state":"off"}')!,
+      );
+      expect(phone.calls.last.$1, AgentActions.wifiToggle);
+      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'off'});
+
+      await withPhone.execute(
+        SystemActionCall.tryParse('{"action":"set_bluetooth","state":"on"}')!,
+      );
+      expect(phone.calls.last.$1, AgentActions.bluetoothToggle);
+      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'on'});
+
+      await withPhone.execute(
+        SystemActionCall.tryParse('{"action":"set_volume","level":40}')!,
+      );
+      expect(phone.calls.last.$1, AgentActions.volumeSet);
+      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'set', 'level': 40});
+
+      await withPhone.execute(
+        SystemActionCall.tryParse('{"action":"set_brightness","level":70}')!,
+      );
+      expect(phone.calls.last.$1, AgentActions.brightnessSet);
+      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'set', 'level': 70});
+    });
+
+    test('never writes its own sentence over the phone\'s for a setting',
+        () async {
+      final _Recorder phone = _Recorder();
+      final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
+
+      // The case the whole rule exists for: Android refused the switch and
+      // opened the panel instead. "Wi-Fi on." here would be a lie about a radio
+      // that is still off, so the phone's sentence is the one the user reads.
+      phone.reply = const ActionResult(
+        true,
+        "Android won't let an app switch Wi-Fi — I opened the Wi-Fi panel, "
+            "flip it there.",
+      );
+      expect(
+        (await actions.execute(
+          SystemActionCall.tryParse('{"action":"set_wifi","state":"on"}')!,
+        )).message,
+        "Android won't let an app switch Wi-Fi — I opened the Wi-Fi panel, "
+            "flip it there.",
+      );
+
+      // And what the phone achieved is what it reports when it did switch.
+      phone.reply = const ActionResult(true, 'Bluetooth off.');
+      expect(
+        (await actions.execute(
+          SystemActionCall.tryParse('{"action":"set_bluetooth","state":"off"}')!,
+        )).message,
+        'Bluetooth off.',
+      );
+
+      phone.reply = const ActionResult(
+        true,
+        'Volume set to 40%.',
+      );
+      expect(
+        (await actions.execute(
+          SystemActionCall.tryParse('{"action":"set_volume","level":40}')!,
+        )).message,
+        'Volume set to 40%.',
+      );
     });
 
     test('the line it puts in the thread is the short one for the three it '

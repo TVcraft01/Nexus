@@ -30,6 +30,8 @@ dependencies:
   # dependency (mobile_scanner pulls it in); declared here because the shell now
   # talks to it directly.
   http: ^1.6.0
+  device_info_plus: ^13.3.0
+  flutter_colorpicker: ^1.1.0
 
 dev_dependencies:
   flutter_test:

@@ -2,6 +2,7 @@ package dev.nexus.nexus
 
 import android.Manifest
 import android.app.ActivityManager
+import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -19,6 +20,7 @@ import android.media.MediaPlayer
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -975,13 +977,18 @@ class MainActivity : FlutterActivity() {
                     args?.get("action")?.toString() ?: "stop",
                     args?.get("url")?.toString(),
                 )
-                "wifi" -> openSettingsPanel(
-                    Settings.ACTION_WIFI_SETTINGS,
-                    "Apps can't switch Wi-Fi for you — I opened the Wi-Fi settings, flip the switch there.",
+                // Both radios take `mode` (on/off, as the action vocabulary
+                // spells it) and fall back to `state`, which is what the
+                // command executor passes for the same two actions.
+                "wifi" -> setWifi(
+                    args?.get("mode")?.toString()
+                        ?: args?.get("state")?.toString()
+                        ?: "toggle",
                 )
-                "bluetooth" -> openSettingsPanel(
-                    Settings.ACTION_BLUETOOTH_SETTINGS,
-                    "Apps can't switch Bluetooth for you — I opened the Bluetooth settings, flip the switch there.",
+                "bluetooth" -> setBluetooth(
+                    args?.get("mode")?.toString()
+                        ?: args?.get("state")?.toString()
+                        ?: "toggle",
                 )
                 "brightness" -> setBrightness(
                     args?.get("mode")?.toString() ?: "up",
@@ -2258,6 +2265,88 @@ class MainActivity : FlutterActivity() {
     } catch (e: Exception) {
         Log.e(TAG, "$action unavailable", e)
         mapOf("ok" to false, "message" to "That setting isn't available on this device.")
+    }
+
+    /// Turns Wi-Fi on or off when this build is allowed to, and opens the Wi-Fi
+    /// panel when it is not.
+    ///
+    /// Android 10 (API 29) stopped letting ordinary apps call
+    /// `WifiManager.setWifiEnabled`: the method still compiles, still runs, and
+    /// returns false on most devices, which is why this attempts it and then
+    /// *checks what actually happened* rather than reporting the attempt. Either
+    /// way the answer is a true sentence: "Wi-Fi on." when the radio moved, and
+    /// the panel with an explanation when it did not. The one thing it must
+    /// never do is claim a switch it did not make.
+    @Suppress("DEPRECATION")
+    private fun setWifi(mode: String): Map<String, Any?> {
+        val want = when (mode.lowercase()) {
+            "on" -> true
+            "off" -> false
+            else -> null
+        }
+        val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        if (want != null && wifi != null) {
+            try {
+                wifi.isWifiEnabled = want
+            } catch (e: SecurityException) {
+                Log.i(TAG, "setWifiEnabled refused: ${e.message}")
+            }
+            if (wifi.isWifiEnabled == want) {
+                return mapOf(
+                    "ok" to true,
+                    "message" to "Wi-Fi ${if (want) "on" else "off"}.",
+                )
+            }
+        }
+        val panel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            Settings.Panel.ACTION_WIFI
+        } else {
+            Settings.ACTION_WIFI_SETTINGS
+        }
+        return openSettingsPanel(
+            panel,
+            "Android won't let an app switch Wi-Fi — I opened the Wi-Fi panel, flip it there.",
+        )
+    }
+
+    /// The same shape as [setWifi], for the other radio.
+    ///
+    /// Android 12 (API 31) additionally guards enable/disable behind
+    /// BLUETOOTH_CONNECT, which Nexus asks for on first use; without it — or on a
+    /// build that refuses anyway — the panel is the honest answer. `disable()`
+    /// needs BLUETOOTH_CONNECT too, so both directions are gated the same way.
+    @Suppress("DEPRECATION")
+    private fun setBluetooth(mode: String): Map<String, Any?> {
+        val want = when (mode.lowercase()) {
+            "on" -> true
+            "off" -> false
+            else -> null
+        }
+        val adapter = (applicationContext.getSystemService(Context.BLUETOOTH_SERVICE)
+            as? BluetoothManager)?.adapter
+        val mayAsk = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
+        if (want != null && adapter != null && mayAsk) {
+            try {
+                if (want) adapter.enable() else adapter.disable()
+            } catch (e: SecurityException) {
+                Log.i(TAG, "bluetooth enable($want) refused: ${e.message}")
+            }
+            if (adapter.isEnabled == want) {
+                return mapOf(
+                    "ok" to true,
+                    "message" to "Bluetooth ${if (want) "on" else "off"}.",
+                )
+            }
+        }
+        // There is no `Settings.Panel` entry for Bluetooth (ACTION_WIFI and
+        // friends exist, ACTION_BLUETOOTH does not), so the settings page is the
+        // only destination on every API level.
+        return openSettingsPanel(
+            Settings.ACTION_BLUETOOTH_SETTINGS,
+            "Android won't let an app switch Bluetooth — I opened the Bluetooth settings, flip it there.",
+        )
     }
 
     /// Writes the brightness only when Nexus has the "modify system settings"
