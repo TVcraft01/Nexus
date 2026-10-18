@@ -30,7 +30,73 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 
 import 'agent_contract.dart';
+import 'command_interpreter.dart'
+    show CommandInterpreter, InterpretOutcome, InterpretResult;
 import 'device_actions.dart';
+
+/// The interpreter the phrase bridge reads with. Const and stateless, so one
+/// instance is the same as none.
+const CommandInterpreter _phrases = CommandInterpreter();
+
+/// A request the fixed vocabulary already understands, as the call a model
+/// would have made for it — or null when the phrase is not one of them.
+///
+/// This exists because "the model usually emits the JSON" is not a contract. On
+/// the A25, "set brightness to 60" came back as the sentence
+/// *"Brightness set to 60%."* with nothing executed, twice, on both models —
+/// while the very same channel executed "set volume to 30" one message
+/// earlier. The translation from speech to [kSystemActionNames] is a closed
+/// list, and [CommandInterpreter] already covers it exactly, so the shell asks
+/// it first and leaves the model to the phrasings the list does not cover.
+///
+/// Only actions that name a state or a level are translated. A bare
+/// "flashlight" is a **toggle**, and the model's vocabulary has no word for
+/// one; guessing `on` here would turn a request to turn it off into a request
+/// to turn it on, which is worse than letting the model answer.
+SystemActionCall? actionFromPhrase(String text) {
+  final String phrase = text.trim();
+  if (phrase.isEmpty) return null;
+  final InterpretResult result = _phrases.interpret(phrase);
+  // `needsInfo` means the phrase was understood but incomplete ("set a timer"
+  // with no length). The shell has nothing to ask with here, so it is the
+  // model's to answer rather than a guess of ours.
+  if (result.outcome != InterpretOutcome.matched) return null;
+  final ParsedCommand? command = result.command;
+  if (command == null) return null;
+
+  final Object? state = command.arguments['state'];
+  switch (command.action) {
+    case AgentActions.wifiToggle:
+      if (state != 'on' && state != 'off') return null;
+      return SystemActionCall('set_wifi', <String, Object?>{'state': state});
+    case AgentActions.bluetoothToggle:
+      if (state != 'on' && state != 'off') return null;
+      return SystemActionCall(
+        'set_bluetooth',
+        <String, Object?>{'state': state},
+      );
+    case AgentActions.flashlightToggle:
+      if (state != 'on' && state != 'off') return null;
+      return SystemActionCall(
+        'set_flashlight',
+        <String, Object?>{'state': state},
+      );
+    case AgentActions.volumeSet:
+    case AgentActions.brightnessSet:
+      // Up/down are relative steps the vocabulary cannot express, and a level
+      // outside the range `SystemActionCall` accepts is not one either.
+      if (command.arguments['mode'] != 'set') return null;
+      final Object? level = command.arguments['level'];
+      if (level is! int) return null;
+      final bool brightness = command.action == AgentActions.brightnessSet;
+      if (level < (brightness ? 1 : 0) || level > 100) return null;
+      return SystemActionCall(
+        brightness ? 'set_brightness' : 'set_volume',
+        <String, Object?>{'level': level},
+      );
+  }
+  return null;
+}
 
 /// The nine actions the model may ask for, by the names it is told to use.
 ///

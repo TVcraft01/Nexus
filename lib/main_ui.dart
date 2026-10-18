@@ -2422,6 +2422,17 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _persistThread();
     _focus.unfocus();
     _scrollToLatest();
+    // A request the phone's own vocabulary already understands is run here,
+    // without asking the model to translate it: the translation is a closed
+    // list, the shell has it, and a 0.5B model that answers "Brightness set to
+    // 60%." without acting is the one failure this app cannot ship. The model
+    // is still what answers everything else — including the relative steps
+    // ("a bit dimmer") this cannot express.
+    final SystemActionCall? known = actionFromPhrase(text);
+    if (known != null) {
+      unawaited(_runAction(known, _thread.length - 1, spoken: spoken));
+      return;
+    }
     unawaited(_answer(text, _thread.length - 1, spoken: spoken));
   }
 

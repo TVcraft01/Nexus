@@ -46,7 +46,9 @@ not by a phone run.)
 
 ## What this pass found and did *not* fix
 
-**The model can claim an action it never took.** `shared_prefs` is explicit
+**The model can claim an action it never took — fixed, not yet re-run on the phone.** The shell's chat path read the reply, and only if the *whole* reply was one JSON object did anything happen; there was no deterministic path at all, while the older shell (`assistant_view.dart`) had always used `CommandInterpreter` first. Worse, the interpreter did not know the phrasing that was used: `brightness` had to arrive as "brightness 60", so "set brightness to 60" was handed to the model. `actionFromPhrase` in `system_actions.dart` now bridges the interpreter's vocabulary to `SystemActionCall`, `_send` runs that before it reaches for the model, and the interpreter takes "set brightness to 60" (and "set the volume"). `test/action_phrase_test.dart` holds both halves: the eight phrasings that must execute and the ones that must not (a bare "flashlight" is a toggle, "dimmer" is a relative step, "brightness 300" is out of range — all left to the model rather than guessed). The APK was built and installed once more at 17:5x, but **the phone dropped off the network before this build could be exercised**, so the phone-side proof of the four actions is still owed.
+
+The original finding, for the record:** `shared_prefs` is explicit
 about it: `"Volume set to 30%."` is stored with `"system": true`, while
 `"Brightness set to 60%."`, `"Bluetooth turned on."` and `"Flashlight turned
 on."` are stored as ordinary assistant text. The 0.5B and then the 1B both

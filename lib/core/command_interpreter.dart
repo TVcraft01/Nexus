@@ -1853,8 +1853,13 @@ class CommandInterpreter {
         ),
       );
     }
-    final brightNum = RegExp(r'^brightness (?:to )?(\d{1,3})(?:\s*%?)?$')
-        .firstMatch(norm);
+    // The same shape as the numeric volume below, plus the verb a person
+    // actually uses: "set brightness to 60" is how the phone was asked, and a
+    // pattern that only took "brightness 60" sent it to the model, which
+    // answered "Brightness set to 60%." and did nothing.
+    final brightNum = RegExp(
+      r'^(?:set |change |adjust )?(?:the )?brightness (?:to |at )?(\d{1,3})(?:\s*%)?$',
+    ).firstMatch(norm);
     if (brightNum != null) {
       final level = int.tryParse(brightNum.group(1)!);
       if (level != null && level >= 0 && level <= 100) {
@@ -1871,7 +1876,7 @@ class CommandInterpreter {
     // --- Volume to a level: "volume 50" / "set volume to 50%" — Siri's
     // numeric phrasing, mapped to a set mode the executor can honor.
     final volumeNum = RegExp(
-      r'^(?:set )?volume (?:to |at )?(\d{1,3})(?:\s*%)?$',
+      r'^(?:set )?(?:the )?volume (?:to |at )?(\d{1,3})(?:\s*%)?$',
     ).firstMatch(norm) ??
         RegExp(r'^mets (?:le |la )?volume (?:a|sur) (\d{1,3})(?:\s*%)?$')
             .firstMatch(norm);
