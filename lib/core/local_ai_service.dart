@@ -24,10 +24,71 @@
 // fake) can implement it in terms of the one method it already has.
 library;
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, immutable;
 
+import 'brain.dart' show ChatTurn;
 import 'ollama_service.dart';
 import 'on_device_ai_service.dart';
+
+/// One earlier exchange, as a brain that is being asked to remember it needs.
+///
+/// Deliberately the smallest thing that can carry a conversation: who spoke and
+/// what they said. No ids, no timestamps, no per-turn options — a brain that
+/// wanted any of those would be asking the screen for something the screen does
+/// not have, and a screen that had to build them would be inventing them.
+///
+/// [fromUser] rather than a role string for the same reason the rest of this
+/// file uses booleans: a typo in `'assistant'` would be a silent third role, and
+/// there is no third role.
+@immutable
+class AiTurn {
+  const AiTurn({required this.fromUser, required this.text});
+
+  const AiTurn.user(this.text) : fromUser = true;
+
+  const AiTurn.assistant(this.text) : fromUser = false;
+
+  /// True for the user's own words, false for the brain's.
+  final bool fromUser;
+
+  /// What was said, as it was said. Never empty: a turn nobody said anything in
+  /// is not history, it is a gap, and callers drop those before they get here.
+  final String text;
+
+  /// The shape the on-device engine's own seam speaks.
+  ChatTurn get chatTurn => (role: fromUser ? 'user' : 'assistant', content: text);
+
+  @override
+  String toString() => 'AiTurn(${fromUser ? 'user' : 'assistant'}: $text)';
+}
+
+/// How many earlier messages a brain is shown.
+///
+/// A conversation is context, and context is memory: every turn handed to the
+/// model is tokens it holds in a KV cache a phone has a couple of thousand of.
+/// Ten is a few exchanges — enough for "and tomorrow?" to have a referent,
+/// small enough that a long conversation cannot walk a 0.5B model off the end
+/// of its context and turn a good answer into a truncated one.
+const int kAiHistoryLimit = 10;
+
+/// [turns] as a brain should be handed them: at most [limit] of the most recent
+/// ones, and never starting on the assistant's own words.
+///
+/// The second rule is what keeps a chat template honest. Templates are built
+/// around a conversation that starts with the user — Qwen's ChatML, Llama's
+/// headers, Ollama's own renderer — and a message list that opens with an
+/// assistant turn is one some of them refuse and others quietly mis-render.
+/// Trimming from the front may therefore drop one turn more than [limit] asks
+/// for.
+List<AiTurn> trimAiHistory(List<AiTurn> turns, {int limit = kAiHistoryLimit}) {
+  final List<AiTurn> recent =
+      turns.length <= limit ? turns : turns.sublist(turns.length - limit);
+  var start = 0;
+  while (start < recent.length && !recent[start].fromUser) {
+    start++;
+  }
+  return start == 0 ? recent : recent.sublist(start);
+}
 
 /// What the shell needs from a brain.
 ///
@@ -87,7 +148,18 @@ abstract class LocalAiService {
   /// throws, and a brain that stops after it has already yielded words throws
   /// too — the caller is showing those words, and it is the only one that can
   /// say the answer ended early. The stream ends when the answer does.
-  Stream<String> generateResponseStream(String prompt);
+  ///
+  /// [history] is what was said before [prompt], oldest first, and it exists for
+  /// the one screen that has a conversation rather than a message: live mode,
+  /// where the user speaks a reply to something they just heard and "it" would
+  /// otherwise have no referent at all. It is optional because every other
+  /// caller asks one question at a time — a chat bubble has the thread on
+  /// screen, and the privacy promise here is that a brain is told what it needs
+  /// and nothing more.
+  Stream<String> generateResponseStream(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  });
 }
 
 /// The two brains, in the order the app trusts them.
@@ -148,10 +220,16 @@ class FallbackAiService implements LocalAiService {
   /// the caller — which holds the words it has already shown — can append the
   /// sentence.
   @override
-  Stream<String> generateResponseStream(String prompt) async* {
+  Stream<String> generateResponseStream(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) async* {
     bool answered = false;
     try {
-      await for (final String piece in onDevice.generateResponseStream(prompt)) {
+      await for (final String piece in onDevice.generateResponseStream(
+        prompt,
+        history: history,
+      )) {
         if (piece.isEmpty) continue;
         answered = true;
         yield piece;
@@ -169,7 +247,10 @@ class FallbackAiService implements LocalAiService {
     }
 
     try {
-      await for (final String piece in pc.generateResponseStream(prompt)) {
+      await for (final String piece in pc.generateResponseStream(
+        prompt,
+        history: history,
+      )) {
         yield piece;
       }
     } on OllamaException {

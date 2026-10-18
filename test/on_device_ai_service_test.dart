@@ -103,6 +103,10 @@ class _FakeBrain extends LocalAiService {
 
   final List<String> prompts = <String>[];
 
+  /// What each streamed answer was told to remember, in the order the questions
+  /// were asked — the only way a test can see the live page's memory.
+  final List<List<AiTurn>> histories = <List<AiTurn>>[];
+
   @override
   Future<String> generateResponse(String prompt) async {
     prompts.add(prompt);
@@ -112,8 +116,12 @@ class _FakeBrain extends LocalAiService {
   }
 
   @override
-  Stream<String> generateResponseStream(String prompt) async* {
+  Stream<String> generateResponseStream(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) async* {
     prompts.add(prompt);
+    histories.add(history);
     final Object? thrown = failure;
     if (thrown != null) throw thrown;
     final List<String> streamed = pieces.isEmpty ? <String>[reply] : pieces;

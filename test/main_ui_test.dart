@@ -13,6 +13,8 @@ import 'package:flutter/services.dart'
     show MethodCall, MethodChannel, SystemChannels;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:nexus/core/ai_status.dart';
+import 'package:nexus/core/chat_log.dart';
 import 'package:nexus/core/device_capabilities.dart';
 import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
@@ -22,6 +24,7 @@ import 'package:nexus/core/on_device_ai_service.dart';
 import 'package:nexus/core/on_device_model.dart';
 import 'package:nexus/core/services/icon_service.dart';
 import 'package:nexus/core/speech.dart';
+import 'package:nexus/core/version.dart';
 import 'package:nexus/main_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -96,6 +99,10 @@ class _FakeOllama extends OllamaService {
   /// Every prompt the shell has sent, in order.
   final List<String> prompts = <String>[];
 
+  /// The history each prompt was asked with — what the screen remembered when it
+  /// asked, which for a one-question chat is nothing at all.
+  final List<List<AiTurn>> histories = <List<AiTurn>>[];
+
   /// True to answer like a PC that is switched off, or on another network.
   bool unreachable = false;
 
@@ -125,8 +132,12 @@ class _FakeOllama extends OllamaService {
   }
 
   @override
-  Future<String> generateResponse(String prompt) {
+  Future<String> generateResponse(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) {
     prompts.add(prompt);
+    histories.add(history);
     if (unreachable) {
       return Future<String>.error(
         const OllamaException(kNexusOllamaUnreachableText),
@@ -156,9 +167,17 @@ class _StreamingBrain implements LocalAiService {
   /// keeps, because the page should ask once either way.
   final List<String> prompts = <String>[];
 
+  /// What each question was asked with. Live mode is the one caller that
+  /// remembers, so this is where a conversation shows up.
+  final List<List<AiTurn>> histories = <List<AiTurn>>[];
+
   @override
-  Stream<String> generateResponseStream(String prompt) {
+  Stream<String> generateResponseStream(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) {
     prompts.add(prompt);
+    histories.add(history);
     return _pieces.stream;
   }
 
@@ -166,8 +185,10 @@ class _StreamingBrain implements LocalAiService {
   /// still has it, and it is defined in terms of the stream so the two can never
   /// disagree.
   @override
-  Future<String> generateResponse(String prompt) =>
-      generateResponseStream(prompt).join();
+  Future<String> generateResponse(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) => generateResponseStream(prompt, history: history).join();
 
   /// One token, arriving.
   void write(String piece) => _pieces.add(piece);
@@ -328,9 +349,16 @@ void main() {
   /// them should be able to reach a socket, an address on the developer's LAN,
   /// or a real model that takes four seconds to think.
   late _FakeOllama ollama;
+
+  /// The conversation this test's app remembers. One per test, in memory: a
+  /// real preference store would let one test's chat turn up in the next one's
+  /// welcome screen.
+  late ChatLog chat;
   setUp(() {
     ollama = _FakeOllama();
     LocalAiService.override = () => ollama;
+    chat = ChatLog(store: MemoryChatLogStore());
+    ChatLog.override = () => chat;
     // The refusal memory is process-wide (it is the same fact the capability
     // checks), so every test starts from "never asked", and no test can leave
     // the next one with a microphone it believes is permanently refused.
@@ -340,6 +368,8 @@ void main() {
   tearDown(() {
     LocalAiService.override = null;
     DeviceCapabilities.override = null;
+    ChatLog.override = null;
+    ChatLog.debugReset();
   });
 
   /// A phone-shaped surface — the layout the shell is designed against.
@@ -477,17 +507,19 @@ void main() {
       )
       .color!;
 
-  testWidgets('opens on Home with the greeting and a bubble per side', (
+  testWidgets('opens on Home with a welcome and nothing said yet', (
     tester,
   ) async {
     await pumpShell(tester);
 
+    // The welcome is a heading, not a message: the screen used to open with an
+    // assistant sentence and a question nobody had asked, drawn by the same code
+    // as a real answer — so the first thing the app "said" was its own.
     expect(find.text('Hey, what do you need?'), findsOneWidget);
-    expect(
-      find.textContaining('Everything stays on your devices'),
-      findsWidgets,
-    );
-    expect(find.text('What’s in my Downloads?'), findsOneWidget);
+    expect(find.text('What’s in my Downloads?'), findsNothing);
+    expect(find.textContaining('Everything stays on your devices'), findsNothing);
+    expect(find.byType(NexusChatBubble), findsNothing);
+    expect(find.byTooltip(kNexusCopyTooltip), findsNothing);
     expect(find.text('Message Nexus'), findsOneWidget);
 
     final home = tester.widget<IndexedStack>(find.byType(IndexedStack));
@@ -753,7 +785,35 @@ void main() {
     expect(find.text('Delete model'), findsOneWidget);
     expect(find.text('Download model'), findsNothing);
 
+    // The title is the danger colour, so the row is recognisable as destructive
+    // before it is read.
+    final Text title = tester.widget<Text>(find.text('Delete model'));
+    expect(title.style?.color, NexusUiColors.light.danger);
+    expect(
+      NexusUiColors.light.danger,
+      isNot(NexusUiColors.light.textStrong),
+      reason: 'a destructive row must not look like every other row',
+    );
+
+    // It asks first, and it says what the megabytes cost: a model that goes away
+    // takes offline answers with it.
     await tester.tap(find.text('Delete model'));
+    await tester.pumpAndSettle();
+    expect(find.text(kNexusDeleteModelTitle), findsOneWidget);
+    expect(find.textContaining('free up 1 MB'), findsOneWidget);
+    expect(find.textContaining('not be able to chat offline'), findsOneWidget);
+
+    // Backing out leaves the file alone — the default answer to "are you sure"
+    // has to be no.
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(File('${dir.path}/$kOnDeviceModelFileName').existsSync(), isTrue);
+    expect(find.text('On-Device (Loaded)'), findsOneWidget);
+
+    // Confirming does it.
+    await tester.tap(find.text('Delete model'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(kNexusConfirmAction));
     await tester.pump();
     await tester.pump();
 
@@ -835,7 +895,7 @@ void main() {
         reason: 'the row stays, so the user can try again');
   });
 
-  testWidgets('a bubble can be copied, on either side of the thread', (
+  testWidgets('a long press selects words, and copy is still one tap', (
     tester,
   ) async {
     // The clipboard as Android sees it: every write is a `Clipboard.setData`
@@ -863,27 +923,26 @@ void main() {
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
 
-    // The user's own line: a long press puts the whole sentence on the
-    // clipboard and says so, because a clipboard write is otherwise invisible.
+    // Both sides of the thread are inside the selectable region, which is what
+    // makes the hold below a selection rather than a copy of the whole line.
+    expect(
+      find.ancestor(
+        of: find.text('remember this'),
+        matching: find.byType(SelectionArea),
+      ),
+      findsOneWidget,
+    );
+
+    // The user's own line, held: nothing reaches the clipboard, so the gesture
+    // belongs to the selection above it and never lands as an invisible copy.
     await tester.longPress(find.text('remember this'));
     await tester.pump();
-    expect(copied, <String>['remember this']);
-    expect(find.text(kNexusCopied), findsOneWidget);
+    expect(copied, isEmpty);
+    expect(find.text(kNexusCopied), findsNothing);
 
-    // And the reply, which is usually the half worth keeping.
-    await tester.longPress(find.text(ollama.reply));
-    await tester.pump();
-    expect(copied, <String>['remember this', ollama.reply]);
-
-    // The greeting bubble is copyable too: it is a Nexus message like any other.
-    await tester.longPress(
-      find.textContaining('Everything stays on your devices'),
-    );
-    await tester.pump();
-    expect(copied.last, contains('Everything stays on your devices'));
-
-    // And so is the copy control under the reply, which is the visible half of
-    // the same promise — the gesture is a shortcut, not the only way in.
+    // The reply, which is usually the half worth keeping, keeps its copy
+    // control: the fine case is a selection, and the whole sentence is still
+    // one tap for the case that is not fine.
     final Finder replyCopy = find.descendant(
       of: find.ancestor(
         of: find.text(ollama.reply),
@@ -894,12 +953,11 @@ void main() {
     expect(replyCopy, findsOneWidget);
     await tester.tap(replyCopy);
     await tester.pump();
-    expect(copied.last, ollama.reply);
+    expect(copied, <String>[ollama.reply]);
+    expect(find.text(kNexusCopied), findsOneWidget);
   });
 
-  testWidgets('a reply is spoken as it lands, and can be heard again', (
-    tester,
-  ) async {
+  testWidgets('a typed question is answered in silence', (tester) async {
     final speech = _FakeSpeechOutput();
     SpeechOutput.override = () => speech;
     addTearDown(() => SpeechOutput.override = null);
@@ -910,22 +968,18 @@ void main() {
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
 
-    // The answer is read out as it arrives — once, and the same sentence that
-    // is on the bubble.
-    expect(speech.said, <String>[ollama.reply]);
+    // Typed, so not spoken. A phone that starts talking after a silent tap is
+    // the behaviour this rule exists to stop — the answer is on screen, and the
+    // speaker under it is there for whoever wants it.
+    expect(speech.said, isEmpty);
 
-    // Both controls sit under every Nexus message — the opening line *and* the
-    // answer that was just generated. A phone run had them on the greeting only,
-    // which is why this check names both bubbles rather than counting icons.
-    final Finder greeting = find.ancestor(
-      of: find.textContaining('Everything stays on your devices'),
-      matching: find.byType(NexusChatBubble),
-    );
+    // The bubble's own controls are the manual half, and they are on the answer
+    // that was just generated.
     final Finder reply = find.ancestor(
       of: find.text(ollama.reply),
       matching: find.byType(NexusChatBubble),
     );
-    for (final Finder bubble in <Finder>[greeting, reply]) {
+    for (final Finder bubble in <Finder>[reply]) {
       expect(bubble, findsOneWidget);
       expect(
         find.descendant(
@@ -954,11 +1008,51 @@ void main() {
       findsNothing,
     );
 
+    // And the control works: one tap reads the answer out loud. This is the
+    // manual half of the rule above — the app is silent unless it was spoken to,
+    // and it is never silent when it is asked.
     await tester.tap(
       find.descendant(of: reply, matching: find.byTooltip(kNexusSpeakTooltip)),
     );
     await tester.pump();
-    expect(speech.said, <String>[ollama.reply, ollama.reply]);
+    expect(speech.said, <String>[ollama.reply]);
+  });
+
+  testWidgets('a question asked out loud is answered out loud', (tester) async {
+    grantMic();
+    final mic = _FakeSpeechInput();
+    SpeechInput.override = () => mic;
+    addTearDown(() => SpeechInput.override = null);
+    final speech = _FakeSpeechOutput();
+    SpeechOutput.override = () => speech;
+    addTearDown(() => SpeechOutput.override = null);
+    await pumpShell(tester);
+
+    // Dictated: the finger is on the button, the recognizer hands over the
+    // sentence, and the words land in the field as a draft.
+    final TestGesture finger = await holdMic(tester);
+    mic.say('what is the weather');
+    await tester.pump();
+    mic.hear('what is the weather');
+    await finger.up();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(fieldText(tester), 'what is the weather');
+    expect(speech.said, isEmpty, reason: 'nothing is spoken before the answer');
+
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    // Spoken in, spoken out: the reply is read once, as it lands.
+    expect(speech.said, <String>[ollama.reply]);
+
+    // And the flag is spent with the turn: the next question, typed, is answered
+    // in silence even though the one before it was spoken.
+    await tester.enterText(find.byType(TextField), 'and tomorrow?');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+    expect(speech.said, <String>[ollama.reply]);
   });
 
   testWidgets('the answer grows in the bubble as the model writes it', (
@@ -1025,7 +1119,9 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(speech.said, <String>['One, two, three.']);
+    // Nothing is said: this turn was typed. The whole answer is what the speaker
+    // button would read, and the button is offered the moment it is whole.
+    expect(speech.said, isEmpty);
   });
 
   testWidgets('a model that stops mid-answer keeps its words and says so', (
@@ -1163,12 +1259,16 @@ void main() {
     final bar = tester.getRect(find.byType(NexusTabBar));
     expect(field.bottom, lessThan(bar.top));
 
+    // A real exchange, because there is no invented one to measure any more.
+    await tester.enterText(find.byType(TextField), 'What’s in my Downloads?');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
     // Measure the text, not the bubble: each bubble is an Align, so the
     // bubble's own rect is the full column and says nothing about its side.
     final mine = tester.getRect(find.text('What’s in my Downloads?'));
-    final theirs = tester.getRect(
-      find.textContaining('Everything stays on your devices'),
-    );
+    final theirs = tester.getRect(find.text(ollama.reply));
     expect(theirs.left, lessThan(60));
     expect(mine.left, greaterThan(theirs.left));
     expect(mine.right, greaterThan(theirs.right));
@@ -1188,24 +1288,291 @@ void main() {
     expect(dots.where((dot) => dot.online).length, 2);
   });
 
-  testWidgets('the dark-mode switch darkens the frame', (tester) async {
+  /// The switch on a named Settings row.
+  Switch switchOn(WidgetTester tester, String row) => tester.widget<Switch>(
+    find.descendant(
+      of: find.ancestor(
+        of: find.text(row),
+        matching: find.byType(NexusRow),
+      ),
+      matching: find.byType(Switch),
+    ),
+  );
+
+  Future<void> tapSwitchOn(WidgetTester tester, String row) async {
+    await tester.tap(
+      find.descendant(
+        of: find.ancestor(
+          of: find.text(row),
+          matching: find.byType(NexusRow),
+        ),
+        matching: find.byType(Switch),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('appearance follows the phone until the user says otherwise', (
+    tester,
+  ) async {
     await pumpShell(tester);
     await openTab(tester, 'Settings', 3);
 
-    expect(find.text('Dark mode'), findsOneWidget);
-    expect(find.text('Voice & speech'), findsOneWidget);
+    // The default is the phone's own answer — and a widget test's platform is
+    // (by default) a light one, so the light frame is what "follow" means here.
+    expect(find.text('Follow system'), findsOneWidget);
+    expect(switchOn(tester, 'Follow system').value, isTrue);
     expect(
       tester.widget<Scaffold>(find.byType(Scaffold).first).backgroundColor,
       NexusUiColors.light.background,
     );
+    // The manual switch reports the state and refuses to pretend otherwise: an
+    // enabled switch that bounced straight back would look broken.
+    expect(switchOn(tester, 'Dark mode').value, isFalse);
+    expect(switchOn(tester, 'Dark mode').onChanged, isNull);
+    expect(
+      find.text('From your phone — turn off Follow system to choose'),
+      findsOneWidget,
+    );
 
-    await tester.tap(find.byType(Switch).first);
-    await tester.pumpAndSettle();
+    // Taking appearance back in hand, then darkening it.
+    await tapSwitchOn(tester, 'Follow system');
+    expect(switchOn(tester, 'Follow system').value, isFalse);
+    expect(switchOn(tester, 'Dark mode').onChanged, isNotNull);
 
+    await tapSwitchOn(tester, 'Dark mode');
     expect(
       tester.widget<Scaffold>(find.byType(Scaffold).first).backgroundColor,
       NexusUiColors.dark.background,
     );
+    expect(switchOn(tester, 'Dark mode').value, isTrue);
+  });
+
+  testWidgets('the theme switch shows it is working, then gets out of the way', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+    await tapSwitchOn(tester, 'Follow system');
+
+    await tester.tap(
+      find.descendant(
+        of: find.ancestor(
+          of: find.text('Dark mode'),
+          matching: find.byType(NexusRow),
+        ),
+        matching: find.byType(Switch),
+      ),
+    );
+    // The frame that is applying the new theme: the switch is a spinner while
+    // the screen catches up, and the row is still there to be looked at.
+    await tester.pump();
+    expect(find.byKey(kNexusThemeBusy), findsOneWidget);
+
+    await tester.pumpAndSettle();
+    expect(find.byKey(kNexusThemeBusy), findsNothing);
+    expect(switchOn(tester, 'Dark mode').value, isTrue);
+  });
+
+  testWidgets('opening a tab asks its screen to look again', (tester) async {
+    await pumpShell(tester);
+    // Offstage while another tab is showing, which is where the first readings
+    // are taken: the shell keeps every tab alive, and so do these finders.
+    final Finder settings = find.byType(SettingsTab, skipOffstage: false);
+    final Finder home = find.byType(HomeTab, skipOffstage: false);
+    final int settingsBefore = tester
+        .widget<SettingsTab>(settings)
+        .refreshEpoch;
+    final int homeBefore = tester.widget<HomeTab>(home).refreshEpoch;
+
+    // The shell is the one that knows a tab was selected, and every visit is a
+    // new number: both screens read where answers come from when they mount, and
+    // a reading that never happened again would keep saying "No AI" — or keep
+    // promising this device — after the model or the PC arrived.
+    await openTab(tester, 'Settings', 3);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<SettingsTab>(settings).refreshEpoch,
+      greaterThan(settingsBefore),
+    );
+
+    await openTab(tester, 'Home', 0);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<HomeTab>(home).refreshEpoch,
+      greaterThan(homeBefore),
+    );
+  });
+
+  testWidgets('the composer line is re-read when Home is opened again', (
+    tester,
+  ) async {
+    AiStatus.debugProbeOverride = () async => const AiStatus(AiSource.none);
+    addTearDown(() => AiStatus.debugProbeOverride = null);
+
+    Future<void> pumpAt(int epoch) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: NexusTheme.light(),
+          home: Scaffold(body: HomeTab(refreshEpoch: epoch)),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      // The line is swapped with an animation, so the old one is on its way out
+      // for a few frames: settle before reading which line is on screen.
+      await tester.pumpAndSettle();
+    }
+
+    await pumpAt(0);
+    expect(find.textContaining('Your own devices answer'), findsOneWidget);
+
+    // The model is downloaded — or the PC's Ollama comes up — while the screen
+    // stays alive: coming back to Home is the moment to read it again, because
+    // the line under the composer is a promise about the next answer.
+    AiStatus.debugProbeOverride = () async =>
+        const AiStatus(AiSource.onDevice);
+    await pumpAt(1);
+    expect(find.textContaining('This device answers'), findsOneWidget);
+    expect(find.textContaining('Your own devices answer'), findsNothing);
+  });
+
+  testWidgets('the Brain rows follow a model that arrives while open', (
+    tester,
+  ) async {
+    final Directory dir = Directory.systemTemp.createTempSync('nexus_reread');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final OnDeviceAiService onDevice = OnDeviceAiService(
+      model: OnDeviceModel(directory: () async => dir),
+    );
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+
+    Future<void> pumpAt(int epoch) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: NexusTheme.light(),
+          home: Scaffold(
+            body: SettingsTab(
+              darkMode: false,
+              onDarkModeChanged: (_) {},
+              onDevice: onDevice,
+              refreshEpoch: epoch,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.scrollUntilVisible(
+        find.text('AI status'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pump();
+    }
+
+    await pumpAt(0);
+    expect(find.text('Download model'), findsOneWidget);
+    expect(find.text('Delete model'), findsNothing);
+
+    // The model lands while the screen is still open — a download finishing in
+    // the background is exactly that — and the next visit to the tab is the
+    // signal to read it again.
+    File(
+      '${dir.path}/$kOnDeviceModelFileName',
+    ).writeAsBytesSync(List<int>.filled(4096, 7));
+    await pumpAt(1);
+
+    expect(find.text('Delete model'), findsOneWidget);
+    expect(find.text('Download model'), findsNothing);
+  });
+
+  testWidgets('the About row names the build, not an empty shell', (
+    tester,
+  ) async {
+    final Directory dir = Directory.systemTemp.createTempSync('nexus_about');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    await pumpBrainSettings(
+      tester,
+      OnDeviceAiService(model: OnDeviceModel(directory: () async => dir)),
+    );
+    await tester.scrollUntilVisible(
+      find.text('Version'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+
+    // The version the build actually is, and no line claiming the model is not
+    // attached while it is answering questions.
+    expect(find.text(appVersion), findsOneWidget);
+    expect(find.text('UI shell preview'), findsNothing);
+    expect(find.textContaining('no model attached'), findsNothing);
+  });
+
+  testWidgets('the accent swatches repaint the app', (tester) async {
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+
+    expect(find.text('Accent colour'), findsOneWidget);
+    // Every accent is on offer, by name and as a disc.
+    for (final NexusAccent accent in NexusAccent.values) {
+      expect(
+        find.byKey(ValueKey<String>('accent-${accent.name}')),
+        findsOneWidget,
+        reason: '${accent.label} is missing from the picker',
+      );
+    }
+
+    expect(
+      tabIconColor(tester, Icons.settings_rounded),
+      NexusAccent.purple.light,
+      reason: 'the shell starts on the shipped purple',
+    );
+
+    await tester.tap(find.byKey(const ValueKey<String>('accent-ocean')));
+    await tester.pumpAndSettle();
+
+    // The tab bar's active icon, which is the accent everywhere in this shell.
+    expect(tabIconColor(tester, Icons.settings_rounded), NexusAccent.ocean.light);
+    // And it is not a private repaint of one widget: the whole scheme follows,
+    // which is what Material's own controls read.
+    expect(
+      Theme.of(
+        tester.element(find.byType(NexusTabBar)),
+      ).colorScheme.primary,
+      NexusAccent.ocean.light,
+    );
+  });
+
+  testWidgets('Settings opens at the top however it was left', (tester) async {
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+
+    final Finder settingsList = find.descendant(
+      of: find.byType(SettingsTab),
+      matching: find.byType(ListView),
+    );
+
+    // Scrolled down to the About rows, then away to another tab.
+    await tester.drag(settingsList, const Offset(0, -600));
+    await tester.pumpAndSettle();
+    final ScrollController controller = tester
+        .widget<ListView>(settingsList)
+        .controller!;
+    expect(controller.offset, greaterThan(0));
+
+    await openTab(tester, 'Home', 0);
+    await openTab(tester, 'Settings', 3);
+
+    expect(controller.offset, 0);
+    expect(find.text('Follow system'), findsOneWidget);
   });
 
   testWidgets('the composer pill is the theme\'s surface in both themes', (
@@ -1231,8 +1598,8 @@ void main() {
     );
 
     await openTab(tester, 'Settings', 3);
-    await tester.tap(find.byType(Switch).first);
-    await tester.pumpAndSettle();
+    await tapSwitchOn(tester, 'Follow system');
+    await tapSwitchOn(tester, 'Dark mode');
     await openTab(tester, 'Home', 0);
 
     expect(pillIn(NexusUiColors.dark.surface), findsWidgets);
@@ -2265,6 +2632,157 @@ void main() {
     expect(tallestBar(tester), kNexusBarMinHeight);
   });
 
+  /// The live page's waveform, as the painter sees it: one number per bar, 0..1.
+  List<double> waveBars(WidgetTester tester) {
+    final CustomPaint paint = tester.widget<CustomPaint>(
+      find.byKey(kNexusLiveWave),
+    );
+    return (paint.painter! as NexusLiveWavePainter).heights;
+  }
+
+  testWidgets('the live waveform rolls and eases, rather than stepping', (
+    tester,
+  ) async {
+    grantMic();
+    final mic = _FakeSpeechInput();
+    SpeechInput.override = () => mic;
+    addTearDown(() => SpeechInput.override = null);
+    await pumpShell(tester);
+    await openLive(tester);
+
+    // A silent room: the meter is a resting line of dots, and it is *drawn* —
+    // an open microphone with nothing to hear must look different from a page
+    // that stopped drawing.
+    for (final double bar in waveBars(tester)) {
+      expect(bar, 0);
+    }
+
+    // One reading from the recognizer, then frames: the heights move a little
+    // per frame instead of jumping to the new value in one — that is the whole
+    // difference from the two-image version this replaced.
+    mic.loudness(9);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 16));
+    final List<double> first = waveBars(tester);
+    await tester.pump(const Duration(milliseconds: 120));
+    final List<double> second = waveBars(tester);
+
+    double peak(List<double> bars) => bars.reduce(math.max);
+    double total(List<double> bars) =>
+        bars.fold(0, (double sum, double bar) => sum + bar);
+
+    expect(total(first), greaterThan(0), reason: 'the reading leaves the dots');
+    expect(
+      total(second),
+      greaterThan(total(first)),
+      reason: 'the waveform is still rising a few frames later',
+    );
+    expect(peak(second), greaterThan(peak(first)), reason: 'it is on its way up');
+    expect(
+      peak(second),
+      lessThan(1),
+      reason: 'eased, not snapped: the tallest bar is still short of the top',
+    );
+
+    // The roll: after a moment the tall part of the waveform has travelled, so
+    // the shape is not the same row of bars with new heights.
+    await tester.pump(const Duration(milliseconds: 400));
+    final List<double> later = waveBars(tester);
+    expect(later, isNot(equals(second)));
+    expect(later.where((double bar) => bar > 0.05).length, greaterThan(3));
+
+    // And it settles. The room goes quiet — the recognizer's own reading of a
+    // silent room — and the waveform rolls the tall bars off the end and fills
+    // in behind them with dots, rather than cutting out or freezing mid-shout.
+    mic.loudness(-2);
+    await tester.pump();
+    // Frames, not one long jump: the waveform advances on the frame clock, and a
+    // single 1.5s pump is one frame of it (the tick clamps a stalled frame to
+    // 50ms on purpose, so a hitch cannot fire the whole array across at once).
+    for (int i = 0; i < 32; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(total(waveBars(tester)), lessThan(total(later)));
+    expect(total(waveBars(tester)), lessThan(0.2));
+  });
+
+  testWidgets('live conversation remembers the turns before it', (
+    tester,
+  ) async {
+    grantMic();
+    final mic = _FakeSpeechInput();
+    SpeechInput.override = () => mic;
+    addTearDown(() => SpeechInput.override = null);
+    await pumpShell(tester);
+    await openLive(tester);
+
+    // The first question, asked with nothing behind it.
+    mic.hear('what is the weather');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+    expect(ollama.prompts, <String>['what is the weather']);
+    expect(ollama.histories.single, isEmpty);
+
+    // The second one, a moment later: "it" has a referent now, and the model is
+    // handed the exchange that gives it one — the question and the answer, in
+    // that order, without the new question twice.
+    ollama.reply = 'Warm and clear.';
+    await tester.tap(find.byKey(kNexusLiveResume));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+    mic.hear('and tomorrow?');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    expect(ollama.prompts, <String>['what is the weather', 'and tomorrow?']);
+    final List<AiTurn> history = ollama.histories.last;
+    expect(history, hasLength(2));
+    expect(history.first.fromUser, isTrue);
+    expect(history.first.text, 'what is the weather');
+    expect(history.last.fromUser, isFalse);
+    expect(history.last.text, 'Hello from the PC.');
+    expect(
+      history.any((AiTurn turn) => turn.text == 'and tomorrow?'),
+      isFalse,
+      reason: 'the current question travels as the prompt, not as history',
+    );
+  });
+
+  testWidgets('closing live conversation keeps what was said in the thread', (
+    tester,
+  ) async {
+    grantMic();
+    final mic = _FakeSpeechInput();
+    SpeechInput.override = () => mic;
+    addTearDown(() => SpeechInput.override = null);
+    await pumpShell(tester);
+
+    expect(find.byType(NexusChatBubble), findsNothing);
+    await openLive(tester);
+
+    ollama.reply = 'It is Tuesday.';
+    mic.hear('what day is it');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+    expect(liveText(tester), 'It is Tuesday.');
+
+    await tester.tap(find.byKey(kNexusLiveClose));
+    await tester.pumpAndSettle();
+
+    // The room is empty again, and the conversation is in the chat thread — the
+    // words the user spoke and the answer they heard, in the order they
+    // happened, where they can be re-read and copied.
+    expect(liveOverlay, findsNothing);
+    expect(find.text('what day is it'), findsOneWidget);
+    expect(find.text('It is Tuesday.'), findsOneWidget);
+    expect(find.byType(NexusChatBubble), findsNWidgets(2));
+    final Finder spoken = find.ancestor(
+      of: find.text('what day is it'),
+      matching: find.byType(NexusChatBubble),
+    );
+    expect(tester.widget<NexusChatBubble>(spoken).mine, isTrue);
+  });
+
   testWidgets('a reading from a closed session never moves the bars again', (
     tester,
   ) async {
@@ -2973,12 +3491,13 @@ void main() {
     addTearDown(() => SpeechInput.override = null);
     await pumpShell(tester);
 
-    // Flip the one switch that owns the frame, then open the room: the live page
-    // is the theme's, so dark mode gets the immersive ground it was designed
-    // around while light mode gets the light one above.
+    // Hand appearance back to nobody (the phone is light in a test), then take
+    // it in hand and darken it: the live page is the theme's, so dark mode gets
+    // the immersive ground it was designed around while light mode gets the
+    // light one above.
     await openTab(tester, 'Settings', 3);
-    await tester.tap(find.byType(Switch).first);
-    await tester.pumpAndSettle();
+    await tapSwitchOn(tester, 'Follow system');
+    await tapSwitchOn(tester, 'Dark mode');
     await openTab(tester, 'Home', 0);
 
     await openLive(tester);
@@ -3165,5 +3684,166 @@ void main() {
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
+  });
+
+  testWidgets('a conversation survives being closed and opened again', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+    await tester.enterText(find.byType(TextField), 'what is the weather?');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+    expect(find.text(ollama.reply), findsOneWidget);
+
+    // The app going away and coming back with the same log: a fresh tree over
+    // the same store is what a relaunch is, without the process.
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(const NexusUiApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('what is the weather?'), findsOneWidget);
+    expect(find.text(ollama.reply), findsOneWidget);
+    expect(
+      find.text('Hey, what do you need?'),
+      findsNothing,
+      reason: 'the welcome heading is for a thread with nothing in it',
+    );
+  });
+
+  testWidgets('the answer is asked with the conversation behind it', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+
+    Future<void> ask(String text) async {
+      await tester.enterText(find.byType(TextField), text);
+      await tester.pump();
+      await tapTheButton(tester, sendButton());
+      await tester.pumpAndSettle();
+    }
+
+    // The first question, asked with nothing behind it.
+    await ask('what is the weather?');
+    expect(ollama.histories.single, isEmpty);
+
+    // The second: "and tomorrow?" has no referent unless the model is handed
+    // the exchange — the question and the answer, in that order, and not the
+    // question being asked, which travels as the prompt.
+    ollama.reply = 'Warm and clear.';
+    await ask('and tomorrow?');
+
+    expect(ollama.prompts, <String>['what is the weather?', 'and tomorrow?']);
+    final List<AiTurn> history = ollama.histories.last;
+    expect(history, hasLength(2));
+    expect(history.first.fromUser, isTrue);
+    expect(history.first.text, 'what is the weather?');
+    expect(history.last.fromUser, isFalse);
+    expect(history.last.text, 'Hello from the PC.');
+    expect(
+      history.any((AiTurn turn) => turn.text == 'and tomorrow?'),
+      isFalse,
+      reason: 'the current question travels as the prompt, not as history',
+    );
+  });
+
+  testWidgets('the model is given the last ten messages, not the whole day', (
+    tester,
+  ) async {
+    // A conversation that has been going on for a while: twelve lines, which is
+    // more than a phone's context should be asked to hold.
+    chat = ChatLog(
+      store: MemoryChatLogStore(<ChatEntry>[
+        for (int i = 0; i < 12; i++)
+          ChatEntry(
+            i.isEven ? 'question $i' : 'answer $i',
+            mine: i.isEven,
+          ),
+      ]),
+    );
+    await pumpShell(tester);
+    await tester.pumpAndSettle();
+    expect(find.text('answer 11'), findsOneWidget, reason: 'restored first');
+
+    await tester.enterText(find.byType(TextField), 'and now?');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    final List<AiTurn> history = ollama.histories.single;
+    expect(history, hasLength(kAiHistoryLimit));
+    expect(
+      history.first.fromUser,
+      isTrue,
+      reason: 'a chat template expects a conversation that starts with the '
+          'user, so the trim drops a leading answer',
+    );
+    expect(history.first.text, 'question 2');
+    expect(history.last.text, 'answer 11');
+    expect(history.any((AiTurn turn) => turn.text == 'and now?'), isFalse);
+  });
+
+  testWidgets('Clear chat asks first, then forgets it everywhere', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+    await tester.enterText(find.byType(TextField), 'what is the weather?');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+    expect(chat.hasChat, isTrue);
+
+    await openTab(tester, 'Settings', 3);
+    await tester.scrollUntilVisible(
+      find.text(kNexusClearChatRow),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+
+    // The title is the danger colour, so the row reads as destructive before it
+    // is read, and the subtitle says what exactly would go.
+    final Text title = tester.widget<Text>(find.text(kNexusClearChatRow));
+    expect(title.style?.color, NexusUiColors.light.danger);
+    expect(find.textContaining('2 messages'), findsOneWidget);
+
+    await tester.tap(find.text(kNexusClearChatRow));
+    await tester.pumpAndSettle();
+    expect(find.text(kNexusClearChatTitle), findsOneWidget);
+    expect(find.textContaining('nothing can be recovered'), findsOneWidget);
+
+    // Backing out leaves the conversation alone.
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(chat.hasChat, isTrue);
+
+    // Confirming forgets it: the store, the row that counts it, and the thread.
+    await tester.tap(find.text(kNexusClearChatRow));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(kNexusConfirmAction));
+    await tester.pumpAndSettle();
+
+    expect(chat.hasChat, isFalse);
+    expect(find.text(kNexusClearChatRow), findsNothing);
+
+    await openTab(tester, 'Home', 0);
+    expect(find.text('Hey, what do you need?'), findsOneWidget);
+    expect(find.text('what is the weather?'), findsNothing);
+  });
+
+  testWidgets('the Devices header offers a + that opens the pairing sheet', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+    await openTab(tester, 'Devices', 2);
+
+    await tester.tap(find.byKey(kNexusAddDevice));
+    await tester.pumpAndSettle();
+
+    // The sheet, and both ways through it. The two row labels are the sheet's
+    // own — the pair row at the foot of the list spells them differently enough
+    // that they cannot be mistaken for each other.
+    expect(find.text(kNexusScanQrLabel), findsOneWidget);
+    expect(find.text(kNexusShowQrLabel), findsOneWidget);
   });
 }

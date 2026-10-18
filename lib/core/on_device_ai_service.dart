@@ -20,6 +20,7 @@ library;
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import 'brain.dart' show ChatTurn;
 import 'llm.dart';
 import 'local_ai_service.dart';
 import 'on_device_model.dart';
@@ -165,15 +166,29 @@ class OnDeviceAiService implements LocalAiService {
   /// A failure before the first word is the same failure the one-shot path
   /// reports, so the fallback chain can still cover it with the PC.
   @override
-  Stream<String> generateResponseStream(String prompt) async* {
+  Stream<String> generateResponseStream(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) async* {
     if (!await _model.isPresent()) throw const ModelNotFoundException();
     bool answered = false;
     try {
-      await for (final String piece in _llm.completeStream(
-        prompt,
-        system: system,
-        maxTokens: maxTokens,
-      )) {
+      // With history this is a chat, not a question: the model is handed the
+      // turns it was told to remember and then this one, in the same message
+      // list the runtime's own template expects. Without history it is the one
+      // prompt it has always been — the same call, so a brain asked a single
+      // question behaves exactly as it did before this parameter existed.
+      final Stream<String> pieces = history.isEmpty
+          ? _llm.completeStream(prompt, system: system, maxTokens: maxTokens)
+          : _llm.completeChatStream(
+              system: system,
+              history: <ChatTurn>[
+                for (final AiTurn turn in history) turn.chatTurn,
+                (role: 'user', content: prompt),
+              ],
+              maxTokens: maxTokens,
+            );
+      await for (final String piece in pieces) {
         if (piece.isEmpty) continue;
         answered = true;
         yield piece;

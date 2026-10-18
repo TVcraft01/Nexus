@@ -483,6 +483,22 @@ class Llm {
     );
   }
 
+  /// The streaming twin of [completeChat]: the same messages, one token at a
+  /// time. Live conversation is the caller — it has a turn to keep in mind and
+  /// a page that wants to show the answer arriving.
+  Stream<String> completeChatStream({
+    required String system,
+    required List<ChatTurn> history,
+    int maxTokens = 300,
+    double temperature = 0.6,
+  }) {
+    return _stream(
+      [(role: 'system', content: system), ...history],
+      maxTokens: maxTokens,
+      temperature: temperature,
+    );
+  }
+
   /// Free the loaded model now (the file stays).
   Future<void> unload() async {
     _idle?.cancel();

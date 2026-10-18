@@ -12,7 +12,10 @@ class _FakeBrain extends LocalAiService {
   /// One piece: the whole answer. The seam's contract has to hold for a brain
   /// that has nothing to stream, which is what the PC's Ollama is today.
   @override
-  Stream<String> generateResponseStream(String prompt) async* {
+  Stream<String> generateResponseStream(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) async* {
     yield await generateResponse(prompt);
   }
 }

@@ -263,9 +263,14 @@ const double kSpeechQuietDb = 0.5;
 ///
 /// A pause rather than a stopwatch: it restarts on every word (an interim
 /// result) and every loud reading, so it only ever fires on a speaker who has
-/// actually stopped. Short enough that the answer arrives while the user is
-/// still looking at the page, long enough to sit through a breath.
-const Duration kSpeechTurnGap = Duration(milliseconds: 1200);
+/// actually stopped.
+///
+/// Two seconds, raised from 1.2s on the strength of using it: the shorter window
+/// ended turns while the speaker was still thinking — mid-sentence, at the pause
+/// before the point — and the user watched their own turn close under them. The
+/// cost is the other side of the same coin: a sentence that is over waits two
+/// seconds before it is answered, which is a pause a listener takes too.
+const Duration kSpeechTurnGap = Duration(milliseconds: 2000);
 
 /// Speaking for the assistant: reads a reply out loud on devices that can.
 /// Android speaks through the system text-to-speech engine (fully on-device,

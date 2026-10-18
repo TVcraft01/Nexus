@@ -129,8 +129,11 @@ class OllamaService implements LocalAiService {
   /// only) piece exactly as it does on the last token of a local model; turning
   /// this into a real NDJSON stream is a change to this method alone.
   @override
-  Stream<String> generateResponseStream(String prompt) async* {
-    yield await generateResponse(prompt);
+  Stream<String> generateResponseStream(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) async* {
+    yield await generateResponse(prompt, history: history);
   }
 
   /// Whether the PC is answering at all, without asking it to think.
@@ -170,20 +173,44 @@ class OllamaService implements LocalAiService {
   /// else: a caller that has to tell a `SocketException` from a `TimeoutException`
   /// to print a message is a caller that will get it wrong once and print a
   /// stack trace to a user.
+  /// With [history], the same answer is asked for through `/api/chat` instead,
+  /// with the earlier turns as messages.
+  ///
+  /// Two endpoints rather than one because they are two different requests, and
+  /// the difference is visible in what the model does with them: `/api/generate`
+  /// renders a bare prompt through the model's template, which is exactly right
+  /// for a single question and wrong for a conversation — Ollama would have no
+  /// idea which lines were the assistant's. A caller with nothing to remember
+  /// therefore keeps the request it always made, byte for byte, and only live
+  /// conversation pays for the richer one.
   @override
-  Future<String> generateResponse(String prompt) async {
-    final Uri uri = Uri.parse('$baseUrl/api/generate');
+  Future<String> generateResponse(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) async {
+    final bool chat = history.isNotEmpty;
+    final Uri uri = Uri.parse('$baseUrl/api/${chat ? 'chat' : 'generate'}');
+    final Map<String, Object?> payload = chat
+        ? <String, Object?>{
+            'model': model,
+            'messages': <Map<String, String>>[
+              for (final AiTurn turn in history)
+                <String, String>{
+                  'role': turn.fromUser ? 'user' : 'assistant',
+                  'content': turn.text,
+                },
+              <String, String>{'role': 'user', 'content': prompt},
+            ],
+            'stream': false,
+          }
+        : <String, Object?>{'model': model, 'prompt': prompt, 'stream': false};
     http.Response response;
     try {
       response = await (client ?? http.Client())
           .post(
             uri,
             headers: const <String, String>{'Content-Type': 'application/json'},
-            body: jsonEncode(<String, Object?>{
-              'model': model,
-              'prompt': prompt,
-              'stream': false,
-            }),
+            body: jsonEncode(payload),
           )
           .timeout(timeout);
     } on OllamaException {
@@ -206,9 +233,11 @@ class OllamaService implements LocalAiService {
     final String text;
     try {
       final Object? decoded = jsonDecode(response.body);
-      final Object? answer = decoded is Map<String, dynamic>
-          ? decoded['response']
-          : null;
+      final Map<Object?, Object?>? body = decoded is Map ? decoded : null;
+      // `/api/chat` answers under `message.content`, `/api/generate` under
+      // `response`. One reader for both, so a change of endpoint is not a change
+      // of error handling.
+      final Object? answer = chat ? _messageContent(body) : body?['response'];
       if (answer is! String || answer.trim().isEmpty) {
         throw const OllamaException(
           'Local AI answered with nothing. Try again, or try a different model.',
@@ -223,5 +252,14 @@ class OllamaService implements LocalAiService {
       throw const OllamaException(kNexusOllamaUnreachableText);
     }
     return text;
+  }
+
+  /// The assistant's sentence inside a `/api/chat` body: `message: {content}`.
+  /// Null for every shape that is not one, which the caller reports as the
+  /// same "answered with nothing" a `/api/generate` body without `response`
+  /// gets.
+  static Object? _messageContent(Map<Object?, Object?>? body) {
+    final Object? message = body?['message'];
+    return message is Map ? message['content'] : null;
   }
 }

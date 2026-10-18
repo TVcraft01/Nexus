@@ -1,0 +1,1 @@
+{"type":"nexus_pair","device_name":"tvcraft01s-pc","device_id":"a2ei86yfg61ogr021qu6q9xmh85o3ovv","public_key":"N4___y9R2pYdNBJK67izMHnVQEd3JMdj7WxE9CN8aEQ"}
