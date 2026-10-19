@@ -1,5 +1,6 @@
-// The two things a user can put into a conversation besides words: a photo
-// from the camera, and a screenshot of the phone.
+// The things a user can put into a conversation besides words: a photo from
+// the camera, a picture from the gallery, a screenshot of the phone, and a
+// document from the file browser.
 //
 // The words matter as much as the bytes. Each attachment leaves a caption in
 // the thread ("Photo attached") and a bracketed sentence describing it, which
@@ -24,33 +25,54 @@ import 'package:path_provider/path_provider.dart'
 /// What the user attached.
 enum AttachmentKind {
   photo,
-  screenshot;
+  screenshot,
+
+  /// A picture chosen from the phone's gallery. It is a photo as far as the
+  /// conversation is concerned — same caption, same prompt, same bubble — and
+  /// a kind of its own only so the kept file's name says where it came from.
+  gallery,
+
+  /// A document chosen from the phone's file browser. Not a picture: the thread
+  /// draws it as a file chip, and the vision layer is never asked about it.
+  document;
 
   /// The line the thread shows under (and speaks of) the picture.
   String get caption => switch (this) {
-    AttachmentKind.photo => kPhotoCaption,
+    AttachmentKind.photo || AttachmentKind.gallery => kPhotoCaption,
     AttachmentKind.screenshot => kScreenshotCaption,
+    AttachmentKind.document => kFileCaption,
   };
 
   /// What a picture turn says about itself: bracketed on purpose, so it reads
   /// as an annotation about the turn rather than as something the user typed.
   /// It is handed to [VisionAiService] with the path — never to a text brain.
   String get prompt => switch (this) {
-    AttachmentKind.photo => kPhotoPrompt,
+    AttachmentKind.photo || AttachmentKind.gallery => kPhotoPrompt,
     AttachmentKind.screenshot => kScreenshotPrompt,
+    AttachmentKind.document => kFilePrompt,
   };
 
   /// The word a failure message uses, e.g. "The photo did not come back."
   String get noun => switch (this) {
-    AttachmentKind.photo => 'photo',
+    AttachmentKind.photo || AttachmentKind.gallery => 'photo',
     AttachmentKind.screenshot => 'screenshot',
+    AttachmentKind.document => 'file',
   };
 
   /// The tooltip on the composer button that starts one.
   String get action => switch (this) {
     AttachmentKind.photo => 'Take a photo',
     AttachmentKind.screenshot => 'Share a screen',
+    AttachmentKind.gallery => 'Choose a photo',
+    AttachmentKind.document => 'Choose a file',
   };
+
+  /// True for the kinds whose bytes are an image the thread can draw. A
+  /// document is kept and named, never decoded.
+  bool get isImage =>
+      this == AttachmentKind.photo ||
+      this == AttachmentKind.screenshot ||
+      this == AttachmentKind.gallery;
 }
 
 /// The caption left in the thread by a camera photo.
@@ -58,6 +80,14 @@ const String kPhotoCaption = 'Photo attached';
 
 /// The caption left in the thread by a screen capture.
 const String kScreenshotCaption = 'Screenshot attached';
+
+/// The line the thread shows for a picked document, before its own name.
+const String kFileCaption = 'File attached';
+
+/// What a file turn says about itself. The vision layer is not asked this — a
+/// document is not an image — but every attachment kind names its turn the same
+/// way so nothing has to guess.
+const String kFilePrompt = '[User attached a file]';
 
 /// What a photo turn is described by — the question put to the vision layer.
 const String kPhotoPrompt = '[User attached a photo]';
@@ -116,7 +146,10 @@ class AttachmentStore {
     final Directory? folder = await _directory();
     if (folder == null) return sourcePath;
     try {
-      final String extension = _extensionOf(sourcePath);
+      final String extension = _extensionOf(
+        sourcePath,
+        keepOriginal: kind == AttachmentKind.document,
+      );
       final String name =
           '${kind.name}-${DateTime.now().millisecondsSinceEpoch}$extension';
       final File target = await source.copy('${folder.path}/$name');
@@ -139,12 +172,16 @@ class AttachmentStore {
     }
   }
 
-  /// The source file's extension, lower-cased, or `.jpg` when it has none —
-  /// a camera that hands back a bare path still yields a decodable name.
-  static String _extensionOf(String path) {
+  /// The source file's extension, lower-cased. Pictures fall back to `.jpg`
+  /// when the path has none, because a camera that hands back a bare path still
+  /// yields a decodable name. A document keeps its own extension — or none —
+  /// because a PDF renamed to `.jpg` is not a picture and would not open.
+  static String _extensionOf(String path, {bool keepOriginal = false}) {
     final int dot = path.lastIndexOf('.');
-    if (dot <= 0 || dot == path.length - 1) return '.jpg';
+    final bool hasExtension = dot > 0 && dot != path.length - 1;
+    if (!hasExtension) return keepOriginal ? '' : '.jpg';
     final String extension = path.substring(dot).toLowerCase();
+    if (keepOriginal) return extension.length > 12 ? '' : extension;
     return extension.length > 5 ? '.jpg' : extension;
   }
 }

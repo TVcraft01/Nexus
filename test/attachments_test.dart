@@ -15,11 +15,11 @@ import 'package:flutter/foundation.dart' show DebugPrintCallback, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:nexus/core/attachment_pickers.dart';
 import 'package:nexus/core/attachments.dart';
 import 'package:nexus/core/chat_log.dart';
 import 'package:nexus/core/local_ai_service.dart';
 import 'package:nexus/core/onboarding.dart';
-import 'package:nexus/core/screen_capture.dart';
 import 'package:nexus/core/system_actions.dart';
 import 'package:nexus/core/vision_ai.dart';
 import 'package:nexus/main_ui.dart';
@@ -40,6 +40,28 @@ class _MemoryStore extends AttachmentStore {
     String sourcePath, {
     required AttachmentKind kind,
   }) async => sourcePath;
+}
+
+/// The gallery and the file browser, answered by the test instead of a
+/// platform dialog. Records which door was opened, and hands back whatever the
+/// test put in it.
+class _FakePickers implements AttachmentPickers {
+  PickedAttachment? image;
+  PickedAttachment? file;
+  int imagePicks = 0;
+  int filePicks = 0;
+
+  @override
+  Future<PickedAttachment?> pickImage() async {
+    imagePicks++;
+    return image;
+  }
+
+  @override
+  Future<PickedAttachment?> pickFile() async {
+    filePicks++;
+    return file;
+  }
 }
 
 /// A brain that answers immediately and remembers what it was asked.
@@ -83,11 +105,15 @@ void main() {
 
   late _EchoBrain brain;
   late ChatLog chat;
+  late _FakePickers pickers;
 
   setUp(() {
     brain = _EchoBrain();
     LocalAiService.override = () => brain;
     AttachmentStore.override = _MemoryStore.new;
+    pickers = _FakePickers();
+    AttachmentPickers.override = () => pickers;
+    VisionAiService.override = null;
     chat = ChatLog(store: MemoryChatLogStore());
     ChatLog.override = () => chat;
     SystemActions.override = null;
@@ -99,8 +125,8 @@ void main() {
     ChatLog.override = null;
     ChatLog.debugReset();
     Onboarding.debugOverride = null;
-    ScreenCapture.override = null;
     AttachmentStore.override = null;
+    AttachmentPickers.override = null;
   });
 
   /// A phone-shaped surface, the layout the composer is designed against.
@@ -130,6 +156,14 @@ void main() {
     test('a screenshot says what it is, in both places', () {
       expect(AttachmentKind.screenshot.caption, 'Screenshot attached');
       expect(AttachmentKind.screenshot.prompt, '[User attached a screenshot]');
+    });
+
+    test('a gallery pick is a photo, and a file is not', () {
+      expect(AttachmentKind.gallery.caption, 'Photo attached');
+      expect(AttachmentKind.gallery.isImage, isTrue);
+      expect(AttachmentKind.document.caption, 'File attached');
+      expect(AttachmentKind.document.isImage, isFalse);
+      expect(AttachmentKind.document.noun, 'file');
     });
   });
 
@@ -168,6 +202,26 @@ void main() {
         await store.keep(source.path, kind: AttachmentKind.screenshot),
         source.path,
       );
+    });
+
+    test('keeps a document under its own extension', () async {
+      final Directory folder = await Directory.systemTemp.createTemp(
+        'nexus-doc-',
+      );
+      addTearDown(() => folder.delete(recursive: true));
+      final File source = File('${folder.path}/notes.pdf');
+      await source.writeAsString('hello');
+      final AttachmentStore store = AttachmentStore(
+        directory: () async => folder,
+      );
+
+      final String? kept = await store.keep(
+        source.path,
+        kind: AttachmentKind.document,
+      );
+
+      expect(kept, endsWith('.pdf'));
+      expect(File(kept!).existsSync(), isTrue);
     });
 
     test('answers null for a capture that has already gone', () async {
@@ -233,6 +287,19 @@ void main() {
       expect(const ChatEntry('hello').toJson().containsKey('image'), isFalse);
     });
 
+    test('carries a document path beside its caption', () {
+      const ChatEntry entry = ChatEntry(
+        'File attached: notes.pdf',
+        mine: true,
+        filePath: '/tmp/notes.pdf',
+      );
+      final Map<String, Object?> json = entry.toJson();
+      expect(json['file'], '/tmp/notes.pdf');
+      final ChatEntry? read = ChatEntry.fromJson(Map<String, Object?>.of(json));
+      expect(read!.filePath, '/tmp/notes.pdf');
+      expect(read.imagePath, isNull);
+    });
+
     test('an unreadable image value is dropped, not the line', () {
       final ChatEntry? read = ChatEntry.fromJson(<String, Object?>{
         'text': 'Photo attached',
@@ -245,30 +312,43 @@ void main() {
   });
 
   group('the composer', () {
-    testWidgets('offers a camera and a screen beside the field', (
+    testWidgets('is a plus, and the plus opens three large doors', (
       tester,
     ) async {
       await pumpShell(tester);
 
-      expect(find.byKey(kAttachCamera), findsOneWidget);
-      expect(find.byKey(kAttachScreen), findsOneWidget);
-      expect(find.byTooltip(AttachmentKind.photo.action), findsOneWidget);
-      expect(find.byTooltip(AttachmentKind.screenshot.action), findsOneWidget);
+      // Claude's composer: one add control on the left, nothing else. The
+      // camera and screen buttons that used to sit here are gone.
+      expect(find.byKey(kComposerAdd), findsOneWidget);
+      expect(find.byKey(kSheetCamera), findsNothing);
+      expect(find.byTooltip('Add'), findsOneWidget);
+      expect(find.byKey(kNexusLiveScreenShare), findsNothing);
 
-      // Small, because the field shares the row with two voice controls.
-      final Size size = tester.getSize(find.byKey(kAttachCamera));
-      expect(size.width, lessThanOrEqualTo(34));
-      expect(size.height, lessThanOrEqualTo(34));
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kSheetCamera), findsOneWidget);
+      expect(find.byKey(kSheetPhotos), findsOneWidget);
+      expect(find.byKey(kSheetFiles), findsOneWidget);
+      expect(find.text('Camera'), findsOneWidget);
+      expect(find.text('Photos'), findsOneWidget);
+      // `Files` is also the tab behind the sheet; the key above is the door.
+      expect(find.text('Files'), findsWidgets);
+      // Large targets: the sheet is three words and a thumb, not a menu row.
+      final Size row = tester.getSize(find.byKey(kSheetCamera));
+      expect(row.height, greaterThanOrEqualTo(72));
     });
 
-    testWidgets('the camera opens the capture page, and X comes back', (
+    testWidgets('the camera door opens the capture page, and X comes back', (
       tester,
     ) async {
       await pumpShell(tester);
 
-      await tester.tap(find.byKey(kAttachCamera));
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kSheetCamera));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 500));
 
       expect(find.byKey(kCameraClose), findsOneWidget);
 
@@ -278,46 +358,87 @@ void main() {
       expect(find.text('Message Nexus'), findsOneWidget);
     });
 
-    testWidgets('both attachment buttons log that they fired', (tester) async {
-      // The buttons were in the tree and still "not reachable" in the report.
-      // These are the lines `adb logcat | grep -E 'camera:|screen:'` shows when
-      // a thumb actually lands on each one.
+    testWidgets('the gallery door attaches a photo and asks the vision layer', (
+      tester,
+    ) async {
+      final File file = (await tester.runAsync(shot))!;
+      pickers.image = PickedAttachment(path: file.path, name: 'shot.png');
+      await pumpShell(tester);
+
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kSheetPhotos));
+      await tester.pumpAndSettle();
+
+      expect(pickers.imagePicks, 1);
+      expect(find.text('Photo attached'), findsOneWidget);
+      expect(find.byType(NexusAttachmentBubble), findsOneWidget);
+      // A text brain is never asked to describe a picture it cannot see.
+      expect(brain.prompts, isEmpty);
+      expect(find.text(kNexusVisionMissingText), findsOneWidget);
+    });
+
+    testWidgets('the files door attaches a document as a file chip', (
+      tester,
+    ) async {
+      final File file = (await tester.runAsync(shot))!;
+      pickers.file = PickedAttachment(path: file.path, name: 'notes.pdf');
+      await pumpShell(tester);
+
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kSheetFiles));
+      await tester.pumpAndSettle();
+
+      expect(pickers.filePicks, 1);
+      expect(find.byType(NexusFileBubble), findsOneWidget);
+      expect(find.text('File attached: notes.pdf'), findsOneWidget);
+      // A document is not a picture: nothing is asked about it, and nothing
+      // pretends to have read it.
+      expect(brain.prompts, isEmpty);
+      expect(find.text(kNexusVisionMissingText), findsNothing);
+      final ChatEntry stored = chat.entries.single;
+      expect(stored.filePath, isNotNull);
+      expect(stored.text, 'File attached: notes.pdf');
+    });
+
+    testWidgets('the attachment doors log that they fired', (tester) async {
+      // The lines `adb logcat | grep -E 'attach:|camera:'` shows when a thumb
+      // lands on a door. Kept because the buttons were in the tree and still
+      // "not reachable" in an earlier report.
       final List<String> lines = <String>[];
       final DebugPrintCallback original = debugPrint;
       debugPrint = (String? line, {int? wrapWidth}) {
         if (line != null &&
-            (line.startsWith('camera:') || line.startsWith('screen:'))) {
+            (line.startsWith('camera:') || line.startsWith('attach:'))) {
           lines.add(line);
         }
       };
       try {
         final File file = (await tester.runAsync(shot))!;
-        ScreenCapture.override = () async => ScreenCaptureResult(file.path);
+        pickers.image = PickedAttachment(path: file.path, name: 'shot.png');
+        pickers.file = PickedAttachment(path: file.path, name: 'notes.pdf');
         await pumpShell(tester);
 
-        await tester.tap(find.byKey(kAttachCamera));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 400));
-        await tester.tap(find.byKey(kCameraClose));
+        await tester.tap(find.byKey(kComposerAdd));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(kSheetPhotos));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byKey(kAttachScreen));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 600));
+        await tester.tap(find.byKey(kComposerAdd));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(kSheetFiles));
+        await tester.pumpAndSettle();
 
         expect(
-          lines.any(
-            (String line) => line.startsWith('camera: attach button tapped'),
-          ),
+          lines.any((String line) => line.startsWith('attach: photos tapped')),
           isTrue,
-          reason: 'the camera button has to prove it fired',
+          reason: 'the gallery door has to prove it fired',
         );
         expect(
-          lines.any(
-            (String line) => line.startsWith('screen: share button tapped'),
-          ),
+          lines.any((String line) => line.startsWith('attach: files tapped')),
           isTrue,
-          reason: 'the screen button has to prove it fired',
+          reason: 'the files door has to prove it fired',
         );
       } finally {
         debugPrint = original;
@@ -338,50 +459,6 @@ void main() {
       expect(find.byKey(kCameraClose), findsOneWidget);
       expect(find.byKey(kCameraShutter), findsNothing);
     });
-
-    testWidgets(
-      'a screenshot becomes a thumbnail and the vision layer is asked',
-      (tester) async {
-        // Real file IO has to run outside the fake clock a widget test uses,
-        // or it never completes.
-        final File file = (await tester.runAsync(shot))!;
-        ScreenCapture.override = () async => ScreenCaptureResult(file.path);
-        await pumpShell(tester);
-
-        await tester.tap(find.byKey(kAttachScreen));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 600));
-
-        // The user's turn: the caption, and a picture in the same bubble.
-        expect(find.text('Screenshot attached'), findsOneWidget);
-        expect(find.byType(NexusAttachmentBubble), findsOneWidget);
-        // A text brain is never asked to describe a picture it cannot see; the
-        // picture goes to the vision layer, which has no module yet and says so.
-        expect(brain.prompts, isEmpty);
-        expect(find.text(kNexusVisionMissingText), findsOneWidget);
-        // And the conversation remembers the file, not only the words.
-        final ChatEntry stored = chat.entries.firstWhere(
-          (ChatEntry e) => e.text == 'Screenshot attached',
-        );
-        expect(stored.imagePath, isNotNull);
-        expect(File(stored.imagePath!).existsSync(), isTrue);
-      },
-    );
-
-    testWidgets('a refused screenshot explains itself and adds no bubble', (
-      tester,
-    ) async {
-      ScreenCapture.override = () async =>
-          const ScreenCaptureResult(null, 'Screen capture was not allowed.');
-      await pumpShell(tester);
-
-      await tester.tap(find.byKey(kAttachScreen));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Screen capture was not allowed.'), findsOneWidget);
-      expect(find.byType(NexusAttachmentBubble), findsNothing);
-      expect(brain.prompts, isEmpty);
-    });
   });
 
   group('the image bubble', () {
@@ -391,11 +468,14 @@ void main() {
       // Real file IO has to run outside the fake clock a widget test uses,
       // or it never completes.
       final File file = (await tester.runAsync(shot))!;
-      ScreenCapture.override = () async => ScreenCaptureResult(file.path);
+      chat = ChatLog(
+        store: MemoryChatLogStore(<ChatEntry>[
+          ChatEntry('Photo attached', mine: true, imagePath: file.path),
+        ]),
+      );
+      ChatLog.override = () => chat;
       await pumpShell(tester);
 
-      await tester.tap(find.byKey(kAttachScreen));
-      await tester.pumpAndSettle();
       await tester.tap(find.byType(NexusAttachmentBubble));
       await tester.pumpAndSettle();
 

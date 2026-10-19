@@ -96,6 +96,7 @@ const _gapWords = <String, (String what, String where)>{
     'control your music',
     'Windows, Linux and your phone',
   ),
+  AgentActions.musicPlay: ('open your music player', 'your phone'),
   AgentActions.alarmSet: ('set an alarm', 'Windows and your phone'),
   AgentActions.volumeSet: (
     'change the volume',
@@ -106,8 +107,7 @@ const _gapWords = <String, (String what, String where)>{
 
 /// What the user asked for, in their words — never empty, so an answer that
 /// says Nexus could not do something always names the something.
-String capabilityWord(String action) =>
-    _gapWords[action]?.$1 ?? 'do that';
+String capabilityWord(String action) => _gapWords[action]?.$1 ?? 'do that';
 
 /// The sentence itself: what Nexus could not do, which system the user is on,
 /// and the systems that *do* have it. One shape for every gap answer, so none
@@ -207,6 +207,7 @@ class RealDeviceActionBackend implements DeviceActionBackend {
           AgentActions.brightnessSet => 'brightness',
           AgentActions.appOpen => 'openApp',
           AgentActions.appClose => 'closeApp',
+          AgentActions.musicPlay => 'playMusic',
           AgentActions.messageSend => 'sendText',
           AgentActions.emailSend => 'sendEmail',
           AgentActions.navOpen => 'navigateTo',
@@ -232,7 +233,7 @@ class RealDeviceActionBackend implements DeviceActionBackend {
         return const ActionResult(
           false,
           "Your phone didn't answer that one — it needs Android to reply, "
-              "and it didn't. Try again, and check Nexus's permissions.",
+          "and it didn't. Try again, and check Nexus's permissions.",
         );
       }
       return ActionResult(
@@ -241,9 +242,7 @@ class RealDeviceActionBackend implements DeviceActionBackend {
         candidates: (raw['candidates'] as List<dynamic>? ?? const [])
             .map((c) => c.toString())
             .toList(),
-        data: raw['events'] is List
-            ? {'events': raw['events'] as List}
-            : null,
+        data: raw['events'] is List ? {'events': raw['events'] as List} : null,
       );
     } catch (_) {
       // The channel itself threw: a missing permission or an unwired method on
@@ -251,7 +250,7 @@ class RealDeviceActionBackend implements DeviceActionBackend {
       return ActionResult(
         false,
         "Your phone couldn't ${capabilityWord(action)} just now — check "
-            "Nexus's permissions in Android settings and try again.",
+        "Nexus's permissions in Android settings and try again.",
       );
     }
   }

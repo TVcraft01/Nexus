@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:nexus/core/agent_contract.dart' show AgentActions;
 import 'package:nexus/core/ai_status.dart';
+import 'package:nexus/core/attachments.dart';
 import 'package:nexus/core/chat_log.dart';
 import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/device_capabilities.dart';
@@ -25,6 +26,7 @@ import 'package:nexus/core/ollama_service.dart';
 import 'package:nexus/core/on_device_ai_service.dart';
 import 'package:nexus/core/on_device_model.dart';
 import 'package:nexus/core/onboarding.dart';
+import 'package:nexus/core/screen_capture.dart';
 import 'package:nexus/core/services/icon_service.dart';
 import 'package:nexus/core/speech.dart';
 import 'package:nexus/core/system_actions.dart';
@@ -332,6 +334,18 @@ class _FakePhoneBackend extends DeviceActionBackend {
     calls.add((action, args));
     return reply;
   }
+}
+
+/// The attachment store without a disk: a widget test runs in fake time, where
+/// a real file read never completes.
+class _MemoryAttachments extends AttachmentStore {
+  _MemoryAttachments() : super(directory: () async => null);
+
+  @override
+  Future<String?> keep(
+    String sourcePath, {
+    required AttachmentKind kind,
+  }) async => sourcePath;
 }
 
 /// A recognizer for a device that cannot listen: on the phone it would be a
@@ -3145,9 +3159,10 @@ void main() {
     // handed the exchange that gives it one — the question and the answer, in
     // that order, without the new question twice.
     ollama.reply = 'Warm and clear.';
-    await tester.tap(find.byKey(kNexusLiveResume));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 260));
+    // A normal reply hands the microphone back by itself; there is no resume
+    // button to press, which is the point of the hand-back.
+    await tester.pump(kLiveAutoListenDelay);
+    expect(mic.listens, 2);
     mic.hear('and tomorrow?');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 260));
@@ -3489,10 +3504,10 @@ void main() {
     // had merely stopped animating would be indistinguishable from one recording.
     expect(find.byKey(kNexusLivePausedIndicator), findsOneWidget);
     expect(find.byKey(kNexusLiveOrbIdle), findsOneWidget);
-    expect(
-      tester.widget<Text>(find.byKey(kNexusLiveStatus)).data,
-      'Mic off — tap to continue.',
-    );
+    expect(tester.widget<Text>(find.byKey(kNexusLiveStatus)).data, 'Mic off.');
+    // A normal reply does not ask for a tap: the 1.5 s hand-back is already on
+    // its way. "Tap to continue" belongs to the guard alone.
+    expect(find.byKey(kNexusLiveResume), findsNothing);
 
     // And then the page hands the turn back on its own: the answer has been
     // read out, and 1.5 s after the voice stops the microphone is open again.
@@ -3599,10 +3614,7 @@ void main() {
     expect(liveText(tester), 'Twenty degrees and clear.');
     expect(find.byKey(kNexusLiveOrbIdle), findsOneWidget);
     expect(find.byKey(kNexusLivePausedIndicator), findsOneWidget);
-    expect(
-      tester.widget<Text>(find.byKey(kNexusLiveStatus)).data,
-      'Mic off — tap to continue.',
-    );
+    expect(tester.widget<Text>(find.byKey(kNexusLiveStatus)).data, 'Mic off.');
 
     // The answer is read out, and 1.5 s after the voice stops the page hands
     // the turn back on its own: a conversation, not a page that needs a tap
@@ -3707,10 +3719,7 @@ void main() {
     expect(speech.said, <String>['It is twenty degrees and clear.']);
     expect(find.byKey(kNexusLiveOrbIdle), findsOneWidget);
     expect(find.byKey(kNexusLiveRecordingIndicator), findsNothing);
-    expect(
-      tester.widget<Text>(find.byKey(kNexusLiveStatus)).data,
-      'Mic off — tap to continue.',
-    );
+    expect(tester.widget<Text>(find.byKey(kNexusLiveStatus)).data, 'Mic off.');
 
     // One ask per turn: the quiet that follows the answer does not ask the
     // recognizer for a transcript a second time. The microphone itself *is*
@@ -3791,6 +3800,115 @@ void main() {
     expect(mic.finishes, 0);
     expect(find.byKey(kNexusLiveRecordingIndicator), findsOneWidget);
     expect(liveText(tester), 'Listening…');
+  });
+
+  testWidgets('screen share belongs to live mode, and its frame is a turn', (
+    tester,
+  ) async {
+    grantMic();
+    final mic = _FakeSpeechInput();
+    SpeechInput.override = () => mic;
+    addTearDown(() => SpeechInput.override = null);
+    final Directory dir = Directory.systemTemp.createTempSync(
+      'nexus-live-shot',
+    );
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final File shot = File('${dir.path}/shot.png')..writeAsBytesSync(<int>[1]);
+    ScreenCapture.override = () async => ScreenCaptureResult(shot.path);
+    addTearDown(() => ScreenCapture.override = null);
+    AttachmentStore.override = _MemoryAttachments.new;
+    addTearDown(() => AttachmentStore.override = null);
+    await pumpShell(tester);
+
+    // Nowhere in the composer. One screen, one place for it: the conversation.
+    expect(find.byKey(kNexusLiveScreenShare), findsNothing);
+    await openLive(tester);
+    expect(find.byKey(kNexusLiveScreenShare), findsOneWidget);
+
+    await tester.tap(find.byKey(kNexusLiveScreenShare));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    // The microphone closes before the projection dialog opens: the room is
+    // not recorded while the user decides what to share.
+    expect(mic.stops, 1);
+    expect(find.text(kScreenshotCaption), findsOneWidget);
+    expect(liveText(tester), kNexusVisionMissingText);
+
+    // And the frame is part of the conversation, not a side effect left behind
+    // in the composer.
+    await tester.tap(find.byKey(kNexusLiveClose));
+    await tester.pumpAndSettle();
+    expect(find.byType(NexusAttachmentBubble), findsOneWidget);
+    expect(find.text(kScreenshotCaption), findsOneWidget);
+  });
+
+  testWidgets('a system action does not end live conversation', (tester) async {
+    grantMic();
+    final mic = _FakeSpeechInput();
+    SpeechInput.override = () => mic;
+    addTearDown(() => SpeechInput.override = null);
+    final _FakePhoneBackend phone = _FakePhoneBackend();
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+    await openLive(tester);
+
+    ollama.reply = '{"action":"set_timer","seconds":60}';
+    mic.say('set a timer for one minute');
+    mic.hear('set a timer for one minute');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    expect(phone.calls.single.$1, AgentActions.timerSet);
+    expect(liveText(tester), 'Timer set for 1 minute.');
+    expect(mic.listens, 1);
+
+    // The clock app is now in front: the microphone closes, but this is not the
+    // user leaving the room. The page stays, with the timer's line on it.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    expect(liveOverlay, findsOneWidget);
+    // The microphone was already closed while the timer was being set; the
+    // background must not close the page on top of that.
+    expect(mic.listens, 1);
+    expect(find.byKey(kNexusLiveRecordingIndicator), findsNothing);
+    expect(liveText(tester), 'Timer set for 1 minute.');
+
+    // Back from the timer, and the conversation is exactly where it was: same
+    // page, microphone open, no drop into the text thread.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+    expect(liveOverlay, findsOneWidget);
+    expect(mic.listens, 2);
+    expect(find.byKey(kNexusLiveRecordingIndicator), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(kNexusLiveStatus)).data,
+      'Listening — just speak.',
+    );
+  });
+
+  testWidgets('a refused play_music is a failure, not a check mark', (
+    tester,
+  ) async {
+    final _FakePhoneBackend phone = _FakePhoneBackend();
+    phone.reply = const ActionResult(false, 'The phone said no.');
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+
+    ollama.reply = '{"action":"play_music"}';
+    await tester.enterText(find.byType(TextField), 'play some music');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(phone.calls.single.$1, AgentActions.musicPlay);
+    expect(find.text(kMusicUnavailableText), findsOneWidget);
+    final NexusSystemBubble pill = tester.widget<NexusSystemBubble>(
+      find.byType(NexusSystemBubble),
+    );
+    expect(pill.ok, isFalse);
+    expect(find.textContaining('song:'), findsNothing);
   });
 
   testWidgets('the X ends live conversation and the microphone with it', (
@@ -4391,6 +4509,15 @@ void main() {
       expect(nexusReadableText('{"a": 1, "b": 2}'), 'a: 1, b: 2');
     });
 
+    test('a key-value line with no braces is left as the plain text it is', () {
+      // The hallucination from the phone: asked to play a song, the model
+      // answered with data-shaped prose. There is no object to read and no
+      // action to run, so the honest thing is to show what it said — the prompt
+      // rule is what stops the next one from claiming it played the song.
+      const String invented = 'song: Yesterday, artist: The Beatles';
+      expect(nexusReadableText(invented), invented);
+    });
+
     test('python-flavoured JSON is read the same way', () {
       expect(nexusReadableText("{'result': 4,}"), '4');
       expect(nexusReadableText('{result: 4}'), '4');
@@ -4399,6 +4526,28 @@ void main() {
     test('a truncated object loses its brace and keeps its words', () {
       expect(nexusReadableText('{"result": 4'), 'result: 4');
       expect(nexusReadableText('{"result": 4'), isNot(contains('{')));
+    });
+
+    test('a fragment that never opened a brace loses its quotes too', () {
+      // Measured on the A25: "what is a mesh network" was answered
+      // `"mesh_network": type:object,value:name:802.15.4 …` — the model's
+      // wire format with the object's braces left off, so there was no region
+      // for the object reader to read and the quotes went to the bubble.
+      expect(
+        nexusReadableText(
+          '"mesh_network": type:object,value:name:802.15.4 wireless mesh '
+          'network,description:A type of wireless communication standard.',
+        ),
+        'mesh_network: type:object,value:name:802.15.4 wireless mesh '
+        'network,description:A type of wireless communication standard.',
+      );
+    });
+
+    test('a sentence that begins with a quotation keeps it', () {
+      expect(
+        nexusReadableText('"Less is more" is the rule.'),
+        '"Less is more" is the rule.',
+      );
     });
 
     test('prose around the object survives it', () {
@@ -4429,7 +4578,7 @@ void main() {
     await pumpShell(tester);
 
     ollama.reply = '{"result": 4}';
-    await tester.enterText(find.byType(TextField), 'what is two plus two?');
+    await tester.enterText(find.byType(TextField), 'tell me about the sun');
     await tester.pump();
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
@@ -4455,7 +4604,7 @@ void main() {
     await pumpShell(tester);
 
     ollama.reply = '{"answer": "Four."}';
-    await tester.enterText(find.byType(TextField), 'what is two plus two?');
+    await tester.enterText(find.byType(TextField), 'tell me about the sun');
     await tester.pump();
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
@@ -4469,7 +4618,7 @@ void main() {
 
     final List<AiTurn> history = ollama.histories.last;
     expect(history.map((AiTurn turn) => turn.text), <String>[
-      'what is two plus two?',
+      'tell me about the sun',
       'Four.',
     ]);
 
@@ -4511,7 +4660,7 @@ void main() {
     // empty bubble would look like a rendering fault; the object is not
     // something a person can read. The shell says the only true thing left.
     ollama.reply = '{}';
-    await tester.enterText(find.byType(TextField), 'what is two plus two?');
+    await tester.enterText(find.byType(TextField), 'tell me about the sun');
     await tester.pump();
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
@@ -4528,7 +4677,7 @@ void main() {
     await pumpShell(tester);
 
     ollama.reply = 'Sure thing. {"result": "Four"}';
-    await tester.enterText(find.byType(TextField), 'what is two plus two?');
+    await tester.enterText(find.byType(TextField), 'tell me about the sun');
     await tester.pump();
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
@@ -4552,8 +4701,8 @@ void main() {
     // The large type is the same reply behind another surface: a JSON object
     // in 30-point type is the worst version of this bug, not a different one.
     ollama.reply = '{"result": "Four"}';
-    mic.say('what is two plus two');
-    mic.hear('what is two plus two');
+    mic.say('tell me about the sun');
+    mic.hear('tell me about the sun');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 260));
 
@@ -5018,7 +5167,7 @@ void main() {
     expect(find.text('Flashlight on.'), findsOneWidget);
   });
 
-  testWidgets('a speaking answer can be stopped, and stopping it stays quiet', (
+  testWidgets('a speaking answer can be stopped, and stopping it listens again', (
     tester,
   ) async {
     grantMic();
@@ -5051,17 +5200,21 @@ void main() {
     await tester.tap(find.byKey(kNexusLiveStopSpeaking));
     await tester.pump();
     expect(speech.stops, 1);
-    expect(find.byKey(kNexusLiveResume), findsOneWidget);
+
+    // Stop is an interruption, not a pause: the voice is gone and the next turn
+    // is already open, which is what the user asked for by tapping it.
+    expect(mic.listens, 2);
+    expect(find.byKey(kNexusLiveResume), findsNothing);
+    expect(find.byKey(kNexusLiveRecordingIndicator), findsOneWidget);
     expect(
       tester.widget<Text>(find.byKey(kNexusLiveStatus)).data,
-      'Mic off — tap to continue.',
+      'Listening — just speak.',
     );
 
-    // Stop means stop: the 1.5 s hand-back is cancelled with the voice, because
-    // reopening the microphone would ignore the one control the user pressed.
+    // Nothing stale reopens it a second time: the auto-listen timer belonged to
+    // the answer that was interrupted and went with it.
     await tester.pump(const Duration(seconds: 2));
-    expect(mic.listens, 1);
-    expect(find.byKey(kNexusLiveRecordingIndicator), findsNothing);
+    expect(mic.listens, 2);
   });
 
   testWidgets('the live page\'s buttons stay readable on a pale accent', (
@@ -5101,7 +5254,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 260));
 
-    // While the voice is going, and after it is stopped.
+    // While the voice is going.
     final FilledButton stop = tester.widget<FilledButton>(
       find.byKey(kNexusLiveStopSpeaking),
     );
@@ -5109,7 +5262,13 @@ void main() {
       stop.style?.foregroundColor?.resolve(<WidgetState>{}),
       isNot(Colors.white),
     );
+
+    // Stop hands the microphone straight back, so the resume pill belongs to
+    // the guard — the one ending that really waits for the user. Trip it and
+    // check the same ink rule on the control the user then sees.
     await tester.tap(find.byKey(kNexusLiveStopSpeaking));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 31));
     await tester.pump();
     final FilledButton resume = tester.widget<FilledButton>(
       find.byKey(kNexusLiveResume),
@@ -5147,7 +5306,10 @@ void main() {
     await tester.pump();
     expect(speech.stops, 1);
     expect(find.byKey(kNexusLiveStopSpeaking), findsNothing);
-    expect(find.byKey(kNexusLiveResume), findsOneWidget);
+    // Interrupted, and listening again: a tap on the page is the same gesture as
+    // the Stop control, not a request for a quiet room.
+    expect(find.byKey(kNexusLiveRecordingIndicator), findsOneWidget);
+    expect(mic.listens, 2);
   });
 
   testWidgets('a model that does not fit names the download that would', (

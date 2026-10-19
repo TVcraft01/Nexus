@@ -40,6 +40,7 @@ class ChatEntry {
     this.system = false,
     this.ok = true,
     this.imagePath,
+    this.filePath,
   });
 
   /// What was said, exactly as it was said. Never empty on the way in: an empty
@@ -71,6 +72,12 @@ class ChatEntry {
   /// by a build that predates attachments loses the picture, not the line.
   final String? imagePath;
 
+  /// Where a picked document lives, if this line carries one. Separate from
+  /// [imagePath] because a document is not decoded as a picture — the thread
+  /// draws a file chip from its name — and a build that predates it loses the
+  /// chip, not the line.
+  final String? filePath;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'text': text,
     'mine': mine,
@@ -80,6 +87,7 @@ class ChatEntry {
     if (system) 'system': true,
     if (!ok) 'ok': false,
     if (imagePath != null) 'image': imagePath,
+    if (filePath != null) 'file': filePath,
   };
 
   /// Reads one stored line. Null for anything that is not one — a file half
@@ -89,6 +97,7 @@ class ChatEntry {
     final Object? text = raw['text'];
     if (text is! String || text.trim().isEmpty) return null;
     final Object? image = raw['image'];
+    final Object? file = raw['file'];
     return ChatEntry(
       text,
       mine: raw['mine'] == true,
@@ -96,6 +105,7 @@ class ChatEntry {
       system: raw['system'] == true,
       ok: raw['ok'] != false,
       imagePath: image is String && image.isNotEmpty ? image : null,
+      filePath: file is String && file.isNotEmpty ? file : null,
     );
   }
 

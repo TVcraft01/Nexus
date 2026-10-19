@@ -10,6 +10,21 @@
 // refused, a device with no lens — lands on [_CameraUnavailable] rather than a
 // black screen: pressing a button and getting nothing back is the failure this
 // page exists to avoid.
+//
+// Two Android-specific rules decide whether the photo that comes back is a
+// photo at all, and both are measured rather than assumed:
+//
+//   * **the sensor needs a moment.** `initialize()` answers when the camera is
+//     open, not when the first frame has been exposed. Shots taken in that
+//     window came back completely black on the A25 — the sensor was still
+//     ramping, and the encoder wrote the dark frame. So the shutter is not
+//     offered until the preview has had [_warmUpDelay] to settle.
+//   * **the bytes are copied while the camera is open.** `takePicture()`
+//     answers with a file in the plugin's cache, and it is the controller that
+//     flushes it. The copy into the attachment store is awaited *before* the
+//     page pops (and therefore before the controller is disposed), because a
+//     copy taken after disposal can read a half-written JPEG — which decodes
+//     to black.
 import 'dart:async';
 
 import 'package:camera/camera.dart';
@@ -24,17 +39,81 @@ const Key kCameraShutter = ValueKey<String>('camera-shutter');
 const Key kCameraClose = ValueKey<String>('camera-close');
 
 /// The sentence shown when there is no camera to open.
-const String kCameraUnavailableText =
-    'No camera is available on this device.';
+const String kCameraUnavailableText = 'No camera is available on this device.';
+
+/// How long the preview is allowed to run before the shutter is offered.
+///
+/// Not a spinner: the preview is already visible and live, so the wait is the
+/// half-second before a button becomes usable, which is what a camera app does
+/// while its metering settles. 300 ms is long enough for the first exposed
+/// frame on the A25 and short enough that nobody presses twice.
+const Duration _warmUpDelay = Duration(milliseconds: 300);
+
+/// A camera as this page uses it: open, see, take one picture, close.
+///
+/// The plugin's [CameraController] is the real implementation ([PluginCamera]).
+/// The seam exists because a widget test has no lens, and because the order of
+/// these four operations is the difference between a photo and a black
+/// rectangle — that order is what the tests pin.
+abstract class CameraSession {
+  Future<void> initialize();
+
+  bool get initialized;
+
+  /// The live preview, drawn by whichever controller is behind this session.
+  Widget preview();
+
+  Future<XFile> takePicture();
+
+  Future<void> dispose();
+}
+
+/// The camera plugin's controller, behind [CameraSession].
+class PluginCamera implements CameraSession {
+  PluginCamera(CameraDescription description)
+    : _controller = CameraController(
+        description,
+        // `high` rather than `max`. The largest preset asks a mid-range phone
+        // for a frame bigger than the JPEG encoder can finish in time, and an
+        // out-of-memory kill during capture loses the picture entirely. `high`
+        // is still 1280×720, more than this app shows or sends.
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
+
+  final CameraController _controller;
+
+  @override
+  bool get initialized => _controller.value.isInitialized;
+
+  @override
+  Future<void> initialize() => _controller.initialize();
+
+  @override
+  Widget preview() => CameraPreview(_controller);
+
+  @override
+  Future<XFile> takePicture() => _controller.takePicture();
+
+  @override
+  Future<void> dispose() => _controller.dispose();
+}
 
 class CameraPage extends StatefulWidget {
-  const CameraPage({super.key, this.cameras});
+  const CameraPage({super.key, this.cameras, this.session});
 
   /// Which cameras the device has. Null asks the plugin — the app's only
   /// behaviour — while a test states the answer, because a widget test host
   /// has no platform camera to enumerate and asking would simply never answer.
   @visibleForTesting
   final Future<List<CameraDescription>> Function()? cameras;
+
+  /// How a camera is turned into a session. Null uses [PluginCamera]; a test
+  /// states its own for the same reason it states [cameras] — there is no
+  /// lens — and because the capture order is what it wants to watch.
+  @visibleForTesting
+  final CameraSession Function(CameraDescription)? session;
 
   /// Opens the camera and answers the kept photo's path, or null when the user
   /// backed out — or when the camera could not be used at all.
@@ -52,11 +131,16 @@ class CameraPage extends StatefulWidget {
 }
 
 class _CameraPageState extends State<CameraPage> {
-  CameraController? _controller;
+  CameraSession? _session;
   bool _starting = true;
+
+  /// Whether the sensor has had its warm-up. Until it has, the shutter is drawn
+  /// disabled and does nothing: a shot taken on a dark sensor is a black photo.
+  bool _warm = false;
   bool _busy = false;
   String? _error;
   String? _notice;
+  Timer? _warmUp;
 
   @override
   void initState() {
@@ -68,6 +152,7 @@ class _CameraPageState extends State<CameraPage> {
   /// phone. Every failure is a sentence, never a throw: the plugin's own
   /// exceptions differ by platform and by how the permission was refused.
   Future<void> _start() async {
+    CameraSession? opened;
     try {
       final List<CameraDescription> cameras =
           await (widget.cameras ?? availableCameras)();
@@ -81,27 +166,31 @@ class _CameraPageState extends State<CameraPage> {
         return;
       }
       final CameraDescription description = cameras.firstWhere(
-        (CameraDescription c) =>
-            c.lensDirection == CameraLensDirection.back,
+        (CameraDescription c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-      final CameraController controller = CameraController(
+      final CameraSession session = (widget.session ?? PluginCamera.new)(
         description,
-        ResolutionPreset.high,
-        enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
       );
-      await controller.initialize();
+      opened = session;
+      await session.initialize();
       if (!mounted) {
-        unawaited(controller.dispose());
+        unawaited(session.dispose());
         return;
       }
       setState(() {
-        _controller = controller;
+        _session = session;
         _starting = false;
+      });
+      // The preview is live now; the shutter waits for the sensor to catch up.
+      _warmUp = Timer(_warmUpDelay, () {
+        if (mounted) setState(() => _warm = true);
       });
     } catch (error) {
       debugPrint('CAMERA: could not open ($error)');
+      // A controller that opened and then failed to initialize still holds the
+      // camera; leaving it is how the next attempt finds the lens busy.
+      if (opened != null) unawaited(opened.dispose());
       if (!mounted) return;
       setState(() {
         _starting = false;
@@ -110,18 +199,25 @@ class _CameraPageState extends State<CameraPage> {
     }
   }
 
-  /// One shot: take it, keep it, and hand the path back. The shutter is
-  /// disabled for the second it takes, so a double tap cannot take two photos
-  /// and pop with one.
+  /// One shot: take it, copy it somewhere permanent, and hand the path back.
+  ///
+  /// The copy is awaited *here*, while the controller is still alive: the page
+  /// pops only after the store has the bytes, and the controller is disposed
+  /// with the widget. Doing it the other way round — pop, then copy — is the
+  /// shape that produces a black or truncated photo on Android, because
+  /// `takePicture`'s file is still being written by the camera service when
+  /// the controller goes away.
   Future<void> _capture() async {
-    final CameraController? controller = _controller;
-    if (controller == null || _busy || !controller.value.isInitialized) return;
+    final CameraSession? session = _session;
+    if (session == null || _busy || !_warm || !session.initialized) {
+      return;
+    }
     setState(() {
       _busy = true;
       _notice = null;
     });
     try {
-      final XFile shot = await controller.takePicture();
+      final XFile shot = await session.takePicture();
       final String? kept = await AttachmentStore.instance.keep(
         shot.path,
         kind: AttachmentKind.photo,
@@ -147,21 +243,23 @@ class _CameraPageState extends State<CameraPage> {
 
   @override
   void dispose() {
-    unawaited(_controller?.dispose());
-    _controller = null;
+    _warmUp?.cancel();
+    _warmUp = null;
+    unawaited(_session?.dispose());
+    _session = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final CameraController? controller = _controller;
+    final CameraSession? session = _session;
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: <Widget>[
-          if (controller != null)
-            Center(child: CameraPreview(controller))
+          if (session != null)
+            Center(child: session.preview())
           else if (_starting)
             const Center(
               child: SizedBox(
@@ -190,7 +288,7 @@ class _CameraPageState extends State<CameraPage> {
               ),
             ),
           ),
-          if (controller != null)
+          if (session != null)
             SafeArea(
               child: Align(
                 alignment: Alignment.bottomCenter,
@@ -210,7 +308,7 @@ class _CameraPageState extends State<CameraPage> {
                             ),
                           ),
                         ),
-                      _Shutter(busy: _busy, onTap: _capture),
+                      _Shutter(busy: _busy || !_warm, onTap: _capture),
                     ],
                   ),
                 ),

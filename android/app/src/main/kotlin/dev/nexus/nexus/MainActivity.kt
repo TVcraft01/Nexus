@@ -31,6 +31,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.CalendarContract
 import android.provider.ContactsContract
+import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -1016,6 +1017,7 @@ class MainActivity : FlutterActivity() {
                     args?.get("action")?.toString() ?: "stop",
                     args?.get("url")?.toString(),
                 )
+                "playMusic" -> playMusic()
                 // Both radios take `mode` (on/off, as the action vocabulary
                 // spells it) and fall back to `state`, which is what the
                 // command executor passes for the same two actions.
@@ -2226,6 +2228,44 @@ class MainActivity : FlutterActivity() {
             "ok" to true,
             "message" to if (asking) "Which app should play it?" else "Playing.",
         )
+    }
+
+    /// "play music": opens the phone's own music player through
+    /// [MediaStore.INTENT_ACTION_MUSIC_PLAYER].
+    ///
+    /// The intent is checked before it is started, and the check is the honest
+    /// part: an empty handler list means no player is installed, and a refused
+    /// startActivity means the device blocked it. Both answer `ok = false` with
+    /// the same sentence, because both are the same fact from the user's side —
+    /// nothing is playing, and it is not Nexus's place to say otherwise. A
+    /// check mark here would be the lie the action exists to prevent.
+    private fun playMusic(): Map<String, Any?> {
+        val intent = Intent(MediaStore.INTENT_ACTION_MUSIC_PLAYER).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val handlers = packageManager.queryIntentActivities(intent, 0)
+        val failure = mapOf(
+            "ok" to false,
+            "message" to "I couldn't do that. Your device blocked it or the app isn't installed.",
+        )
+        if (handlers.isEmpty()) {
+            Log.w(TAG, "playMusic: no activity handles MUSIC_PLAYER")
+            return failure
+        }
+        return try {
+            startActivity(intent)
+            val label = handlers.firstOrNull()
+                ?.loadLabel(packageManager)
+                ?.toString()
+                ?.trim()
+            mapOf(
+                "ok" to true,
+                "message" to if (label.isNullOrEmpty()) "Opened your music player." else "Opened $label.",
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "playMusic: the player could not be opened", e)
+            failure
+        }
     }
 
     /// In-app music: plays Deezer's 30-second preview stream right inside

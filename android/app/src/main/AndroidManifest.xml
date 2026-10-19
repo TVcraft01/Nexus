@@ -47,6 +47,11 @@
         <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="geo"/></intent>
         <intent><action android:name="android.intent.action.INSERT"/><data android:mimeType="vnd.android.cursor.dir/event"/></intent>
         <intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.APP_MUSIC"/></intent>
+        <!-- The music-player intent behind the play_music action: without this
+             entry, Android 11+ package visibility hides every player from the
+             check, and the action would report "no app installed" on a phone
+             that has one. -->
+        <intent><action android:name="android.intent.action.MUSIC_PLAYER"/></intent>
     </queries>
     <!-- The three android:icon lines in this file — this one and the two
          activity aliases below — are rewritten wholesale by

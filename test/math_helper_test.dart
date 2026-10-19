@@ -55,6 +55,30 @@ void main() {
     });
   });
 
+  group('a sum said out loud', () {
+    test('number words and operators become digits and symbols', () {
+      expect(wordsToDigits('six times seven'), '6 * 7');
+      expect(wordsToDigits('what is six plus seven?'), 'what is 6 + 7?');
+      expect(wordsToDigits('twenty five minus five'), '25 - 5');
+      expect(wordsToDigits('one hundred divided by four'), '100 / 4');
+      expect(wordsToDigits('nine multiplied by nine'), '9 * 9');
+    });
+
+    test('the interceptor answers a spoken sum', () {
+      // The recognizer hands the shell words; the shell has one grammar.
+      expect(nexusMathAnswer('six times seven'), '6 * 7 = 42');
+      expect(nexusMathAnswer('What is six plus seven?'), '6 + 7 = 13');
+      expect(nexusMathAnswer('twenty five minus five'), '25 - 5 = 20');
+      expect(nexusMathAnswer('one hundred divided by four'), '100 / 4 = 25');
+      expect(nexusMathAnswer('nine times nine'), '9 * 9 = 81');
+    });
+
+    test('a word that merely contains a number word is left alone', () {
+      expect(wordsToDigits('someone is at the door'), 'someone is at the door');
+      expect(nexusMathAnswer('which one is better'), null);
+    });
+  });
+
   group('the sentences it declines', () {
     test('a word problem is not arithmetic', () {
       expect(

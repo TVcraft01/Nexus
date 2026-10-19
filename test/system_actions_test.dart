@@ -46,6 +46,7 @@ void main() {
         'set_volume',
         'set_brightness',
         'get_time',
+        'play_music',
       });
       // The prompt is the only place the model can learn the vocabulary, so
       // every name in the set has to appear in it — a name the rules forget is
@@ -92,7 +93,36 @@ void main() {
     });
   });
 
+  test('the rules forbid key-value prose and invented now-playing', () {
+    // The phone answered "play Yesterday by The Beatles" with
+    // `song: Yesterday, artist: The Beatles` — a claim about a player it never
+    // opened. The vocabulary now has play_music, and the rule says what it
+    // cannot do, in the words a small model is given.
+    expect(kSystemActionRules, contains('Do not output key-value pairs.'));
+    expect(
+      kSystemActionRules,
+      contains('If you cannot perform an action, speak in plain English.'),
+    );
+    expect(kSystemActionRules, contains('Never name a song or an artist'));
+  });
+
   group('parsing what the model wrote', () {
+    test('play_music is an action with no arguments', () {
+      expect(
+        SystemActionCall.tryParse('{"action":"play_music"}'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'play_music')
+            .having((SystemActionCall c) => c.args, 'args', isEmpty),
+      );
+      // A song name does not turn it into a different action, and is not stored
+      // as though the phone could play it.
+      final SystemActionCall? named = SystemActionCall.tryParse(
+        '{"action":"play_music","song":"Yesterday"}',
+      );
+      expect(named?.action, 'play_music');
+      expect(named?.args, isEmpty);
+    });
+
     test('reads each of the nine actions', () {
       expect(
         SystemActionCall.tryParse('{"action":"set_flashlight","state":"on"}'),
@@ -335,6 +365,12 @@ void main() {
       expect(phone.calls.last.$2, <String, dynamic>{'query': 'Maps'});
 
       await withPhone.execute(
+        SystemActionCall.tryParse('{"action":"play_music"}')!,
+      );
+      expect(phone.calls.last.$1, AgentActions.musicPlay);
+      expect(phone.calls.last.$2, isEmpty);
+
+      await withPhone.execute(
         SystemActionCall.tryParse('{"action":"get_battery_level"}')!,
       );
       expect(phone.calls.last.$1, AgentActions.batteryGet);
@@ -483,6 +519,34 @@ void main() {
         );
       },
     );
+
+    test('a refused play_music says the one honest sentence', () async {
+      final _Recorder phone = _Recorder();
+      final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
+      // The phone may have a better idea of *why*, and it is not used: the two
+      // facts a user can act on are "blocked" and "not installed", and the pill
+      // must not dress either up as a success.
+      phone.reply = const ActionResult(false, 'No activity found');
+
+      final SystemActionOutcome outcome = await actions.execute(
+        SystemActionCall.tryParse('{"action":"play_music"}')!,
+      );
+      expect(outcome.ok, isFalse);
+      expect(outcome.message, kMusicUnavailableText);
+      expect(outcome.message, isNot(contains('No activity')));
+    });
+
+    test('an opened music player reports what the phone opened', () async {
+      final _Recorder phone = _Recorder();
+      final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
+      phone.reply = const ActionResult(true, 'Opened YouTube Music.');
+
+      final SystemActionOutcome outcome = await actions.execute(
+        SystemActionCall.tryParse('{"action":"play_music"}')!,
+      );
+      expect(outcome.ok, isTrue);
+      expect(outcome.message, 'Opened YouTube Music.');
+    });
 
     test('a refusal keeps the phone\'s reason and is not a success', () async {
       final _Recorder phone = _Recorder();

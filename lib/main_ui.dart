@@ -84,6 +84,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'core/ai_status.dart';
 import 'core/appearance.dart';
+import 'core/attachment_pickers.dart';
 import 'core/attachments.dart';
 import 'core/chat_log.dart';
 import 'core/clock_context.dart' show isClockQuestion;
@@ -108,6 +109,7 @@ import 'mesh/nearby.dart' show NearbyDevices;
 import 'core/version.dart';
 import 'ui/camera_page.dart';
 import 'ui/image_viewer_page.dart';
+import 'ui/local_files.dart' show openLocalFile;
 import 'core/speech.dart';
 import 'core/system_actions.dart';
 
@@ -332,6 +334,11 @@ const Key kNexusLiveWave = Key('nexus-live-wave');
 const Key kNexusLiveTranscript = Key('nexus-live-transcript');
 const Key kNexusLiveOrbIdle = Key('nexus-live-orb-idle');
 
+/// The screen-share control on the live page. Live mode is the only place it
+/// lives: sharing the screen is something said in a conversation, not a button
+/// beside a draft in the composer.
+const Key kNexusLiveScreenShare = Key('nexus-live-screen-share');
+
 /// The way back from a guard trip: live conversation stops listening rather
 /// than looping for ever, and this is the one control that reopens the mic.
 const Key kNexusLiveResume = Key('nexus-live-resume');
@@ -340,7 +347,7 @@ const Key kNexusLiveResume = Key('nexus-live-resume');
 /// voice off, and the microphone stays closed: the user asked for quiet, not
 /// for the next turn.
 const Key kNexusLiveStopSpeaking = Key('nexus-live-stop-speaking');
-const String kNexusLiveStopSpeakingLabel = 'Stop speaking';
+const String kNexusLiveStopSpeakingLabel = 'Stop';
 
 /// The sentence under the orb: the page's plain-language answer to "is the
 /// microphone on?".
@@ -2041,6 +2048,7 @@ class NexusMockMessage {
     this.system = false,
     this.ok = true,
     this.imagePath,
+    this.filePath,
   });
 
   final String text;
@@ -2054,6 +2062,11 @@ class NexusMockMessage {
   /// ones that already exist, and an image that cannot be decoded still leaves
   /// a readable line in the thread.
   final String? imagePath;
+
+  /// Where a picked document is kept. Never decoded as a picture: the bubble
+  /// draws a file chip from its name, and tapping it hands the path to the
+  /// platform's own viewer.
+  final String? filePath;
 
   /// True for the user's side of the thread (right, grey, tail on the left).
   final bool mine;
@@ -2275,7 +2288,23 @@ String nexusReadableText(String text) {
     if (next == out) break;
     out = next;
   }
-  return _unclosedJson(out);
+  return _bareFragmentText(_unclosedJson(out));
+}
+
+/// A reply that starts as a quoted key and a colon: `"mesh_network": …`.
+///
+/// Measured on the A25: "what is a mesh network" was answered
+/// `"mesh_network": type:object,value:name:802.15.4 …` — the model's wire
+/// format with the object's braces left off, so the object reader above has no
+/// region to read and the quotes went to the screen. A sentence does not begin
+/// with a quoted key and a colon; a JSON fragment does, and there the quotes
+/// are the only thing between it and something a person can read.
+final RegExp _bareFragment = RegExp(r'^\s*"[^"]+"\s*:');
+
+String _bareFragmentText(String text) {
+  if (!_bareFragment.hasMatch(text)) return text;
+  final String out = text.replaceAll('"', '');
+  return out.replaceAll(RegExp(r'\s+'), ' ').trim();
 }
 
 /// One pass of [nexusReadableText]: every balanced `{…}` and `[…]` region is
@@ -2633,6 +2662,20 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// button would look broken at exactly the moment the user is answering it.
   Future<bool>? _micAsking;
 
+  /// True while a system action is carrying the user out of Nexus — a timer, an
+  /// alarm, a music player, another app.
+  ///
+  /// Those actions open Android's own UI, so the app is backgrounded for a
+  /// moment. That is not the user leaving the conversation: the live page stays
+  /// up, the microphone closes while Nexus is away, and the next turn opens when
+  /// the user comes back. Without this flag the same background event ends live
+  /// mode, and "set a timer" drops the user into the text thread.
+  ///
+  /// Cleared on resume, and by its own timer so a stale flag cannot hold a page
+  /// open for the rest of the session if the action never actually leaves.
+  bool _liveActionPending = false;
+  Timer? _liveActionGuard;
+
   /// True while the live conversation overlay is on screen.
   ///
   /// It is this state's rather than the overlay's because the microphone is the
@@ -2832,7 +2875,40 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// mid-sentence is not the user cancelling their sentence.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) return;
+    if (state == AppLifecycleState.resumed) {
+      // Back from an action's own app (the clock, the music player): the page
+      // that was live is still the page, and the conversation continues.
+      if (_liveOpen && _liveActionPending) {
+        _liveActionPending = false;
+        _liveActionGuard?.cancel();
+        _liveActionGuard = null;
+        unawaited(_liveTurn());
+      }
+      return;
+    }
+    // A system action opening another app is not the user ending the room. The
+    // microphone still closes — a page nobody is looking at must not listen —
+    // and everything else waits for the user to come back.
+    if (_liveOpen && _liveActionPending) {
+      _speechDone?.cancel();
+      _speechDone = null;
+      _autoListen?.cancel();
+      _autoListen = null;
+      if (_speaking) {
+        _speaking = false;
+        unawaited(SpeechOutput.current.stop());
+      }
+      if (_listening) _stopListening(reason: 'background');
+      if (mounted) {
+        setState(() {
+          _liveIdle = _LivePhase.waiting;
+          _liveThinking = false;
+          _liveAnswering = false;
+        });
+        _syncLive();
+      }
+      return;
+    }
     // The live overlay goes with the session that opened it: leaving the app is
     // the end of the conversation as far as this phone is concerned, and coming
     // back to a dark page that has silently stopped listening would be a worse
@@ -2842,6 +2918,24 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       return;
     }
     if (_listening) _stopListening(reason: 'background');
+  }
+
+  /// The actions whose result is Android showing another app. `get_*` answers
+  /// in place; these four hand the screen to somebody else for a moment.
+  static bool _leavesTheApp(SystemActionCall call) =>
+      call.action == 'set_timer' ||
+      call.action == 'set_alarm' ||
+      call.action == 'open_app' ||
+      call.action == 'play_music';
+
+  /// Marks the background that follows a system action as temporary.
+  void _holdLiveForAction() {
+    _liveActionPending = true;
+    _liveActionGuard?.cancel();
+    _liveActionGuard = Timer(const Duration(seconds: 20), () {
+      _liveActionPending = false;
+      _liveActionGuard = null;
+    });
   }
 
   /// Whether this app is in the foreground, which is the only place a
@@ -2879,6 +2973,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _speechDone = null;
     _autoListen?.cancel();
     _autoListen = null;
+    _liveActionGuard?.cancel();
+    _liveActionGuard = null;
     if (_speaking) unawaited(SpeechOutput.current.stop());
     _live.dispose();
     _micLevel.dispose();
@@ -3098,30 +3194,111 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _sendAttachment(path, AttachmentKind.photo);
   }
 
-  /// The composer's screen button: one frame of this phone through the
-  /// platform's own projection dialog.
-  Future<void> _captureScreen() async {
-    debugPrint('screen: share button tapped ${_stamp()}');
+  /// The `+`: one sheet, three doors, and no dialog of its own. The sheet is
+  /// dismissed before a picker opens, so the phone's gallery or file browser
+  /// arrives on a screen that is not still drawing a menu over it.
+  Future<void> _openAttachmentSheet() async {
     _focus.unfocus();
+    final _AttachChoice? choice = await showModalBottomSheet<_AttachChoice>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (BuildContext context) => const _AttachmentSheet(),
+    );
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case _AttachChoice.camera:
+        await _openCamera();
+      case _AttachChoice.photos:
+        await _pickPhoto();
+      case _AttachChoice.files:
+        await _pickFile();
+    }
+  }
+
+  /// One picture from the gallery, kept like a camera shot and described by the
+  /// same vision layer.
+  Future<void> _pickPhoto() async {
+    debugPrint('attach: photos tapped ${_stamp()}');
+    final PickedAttachment? picked = await AttachmentPickers.current
+        .pickImage();
+    debugPrint(
+      'attach: gallery ${picked == null ? 'cancelled' : 'picked'} ${_stamp()}',
+    );
+    if (picked == null || !mounted) return;
+    final String? kept = await AttachmentStore.instance.keep(
+      picked.path,
+      kind: AttachmentKind.gallery,
+    );
+    if (!mounted) return;
+    if (kept == null) {
+      _say('That photo could not be read.');
+      return;
+    }
+    _sendAttachment(kept, AttachmentKind.gallery);
+  }
+
+  /// One document from the file browser. A document is not a picture: it gets
+  /// its own chip and its own line in the thread, and the vision layer is never
+  /// asked to look at it. Nothing answers for it, because a text brain given a
+  /// PDF's name would invent its contents — the honest reply is the file the
+  /// user attached, and the next question they type.
+  Future<void> _pickFile() async {
+    debugPrint('attach: files tapped ${_stamp()}');
+    final PickedAttachment? picked = await AttachmentPickers.current.pickFile();
+    debugPrint(
+      'attach: file ${picked == null ? 'cancelled' : 'picked'} ${_stamp()}',
+    );
+    if (picked == null || !mounted) return;
+    final String? kept = await AttachmentStore.instance.keep(
+      picked.path,
+      kind: AttachmentKind.document,
+    );
+    if (!mounted) return;
+    if (kept == null) {
+      _say('That file could not be read.');
+      return;
+    }
+    setState(() {
+      _thread.add(
+        NexusMockMessage(
+          '$kFileCaption: ${picked.name}',
+          mine: true,
+          filePath: kept,
+        ),
+      );
+    });
+    _persistThread();
+    _scrollToLatest();
+  }
+
+  /// One frame of this phone through the platform's own projection dialog.
+  ///
+  /// Live conversation is the only caller: sharing a screen is a thing said
+  /// while the user is talking, not a button in the composer that competes with
+  /// the message they are typing. Answers the kept path, or null after saying
+  /// why on screen.
+  Future<String?> _captureScreen() async {
+    debugPrint('screen: share button tapped ${_stamp()}');
     final ScreenCaptureResult result = await ScreenCapture.capture();
     debugPrint('screen: capture ${result.ok ? 'ok' : 'refused'} ${_stamp()}');
-    if (!mounted) return;
+    if (!mounted) return null;
     final String? path = result.path;
     if (path == null) {
       _say(result.message ?? 'The screenshot could not be taken.');
-      return;
+      return null;
     }
     // Kept like a camera shot, so the thumbnail survives a restart.
     final String? kept = await AttachmentStore.instance.keep(
       path,
       kind: AttachmentKind.screenshot,
     );
-    if (!mounted) return;
+    if (!mounted) return null;
     if (kept == null) {
       _say('The screenshot could not be read back.');
-      return;
+      return null;
     }
-    _sendAttachment(kept, AttachmentKind.screenshot);
+    return kept;
   }
 
   /// One short sentence over the thread — what a refusal or a failed capture
@@ -3162,6 +3339,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             system: entry.system,
             ok: entry.ok,
             imagePath: entry.imagePath,
+            filePath: entry.filePath,
           ),
       ]);
     });
@@ -3181,7 +3359,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// the screen never shows one; reading it on the way in is what makes that
   /// true of a conversation that predates the fix, not only of the next one.
   String _restoredText(ChatEntry entry, {required VoidCallback onRepair}) {
-    if (entry.mine || entry.system || entry.imagePath != null) {
+    if (entry.mine ||
+        entry.system ||
+        entry.imagePath != null ||
+        entry.filePath != null) {
       return entry.text;
     }
     final String text = nexusReadableText(entry.text).trim();
@@ -3212,6 +3393,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             system: message.system,
             ok: message.ok,
             imagePath: message.imagePath,
+            filePath: message.filePath,
           ),
     ]);
   }
@@ -3289,17 +3471,42 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   void _scrollToLatest() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_threadScroll.hasClients) return;
+      unawaited(_settleToLatest());
+    });
+  }
+
+  /// Scrolls to the end, and again if the end moved while the scroll ran.
+  ///
+  /// One pass is enough for a bubble that arrives whole. It is not enough for a
+  /// picture: the thumbnail is laid out when the bytes are decoded, which is
+  /// after the frame that added it, so the thread can grow *behind* an
+  /// animation that is already running — and an animation cannot chase a target
+  /// that moved. Measured on the A25: attaching a photo left the shell's answer
+  /// one bubble below the fold, and the user had to swipe to learn it was
+  /// there. Two passes cover the growth; a third would be a ticker.
+  Future<void> _settleToLatest() async {
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (!mounted || !_threadScroll.hasClients) return;
       final ScrollPosition position = _threadScroll.position;
       final double end = position.maxScrollExtent;
-      if ((end - position.pixels).abs() < 1) return;
-      unawaited(
-        _threadScroll.animateTo(
+      final bool atEnd = (end - position.pixels).abs() < 1;
+      // One pass is enough when the thread already ends on screen; the frame
+      // below is what proves it, because the extent is only an estimate of the
+      // children built so far.
+      if (atEnd && attempt > 0) return;
+      if (!atEnd) {
+        await _threadScroll.animateTo(
           end,
           duration: const Duration(milliseconds: 240),
           curve: Curves.easeOut,
-        ),
-      );
-    });
+        );
+      }
+      // Let the list lay out what the scroll uncovered. Its extent is
+      // estimated from the children it has built, so a bubble that arrived
+      // below the fold — an attachment's answer is the one measured — can
+      // raise it only after this frame, and the next pass is what catches it.
+      await WidgetsBinding.instance.endOfFrame;
+    }
   }
 
   /// Switches to Qwen 0.5B when the model the user picked does not fit.
@@ -3990,17 +4197,23 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     });
   }
 
-  /// Cut the voice off now, and do not reopen the microphone: the user asked
-  /// for quiet, and a page that starts listening 1.5 s later would be ignoring
-  /// the one control they pressed. The page stays on "tap to continue".
+  /// The interruption: cut the voice off and hand the microphone straight back.
+  ///
+  /// This is what "stop" means in a conversation — the user is not asking for
+  /// the page to go quiet, they are asking to say the next thing. So the voice
+  /// stops and the next turn opens on the same beat, rather than leaving a
+  /// greys screen with a tap-to-continue control; the 1.5 s hand-back is for a
+  /// reply that finished on its own, not for a control that was pressed.
   void _stopSpeaking() {
     _speechDone?.cancel();
     _speechDone = null;
     _autoListen?.cancel();
     _autoListen = null;
+    final bool wasSpeaking = _speaking;
     if (_speaking) setState(() => _speaking = false);
     _syncLive();
     unawaited(SpeechOutput.current.stop());
+    if (wasSpeaking && _liveOpen && mounted) unawaited(_liveTurn());
   }
 
   /// The guard ended a live turn: the microphone is closed and it stays closed.
@@ -4208,6 +4421,12 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         ? interceptSystemActions(buffer.toString())
         : const NexusActionIntercept('', <SystemActionCall>[]);
     if (intercept.acted) {
+      // Some of these actions open Android's own app — the clock, the music
+      // player, another app — and that background moment must not be read as
+      // the user ending live conversation. Nothing else about the turn changes:
+      // the action still runs, the line is still said, and the microphone still
+      // comes back.
+      if (intercept.calls.any(_leavesTheApp)) _holdLiveForAction();
       final List<SystemActionOutcome> outcomes = <SystemActionOutcome>[];
       for (final SystemActionCall call in intercept.calls) {
         outcomes.add(await SystemActions.current.execute(call));
@@ -4277,6 +4496,41 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     if (spoken) _speakThenListen(answer);
   }
 
+  /// Screen share, from live mode only.
+  ///
+  /// The microphone closes before the projection dialog opens — a screen
+  /// capture is a deliberate moment, and a live microphone underneath it would
+  /// be recording the room while the user is deciding what to share. The frame
+  /// joins the live conversation as the user's turn, and the vision layer
+  /// answers it through the same page and voice as any other answer.
+  Future<void> _liveShareScreen() async {
+    if (!_liveOpen || !mounted || _liveThinking || _liveAnswering) return;
+    if (_listening) _stopListening();
+    _liveQuiet?.cancel();
+    _liveQuiet = null;
+    final int turn = _liveTurns;
+    final String? path = await _captureScreen();
+    if (path == null || !mounted || !_liveOpen || turn != _liveTurns) return;
+    setState(() {
+      _liveIdle = _LivePhase.waiting;
+      _liveThinking = true;
+      _liveAnswering = false;
+      _liveSaid = kScreenshotCaption;
+      _liveAnswerText = '';
+      _livePartial = '';
+      _addLiveTurn(
+        NexusMockMessage(kScreenshotCaption, mine: true, imagePath: path),
+      );
+    });
+    _syncLive();
+    final String answer = await VisionAiService.current.describe(
+      path,
+      question: kScreenshotPrompt,
+    );
+    if (!mounted || !_liveOpen || turn != _liveTurns) return;
+    _answerLiveLocally(answer, turn);
+  }
+
   /// Pushes the overlay and keeps a handle on it.
   ///
   /// The route is the one surface in this file that is not built by this state,
@@ -4299,6 +4553,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             onClose: _closeLive,
             onResume: _liveResume,
             onStopSpeaking: _stopSpeaking,
+            onShareScreen: _liveShareScreen,
             level: _micLevel,
           ),
       transitionsBuilder: (
@@ -4326,6 +4581,9 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// live conversation has no draft in the field to throw away, which is the
   /// point of it being its own page.
   void _closeLive({String reason = 'closed'}) {
+    _liveActionPending = false;
+    _liveActionGuard?.cancel();
+    _liveActionGuard = null;
     // Only a live session is this method's to end. A dictation session that a
     // race left open belongs to the button that opened it.
     if (_micMode == _MicMode.live) _stopListening(reason: reason);
@@ -4682,6 +4940,16 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                                     mine: message.mine,
                                     maxWidth: bubbleWidth,
                                   )
+                                // A picked document: a chip with its name, not a
+                                // thumbnail. Tapping it opens the file with the
+                                // platform's own viewer.
+                                : message.filePath != null
+                                ? NexusFileBubble(
+                                    path: message.filePath!,
+                                    caption: message.text,
+                                    mine: message.mine,
+                                    maxWidth: bubbleWidth,
+                                  )
                                 : NexusChatBubble(
                                     text: message.text,
                                     mine: message.mine,
@@ -4715,8 +4983,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             onLiveTap: () => unawaited(_openLive()),
             liveEnabled: _micUsable && !_listening,
             liveTooltip: _liveTooltip,
-            onCamera: () => unawaited(_openCamera()),
-            onScreenShare: () => unawaited(_captureScreen()),
+            onAdd: () => unawaited(_openAttachmentSheet()),
           ),
         ],
       ),
@@ -5342,6 +5609,119 @@ class _MissingThumbnail extends StatelessWidget {
   }
 }
 
+/// A document in the thread: a chip with the file's name, drawn on the user's
+/// side like any other thing they said.
+///
+/// Deliberately not a thumbnail. A PDF has no picture to show, and the one
+/// honest thing a conversation can say about a file it cannot read is which
+/// file it is — so the chip names it and taps through to the platform's own
+/// viewer. A name that has gone missing says so instead of opening nothing.
+class NexusFileBubble extends StatelessWidget {
+  const NexusFileBubble({
+    super.key,
+    required this.path,
+    required this.caption,
+    required this.mine,
+    this.maxWidth = 320,
+  });
+
+  /// Where the kept copy lives.
+  final String path;
+
+  /// The line the turn carried: "File attached: notes.pdf".
+  final String caption;
+
+  final bool mine;
+  final double maxWidth;
+
+  Future<void> _open(BuildContext context) async {
+    final bool opened = await openLocalFile(path);
+    if (opened || !context.mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      const SnackBar(
+        content: Text('That file could not be opened.'),
+        duration: Duration(milliseconds: 2200),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: Semantics(
+          button: true,
+          label: caption,
+          child: InkWell(
+            key: ValueKey<String>('file:$path'),
+            onTap: () => unawaited(_open(context)),
+            borderRadius: BorderRadius.all(NexusLayout.bubble),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(12, 12, 14, 12),
+              decoration: BoxDecoration(
+                color: mine ? c.bubbleMine : c.bubbleTheirs,
+                border: mine ? null : Border.all(color: c.hairline),
+                borderRadius: BorderRadius.only(
+                  topLeft: NexusLayout.bubble,
+                  topRight: NexusLayout.bubble,
+                  bottomLeft: mine
+                      ? NexusLayout.bubble
+                      : NexusLayout.bubbleTail,
+                  bottomRight: mine
+                      ? NexusLayout.bubbleTail
+                      : NexusLayout.bubble,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Container(
+                    width: 38,
+                    height: 38,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: c.raised,
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    child: Icon(
+                      Icons.description_rounded,
+                      size: 20,
+                      color: c.accent,
+                    ),
+                  ),
+                  const SizedBox(width: 11),
+                  Flexible(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Text(
+                          caption,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: NexusType.bubble(c).copyWith(fontSize: 14),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Tap to open',
+                          style: NexusType.rowMeta(c).copyWith(fontSize: 11.5),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The pill that stands where an *action* was carried out.
 ///
 /// Deliberately the quietest of the three: no bubble colour, no rim, no shadow.
@@ -5602,18 +5982,15 @@ class _Composer extends StatelessWidget {
     required this.liveEnabled,
     required this.liveTooltip,
     required this.showVoice,
-    required this.onCamera,
-    required this.onScreenShare,
+    required this.onAdd,
   });
 
-  /// The two attachment doors, left of the field and deliberately small: they
-  /// are the less frequent way in, and a pair of full-size round buttons
-  /// beside the send arrow would compete with the one action that matters.
-  /// Both leave the row while a dictation is open — the pill is the recording
-  /// indicator then, and a camera inside it would be a second thing to look at
-  /// in the one state where the user is looking at their voice.
-  final VoidCallback onCamera;
-  final VoidCallback onScreenShare;
+  /// The way in to everything that is not words: camera, gallery, file, and —
+  /// inside live mode — the screen. One button on the left, as Claude's
+  /// composer has it: a pair of named circles beside a field that already
+  /// shares its row with two voice controls was two more things to read in the
+  /// one place the user is trying to type.
+  final VoidCallback onAdd;
 
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -5760,19 +6137,7 @@ class _Composer extends StatelessWidget {
                     // is the part the user is actually reading.
                     _LevelSlot(listening: listening, level: level),
                     if (!listening) ...<Widget>[
-                      _AttachButton(
-                        key: kAttachCamera,
-                        icon: Icons.photo_camera_rounded,
-                        tooltip: AttachmentKind.photo.action,
-                        onTap: onCamera,
-                      ),
-                      const SizedBox(width: 4),
-                      _AttachButton(
-                        key: kAttachScreen,
-                        icon: Icons.screen_share_rounded,
-                        tooltip: AttachmentKind.screenshot.action,
-                        onTap: onScreenShare,
-                      ),
+                      _AddButton(onTap: onAdd),
                       const SizedBox(width: 6),
                     ],
                     Expanded(
@@ -5943,30 +6308,26 @@ class _Composer extends StatelessWidget {
   }
 }
 
-/// The key on the composer's camera button.
-const Key kAttachCamera = ValueKey<String>('attach-camera');
+/// The key on the composer's `+`: the one door to every attachment.
+const Key kComposerAdd = ValueKey<String>('composer-add');
 
-/// The key on the composer's screen-share button.
-const Key kAttachScreen = ValueKey<String>('attach-screen');
+/// The three buttons in the attachment sheet, named so a test can reach each
+/// one the way a thumb does.
+const Key kSheetCamera = ValueKey<String>('sheet-camera');
+const Key kSheetPhotos = ValueKey<String>('sheet-photos');
+const Key kSheetFiles = ValueKey<String>('sheet-files');
 
-/// A small round attachment button beside the field.
+/// The `+` at the left of the field.
 ///
 /// Outlined rather than filled, and smaller than the mic/send circle: the
-/// colour rule in this file says purple means "the action here", and taking a
-/// photo is a way *into* the composer rather than the composer's action. A
-/// 30px target inside a 44px touch area is the compromise — small enough not
-/// to crowd a field that already shares its row with two voice controls, large
-/// enough to hit.
-class _AttachButton extends StatelessWidget {
-  const _AttachButton({
-    super.key,
-    required this.icon,
-    required this.tooltip,
-    required this.onTap,
-  });
+/// colour rule in this file says purple means "the action here", and attaching
+/// something is a way *into* the composer rather than the composer's action.
+/// The glyph is a plus, the label a tooltip, and everything it can do lives one
+/// tap away in [_AttachmentSheet] — the same shape as Claude's composer, which
+/// is where this came from.
+class _AddButton extends StatelessWidget {
+  const _AddButton({required this.onTap});
 
-  final IconData icon;
-  final String tooltip;
   final VoidCallback onTap;
 
   @override
@@ -5975,20 +6336,149 @@ class _AttachButton extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Tooltip(
-        message: tooltip,
+        message: 'Add',
         child: InkResponse(
+          key: kComposerAdd,
           onTap: onTap,
           radius: 22,
           child: Container(
-            width: 30,
-            height: 30,
+            width: 32,
+            height: 32,
             alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: c.raised,
               border: Border.all(color: c.hairline),
             ),
-            child: Icon(icon, size: 16, color: c.textMuted),
+            child: Icon(Icons.add_rounded, size: 19, color: c.textMuted),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What the user chose in the attachment sheet.
+enum _AttachChoice { camera, photos, files }
+
+/// The sheet behind the composer's `+`.
+///
+/// Deliberately its own room rather than a row of the app's tokens: Claude's
+/// sheet is a dark surface with three large targets, and the three things a
+/// person can attach are exactly three. Each row is a 72px block with the icon
+/// and the word — the shape a thumb lands on without aiming, and the reason the
+/// composer itself can stay a field with one small plus beside it.
+class _AttachmentSheet extends StatelessWidget {
+  const _AttachmentSheet();
+
+  /// The sheet's own ink, independent of the app's brightness: a dark sheet
+  /// under a light theme is a deliberate surface, not a theme failure.
+  static const Color _ground = Color(0xFF1F1F1E);
+  static const Color _row = Color(0xFF2C2C2A);
+  static const Color _ink = Color(0xFFF5F5F2);
+  static const Color _muted = Color(0xFFA8A8A2);
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+        child: Container(
+          decoration: const BoxDecoration(
+            color: _ground,
+            borderRadius: BorderRadius.all(Radius.circular(26)),
+          ),
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF4A4A47),
+                    borderRadius: BorderRadius.all(Radius.circular(2)),
+                  ),
+                ),
+              ),
+              _AttachRow(
+                key: kSheetCamera,
+                icon: Icons.photo_camera_rounded,
+                label: 'Camera',
+                onTap: () => Navigator.of(context).pop(_AttachChoice.camera),
+              ),
+              const SizedBox(height: 8),
+              _AttachRow(
+                key: kSheetPhotos,
+                icon: Icons.photo_library_rounded,
+                label: 'Photos',
+                onTap: () => Navigator.of(context).pop(_AttachChoice.photos),
+              ),
+              const SizedBox(height: 8),
+              _AttachRow(
+                key: kSheetFiles,
+                icon: Icons.description_rounded,
+                label: 'Files',
+                onTap: () => Navigator.of(context).pop(_AttachChoice.files),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One large row in [_AttachmentSheet]: icon, word, and the whole block as the
+/// target.
+class _AttachRow extends StatelessWidget {
+  const _AttachRow({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: _AttachmentSheet._row,
+      borderRadius: const BorderRadius.all(Radius.circular(18)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          height: 72,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            child: Row(
+              children: <Widget>[
+                Icon(icon, size: 26, color: _AttachmentSheet._ink),
+                const SizedBox(width: 16),
+                Text(
+                  label,
+                  style: GoogleFonts.inter(
+                    color: _AttachmentSheet._ink,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const Spacer(),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 22,
+                  color: _AttachmentSheet._muted,
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -6636,6 +7126,7 @@ class _LivePage extends StatelessWidget {
     required this.onClose,
     required this.onResume,
     required this.onStopSpeaking,
+    required this.onShareScreen,
     required this.level,
   });
 
@@ -6652,8 +7143,13 @@ class _LivePage extends StatelessWidget {
   final VoidCallback onResume;
 
   /// Cuts the voice off now. Shown as a control while [state.speaking], and
-  /// wired to a tap anywhere else on the page.
+  /// wired to a tap anywhere else on the page. Tapping it hands the microphone
+  /// straight back: an interruption is the start of the next turn.
   final VoidCallback onStopSpeaking;
+
+  /// Shares one frame of the phone's screen with the conversation. Only this
+  /// page has it.
+  final VoidCallback onShareScreen;
   final ValueListenable<double> level;
 
   @override
@@ -6844,8 +7340,12 @@ class _LivePage extends StatelessWidget {
                                     'Mic off — asking the AI…',
                                   _LivePhase.answering =>
                                     'Mic off — answering…',
-                                  _LivePhase.waiting =>
-                                    'Mic off — tap to continue.',
+                                  // A reply that finished is not an invitation
+                                  // to tap: the microphone comes back on its own
+                                  // 1.5 s after the voice stops. "Tap to continue"
+                                  // belongs to the guard, which is the one ending
+                                  // that really does wait for the user.
+                                  _LivePhase.waiting => 'Mic off.',
                                   _LivePhase.guarded =>
                                     'Mic off. Nothing is recording.',
                                 },
@@ -6856,18 +7356,19 @@ class _LivePage extends StatelessWidget {
                             fontSize: 14,
                           ),
                         ),
-                        // The other way on, and the way off the voice. A button
-                        // rather than a countdown: after a stop or a guard the
-                        // microphone waits for a person, and while the answer is
-                        // being read out the same slot says how to silence it.
+                        // The interruption. Large, because it is the control a
+                        // user reaches for while the phone is still talking and
+                        // they are already thinking about their next sentence:
+                        // one press stops the voice and reopens the microphone,
+                        // which is what stopping mid-conversation means.
                         if (live.speaking) ...<Widget>[
                           const SizedBox(height: 14),
                           FilledButton.icon(
                             key: kNexusLiveStopSpeaking,
                             onPressed: onStopSpeaking,
                             icon: const Icon(
-                              Icons.volume_off_rounded,
-                              size: 18,
+                              Icons.stop_circle_rounded,
+                              size: 22,
                             ),
                             label: const Text(kNexusLiveStopSpeakingLabel),
                             style: FilledButton.styleFrom(
@@ -6877,18 +7378,23 @@ class _LivePage extends StatelessWidget {
                               // label on a near-white button is a control that
                               // cannot be read.
                               foregroundColor: palette.onAccent,
-                              minimumSize: const Size(0, 48),
+                              minimumSize: const Size(200, 56),
                               padding: const EdgeInsets.symmetric(
-                                horizontal: 22,
+                                horizontal: 30,
                               ),
                               textStyle: GoogleFonts.inter(
-                                fontSize: 15,
+                                fontSize: 17,
                                 fontWeight: FontWeight.w600,
                               ),
                               shape: const StadiumBorder(),
                             ),
                           ),
-                        ] else if (idle) ...<Widget>[
+                        ]
+                        // The guard is the only ending that waits for a person.
+                        // A normal reply hands the microphone back on its own,
+                        // so a button here would ask the user to do something
+                        // the page is already doing.
+                        else if (live.phase == _LivePhase.guarded) ...<Widget>[
                           const SizedBox(height: 14),
                           FilledButton.icon(
                             key: kNexusLiveResume,
@@ -6910,7 +7416,31 @@ class _LivePage extends StatelessWidget {
                             ),
                           ),
                         ],
-                        const SizedBox(height: 14),
+                        // Screen share, where a conversation is: this page is
+                        // the only place it exists. Quietly drawn while the
+                        // voice is going, because the interruption control owns
+                        // that moment.
+                        if (!live.speaking) ...<Widget>[
+                          const SizedBox(height: 10),
+                          TextButton.icon(
+                            key: kNexusLiveScreenShare,
+                            onPressed: onShareScreen,
+                            icon: Icon(
+                              Icons.screen_share_rounded,
+                              size: 18,
+                              color: palette.muted,
+                            ),
+                            label: Text(
+                              'Share screen',
+                              style: GoogleFonts.inter(
+                                color: palette.muted,
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
                         // The way out, where a thumb is: the bottom of the screen.
                         // Large on purpose — the one control this page has must not
                         // be a hunt.

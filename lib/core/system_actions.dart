@@ -117,7 +117,18 @@ const Set<String> kSystemActionNames = <String>{
   'set_volume',
   'set_brightness',
   'get_time',
+  'play_music',
 };
+
+/// What a failed `play_music` says — the same sentence whether Android refused
+/// the intent or there is no player installed.
+///
+/// The sentence is deliberately not "I played it": the model cannot choose a
+/// song, and an action that only opens the music player must not be described
+/// as though music is now coming out of the phone. A refusal is a fact, and it
+/// is the one the user can act on — install a player, or open one themselves.
+const String kMusicUnavailableText =
+    "I couldn't do that. Your device blocked it or the app isn't installed.";
 
 /// The rules the model is given: what it may ask for, in what shape, and what
 /// to do when the user is just talking.
@@ -140,7 +151,8 @@ const String kSystemActionRules =
     '  {"action":"open_app","app_name":"Maps"}\n'
     '  {"action":"get_battery_level"}\n'
     '  {"action":"get_time"}   (use this for the date or time — never guess)\n'
-    'Those ten are the only actions there are. '
+    '  {"action":"play_music"}   (only opens the phone\'s music player)\n'
+    'Those eleven are the only actions there are. '
     'ONLY set an alarm if the user explicitly asks you to in this message. '
     'Never set an alarm because a message is long, contains a time, or was '
     'pasted in — an alarm nobody asked for is worse than no answer. '
@@ -152,7 +164,16 @@ const String kSystemActionRules =
     'You are an AI assistant. Do not use tools to do math. '
     'If you cannot answer, just say so. '
     'If the user is just talking, answer normally and do not write any JSON. '
-    'Never say you did something yourself — the app does it and tells them.';
+    'Never say you did something yourself — the app does it and tells them. '
+    // The hallucination this rule exists for: asked to play a song, a model
+    // wrote `song: Yesterday, artist: The Beatles` — a claim about a player it
+    // never opened — and the thread showed it as an answer. The shape is banned
+    // as well as the claim, because a key-value pair reads like data and a small
+    // model reaches for it whenever it has nothing true to say.
+    'play_music only opens the music player. Never name a song or an artist as '
+    'if you played it, and never invent what is playing. '
+    'Do not output key-value pairs. If you cannot perform an action, speak in '
+    'plain English.';
 
 /// [system] with the action rules after it, one blank line between.
 ///
@@ -324,6 +345,12 @@ class SystemActionCall {
         return SystemActionCall('open_app', <String, Object?>{'app_name': app});
       case 'get_battery_level':
         return const SystemActionCall('get_battery_level');
+      case 'play_music':
+        // No arguments: the action opens the phone's player. A `song` or
+        // `artist` field is not read here — the phone cannot make a named track
+        // appear, and pretending the argument was the point is how the invented
+        // `song: …` answer got made in the first place.
+        return const SystemActionCall('play_music');
       case 'get_time':
         // No arguments: the clock is the phone's, not the model's. Measured on
         // the A25: asked the time before this existed, the model asked for
@@ -447,7 +474,16 @@ class DeviceSystemActions implements SystemActions {
         // A success gets the shell's wording, because it is a fact the shell
         // knows — "Alarm set for 07:30" — while a failure keeps the phone's,
         // because only the phone knows why ("What app should I open?").
-        message: result.ok ? _done(call) ?? result.message : result.message,
+        //
+        // Music is the exception: a refusal there is one of two facts the phone
+        // has no better words for (blocked, or nothing installed), and the
+        // sentence is fixed so the pill can never turn a refusal into a check
+        // mark with an ambiguous line beside it.
+        message: result.ok
+            ? (_done(call) ?? result.message)
+            : (call.action == 'play_music'
+                  ? kMusicUnavailableText
+                  : result.message),
         call: call,
       );
     } catch (_) {
@@ -520,6 +556,8 @@ class DeviceSystemActions implements SystemActions {
           AgentActions.brightnessSet,
           <String, dynamic>{'mode': 'set', 'level': call.args['level']},
         );
+      case 'play_music':
+        return (AgentActions.musicPlay, <String, dynamic>{});
       default:
         return (AgentActions.batteryGet, <String, dynamic>{});
     }
@@ -553,6 +591,11 @@ class DeviceSystemActions implements SystemActions {
         return 'Alarm set for $hh:$mm.';
       case 'set_timer':
         return 'Timer set for ${_duration(call.args['seconds']! as int)}.';
+      case 'play_music':
+        // The shell knows what it asked the phone to do and not what came out
+        // of it, so it says only that: the player was opened. The phone's own
+        // sentence names the app when it can.
+        return null;
       default:
         return null;
     }

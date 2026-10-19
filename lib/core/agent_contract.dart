@@ -39,6 +39,11 @@ abstract final class AgentActions {
 
   // --- Media ---
   static const mediaPlay = 'media.play';
+
+  /// Opens the phone's music player — `MediaStore.INTENT_ACTION_MUSIC_PLAYER`.
+  /// Deliberately separate from [mediaPlay]: that one is a transport key for a
+  /// player that is already running, and this one is the intent that starts one.
+  static const musicPlay = 'music.play';
   static const mediaPause = 'media.pause';
   static const mediaNext = 'media.next';
   static const mediaPrev = 'media.prev';
@@ -116,9 +121,14 @@ const Map<String, (String, String)> musicApps = {
 /// (web maps) alongside the installed app in the chooser.
 const Map<String, (String, String)> navApps = {
   'waze': ('Waze', 'https://waze.com/ul?q='),
-  'google maps':
-      ('Google Maps', 'https://www.google.com/maps/dir/?api=1&destination='),
-  'maps': ('Google Maps', 'https://www.google.com/maps/dir/?api=1&destination='),
+  'google maps': (
+    'Google Maps',
+    'https://www.google.com/maps/dir/?api=1&destination=',
+  ),
+  'maps': (
+    'Google Maps',
+    'https://www.google.com/maps/dir/?api=1&destination=',
+  ),
   'apple maps': ('Apple Maps', 'https://maps.apple.com/?daddr='),
 };
 
@@ -126,10 +136,14 @@ const Map<String, (String, String)> navApps = {
 /// routing. The deep links open the app's new-event form with the title
 /// pre-filled — the user still confirms, exactly like the system intent.
 const Map<String, (String, String)> calendarApps = {
-  'google':
-      ('Google Calendar', 'https://calendar.google.com/calendar/render?action=TEMPLATE&text='),
-  'outlook':
-      ('Outlook Calendar', 'https://outlook.live.com/calendar/0/deeplink/compose?subject='),
+  'google': (
+    'Google Calendar',
+    'https://calendar.google.com/calendar/render?action=TEMPLATE&text=',
+  ),
+  'outlook': (
+    'Outlook Calendar',
+    'https://outlook.live.com/calendar/0/deeplink/compose?subject=',
+  ),
 };
 
 /// Every target `open <app>` (and its "launch" / "start" / "go to"
