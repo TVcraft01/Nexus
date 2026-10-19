@@ -30,6 +30,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 
 import 'agent_contract.dart';
+import 'clock_context.dart' show nexusClockAnswer;
 import 'command_interpreter.dart'
     show CommandInterpreter, InterpretOutcome, InterpretResult;
 import 'device_actions.dart';
@@ -71,16 +72,14 @@ SystemActionCall? actionFromPhrase(String text) {
       return SystemActionCall('set_wifi', <String, Object?>{'state': state});
     case AgentActions.bluetoothToggle:
       if (state != 'on' && state != 'off') return null;
-      return SystemActionCall(
-        'set_bluetooth',
-        <String, Object?>{'state': state},
-      );
+      return SystemActionCall('set_bluetooth', <String, Object?>{
+        'state': state,
+      });
     case AgentActions.flashlightToggle:
       if (state != 'on' && state != 'off') return null;
-      return SystemActionCall(
-        'set_flashlight',
-        <String, Object?>{'state': state},
-      );
+      return SystemActionCall('set_flashlight', <String, Object?>{
+        'state': state,
+      });
     case AgentActions.volumeSet:
     case AgentActions.brightnessSet:
       // Up/down are relative steps the vocabulary cannot express, and a level
@@ -117,6 +116,7 @@ const Set<String> kSystemActionNames = <String>{
   'set_bluetooth',
   'set_volume',
   'set_brightness',
+  'get_time',
 };
 
 /// The rules the model is given: what it may ask for, in what shape, and what
@@ -139,7 +139,18 @@ const String kSystemActionRules =
     '  {"action":"set_timer","seconds":300}\n'
     '  {"action":"open_app","app_name":"Maps"}\n'
     '  {"action":"get_battery_level"}\n'
-    'Those nine are the only actions there are. '
+    '  {"action":"get_time"}   (use this for the date or time — never guess)\n'
+    'Those ten are the only actions there are. '
+    'ONLY set an alarm if the user explicitly asks you to in this message. '
+    'Never set an alarm because a message is long, contains a time, or was '
+    'pasted in — an alarm nobody asked for is worse than no answer. '
+    // Measured on the A25: asked "what is 6 times 7", the model answered
+    // `{"action":"set_timer","seconds":420}`. It read the numbers as a
+    // length of time because it had no other way to use them, so the rule is
+    // said in words a small model cannot mistake for a suggestion: arithmetic
+    // is not what the actions are for, and "I don't know" is allowed.
+    'You are an AI assistant. Do not use tools to do math. '
+    'If you cannot answer, just say so. '
     'If the user is just talking, answer normally and do not write any JSON. '
     'Never say you did something yourself — the app does it and tells them.';
 
@@ -246,7 +257,18 @@ class SystemActionCall {
     }
     if (decoded is! Map) return null;
     final Object? action = decoded['action'];
-    if (action is! String) return null;
+    if (action is! String) {
+      // A model with no clock writes the time it cannot know. Measured on the
+      // A25, twice: asked "what time is it" at 14:24 it answered
+      // `{"time": "07:30"}` — not an action, so it used to reach the screen as
+      // raw JSON stating a false time. A block whose subject is the clock is a
+      // request for the clock, and the shell answers it with its own reading
+      // rather than showing the guess.
+      if (decoded.containsKey('time') || decoded.containsKey('date')) {
+        return const SystemActionCall('get_time');
+      }
+      return null;
+    }
 
     switch (action.trim()) {
       case 'set_flashlight':
@@ -254,7 +276,9 @@ class SystemActionCall {
       case 'set_bluetooth':
         final String? state = _state(decoded['state']);
         if (state == null) return null;
-        return SystemActionCall(action.trim(), <String, Object?>{'state': state});
+        return SystemActionCall(action.trim(), <String, Object?>{
+          'state': state,
+        });
       case 'set_volume':
       case 'set_brightness':
         // One level, one range, and the same word for it in the prompt and in
@@ -300,6 +324,11 @@ class SystemActionCall {
         return SystemActionCall('open_app', <String, Object?>{'app_name': app});
       case 'get_battery_level':
         return const SystemActionCall('get_battery_level');
+      case 'get_time':
+        // No arguments: the clock is the phone's, not the model's. Measured on
+        // the A25: asked the time before this existed, the model asked for
+        // `get_time` anyway (and was refused), or invented `{"time":"07:30"}`.
+        return const SystemActionCall('get_time');
     }
     return null;
   }
@@ -384,15 +413,29 @@ abstract class SystemActions {
 /// else — [AgentActions] is what the native side already answers, and this is
 /// the only translation between the two.
 class DeviceSystemActions implements SystemActions {
-  const DeviceSystemActions({this.backend});
+  const DeviceSystemActions({this.backend, this.clock});
 
   /// Injected by tests; null means "the platform's", which is what the app
   /// gets. Not a field on the seam because a test that wants a recorder uses
   /// [SystemActions.override], exactly as it does for the brain.
   final DeviceActionBackend? backend;
 
+  /// The clock `get_time` reads, or null for [DateTime.now]. A field so a test
+  /// can pin the sentence instead of racing the second hand.
+  final DateTime Function()? clock;
+
   @override
   Future<SystemActionOutcome> execute(SystemActionCall call) async {
+    // The clock is the shell's own: no permission, no platform channel, and the
+    // one thing it must be is *now*. Answered before [backend] is consulted so
+    // a device with no channel can still tell the time.
+    if (call.action == 'get_time') {
+      return SystemActionOutcome(
+        ok: true,
+        message: nexusClockAnswer(now: clock?.call()),
+        call: call,
+      );
+    }
     final (String action, Map<String, dynamic> args) = _plan(call);
     try {
       final ActionResult result = await (backend ?? deviceActionBackend()).run(
@@ -499,7 +542,9 @@ class DeviceSystemActions implements SystemActions {
   String? _done(SystemActionCall call) {
     switch (call.action) {
       case 'set_flashlight':
-        return call.args['state'] == 'off' ? 'Flashlight off.' : 'Flashlight on.';
+        return call.args['state'] == 'off'
+            ? 'Flashlight off.'
+            : 'Flashlight on.';
       case 'set_alarm':
         final int hour = call.args['hour']! as int;
         final int minute = call.args['minute']! as int;

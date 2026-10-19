@@ -18,11 +18,16 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart'
-    show ChangeNotifier, TargetPlatform, defaultTargetPlatform, visibleForTesting;
+    show
+        ChangeNotifier,
+        TargetPlatform,
+        defaultTargetPlatform,
+        visibleForTesting;
 
 import '../core/identity.dart' show DeviceInfo;
 import '../core/pair_invite.dart' show PairIdentity;
-import 'discovery.dart' show DiscoveredDevice, DiscoveryService, DiscoveryStatus;
+import 'discovery.dart'
+    show DiscoveredDevice, DiscoveryService, DiscoveryStatus;
 
 /// How long a device stays on the list after the last time it was heard.
 ///
@@ -80,6 +85,28 @@ class NearbyDevices extends ChangeNotifier {
 
   /// Everything heard recently, by device id — the latest announcement wins.
   final Map<String, DiscoveredDevice> _heard = <String, DiscoveredDevice>{};
+
+  /// Devices the user has forgotten this session.
+  ///
+  /// Forget removes the paired row, and the very next announcement would put
+  /// the same device back under "Nearby" — which is exactly the "deleted device
+  /// is still showing up" report. A forgotten id stays out of discovery until
+  /// the user pairs it again ([remember]); forgetting is about the list the user
+  /// is reading, not about refusing to ever hear the device.
+  final Set<String> _forgotten = <String>{};
+
+  /// Drops [id] from everything this screen knows, and stops re-adding it from
+  /// announcements. Called by Forget, after the paired row is gone.
+  void forget(String id) {
+    _forgotten.add(id);
+    _heard.remove(id);
+    notifyListeners();
+  }
+
+  /// Lets [id] back into discovery — what pairing it again means.
+  void remember(String id) {
+    if (_forgotten.remove(id)) notifyListeners();
+  }
 
   /// True while the socket is open and announces are going out.
   bool get running => _running;
@@ -157,6 +184,7 @@ class NearbyDevices extends ChangeNotifier {
 
   /// One announcement, or one unicast reply, from [device].
   void _note(DiscoveredDevice device) {
+    if (_forgotten.contains(device.id)) return;
     _heard[device.id] = device.withSeen(DateTime.now());
     notifyListeners();
   }

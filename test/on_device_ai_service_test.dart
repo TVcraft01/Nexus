@@ -15,6 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:nexus/core/ai_status.dart';
 import 'package:nexus/core/brain.dart';
+import 'package:nexus/core/clock_context.dart';
 import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
 import 'package:nexus/core/ollama_service.dart';
@@ -87,7 +88,11 @@ class _FakeRuntime implements LlmRuntime {
 /// asked — the PC in the fallback tests, and any brain whose *behaviour* is the
 /// subject rather than its transport.
 class _FakeBrain extends LocalAiService {
-  _FakeBrain({this.reply = 'from the PC', this.failure, this.pieces = const <String>[]});
+  _FakeBrain({
+    this.reply = 'from the PC',
+    this.failure,
+    this.pieces = const <String>[],
+  });
 
   String reply;
   Object? failure;
@@ -165,14 +170,23 @@ class _Device {
   /// A model file, as a finished download would leave one.
   void writeModel() => file.writeAsBytesSync(<int>[1, 2, 3]);
 
-  OnDeviceAiService service() => OnDeviceAiService(
-    model: model,
-    llm: Llm(
-      model: model.model,
-      runtime: runtime,
-      modelsDir: model.directoryFor,
-    ),
-  );
+  /// The clock every system turn is stamped with, so the sentence a test
+  /// asserts does not depend on when the suite ran.
+  static final DateTime fixedNow = DateTime(2026, 10, 19, 14, 24);
+
+  OnDeviceAiService service({Future<int?> Function()? availableMemory}) {
+    OnDeviceAiService.availableMemoryOverride = availableMemory;
+    addTearDown(() => OnDeviceAiService.availableMemoryOverride = null);
+    return OnDeviceAiService(
+      model: model,
+      llm: Llm(
+        model: model.model,
+        runtime: runtime,
+        modelsDir: model.directoryFor,
+      ),
+      clock: () => fixedNow,
+    );
+  }
 }
 
 _Device _device({bool failToLoad = false}) {
@@ -232,11 +246,63 @@ void main() {
       // the five actions before it can ask for one.
       final List<ChatTurn> prompt = device.runtime.prompts.single;
       expect(prompt.first.role, 'system');
-      expect(prompt.first.content, kNexusOnDeviceSystem);
+      // The persona and the rules, plus the clock: a model has no clock of its
+      // own, and asked the time it invents one.
+      expect(
+        prompt.first.content,
+        nexusSystemWithClock(kNexusOnDeviceSystem, now: _Device.fixedNow),
+      );
       expect(prompt.first.content, contains(kNexusOnDeviceSystemPrompt));
+      expect(prompt.first.content, contains('Monday 19 October 2026, 14:24'));
       expect(prompt.first.content, contains('"action":"set_flashlight"'));
       expect(prompt.last.role, 'user');
       expect(prompt.last.content, 'what is a mesh?');
+    });
+
+    test('a model that does not fit in memory is refused before it loads', () async {
+      final device = _device();
+      device.writeModel();
+      // Four bytes free against a three-byte model: the guard asks for 1.5× the
+      // file, so five, and refuses. Deliberately absurd numbers — the point is
+      // the arithmetic and the *order*, not the phone.
+      final service = device.service(availableMemory: () async => 4);
+
+      await expectLater(
+        service.generateResponse('hello'),
+        throwsA(
+          isA<InsufficientMemoryException>()
+              .having((e) => e.freeBytes, 'freeBytes', 4)
+              .having((e) => e.neededBytes, 'neededBytes', 5)
+              .having(
+                (e) => e.message,
+                'message',
+                contains('Not enough memory'),
+              ),
+        ),
+      );
+      // The whole reason the check is before the engine is built: a model that
+      // does not fit would have taken the app with it.
+      expect(device.runtime.loads, 0);
+    });
+
+    test('a model that fits is loaded and answers', () async {
+      final device = _device();
+      device.writeModel();
+      final service = device.service(availableMemory: () async => 1 << 30);
+
+      expect(await service.generateResponse('hello'), isNotEmpty);
+      expect(device.runtime.loads, 1);
+    });
+
+    test('with no memory reading the model is allowed to load', () async {
+      final device = _device();
+      device.writeModel();
+      // Null is "this platform cannot say", not zero: refusing on a missing
+      // /proc would stop the app on a device that could run the model fine.
+      final service = device.service(availableMemory: () async => null);
+
+      expect(await service.generateResponse('hello'), isNotEmpty);
+      expect(device.runtime.loads, 1);
     });
 
     test(
@@ -469,7 +535,10 @@ void main() {
       device.runtime.chunks = <String>['A mesh ', 'is devices ', 'talking.'];
 
       expect(
-        await device.service().generateResponseStream('what is a mesh?').toList(),
+        await device
+            .service()
+            .generateResponseStream('what is a mesh?')
+            .toList(),
         <String>['A mesh ', 'is devices ', 'talking.'],
       );
       expect(device.runtime.prompts.single.last.content, 'what is a mesh?');
@@ -485,34 +554,36 @@ void main() {
       expect(device.runtime.loads, 0);
     });
 
-    test('a model that stops mid-answer throws a sentence about the answer',
-        () async {
-      final device = _device();
-      device.writeModel();
-      device.runtime.chunks = <String>['A mesh is ', 'devices'];
-      device.runtime.failMidStream = true;
+    test(
+      'a model that stops mid-answer throws a sentence about the answer',
+      () async {
+        final device = _device();
+        device.writeModel();
+        device.runtime.chunks = <String>['A mesh is ', 'devices'];
+        device.runtime.failMidStream = true;
 
-      final pieces = <String>[];
-      await expectLater(
-        device
-            .service()
-            .generateResponseStream('hello')
-            .listen(pieces.add)
-            .asFuture<void>(),
-        throwsA(
-          isA<OnDeviceAiException>().having(
-            (e) => e.message,
-            'message',
-            kOnDeviceStreamFailureText,
+        final pieces = <String>[];
+        await expectLater(
+          device
+              .service()
+              .generateResponseStream('hello')
+              .listen(pieces.add)
+              .asFuture<void>(),
+          throwsA(
+            isA<OnDeviceAiException>().having(
+              (e) => e.message,
+              'message',
+              kOnDeviceStreamFailureText,
+            ),
           ),
-        ),
-      );
-      expect(
-        pieces,
-        <String>['A mesh is '],
-        reason: 'the words that did arrive are the caller\'s to keep showing',
-      );
-    });
+        );
+        expect(
+          pieces,
+          <String>['A mesh is '],
+          reason: 'the words that did arrive are the caller\'s to keep showing',
+        );
+      },
+    );
 
     test('a model that cannot come up says which silence it is', () async {
       final device = _device(failToLoad: true);
@@ -537,10 +608,11 @@ void main() {
       final pc = _FakeBrain(pieces: <String>['From ', 'the ', 'PC.']);
       final brain = FallbackAiService(onDevice: device.service(), pc: pc);
 
-      expect(
-        await brain.generateResponseStream('hello').toList(),
-        <String>['From ', 'the ', 'PC.'],
-      );
+      expect(await brain.generateResponseStream('hello').toList(), <String>[
+        'From ',
+        'the ',
+        'PC.',
+      ]);
       expect(pc.prompts, <String>['hello']);
     });
 
@@ -574,34 +646,36 @@ void main() {
       final pc = _FakeBrain(pieces: <String>['The PC ', 'picked it up.']);
       final brain = FallbackAiService(onDevice: device.service(), pc: pc);
 
-      expect(
-        await brain.generateResponseStream('hello').toList(),
-        <String>['The PC ', 'picked it up.'],
-      );
+      expect(await brain.generateResponseStream('hello').toList(), <String>[
+        'The PC ',
+        'picked it up.',
+      ]);
       expect(pc.prompts, <String>['hello']);
     });
 
-    test('neither brain: the one sentence the shell shows as a notice',
-        () async {
-      final device = _device();
-      final brain = FallbackAiService(
-        onDevice: device.service(),
-        pc: _FakeBrain(
-          failure: const OllamaException(kNexusOllamaUnreachableText),
-        ),
-      );
-
-      await expectLater(
-        brain.generateResponseStream('hello').toList(),
-        throwsA(
-          isA<OllamaException>().having(
-            (e) => e.message,
-            'message',
-            kNexusOllamaUnreachableText,
+    test(
+      'neither brain: the one sentence the shell shows as a notice',
+      () async {
+        final device = _device();
+        final brain = FallbackAiService(
+          onDevice: device.service(),
+          pc: _FakeBrain(
+            failure: const OllamaException(kNexusOllamaUnreachableText),
           ),
-        ),
-      );
-    });
+        );
+
+        await expectLater(
+          brain.generateResponseStream('hello').toList(),
+          throwsA(
+            isA<OllamaException>().having(
+              (e) => e.message,
+              'message',
+              kNexusOllamaUnreachableText,
+            ),
+          ),
+        );
+      },
+    );
   });
 
   group('where the answers come from', () {

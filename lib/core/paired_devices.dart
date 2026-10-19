@@ -242,11 +242,9 @@ class SharedPrefsPairedDevicesStore implements PairedDevicesStore {
 
 /// The shell's paired list, as one object the Devices tab listens to.
 class PairedDevices extends ChangeNotifier {
-  PairedDevices({
-    PairedDevicesStore? store,
-    List<PairedDevice>? seed,
-  }) : _store = store ?? SharedPrefsPairedDevicesStore(),
-       _devices = List<PairedDevice>.of(seed ?? kSeedPairedDevices);
+  PairedDevices({PairedDevicesStore? store, List<PairedDevice>? seed})
+    : _store = store ?? SharedPrefsPairedDevicesStore(),
+      _devices = List<PairedDevice>.of(seed ?? kSeedPairedDevices);
 
   /// Test seam, in the same shape as [SpeechInput.override]: a widget test
   /// states what is paired instead of touching the preferences plugin. The app
@@ -259,7 +257,8 @@ class PairedDevices extends ChangeNotifier {
   /// The app-wide list. Built once: a second instance would be a second answer
   /// to "what is paired", and the row the user just added would be missing from
   /// whichever one the screen happens to be reading.
-  static PairedDevices get instance => override?.call() ?? (_instance ??= PairedDevices());
+  static PairedDevices get instance =>
+      override?.call() ?? (_instance ??= PairedDevices());
 
   /// Forgets the app-wide instance. Tests use it; the app never does.
   @visibleForTesting
@@ -268,6 +267,15 @@ class PairedDevices extends ChangeNotifier {
   final PairedDevicesStore _store;
   List<PairedDevice> _devices;
   bool _attached = false;
+
+  /// Counts local changes, so a slow first read cannot undo one.
+  ///
+  /// [attach] is asynchronous: on a cold start it reads the stored list while
+  /// the screen is already interactive. A Forget tapped during that read used to
+  /// remove the row and then have the stale read assigned over it — the "deleted
+  /// device comes back" bug. A revision taken before the read and compared after
+  /// it makes the in-memory list win whenever the user has touched it.
+  int _revision = 0;
 
   /// The list, in the order rows are drawn: this device first, then the peers
   /// in the order they were paired.
@@ -282,8 +290,13 @@ class PairedDevices extends ChangeNotifier {
   Future<void> attach() async {
     if (_attached) return;
     _attached = true;
+    final int revision = _revision;
     final List<PairedDevice>? stored = await _store.read();
     if (stored == null) return;
+    // The user changed the list while the store was being read. What they did
+    // is newer than what was on disk, and applying the read would resurrect a
+    // row they just forgot.
+    if (revision != _revision) return;
     // A stored list that lost this device (an older build, a wiped row) gets it
     // back: the row is not a pairing, it is the list saying who is reading it.
     final PairedDevice? local = _thisDevice;
@@ -298,10 +311,8 @@ class PairedDevices extends ChangeNotifier {
   /// which is the one case the screen has to say something different about.
   bool add(PairInvite invite) {
     if (contains(invite.deviceId)) return false;
-    _devices = <PairedDevice>[
-      ..._devices,
-      PairedDevice.fromInvite(invite),
-    ];
+    _devices = <PairedDevice>[..._devices, PairedDevice.fromInvite(invite)];
+    _revision++;
     notifyListeners();
     _persist();
     return true;
@@ -316,6 +327,7 @@ class PairedDevices extends ChangeNotifier {
         .toList();
     if (next.length == _devices.length) return false;
     _devices = next;
+    _revision++;
     notifyListeners();
     _persist();
     return true;

@@ -36,6 +36,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.view.KeyEvent
@@ -209,6 +210,11 @@ class MainActivity : FlutterActivity() {
     // Voice output: the system TextToSpeech engine says the assistant's
     // reply aloud. No runtime permission needed.
     private val SPEECH_OUT_CHANNEL = "dev.nexus.nexus/speech_out"
+
+    // Kept so the engine's own completion can be reported back to Dart: live
+    // conversation reopens the microphone only after this says the voice has
+    // stopped, and a Stop speaking tap has to be honoured on both sides.
+    private var speechOutChannel: MethodChannel? = null
 
     // On-device tiny model: the phone's everyday brain. Real inference
     // (llama.cpp / MediaPipe LLM) plugs in here; until then both calls
@@ -404,11 +410,20 @@ class MainActivity : FlutterActivity() {
         // A device whose TTS engine is missing or broken answers false and
         // the assistant just stays on the written card.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SPEECH_OUT_CHANNEL)
+            .also { speechOutChannel = it }
             .setMethodCallHandler { call, result ->
-                if (call.method == "speak") {
-                    speakText(call.argument<String>("text") ?: "", result)
-                } else {
-                    result.notImplemented()
+                when (call.method) {
+                    "speak" -> speakText(call.argument<String>("text") ?: "", result)
+                    "stop" -> {
+                        // Drop a held utterance too: stopping means stopping, not
+                        // letting the queued reply start when the engine is ready.
+                        pendingTtsText = null
+                        pendingTtsResult?.success(true)
+                        pendingTtsResult = null
+                        tts?.stop()
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
                 }
             }
 
@@ -1804,6 +1819,21 @@ class MainActivity : FlutterActivity() {
             pendingTtsText = null
             ttsInitPending = false
             val e = tts
+            // `done` is what lets the live page reopen the microphone after the
+            // AI has finished speaking. The callbacks arrive on a binder thread,
+            // and a MethodChannel is only safe to call from the UI one.
+            e?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+
+                override fun onDone(utteranceId: String?) {
+                    runOnUiThread { speechOutChannel?.invokeMethod("done", null) }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    runOnUiThread { speechOutChannel?.invokeMethod("done", null) }
+                }
+            })
             if (status != TextToSpeech.SUCCESS || e == null || r == null || t == null) {
                 r?.success(false) // no speech engine — stay on the card
                 return@TextToSpeech

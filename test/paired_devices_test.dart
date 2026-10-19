@@ -1,7 +1,26 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/pair_invite.dart';
 import 'package:nexus/core/paired_devices.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// A store whose first read lands when the test says so — the cold-start gap the
+/// Forget button has to survive.
+class _DelayedStore implements PairedDevicesStore {
+  _DelayedStore(this._read);
+
+  final Future<List<PairedDevice>?> _read;
+  List<PairedDevice>? written;
+
+  @override
+  Future<List<PairedDevice>?> read() => _read;
+
+  @override
+  Future<void> write(List<PairedDevice> devices) async {
+    written = List<PairedDevice>.of(devices);
+  }
+}
 
 /// The list of paired devices, and the fact that it survives a restart.
 ///
@@ -128,6 +147,33 @@ void main() {
       await paired.attach();
       expect(paired.devices.first.isThisDevice, isTrue);
       expect(paired.devices.last.name, 'Peer');
+    });
+
+    test('a Forget during the first read is not undone by that read', () async {
+      // The bug: the screen is interactive while the stored list is still being
+      // read. Forgetting a device in that gap used to remove the row and then
+      // have the stale read assigned over it, so the device came back.
+      final Completer<List<PairedDevice>?> read =
+          Completer<List<PairedDevice>?>();
+      final _DelayedStore store = _DelayedStore(read.future);
+      final PairedDevices paired = PairedDevices(store: store);
+
+      final Future<void> attaching = paired.attach();
+      expect(paired.forget('example-mac'), isTrue);
+      read.complete(kSeedPairedDevices);
+      await attaching;
+
+      expect(paired.contains('example-mac'), isFalse);
+      expect(
+        paired.devices.map((PairedDevice d) => d.name),
+        isNot(contains('Studio Mac')),
+      );
+      // And the write the Forget made is the one the next start will read.
+      expect(store.written, isNotNull);
+      expect(
+        store.written!.map((PairedDevice d) => d.id),
+        isNot(contains('example-mac')),
+      );
     });
 
     test('attaches once: a second call cannot undo a pairing', () async {

@@ -48,6 +48,17 @@ Future<void> loudness(MethodChannel channel, Object? level) async {
       );
 }
 
+/// The platform saying the utterance is over — the event live conversation
+/// waits for before it reopens the microphone.
+Future<void> speechDone(MethodChannel channel) async {
+  await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(MethodCall('done')),
+        (ByteData? _) {},
+      );
+}
+
 void main() {
   // These are plain unit tests, so nothing has stood the binding up for them:
   // the platform side of the seam is reached through it.
@@ -174,6 +185,27 @@ void main() {
     // it is asked for.
     await expectLater(const SpeechInput().finish(), completes);
     await expectLater(const SpeechInput().stop(), completes);
+  });
+
+  test('the voice reports when it finishes, and can be stopped', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    const MethodChannel channel = MethodChannel('dev.nexus.nexus/speech_out');
+    final List<String> calls = recordCalls(channel);
+
+    // Speech is the call that installs the `done` listener.
+    expect(await const SpeechOutput().speak('hello'), isFalse);
+    final List<void> finished = <void>[];
+    final StreamSubscription<void> watching = const SpeechOutput().spoken
+        .listen(finished.add);
+    addTearDown(watching.cancel);
+
+    await speechDone(channel);
+    await pumpEventQueue();
+    expect(finished, hasLength(1), reason: 'the end of a reply is one event');
+
+    // And the interruption path the live page uses reaches the engine.
+    await const SpeechOutput().stop();
+    expect(calls, <String>['speak', 'stop']);
   });
 
   test('the live words an utterance is made of cross to Dart', () async {

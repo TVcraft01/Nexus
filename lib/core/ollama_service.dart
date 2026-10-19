@@ -37,6 +37,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'clock_context.dart' show nexusSystemWithClock;
 import 'local_ai_service.dart';
 import 'system_actions.dart' show kSystemActionRules;
 
@@ -57,8 +58,7 @@ const String kNexusOllamaPersona =
 /// `/api/generate`, so the PC's model is offered exactly the vocabulary the
 /// phone's model is — the two brains answering differently about what they can
 /// do is a bug the user would read as one of them lying.
-const String kNexusOllamaSystem =
-    '$kNexusOllamaPersona\n\n$kSystemActionRules';
+const String kNexusOllamaSystem = '$kNexusOllamaPersona\n\n$kSystemActionRules';
 
 /// Where Ollama is expected to be listening.
 ///
@@ -120,6 +120,7 @@ class OllamaService implements LocalAiService {
     this.timeout = const Duration(seconds: 30),
     this.client,
     this.system = kNexusOllamaSystem,
+    this.clock,
   });
 
   /// The PC and port, without a trailing slash (`http://192.168.1.100:11434`).
@@ -149,6 +150,13 @@ class OllamaService implements LocalAiService {
   /// part of the prompt the shell — not the user — owns, and a test asserting
   /// what the PC is told should not have to read it off the wire.
   final String system;
+
+  /// The clock the system turn is built from, or null for [DateTime.now].
+  ///
+  /// A model has no clock of its own — asked the time it invents one — so the
+  /// device's is appended to the system turn on every request. A field rather
+  /// than a direct [DateTime.now] so a test can pin the sentence it asserts.
+  final DateTime Function()? clock;
 
   /// The whole answer as one piece.
   ///
@@ -219,11 +227,14 @@ class OllamaService implements LocalAiService {
   }) async {
     final bool chat = history.isNotEmpty;
     final Uri uri = Uri.parse('$baseUrl/api/${chat ? 'chat' : 'generate'}');
+    // Built per request, not stored: the answer to "what time is it" has to be
+    // the time now, not the time the service was constructed.
+    final String systemTurn = nexusSystemWithClock(system, now: clock?.call());
     final Map<String, Object?> payload = chat
         ? <String, Object?>{
             'model': model,
             'messages': <Map<String, String>>[
-              <String, String>{'role': 'system', 'content': system},
+              <String, String>{'role': 'system', 'content': systemTurn},
               for (final AiTurn turn in history)
                 <String, String>{
                   'role': turn.fromUser ? 'user' : 'assistant',
@@ -236,7 +247,7 @@ class OllamaService implements LocalAiService {
         : <String, Object?>{
             'model': model,
             'prompt': prompt,
-            'system': system,
+            'system': systemTurn,
             'stream': false,
           };
     http.Response response;

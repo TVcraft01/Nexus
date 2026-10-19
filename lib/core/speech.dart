@@ -272,6 +272,15 @@ const double kSpeechQuietDb = 0.5;
 /// seconds before it is answered, which is a pause a listener takes too.
 const Duration kSpeechTurnGap = Duration(milliseconds: 2000);
 
+/// How long live conversation waits after the assistant's voice stops before it
+/// opens the microphone again.
+///
+/// A beat rather than an instant: the answer has to land, and the user has to
+/// have a moment to say "stop" before the room starts listening to itself. Live
+/// mode is a conversation, so the default is to hand the turn back — the page
+/// still stops for good when the user taps Stop speaking or closes it.
+const Duration kLiveAutoListenDelay = Duration(milliseconds: 1500);
+
 /// Speaking for the assistant: reads a reply out loud on devices that can.
 /// Android speaks through the system text-to-speech engine (fully on-device,
 /// no network — the same zero-cloud rule as the mic); everywhere else this
@@ -290,17 +299,59 @@ class SpeechOutput {
   /// Whether this device can read replies out loud at all.
   bool get available => defaultTargetPlatform == TargetPlatform.android;
 
+  /// Fires once for every utterance that finishes — spoken to its end, cut off
+  /// by a newer reply, or stopped by the user. Live conversation waits for this
+  /// before it reopens the microphone: listening while the phone is still
+  /// talking would feed the assistant its own voice.
+  ///
+  /// A broadcast stream, and empty when the platform has no engine: a caller
+  /// that only schedules work here simply never hears anything.
+  Stream<void> get spoken => _spoken.stream;
+
   /// Says [text] out loud. Returns true when the utterance was handed to
   /// the speech engine. Never throws — a device that can't speak (or a
   /// speech engine that fails) just means the text stays on the card.
   Future<bool> speak(String text) async {
     if (!available) return false;
+    _wireChannel();
     try {
       return await _channel.invokeMethod<bool>('speak', {'text': text}) ??
           false;
     } catch (_) {
       return false; // never crash the assistant for a speech failure
     }
+  }
+
+  /// Cuts the utterance off now. The one control over a phone that has started
+  /// talking: a user who has heard enough should not have to wait it out.
+  ///
+  /// Never throws, and answers as soon as the stop is asked for rather than
+  /// when the engine confirms it.
+  Future<void> stop() async {
+    if (!available) return;
+    try {
+      await _channel.invokeMethod<void>('stop');
+    } catch (_) {
+      // A speaker that cannot be stopped is not something the caller can fix.
+    } finally {
+      _spoken.add(null);
+    }
+  }
+
+  static final StreamController<void> _spoken =
+      StreamController<void>.broadcast();
+
+  static bool _wired = false;
+
+  /// Listens for the platform's `done` call. Installed on the first [speak], so
+  /// a build that never reads anything aloud never claims the channel.
+  static void _wireChannel() {
+    if (_wired) return;
+    _wired = true;
+    _channel.setMethodCallHandler((MethodCall call) async {
+      if (call.method == 'done') _spoken.add(null);
+      return null;
+    });
   }
 
   static const _channel = MethodChannel('dev.nexus.nexus/speech_out');

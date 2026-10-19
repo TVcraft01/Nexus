@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:nexus/core/clock_context.dart';
 import 'package:nexus/core/local_ai_service.dart' show AiTurn;
 import 'package:nexus/core/ollama_service.dart';
 
@@ -14,6 +15,16 @@ import 'package:nexus/core/ollama_service.dart';
 /// because what they care about is what goes out and what comes back — the
 /// request body Ollama is actually sent, and the four ways it can fail.
 void main() {
+  // A clock the assertions can name. The system turn carries the device's date
+  // and time — a model has no clock of its own, which is how the phone answered
+  // "what time is it" with 07:30 at 14:24 — so the sentence is pinned here
+  // rather than left to the hour the suite happens to run at.
+  final DateTime fixedNow = DateTime(2026, 10, 19, 14, 24);
+  final String clockedSystem = nexusSystemWithClock(
+    kNexusOllamaSystem,
+    now: fixedNow,
+  );
+
   /// A service whose HTTP client is [handler], with a timeout short enough that
   /// a test can sit through it.
   OllamaService serviceFor(
@@ -24,6 +35,7 @@ void main() {
     baseUrl: baseUrl,
     timeout: timeout,
     client: MockClient(handler),
+    clock: () => fixedNow,
   );
 
   test('posts the plainest generate request and returns the response', () async {
@@ -40,7 +52,9 @@ void main() {
       );
     });
 
-    final String answer = await ollama.generateResponse('what is in Downloads?');
+    final String answer = await ollama.generateResponse(
+      'what is in Downloads?',
+    );
 
     // The answer is the field, trimmed: Ollama's leading and trailing whitespace
     // is not the model's opinion about spacing.
@@ -56,7 +70,7 @@ void main() {
     expect(jsonDecode(seen.body), <String, Object?>{
       'model': kNexusOllamaModel,
       'prompt': 'what is in Downloads?',
-      'system': kNexusOllamaSystem,
+      'system': clockedSystem,
       'stream': false,
     });
     // The system turn is not decoration: it is where the model is told what it
@@ -64,51 +78,61 @@ void main() {
     // talk.
     expect(kNexusOllamaSystem, contains('"action":"set_flashlight"'));
     expect(kNexusOllamaSystem, contains('answer normally'));
+    // The clock is in the one turn a model treats as instruction, in words it
+    // can read: the date, the weekday and the time, then the rule about them.
+    expect(clockedSystem, contains('Monday 19 October 2026, 14:24'));
+    expect(clockedSystem, contains('never invent'));
   });
 
-  test('a conversation is asked with the system turn first, then the turns',
-      () async {
-    late http.Request seen;
-    final OllamaService ollama = serviceFor((http.Request request) async {
-      seen = request;
-      return http.Response(
-        jsonEncode(<String, Object?>{
-          'message': <String, String>{'role': 'assistant', 'content': 'Sam.'},
-          'done': true,
-        }),
-        200,
+  test(
+    'a conversation is asked with the system turn first, then the turns',
+    () async {
+      late http.Request seen;
+      final OllamaService ollama = serviceFor((http.Request request) async {
+        seen = request;
+        return http.Response(
+          jsonEncode(<String, Object?>{
+            'message': <String, String>{'role': 'assistant', 'content': 'Sam.'},
+            'done': true,
+          }),
+          200,
+        );
+      });
+
+      final String answer = await ollama.generateResponse(
+        'what is my name?',
+        history: const <AiTurn>[
+          AiTurn.user('my name is Sam'),
+          AiTurn.assistant('Hello Sam!'),
+        ],
       );
-    });
 
-    final String answer = await ollama.generateResponse(
-      'what is my name?',
-      history: const <AiTurn>[
-        AiTurn.user('my name is Sam'),
-        AiTurn.assistant('Hello Sam!'),
-      ],
-    );
-
-    expect(answer, 'Sam.');
-    expect(seen.url.toString(), endsWith('/api/chat'));
-    final Map<String, dynamic> body =
-        jsonDecode(seen.body) as Map<String, dynamic>;
-    final List<dynamic> messages = body['messages'] as List<dynamic>;
-    expect(
-      messages.first,
-      <String, String>{'role': 'system', 'content': kNexusOllamaSystem},
-      reason: 'the model is told who it is and what it may ask for before it is '
-          'told what was said',
-    );
-    expect(messages[1], <String, String>{'role': 'user', 'content': 'my name is Sam'});
-    expect(messages[2], <String, String>{
-      'role': 'assistant',
-      'content': 'Hello Sam!',
-    });
-    expect(messages.last, <String, String>{
-      'role': 'user',
-      'content': 'what is my name?',
-    });
-  });
+      expect(answer, 'Sam.');
+      expect(seen.url.toString(), endsWith('/api/chat'));
+      final Map<String, dynamic> body =
+          jsonDecode(seen.body) as Map<String, dynamic>;
+      final List<dynamic> messages = body['messages'] as List<dynamic>;
+      expect(
+        messages.first,
+        <String, String>{'role': 'system', 'content': clockedSystem},
+        reason:
+            'the model is told who it is and what it may ask for before it is '
+            'told what was said',
+      );
+      expect(messages[1], <String, String>{
+        'role': 'user',
+        'content': 'my name is Sam',
+      });
+      expect(messages[2], <String, String>{
+        'role': 'assistant',
+        'content': 'Hello Sam!',
+      });
+      expect(messages.last, <String, String>{
+        'role': 'user',
+        'content': 'what is my name?',
+      });
+    },
+  );
 
   test('a PC that is not there is one sentence, not a stack trace', () async {
     final OllamaService ollama = serviceFor(
@@ -218,18 +242,20 @@ void main() {
     server.listen((HttpRequest request) async {
       expect(request.method, 'POST');
       expect(request.uri.path, '/api/generate');
-      final Map<String, dynamic> payload =
-          jsonDecode(await utf8.decoder.bind(request).join())
-              as Map<String, dynamic>;
+      final Map<String, dynamic> payload = jsonDecode(
+        await utf8.decoder.bind(request).join(),
+      ) as Map<String, dynamic>;
       modelSeen = payload['model'] as String?;
       promptSeen = payload['prompt'] as String?;
       request.response
         ..statusCode = 200
         ..headers.contentType = ContentType.json
-        ..write(jsonEncode(<String, Object?>{
-          'response': 'A local answer.',
-          'done': true,
-        }));
+        ..write(
+          jsonEncode(<String, Object?>{
+            'response': 'A local answer.',
+            'done': true,
+          }),
+        );
       await request.response.close();
     });
 

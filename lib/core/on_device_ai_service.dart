@@ -19,10 +19,12 @@
 library;
 
 import 'dart:async';
+import 'dart:io' show File, Platform;
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
 import 'brain.dart' show ChatTurn;
+import 'clock_context.dart' show nexusSystemWithClock;
 import 'llm.dart';
 import 'local_ai_service.dart';
 import 'on_device_model.dart';
@@ -74,6 +76,47 @@ class OnDeviceAiException implements Exception {
 const String kOnDeviceStreamFailureText =
     'The on-device model stopped mid-answer.';
 
+/// A model that would not fit in memory right now.
+///
+/// Measured on the A25: asking the 1B model for an answer while the phone was
+/// already under pressure is how the app was closed by the system — no
+/// exception, no sentence, just the launcher. The weights have to fit beside
+/// everything else the phone is holding, so this is checked *before* the engine
+/// is built and thrown rather than attempted.
+///
+/// Its own type, and rethrown by [FallbackAiService] rather than swallowed into
+/// the PC fallback, because the caller can do better than a generic failure:
+/// switch to the smaller model the user has, or say which download would fit.
+class InsufficientMemoryException extends OnDeviceAiException {
+  const InsufficientMemoryException({
+    required this.label,
+    required this.neededBytes,
+    required this.freeBytes,
+  }) : super('Not enough memory to run $label.');
+
+  /// The model that did not fit, as the picker names it.
+  final String label;
+
+  /// The room the guard asked for: [kModelMemoryHeadroom] times the file.
+  final int neededBytes;
+
+  /// What the device reported as available when the load was refused.
+  final int freeBytes;
+
+  @override
+  String toString() =>
+      'InsufficientMemoryException: $label needs $neededBytes bytes, '
+      '$freeBytes available';
+}
+
+/// How much room a model needs beyond its own file, as a multiple of it.
+///
+/// 1.5× is the llama.cpp working set — the mmapped weights, the KV cache, and
+/// the native allocations around them. A model loaded with exactly its file
+/// size free is a model that loads and then gets the app killed mid-answer,
+/// which is the failure this guard exists to turn into a sentence.
+const double kModelMemoryHeadroom = 1.5;
+
 /// No model file on this device: the one failure a PC can cover.
 ///
 /// Deliberately its own type rather than a message, because it is the only
@@ -103,6 +146,7 @@ class OnDeviceAiService implements LocalAiService {
     Llm? llm,
     this.system = kNexusOnDeviceSystem,
     this.maxTokens = 220,
+    this.clock,
   }) : _deviceModel = model,
        _fixedEngine = llm;
 
@@ -123,6 +167,20 @@ class OnDeviceAiService implements LocalAiService {
   /// How long an answer may be. Small enough that a 0.5B model finishes while
   /// the user is still looking at "Thinking…".
   final int maxTokens;
+
+  /// The clock the system turn is built from, or null for [DateTime.now].
+  ///
+  /// A field so a test can pin the sentence it asserts; the app leaves it null
+  /// and every request is told the time it is being asked at.
+  final DateTime Function()? clock;
+
+  /// Test seam for the free-memory reading: null reads `/proc/meminfo`.
+  ///
+  /// Pointing this at a number is how the guard is tested without a phone under
+  /// pressure — the alternative is a test that can only pass on a device that
+  /// happens to be out of memory.
+  @visibleForTesting
+  static Future<int?> Function()? availableMemoryOverride;
 
   /// The file this brain answers from — the Settings row reports the same one.
   OnDeviceModel get model => _deviceModel;
@@ -152,10 +210,67 @@ class OnDeviceAiService implements LocalAiService {
     _engine = null;
     _engineChoice = null;
     if (engine != null) await engine.dispose();
-    final Llm built = Llm(model: _deviceModel.model, modelsDir: _deviceModel.directoryFor);
+    // Before any weights are touched: a model that does not fit is the one
+    // failure that takes the whole app with it, so it is refused here rather
+    // than attempted and mourned.
+    await _ensureMemoryForLoad();
+    final Llm built = Llm(
+      model: _deviceModel.model,
+      modelsDir: _deviceModel.directoryFor,
+    );
     _engine = built;
     _engineChoice = choice;
     return built;
+  }
+
+  /// Refuses a load the device does not have room for.
+  ///
+  /// The file's real size is what counts, not the published download size: a
+  /// user may have a trimmed or a custom file, and it is the bytes on this phone
+  /// that are about to become weights. The reading is [availableMemory]; when a
+  /// platform cannot answer, the load is allowed — guessing "out of memory" from
+  /// a missing `/proc` would refuse to run on the one device that could.
+  Future<void> _ensureMemoryForLoad() async {
+    final int? free = await availableMemory();
+    if (free == null) return;
+    final int onDisk = await _deviceModel.sizeBytes();
+    final int bytes = onDisk > 0 ? onDisk : _deviceModel.model.bytes;
+    final int needed = (bytes * kModelMemoryHeadroom).round();
+    if (free >= needed) return;
+    debugPrint(
+      'AI: ${_deviceModel.label} needs $needed bytes, $free available — '
+      'refusing to load it',
+    );
+    throw InsufficientMemoryException(
+      label: _deviceModel.label,
+      neededBytes: needed,
+      freeBytes: free,
+    );
+  }
+
+  /// How many bytes this device could hand to a new process right now.
+  ///
+  /// `MemAvailable` rather than `MemFree`: the kernel's own estimate of what can
+  /// be reclaimed includes reclaimable page cache, and `MemFree` on an idle phone
+  /// reads alarmingly low while gigabytes are still there for the taking.
+  /// Null — not zero — when the platform cannot answer, so "unknown" is never
+  /// mistaken for "full".
+  static Future<int?> availableMemory() async {
+    final Future<int?> Function()? override = availableMemoryOverride;
+    if (override != null) return override();
+    if (!Platform.isAndroid && !Platform.isLinux) return null;
+    try {
+      final String info = await File('/proc/meminfo').readAsString();
+      final RegExpMatch? match = RegExp(
+        r'^MemAvailable:\s+(\d+)\s+kB',
+        multiLine: true,
+      ).firstMatch(info);
+      if (match == null) return null;
+      return int.parse(match.group(1)!) * 1024;
+    } on Object catch (error) {
+      debugPrint('AI: could not read available memory ($error)');
+      return null;
+    }
   }
 
   /// True when a model file is on disk. Cheap, and never a load.
@@ -201,12 +316,20 @@ class OnDeviceAiService implements LocalAiService {
   Future<String> generateResponse(String prompt) async {
     _warmChoice();
     if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
+    // Before any weights are touched: a model that does not fit is the one
+    // failure that takes the whole app down with it, and there is no sentence
+    // after it. Checked only when nothing is loaded — an engine already in
+    // memory is not asking for more room to exist.
+    if (_engine == null) await _ensureMemoryForLoad();
     final Llm llm = await _current();
+    // The clock goes in per question, not into [system]: "what time is it"
+    // has to be answered with the time it is asked at.
+    final String systemTurn = nexusSystemWithClock(system, now: clock?.call());
     String answer;
     try {
       answer = await llm.complete(
         prompt,
-        system: system,
+        system: systemTurn,
         maxTokens: maxTokens,
       );
     } on Object catch (e) {
@@ -248,7 +371,9 @@ class OnDeviceAiService implements LocalAiService {
   }) async* {
     _warmChoice();
     if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
+    if (_engine == null) await _ensureMemoryForLoad();
     final Llm llm = await _current();
+    final String systemTurn = nexusSystemWithClock(system, now: clock?.call());
     bool answered = false;
     try {
       // With history this is a chat, not a question: the model is handed the
@@ -257,9 +382,9 @@ class OnDeviceAiService implements LocalAiService {
       // prompt it has always been — the same call, so a brain asked a single
       // question behaves exactly as it did before this parameter existed.
       final Stream<String> pieces = history.isEmpty
-          ? llm.completeStream(prompt, system: system, maxTokens: maxTokens)
+          ? llm.completeStream(prompt, system: systemTurn, maxTokens: maxTokens)
           : llm.completeChatStream(
-              system: system,
+              system: systemTurn,
               history: <ChatTurn>[
                 for (final AiTurn turn in history) turn.chatTurn,
                 (role: 'user', content: prompt),

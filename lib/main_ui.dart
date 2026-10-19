@@ -21,8 +21,10 @@
 ///     being spoken and then *stay* there as a draft — nothing is sent until the
 ///     user sends it. *Live conversation* is the button beside it: a dark,
 ///     full-screen page that listens the moment it opens, shows what was said in
-///     large type, and then **stops** — the microphone is re-opened only by a
-///     tap. See [_HomeTabState] for the session, [_HoldToTalk] for the gesture
+///     large type, and hands the turn back 1.5 s after the answer has been read
+///     out — with a Stop speaking control (and a tap anywhere) to end the voice
+///     and stay quiet. See [_HomeTabState] for the session, [_HoldToTalk] for the
+///     gesture
 ///     that owns the hold, and [_LivePage] for the overlay.
 ///   * `core/ollama_service.dart` — the brain. A sent message and a finished
 ///     live turn both go to the small model running on the user's own PC, and
@@ -55,6 +57,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert' show jsonDecode;
 import 'dart:io' show File;
 import 'dart:math' as math;
 
@@ -83,10 +86,12 @@ import 'core/ai_status.dart';
 import 'core/appearance.dart';
 import 'core/attachments.dart';
 import 'core/chat_log.dart';
+import 'core/clock_context.dart' show isClockQuestion;
 import 'core/device_capabilities.dart';
 import 'core/device_memory.dart';
 import 'core/file_link.dart';
 import 'core/local_ai_service.dart';
+import 'core/math_helper.dart';
 import 'core/mic_access.dart';
 import 'core/ollama_service.dart';
 import 'core/on_device_ai_service.dart';
@@ -96,6 +101,7 @@ import 'core/pair_invite.dart';
 import 'core/paired_devices.dart';
 import 'core/qr_pairing.dart' show QrPairingToken;
 import 'core/screen_capture.dart';
+import 'core/vision_ai.dart';
 import 'core/services/icon_service.dart';
 import 'mesh/discovery.dart' show DiscoveredDevice;
 import 'mesh/nearby.dart' show NearbyDevices;
@@ -159,9 +165,11 @@ class NexusAccent {
   /// The same accent lifted for a dark page.
   final Color dark;
 
-  /// The swatch the row draws — always the light-mode value, because the row is
-  /// a colour the user is choosing rather than a colour that is being applied.
-  Color get swatch => light;
+  /// The swatch the row draws: the colour the user actually picked, not the
+  /// legible version derived for a page. A pale `#FBF5FF` has to show as a pale
+  /// disc — the row is a colour being chosen, and showing its darkened ink there
+  /// made a near-white pick look like a purple one.
+  Color get swatch => seed;
 
   /// Whether this is the user's own colour rather than the shipped purple.
   bool get isCustom => seed != kNexusAccent;
@@ -238,8 +246,7 @@ class NexusAccent {
       '#${color.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
 
   @override
-  bool operator ==(Object other) =>
-      other is NexusAccent && other.seed == seed;
+  bool operator ==(Object other) => other is NexusAccent && other.seed == seed;
 
   @override
   int get hashCode => seed.hashCode;
@@ -329,6 +336,12 @@ const Key kNexusLiveOrbIdle = Key('nexus-live-orb-idle');
 /// than looping for ever, and this is the one control that reopens the mic.
 const Key kNexusLiveResume = Key('nexus-live-resume');
 
+/// The interruption control while the assistant is speaking. One tap cuts the
+/// voice off, and the microphone stays closed: the user asked for quiet, not
+/// for the next turn.
+const Key kNexusLiveStopSpeaking = Key('nexus-live-stop-speaking');
+const String kNexusLiveStopSpeakingLabel = 'Stop speaking';
+
 /// The sentence under the orb: the page's plain-language answer to "is the
 /// microphone on?".
 const Key kNexusLiveStatus = Key('nexus-live-status');
@@ -343,6 +356,25 @@ const Key kNexusLiveOrbThinking = Key('nexus-live-orb-thinking');
 /// One constant for both because it is one state — the request is out, nothing is
 /// recording, and the only thing that can happen next is an answer.
 const String kNexusThinking = 'Nexus is thinking…';
+
+/// What the thread says when a reply was nothing but punctuation.
+///
+/// `{}` is the one shape [nexusReadableText] takes everything out of: there is
+/// no answer field to read and no words between the braces. An empty bubble
+/// would look like a rendering fault, and the object itself is not something a
+/// person can read, so the shell says the only true thing left.
+const String kNexusNoAnswerText = "I don't have an answer for that.";
+
+/// What the thread says when the selected model does not fit in the phone's
+/// memory.
+///
+/// Red, and actionable: the app has already tried the smaller model if the user
+/// has it, so the only thing left to say is which download would fit. "Not
+/// enough memory" on its own would be a dead end; deleting the model and taking
+/// Qwen 0.5B is the way forward, and it is the sentence the user is given.
+const String kNexusNotEnoughMemoryText =
+    'Not enough memory to run this model. Please delete it and download '
+    'Qwen 0.5B.';
 
 /// The live overlay's own ground and ink.
 ///
@@ -441,7 +473,9 @@ class NexusUiColors extends ThemeExtension<NexusUiColors> {
     offline: Color(0xFFC7C7C1),
     accent: kNexusAccent,
     onAccent: Color(0xFFFFFFFF),
-    danger: Color(0xFFB3261E),
+    // Solid red, not a muted brick and not the pink the dark theme used: a
+    // delete control has to read as destructive before it is read.
+    danger: Color(0xFFD32F2F),
   );
 
   /// Dark: the same neutrals, inverted. Purple lifts a step so it keeps its
@@ -459,7 +493,9 @@ class NexusUiColors extends ThemeExtension<NexusUiColors> {
     offline: Color(0xFF55555C),
     accent: Color(0xFF9D6BF5),
     onAccent: Color(0xFFFFFFFF),
-    danger: Color(0xFFFFB4AB),
+    // [Colors.redAccent], hardcoded: the old pink (#FFB4AB) read as a faded
+    // secondary action rather than as "this deletes something".
+    danger: Color(0xFFFF5252),
   );
 
   @override
@@ -764,7 +800,9 @@ void main() async {
 NexusAccent accentFromSeed(int? seed) {
   if (seed == null) return NexusAccent.purple;
   final Color colour = Color(seed);
-  return colour == kNexusAccent ? NexusAccent.purple : NexusAccent.custom(colour);
+  return colour == kNexusAccent
+      ? NexusAccent.purple
+      : NexusAccent.custom(colour);
 }
 
 /// The shell app. Holds what outlives a tab — appearance and accent — because
@@ -938,7 +976,8 @@ class _WelcomeViewState extends State<WelcomeView> {
   double _progress = 0;
   String? _error;
 
-  late final OnDeviceAiService _onDevice = widget.onDevice ?? OnDeviceAiService();
+  late final OnDeviceAiService _onDevice =
+      widget.onDevice ?? OnDeviceAiService();
 
   /// Whether this device can run a model at all. Answered by the capability
   /// registry, so the same device that is not offered the download in Settings
@@ -1042,10 +1081,7 @@ class _WelcomeViewState extends State<WelcomeView> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(20, 28, 20, 28),
                   children: <Widget>[
-                    Text(
-                      'Welcome to Nexus.',
-                      style: NexusType.greeting(c),
-                    ),
+                    Text('Welcome to Nexus.', style: NexusType.greeting(c)),
                     const SizedBox(height: 6),
                     Text(
                       "Let's get your private AI set up.",
@@ -1068,7 +1104,9 @@ class _WelcomeViewState extends State<WelcomeView> {
                             ? '${choice.label} — already downloaded'
                             : 'Recommended: ${choice.label}',
                         subtitle: '${choice.megabytes} MB — ${choice.blurb}',
-                        leading: const NexusIconTile(Icons.auto_awesome_rounded),
+                        leading: const NexusIconTile(
+                          Icons.auto_awesome_rounded,
+                        ),
                         accentTitle: true,
                       )
                     else
@@ -1096,9 +1134,7 @@ class _WelcomeViewState extends State<WelcomeView> {
                       const SizedBox(height: 14),
                       Text(
                         _error!,
-                        style: NexusType.rowMeta(
-                          c,
-                        ).copyWith(color: c.danger),
+                        style: NexusType.rowMeta(c).copyWith(color: c.danger),
                       ),
                     ],
                     const SizedBox(height: 26),
@@ -1262,10 +1298,7 @@ class _NexusShellState extends State<NexusShell> {
           ),
         ],
       ),
-      bottomNavigationBar: NexusTabBar(
-        index: _tab,
-        onSelected: _select,
-      ),
+      bottomNavigationBar: NexusTabBar(index: _tab, onSelected: _select),
     );
   }
 }
@@ -1699,6 +1732,11 @@ const String kNexusClearChatTitle = 'Clear chat?';
 const Key kNexusDarkModeRow = Key('nexus-dark-mode-row');
 const Key kNexusThemeBusy = Key('nexus-theme-busy');
 
+/// The opacity that greys the Dark mode switch out while Follow system owns
+/// the theme. Keyed so a test can read the treatment rather than guess it from
+/// a rendered pixel.
+const Key kNexusDarkModeLocked = Key('nexus-dark-mode-locked');
+
 /// Asks a yes/no question about something that cannot be undone.
 ///
 /// Returns true only when the user pressed the button that says so; every other
@@ -1766,7 +1804,6 @@ const String kNexusLivePairCodeText =
     'screen does not run yet — use the code on the other device\u2019s Nexus '
     'code instead.';
 
-
 /// The key on a destructive dialog's confirm button.
 const Key kNexusConfirmAction = Key('nexus-confirm-action');
 
@@ -1786,9 +1823,9 @@ const Key kNexusResetAccent = Key('nexus-reset-accent');
 ///
 /// A wheel rather than a row of presets, because the presets were five colours
 /// somebody else had chosen and the point of the row is that this app is the
-/// user's. The wheel paints the app *while* the thumb drags it — the preview is
-/// the app itself — so there is nothing to confirm, and the dialog's buttons are
-/// only the way back to the shipped purple and the way out.
+/// user's. The wheel previews in its own disc while the thumb drags; the pick is
+/// applied to the app when the dialog's Done is pressed, so a drag is not a
+/// hundred full-screen repaints and Cancel really does cancel.
 class _AccentRow extends StatelessWidget {
   const _AccentRow({required this.selected, required this.onSelected});
 
@@ -1884,17 +1921,17 @@ class _AccentDisc extends StatelessWidget {
 
 /// The colour wheel itself, in a dialog.
 ///
-/// Stateful for one reason: the wheel needs to know which colour it is showing,
-/// and `flutter_colorpicker`'s widget is told rather than asked. Every call back
-/// to the app replaces the accent outright, which is what "instantly" means
-/// here — there is no Apply, because there is nothing to apply.
+/// Stateful because the wheel needs to know which colour it is showing, and
+/// `flutter_colorpicker`'s widget is told rather than asked. The pick stays
+/// local until Done: applying every onColorChanged repainted the whole app on
+/// every drag event, which is exactly as laggy as it sounds.
 class _AccentWheelDialog extends StatefulWidget {
   const _AccentWheelDialog({required this.accent, required this.onChanged});
 
   /// The accent in force when the dialog opened: the colour the wheel starts on.
   final NexusAccent accent;
 
-  /// Called with every colour the thumb passes over, as the accent to paint.
+  /// Called once, on Done, with the colour to make the app's accent.
   final ValueChanged<NexusAccent> onChanged;
 
   @override
@@ -1902,8 +1939,8 @@ class _AccentWheelDialog extends StatefulWidget {
 }
 
 class _AccentWheelDialogState extends State<_AccentWheelDialog> {
-  /// The colour on the wheel right now — already the app's accent, because the
-  /// app is what is being painted while the thumb moves.
+  /// The colour on the wheel right now — a preview, not the app's accent until
+  /// Done is pressed.
   late Color _color = widget.accent.seed;
 
   /// Whether what the wheel is showing came from the user rather than from the
@@ -1913,12 +1950,25 @@ class _AccentWheelDialogState extends State<_AccentWheelDialog> {
   /// never sees when they need it.
   late bool _custom = widget.accent.isCustom;
 
+  /// Records the colour under the thumb without painting the app with it.
+  ///
+  /// The wheel used to repaint every surface on every drag event, which made a
+  /// phone stutter while the user was still choosing. Nothing is applied until
+  /// Done: the dialog previews the pick in its own disc, and the app stays on
+  /// the colour it had — including when the dialog is dismissed any other way.
   void _choose(Color color) {
     setState(() {
       _color = color;
       _custom = NexusAccent.custom(color).isCustom;
     });
-    widget.onChanged(NexusAccent.custom(color));
+  }
+
+  /// The one moment the pick becomes the app's accent.
+  void _commit() {
+    widget.onChanged(
+      _color == kNexusAccent ? NexusAccent.purple : NexusAccent.custom(_color),
+    );
+    Navigator.of(context).pop();
   }
 
   @override
@@ -1945,19 +1995,15 @@ class _AccentWheelDialogState extends State<_AccentWheelDialog> {
         if (_custom)
           TextButton(
             key: kNexusResetAccent,
-            onPressed: () {
-              setState(() {
-                _color = kNexusAccent;
-                _custom = false;
-              });
-              widget.onChanged(NexusAccent.purple);
-            },
+            // A pending reset, like a pending colour: it takes effect when the
+            // dialog is confirmed, so Cancel still means cancel.
+            onPressed: () => setState(() {
+              _color = kNexusAccent;
+              _custom = false;
+            }),
             child: const Text('Reset'),
           ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Done'),
-        ),
+        TextButton(onPressed: _commit, child: const Text('Done')),
       ],
     );
   }
@@ -2033,6 +2079,414 @@ class NexusMockMessage {
   /// Whether a [system] line reports something that happened (true) or a
   /// refusal. Only the icon changes.
   final bool ok;
+}
+
+// ---------------------------------------------------------------------------
+// The action interceptor
+// ---------------------------------------------------------------------------
+
+/// One reply, split into the prose the user should see and the action requests
+/// buried in it.
+///
+/// A small model does not keep the promise the rules make. It writes
+/// `{action: "set_flashlight"}` (unquoted keys, because the grammar of JSON is
+/// not the grammar of the sentence), wraps it in a friendly sentence, or fences
+/// it in Markdown — and every one of those used to reach the thread as text,
+/// because [SystemActionCall.tryParse] only reads strict JSON. The user then
+/// saw a flashlight request instead of a flashlight.
+///
+/// So the shell reads the shape as well as the JSON: a flat `{…}` block anywhere
+/// in the reply is normalised (quotes, unquoted keys, trailing commas) and only
+/// then offered to the same guarded parser that already refuses unknown actions
+/// and missing arguments. A block that survives is stripped from the text and
+/// run; a block that does not is prose, exactly as before.
+@immutable
+class NexusActionIntercept {
+  const NexusActionIntercept(
+    this.text,
+    this.calls, {
+    this.refused = const <String>[],
+  });
+
+  /// What is left to show: the reply with every recognised action request
+  /// removed, and the Markdown fence it was wrapped in taken with it.
+  ///
+  /// Also JSON the model wrote as an *answer* has been read into words by
+  /// [nexusReadableText]: asked "what is two plus two", a 1B model replies
+  /// `{"result": 4}` instead of a sentence, and the thread shows "4". Raw
+  /// JSON syntax never reaches the screen, because a bubble is read as a
+  /// message and `{` is not how a message starts.
+  final String text;
+
+  /// The requests, in the order the model wrote them. Already validated: an
+  /// action that runs from here is one the phone has and can carry out.
+  final List<SystemActionCall> calls;
+
+  /// Action *names* the model asked for that this phone does not have.
+  ///
+  /// Measured on the A25, and the reason this field exists: asked "it's dark in
+  /// here", llama3.2 answered `{"action":"turn_down_brightness","state":90}`,
+  /// which is not the vocabulary — the phone's is `set_brightness` with a
+  /// `level`. The old rule left anything unrecognised on screen "as written",
+  /// so the user got a wall of JSON where a sentence belonged. A request is
+  /// never prose: whatever the model called it, the block is taken out of the
+  /// text and the shell answers for it.
+  final List<String> refused;
+
+  bool get hasAction => calls.isNotEmpty;
+
+  /// True while there is an action request to answer for — one to run, or one
+  /// to admit to not having.
+  bool get acted => calls.isNotEmpty || refused.isNotEmpty;
+}
+
+/// A flat JSON object. The action vocabulary is flat by design — one action and
+/// its scalar arguments — so a brace region with no braces inside it is the
+/// exact shape being looked for, and a nested object in prose is left alone.
+final RegExp _actionBlock = RegExp(r'\{[^{}]*\}');
+
+/// A key that is a bare word rather than a quoted string: `{action: …}`.
+final RegExp _bareKey = RegExp(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:');
+
+/// A bare word where a value belongs: `{action: set_timer, seconds: 300}`.
+///
+/// Quoted strings, numbers, booleans, null and nested containers are skipped —
+/// only the unquoted word a model writes for an action name or a state is
+/// quoted. The lookahead is what keeps `true` and `false` from becoming the
+/// strings `"true"` and `"false"`.
+final RegExp _bareValue = RegExp(
+  r'(:\s*)(?!["\d\-\[{]|true\b|false\b|null\b)'
+  r'([A-Za-z_][A-Za-z0-9_ ]*?)(\s*[,}])',
+);
+
+/// A comma before the end of an object: `{"state":"on",}`.
+final RegExp _trailingComma = RegExp(r',\s*([}\]])');
+
+/// The name inside a block that is shaped like an action request, wherever the
+/// phone knows it or not: `{"action":"turn_down_brightness","state":90}`. Read
+/// off the loosened text, so the unquoted `{action: set_flashlight}` a small
+/// model writes counts too.
+final RegExp _askedActionName = RegExp(r'"action"\s*:\s*"([^"]*)"');
+
+/// The action name [loose] asks for, or null when the block is not an action
+/// request at all — a JSON object the model wrote for its own reasons, which is
+/// left where it is.
+String? _askedNameIn(String loose) {
+  final String? name = _askedActionName.firstMatch(loose)?.group(1)?.trim();
+  return (name == null || name.isEmpty) ? null : name;
+}
+
+/// Splits [reply] into visible prose, runnable action calls, and the requests
+/// the phone cannot honour.
+///
+/// Never throws, and never invents an action: [SystemActionCall.tryParse] is
+/// still the one gate, so a `launch_missiles` block is never *run*. It is not
+/// printed either — a block that names an action is an action request, and the
+/// user gets the shell's sentence about it instead of the JSON that asked.
+///
+/// A block that is not action-shaped at all (no `action` key) is not printed as
+/// JSON either. It is read by [nexusReadableText], which takes the answer out
+/// of it — `{"result": 4}` is "4" — and the same goes for a reply with no
+/// action in it at all. The model may answer in JSON; the thread speaks prose.
+NexusActionIntercept interceptSystemActions(String reply) {
+  final List<SystemActionCall> calls = <SystemActionCall>[];
+  final List<String> refused = <String>[];
+  String prose = reply;
+  for (final RegExpMatch match in _actionBlock.allMatches(reply)) {
+    final String? block = match.group(0);
+    if (block == null) continue;
+    final String loose = _looseActionJson(block);
+    final SystemActionCall? call = SystemActionCall.tryParse(loose);
+    final String? asked = _askedNameIn(loose);
+    if (call == null && asked == null) continue;
+    if (call == null) {
+      refused.add(asked!);
+    } else {
+      calls.add(call);
+    }
+    prose = prose.replaceFirst(block, '');
+  }
+  if (calls.isEmpty && refused.isEmpty) {
+    // Nothing loose matched. Strict JSON can still be an action with nested
+    // braces in a string argument (an app called "Notes {beta}"), which the
+    // flat-block scan above deliberately does not read.
+    final SystemActionCall? strict = SystemActionCall.tryParse(reply);
+    if (strict != null) {
+      return NexusActionIntercept('', <SystemActionCall>[strict]);
+    }
+    final String? asked = _askedNameIn(_looseActionJson(reply));
+    if (asked != null) {
+      return NexusActionIntercept(
+        '',
+        const <SystemActionCall>[],
+        refused: <String>[asked],
+      );
+    }
+    return NexusActionIntercept(
+      _tidyProse(nexusReadableText(reply)),
+      const <SystemActionCall>[],
+    );
+  }
+  return NexusActionIntercept(
+    _tidyProse(nexusReadableText(prose)),
+    calls,
+    refused: refused,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// JSON in, words out
+// ---------------------------------------------------------------------------
+
+/// The keys a model uses when it puts the answer itself in an object: asked
+/// "what is two plus two", llama3.2 answers `{"result": 4}`. Lower-cased and
+/// compared case-insensitively, because `Result` is the same field.
+const List<String> _answerKeys = <String>[
+  'result',
+  'answer',
+  'text',
+  'response',
+];
+
+/// [text] with every JSON object or array in it replaced by what a person
+/// would read.
+///
+/// This is the other half of the interceptor above. A 1B model answers in JSON
+/// as readily as in a sentence, and a bubble is the wrong place to show that:
+/// the user asked a question, not for a wire format. Three shapes are handled,
+/// in the order a reader would want them:
+///
+///  * an object with an answer field (`result`, `answer`, `text`, `response`) —
+///    the value alone, so `{"result": 4}` reads as "4";
+///  * an array of scalars — its items, separated by commas;
+///  * anything else that is still shaped like JSON — the punctuation taken out,
+///    so `{"colour": "red"}` reads as "colour: red" rather than as nothing.
+///
+/// A brace region that is *not* shaped like JSON — prose in braces, a code
+/// snippet with no quotes or colons in it — is left exactly as written: the
+/// point is to stop the model's wire format, not to edit the user's text.
+/// Run to a fixed point, because an extracted value can itself be JSON (a model
+/// that answered `{"result": "{\"answer\": 4}"}`).
+@visibleForTesting
+String nexusReadableText(String text) {
+  var out = text;
+  for (var pass = 0; pass < 3; pass++) {
+    final String next = _readablePass(out);
+    if (next == out) break;
+    out = next;
+  }
+  return _unclosedJson(out);
+}
+
+/// One pass of [nexusReadableText]: every balanced `{…}` and `[…]` region is
+/// read into words and the rest of [text] is copied through untouched.
+String _readablePass(String text) {
+  final StringBuffer out = StringBuffer();
+  int i = 0;
+  while (i < text.length) {
+    final String ch = text[i];
+    if (ch != '{' && ch != '[') {
+      out.write(ch);
+      i++;
+      continue;
+    }
+    final int end = _balancedEnd(text, i);
+    if (end < 0) {
+      out.write(ch);
+      i++;
+      continue;
+    }
+    final String region = text.substring(i, end + 1);
+    final Object? decoded = _decodeJson(region);
+    if (decoded == null) {
+      out.write(_looksJson(region) ? _stripJsonSyntax(region) : region);
+    } else {
+      out.write(_readableValue(decoded, region));
+    }
+    i = end + 1;
+  }
+  return out.toString();
+}
+
+/// The index of the brace or bracket that closes the one at [start], or -1 when
+/// it never closes.
+///
+/// Quotes and escapes are tracked, so a brace inside a string does not end the
+/// region early; a mismatched closer (`{]`) never matches, because a region the
+/// parser would refuse is not a region this may rewrite.
+int _balancedEnd(String text, int start) {
+  final List<String> expected = <String>[];
+  bool inString = false;
+  bool escaped = false;
+  for (int i = start; i < text.length; i++) {
+    final String ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch == r'\') {
+        escaped = true;
+      } else if (ch == '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch == '"') {
+      inString = true;
+    } else if (ch == '{' || ch == '[') {
+      expected.add(ch == '{' ? '}' : ']');
+    } else if (ch == '}' || ch == ']') {
+      if (expected.isEmpty || expected.last != ch) return -1;
+      expected.removeLast();
+      if (expected.isEmpty) return i;
+    }
+  }
+  return -1;
+}
+
+/// [region] as JSON, strict first and then loosened the way the action parser
+/// loosens it (single quotes, bare keys, Python's `True`). Null when neither
+/// reads it.
+Object? _decodeJson(String region) {
+  try {
+    return jsonDecode(region);
+  } catch (_) {
+    // A small model writes Python as readily as JSON; the looseness is the
+    // same one [SystemActionCall.tryParse] is given.
+  }
+  try {
+    return jsonDecode(_looseActionJson(region));
+  } catch (_) {
+    return null;
+  }
+}
+
+/// True for a region that is *shaped* like JSON even when it does not parse: it
+/// has a quoted string or a key in it. `{curly braces}` is prose and is left
+/// alone; `{"colour": "red"}` is not.
+bool _looksJson(String region) => region.contains('"') || region.contains(":");
+
+/// What [decoded] says, in words, with [region] as the fallback when it says
+/// nothing this knows how to read.
+String _readableValue(Object decoded, String region) {
+  if (decoded is Map) {
+    for (final String key in _answerKeys) {
+      for (final MapEntry<Object?, Object?> entry in decoded.entries) {
+        final Object? name = entry.key;
+        if (name is! String || name.trim().toLowerCase() != key) continue;
+        final String? value = _answerText(entry.value);
+        if (value != null && value.isNotEmpty) return value;
+      }
+    }
+  } else if (decoded is List) {
+    final List<String> parts = <String>[];
+    for (final Object? item in decoded) {
+      final String? value = _answerText(item);
+      if (value == null || value.isEmpty) {
+        parts.clear();
+        break;
+      }
+      parts.add(value);
+    }
+    if (parts.isNotEmpty) return parts.join(', ');
+  }
+  return _stripJsonSyntax(region);
+}
+
+/// A JSON scalar as text. Null for null and for a nested container, which are
+/// not answers to read out on their own.
+String? _answerText(Object? value) {
+  if (value is String) return value.trim();
+  if (value is num || value is bool) return '$value';
+  return null;
+}
+
+/// [json] with the punctuation taken out: braces, brackets and quotes go, the
+/// words and the spacing stay, so `{"colour": "red"}` reads "colour: red".
+String _stripJsonSyntax(String json) {
+  var out = json.replaceAll(RegExp(r'[{}]'), '');
+  out = out.replaceAll(RegExp(r'^\[\s*|\s*\]$'), '');
+  out = out.replaceAll('"', '');
+  out = out.replaceAll(RegExp(r'\s+'), ' ').trim();
+  return out.replaceAll(RegExp(r'^:+|:+$'), '').trim();
+}
+
+/// A reply that *begins* with an object or array and never closes it.
+///
+/// A truncated object is still not a sentence: the opening brace goes, the
+/// words and the key/value colons stay, so half a `{"result": 4` reads as
+/// "result: 4" instead of as a broken object. Only a reply that begins with
+/// the brace is touched — a lone brace in the middle of prose is the user's
+/// text, not a wire format.
+String _unclosedJson(String text) {
+  final String trimmed = text.trim();
+  if (trimmed.isEmpty ||
+      !(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    return text;
+  }
+  var out = trimmed.replaceAll(RegExp(r'^[{\[]+'), '');
+  out = out.replaceAll(RegExp(r'[}\]]+$'), '');
+  out = out.replaceAll('"', '');
+  return out.trim();
+}
+
+/// [name] the way a person would say it: `turn_down_brightness` reads as
+/// "turn down brightness" in the sentence the shell answers with.
+@visibleForTesting
+String nexusActionPhrase(String name) =>
+    name.replaceAll(RegExp(r'[\s_]+'), ' ').trim();
+
+/// What the thread says when the model asks for something this phone cannot do.
+///
+/// The alternative the report found on the device was the model's own JSON in
+/// the bubble, which is worse than a refusal: it looks like output, and it asks
+/// the user to read a request they already made.
+@visibleForTesting
+String nexusUnknownActionLine(String name) =>
+    'I can\'t do that yet — “${nexusActionPhrase(name)}” isn\'t one of my phone '
+    'actions.';
+
+/// [text] as far as it can be shown while an answer is still streaming.
+///
+/// A half-written `{` is not a sentence, and a model that is about to ask for
+/// an action must never spell its request out in the thread or in the live
+/// page's large type. Everything before the first brace streams normally; from
+/// the brace on, the screen waits for the reply to be whole and the interceptor
+/// to decide whether it was an action.
+@visibleForTesting
+String nexusStreamingProse(String text) {
+  final int brace = text.indexOf('{');
+  return brace < 0 ? text : text.substring(0, brace);
+}
+
+/// [json] in the shape `jsonDecode` accepts, without changing its meaning.
+///
+/// Deliberately mechanical: single quotes become double, a bare key gets its
+/// quotes, Python's `True`/`False`/`None` become JSON's, and a trailing comma
+/// is dropped. Values are not rewritten, so an action the phone does not have
+/// still fails the parser afterwards instead of being normalised into one.
+String _looseActionJson(String json) {
+  var out = json.trim();
+  out = out.replaceAll("'", '"');
+  out = out.replaceAll(RegExp(r'\bTrue\b'), 'true');
+  out = out.replaceAll(RegExp(r'\bFalse\b'), 'false');
+  out = out.replaceAll(RegExp(r'\bNone\b'), 'null');
+  out = out.replaceAllMapped(_bareKey, (Match m) => '${m[1]}"${m[2]}":');
+  out = out.replaceAllMapped(
+    _bareValue,
+    (Match m) => '${m[1]}"${m[2]}"${m[3]}',
+  );
+  out = out.replaceAllMapped(_trailingComma, (Match m) => m[1] ?? '');
+  return out;
+}
+
+/// The reply with the scaffolding an action was wrapped in taken out: empty
+/// Markdown fences, doubled spaces, the blank line a stripped block leaves.
+String _tidyProse(String text) {
+  var out = text.replaceAll(RegExp(r'```[A-Za-z]*[ \t]*'), '');
+  out = out.replaceAll(RegExp(r'[ \t]+\n'), '\n');
+  out = out.replaceAll(RegExp(r'\n{3,}'), '\n\n');
+  out = out.replaceAll(RegExp(r'[ \t]{2,}'), ' ');
+  return out.trim();
 }
 
 /// How a listening session was opened, which is the whole difference between
@@ -2218,6 +2672,25 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// page that had already moved on.
   int _liveTurns = 0;
 
+  /// True while the assistant's answer is being read out loud.
+  ///
+  /// The live page draws a Stop speaking control while this is set, and tapping
+  /// the page (or that control) cuts the voice off. It is cleared by the
+  /// platform's own `done`, by the stop, and by the page closing — never left on
+  /// after the microphone is allowed to open again.
+  bool _speaking = false;
+
+  /// The platform's completion for the utterance in flight, and the pause that
+  /// follows it before the microphone reopens. Both are cancelled by a stop, a
+  /// new turn, or the page going away.
+  StreamSubscription<void>? _speechDone;
+  Timer? _autoListen;
+
+  /// How long live conversation waits after the voice stops before it listens
+  /// again. Long enough for the user to interrupt, short enough that the room
+  /// does not feel dead.
+  static const Duration _autoListenGap = kLiveAutoListenDelay;
+
   /// The live conversation in progress, oldest first.
   ///
   /// One list, three readers: the page draws it, the model is handed it as
@@ -2238,8 +2711,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   List<AiTurn> get _liveHistory {
     final List<AiTurn> turns = <AiTurn>[
       for (final NexusMockMessage message in _liveThread)
-        if (!message.failed)
-          AiTurn(fromUser: message.mine, text: message.text),
+        if (!message.failed) AiTurn(fromUser: message.mine, text: message.text),
     ];
     if (turns.isNotEmpty && turns.last.fromUser) turns.removeLast();
     return trimAiHistory(turns);
@@ -2400,6 +2872,14 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // stays a one-line release rather than a second place that has to remember
     // to log. And it cannot repaint: a disposed element throws on setState.
     if (_listening) unawaited(SpeechInput.current.stop());
+    // A voice and its reopen timer belong to this screen: leaving them behind
+    // would let the phone talk to a page that no longer exists, or open the
+    // microphone from a listener nobody can see.
+    _speechDone?.cancel();
+    _speechDone = null;
+    _autoListen?.cancel();
+    _autoListen = null;
+    if (_speaking) unawaited(SpeechOutput.current.stop());
     _live.dispose();
     _micLevel.dispose();
     WidgetsBinding.instance.removeObserver(this);
@@ -2423,6 +2903,20 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   }
 
   bool get _hasText => _message.text.trim().isNotEmpty;
+
+  /// Puts one of the empty screen's suggestions into the field.
+  ///
+  /// Fills the draft rather than sending it: the suggestion is a sentence the
+  /// user can finish or edit ("Turn on the flashlight … in the kitchen" is not
+  /// the same request), and a tap that fired an action immediately would be a
+  /// one-tap way to turn the torch on by accident.
+  void _useSuggestion(String text) {
+    setState(() {
+      _message.text = text;
+      _message.selection = TextSelection.collapsed(offset: text.length);
+    });
+    _focus.requestFocus();
+  }
 
   /// Sends the draft: the user's bubble, a placeholder for the answer, and the
   /// request to the model on the PC.
@@ -2462,6 +2956,41 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // 60%." without acting is the one failure this app cannot ship. The model
     // is still what answers everything else — including the relative steps
     // ("a bit dimmer") this cannot express.
+    // The clock is the shell's, and a model cannot know it: asked on the A25
+    // (with the time in its system turn) it answered "07:30" at 14:24. So a
+    // question about the time is answered here, and the model is not asked at
+    // all — the same rule as the phrase bridge below, for the same reason.
+    if (isClockQuestion(text)) {
+      unawaited(
+        _runAction(
+          const SystemActionCall('get_time'),
+          _thread.length - 1,
+          spoken: spoken,
+        ),
+      );
+      return;
+    }
+    // Arithmetic is the shell's too, and for a sharper reason than the clock:
+    // measured on the A25, "what is 6 times 7" made the 1B model answer
+    // `{"action":"set_timer","seconds":420}` — a seven-minute timer where an
+    // answer belonged. One operation between two numbers has one answer, so
+    // the shell works it out and the model is not asked.
+    final String? sum = nexusMathAnswer(text);
+    if (sum != null) {
+      _sayLocally(sum, _thread.length - 1, spoken: spoken);
+      return;
+    }
+    // A question about a picture goes to the vision layer, never to a text
+    // brain: a model that cannot see answers "what is this?" with an invented
+    // description, and the user has no way to tell one from a sighting. There
+    // is no vision module installed yet, so the shell says so.
+    final String? picture = _pictureAttached(_thread.length - 2);
+    if (picture != null && isVisionQuestion(text)) {
+      unawaited(
+        _describePicture(picture, text, _thread.length - 1, spoken: spoken),
+      );
+      return;
+    }
     final SystemActionCall? known = actionFromPhrase(text);
     if (known != null) {
       unawaited(_runAction(known, _thread.length - 1, spoken: spoken));
@@ -2470,35 +2999,101 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     unawaited(_answer(text, _thread.length - 1, spoken: spoken));
   }
 
-  /// Puts a captured photo or screenshot into the thread and asks the brain
-  /// about it.
+  /// Puts a captured photo or screenshot into the thread and asks the vision
+  /// layer about it.
   ///
   /// The picture is the user's turn, so it takes a user bubble — the thumbnail
   /// plus a caption — and a placeholder follows it exactly as a typed question
-  /// does. What the brain is asked, though, is not the caption: it is
-  /// [AttachmentKind.prompt], a bracketed sentence that says a picture was
-  /// attached. The shipped on-device model cannot see images, and a prompt that
-  /// implied it could would be answered with an invented description.
+  /// does. What is asked about it, though, is not the caption: it is
+  /// [AttachmentKind.prompt], handed to [VisionAiService] together with the
+  /// path. It is deliberately *not* handed to a text model: the brains this
+  /// build runs cannot see, and a model given "[User attached a photo]" answers
+  /// a question about a picture with an invention. Until a vision module is
+  /// installed, the service says so in words.
   void _sendAttachment(String path, AttachmentKind kind) {
     setState(() {
-      _thread.add(
-        NexusMockMessage(kind.caption, mine: true, imagePath: path),
-      );
+      _thread.add(NexusMockMessage(kind.caption, mine: true, imagePath: path));
       _thread.add(const NexusMockMessage(kNexusThinking, thinking: true));
     });
     _persistThread();
     _focus.unfocus();
     _scrollToLatest();
-    unawaited(_answer(kind.prompt, _thread.length - 1, spoken: false));
+    unawaited(
+      _describePicture(path, kind.prompt, _thread.length - 1, spoken: false),
+    );
+  }
+
+  /// Answers [question] about [path] with the vision layer, in the bubble the
+  /// placeholder is in.
+  ///
+  /// Asynchronous because a sighted implementation will be (an encoder run, a
+  /// request over the mesh); the shipped one answers immediately with the
+  /// sentence that says it has no eyes. A failure is a sentence too — the
+  /// service answers rather than throwing, so this never has to catch.
+  Future<void> _describePicture(
+    String path,
+    String question,
+    int index, {
+    required bool spoken,
+  }) async {
+    final String answer = await VisionAiService.current.describe(
+      path,
+      question: question,
+    );
+    if (!mounted || index >= _thread.length) return;
+    _sayLocally(answer, index, spoken: spoken);
+  }
+
+  /// The picture the question at [before] is about, or null.
+  ///
+  /// The last thing the *user* said before this question is the turn a
+  /// follow-up refers to: after a photo, "what is this?" means the photo;
+  /// after a typed question, it means the words. Only a user turn that carries
+  /// an image counts, and only the newest one — a picture further up the thread
+  /// is not what "this" points at, and answering as though it were would
+  /// refuse a question nobody asked the shell.
+  ///
+  /// [before] is the index of the question itself, which is already in the
+  /// thread: it is a user turn with no picture, so reading from the end would
+  /// always answer "no picture" and the notice would never be said.
+  String? _pictureAttached(int before) {
+    for (int i = before - 1; i >= 0; i--) {
+      final NexusMockMessage message = _thread[i];
+      if (!message.mine) continue;
+      return message.imagePath;
+    }
+    return null;
+  }
+
+  /// Puts [answer] where the placeholder is, as a normal bubble.
+  ///
+  /// This is the shell speaking as itself with something it worked out — a
+  /// sum, or what the vision layer said — not the model and not a system pill:
+  /// it looks like every other answer, it is stored like one, and a spoken
+  /// question hears it back.
+  void _sayLocally(String answer, int index, {required bool spoken}) {
+    if (!mounted || index >= _thread.length) return;
+    setState(() => _thread[index] = NexusMockMessage(answer));
+    _persistThread();
+    _scrollToLatest();
+    if (spoken) unawaited(SpeechOutput.current.speak(answer));
   }
 
   /// The composer's camera button: a full-screen preview, one shutter, and the
   /// kept photo back into the thread.
   Future<void> _openCamera() async {
+    // One line on the log Flutter already writes, so `adb logcat | grep
+    // camera:` answers "did the button fire?" without a debugger. The page has
+    // its own `CAMERA:` lines for what happened after it opened; this one is the
+    // tap itself, which is the half that kept being assumed rather than proven.
+    debugPrint('camera: attach button tapped ${_stamp()}');
     // Closing the keyboard first: the camera page is full screen, and coming
     // back to a raised keyboard over the thread would cover the new bubble.
     _focus.unfocus();
     final String? path = await CameraPage.open(context);
+    debugPrint(
+      'camera: page closed path=${path == null ? 'none' : 'kept'} ${_stamp()}',
+    );
     if (path == null || !mounted) return;
     _sendAttachment(path, AttachmentKind.photo);
   }
@@ -2506,8 +3101,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// The composer's screen button: one frame of this phone through the
   /// platform's own projection dialog.
   Future<void> _captureScreen() async {
+    debugPrint('screen: share button tapped ${_stamp()}');
     _focus.unfocus();
     final ScreenCaptureResult result = await ScreenCapture.capture();
+    debugPrint('screen: capture ${result.ok ? 'ok' : 'refused'} ${_stamp()}');
     if (!mounted) return;
     final String? path = result.path;
     if (path == null) {
@@ -2530,7 +3127,9 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// One short sentence over the thread — what a refusal or a failed capture
   /// gets, in the place the user is already looking.
   void _say(String message) {
-    final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(context);
+    final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(
+      context,
+    );
     if (messenger == null) return;
     messenger
       ..hideCurrentSnackBar()
@@ -2552,11 +3151,12 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     await log.attach();
     if (!mounted || log.entries.isEmpty) return;
     if (_thread.isNotEmpty) return;
+    bool repaired = false;
     setState(() {
       _thread.addAll(<NexusMockMessage>[
         for (final ChatEntry entry in log.entries)
           NexusMockMessage(
-            entry.text,
+            _restoredText(entry, onRepair: () => repaired = true),
             mine: entry.mine,
             failed: entry.failed,
             system: entry.system,
@@ -2565,7 +3165,33 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
           ),
       ]);
     });
+    // A line the fix rewrote is written back, so the disk is clean too and the
+    // next launch does not have to repair it again. Only when something
+    // changed: a save on every open would be a write for no reason.
+    if (repaired) _persistThread();
     _scrollToLatest();
+  }
+
+  /// [entry]'s words as this build shows them.
+  ///
+  /// The user's own lines and the shell's are copied exactly as saved — they
+  /// were never the model's output. An *answer* saved before
+  /// [nexusReadableText] existed can still be a JSON object (the A25's thread
+  /// had `{ "result": 4 }` in it), and the point of the interceptor is that
+  /// the screen never shows one; reading it on the way in is what makes that
+  /// true of a conversation that predates the fix, not only of the next one.
+  String _restoredText(ChatEntry entry, {required VoidCallback onRepair}) {
+    if (entry.mine || entry.system || entry.imagePath != null) {
+      return entry.text;
+    }
+    final String text = nexusReadableText(entry.text).trim();
+    if (text.isEmpty) {
+      onRepair();
+      return kNexusNoAnswerText;
+    }
+    if (text == entry.text) return entry.text;
+    onRepair();
+    return text;
   }
 
   /// Writes the thread, as the screen holds it, to the log.
@@ -2618,11 +3244,32 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// The line stays the shell's (it is still drawn as a pill, it is still not
   /// something the model wrote); it is only *context* that it was said.
   List<AiTurn> _historyBefore(int index) {
-    final List<AiTurn> turns = <AiTurn>[
-      for (final NexusMockMessage message in _thread.take(index))
-        if (!message.thinking && !message.failed)
-          AiTurn(fromUser: message.mine, text: message.text),
-    ];
+    // What the model is shown of the shell's own lines is a deliberate split.
+    //
+    // A *successful* action line stays: "Timer set for 5 minutes." is the reply
+    // to the question, and a model handed the question with no reply reads the
+    // next turn as a second half of the same request (measured on llama3.2,
+    // which answered "turn on the flashlight" by setting the timer again).
+    //
+    // A *refusal* does not: "I can't do that yet — "get description" isn't one
+    // of my phone actions" contains an action-shaped word, teaches nothing about
+    // what happened, and measurably turns a small model into an action machine.
+    // On the A25 a thread with three of them in it answered "explain what a mesh
+    // network is" with a Wi-Fi request.
+    final List<AiTurn> turns = <AiTurn>[];
+    for (final NexusMockMessage message in _thread.take(index)) {
+      if (message.thinking || message.failed) continue;
+      if (message.system && !message.ok) continue;
+      // Two questions in a row is what dropping a refusal leaves behind, and a
+      // chat template built for alternating turns reads it as one question
+      // asked twice. The later one is the one still being asked — and keeping
+      // it (rather than the earlier one) keeps the question beside its answer.
+      if (message.mine && turns.isNotEmpty && turns.last.fromUser) {
+        turns[turns.length - 1] = AiTurn.user(message.text);
+        continue;
+      }
+      turns.add(AiTurn(fromUser: message.mine, text: message.text));
+    }
     if (turns.isNotEmpty && turns.last.fromUser) turns.removeLast();
     return trimAiHistory(turns);
   }
@@ -2655,6 +3302,26 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     });
   }
 
+  /// Switches to Qwen 0.5B when the model the user picked does not fit.
+  ///
+  /// Answers whether the caller should ask again. True only when the smaller
+  /// model is actually on this phone and is not already the selected one — a
+  /// switch to a file that is not there would turn one honest failure into a
+  /// second, less useful one. The selection is written through [ModelChoice], so
+  /// the next question loads the smaller weights and the Settings row agrees.
+  Future<bool> _switchToSmallerModel(InsufficientMemoryException error) async {
+    if (ModelChoice.instance.choice == OnDeviceModelChoice.qwen) return false;
+    const OnDeviceModel model = OnDeviceModel();
+    if (!await model.withChoice(OnDeviceModelChoice.qwen).isPresent()) {
+      return false;
+    }
+    debugPrint(
+      'AI: ${error.message} Switching to ${OnDeviceModelChoice.qwen.label}.',
+    );
+    await ModelChoice.instance.select(OnDeviceModelChoice.qwen);
+    return true;
+  }
+
   /// Waits for the answer and puts it where the placeholder was.
   ///
   /// A failure is not an exception on its way to a crash reporter: it is a
@@ -2680,46 +3347,67 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // is ChatML) and Ollama through `/api/chat`; nothing here hand-writes
     // `<|im_start|>`, which would template the turns a second time.
     final List<AiTurn> history = _historyBefore(index);
-    try {
-      await for (final String piece
-          in LocalAiService.current.generateResponseStream(
-            prompt,
-            history: history,
-          )) {
-        // The screen may be gone, and the bubble may have been answered
-        // already by a seam that resolved twice: a replaced bubble is left
-        // alone.
-        if (!mounted || index >= _thread.length) return;
-        if (!shown && !_thread[index].thinking) return;
-        buffer.write(piece);
-        // A reply that opens with `{` may be an action request, and half a JSON
-        // object is not a sentence: the placeholder stays until the request is
-        // whole and [_runAction] can say what happened. Prose streams exactly as
-        // it always did, so nothing that is not an action pays for this.
-        if (buffer.toString().trimLeft().startsWith('{')) continue;
-        shown = true;
-        // A half-written answer is a placeholder, not a reply: the words are
-        // on screen as they arrive, and the copy/speaker row waits for the
-        // sentence to be whole. See [NexusChatBubble.thinking].
-        setState(
-          () => _thread[index] = NexusMockMessage(
-            buffer.toString(),
-            thinking: true,
-          ),
-        );
-        _scrollToLatestSoon();
+    // Two attempts at most: a model that does not fit is retried once on the
+    // smaller one the user has, and a guard that fires again is the answer.
+    for (int attempt = 0; ; attempt++) {
+      try {
+        await for (final String piece
+            in LocalAiService.current.generateResponseStream(
+              prompt,
+              history: history,
+            )) {
+          // The screen may be gone, and the bubble may have been answered
+          // already by a seam that resolved twice: a replaced bubble is left
+          // alone.
+          if (!mounted || index >= _thread.length) return;
+          if (!shown && !_thread[index].thinking) return;
+          buffer.write(piece);
+          // A reply that has reached a `{` may be an action request, and half a
+          // JSON object is not a sentence: the visible text stops at the brace
+          // and the placeholder stays until the request is whole and the
+          // interceptor can say what happened. Prose streams exactly as it
+          // always did, so nothing that is not an action pays for this.
+          final String visible = nexusStreamingProse(buffer.toString());
+          if (visible.trim().isEmpty && buffer.toString().contains('{')) {
+            continue;
+          }
+          shown = true;
+          // A half-written answer is a placeholder, not a reply: the words are
+          // on screen as they arrive, and the copy/speaker row waits for the
+          // sentence to be whole. See [NexusChatBubble.thinking].
+          setState(
+            () => _thread[index] = NexusMockMessage(visible, thinking: true),
+          );
+          _scrollToLatestSoon();
+        }
+        break;
+      } on InsufficientMemoryException catch (error) {
+        // The guard fires before a weight is loaded, so nothing has been shown
+        // and the smaller model can be asked the same question. Once only: a
+        // guard that fires again is the answer, not a reason to keep trying.
+        if (attempt == 0 && await _switchToSmallerModel(error)) {
+          buffer.clear();
+          shown = false;
+          continue;
+        }
+        _appendFailure(buffer, kNexusNotEnoughMemoryText);
+        failed = true;
+        break;
+      } on OllamaException catch (error) {
+        _appendFailure(buffer, error.message);
+        failed = true;
+        break;
+      } on OnDeviceAiException catch (error) {
+        // The model stopped mid-answer: the words it managed are kept, and the
+        // sentence that says so is what the bubble ends with.
+        _appendFailure(buffer, error.message);
+        failed = true;
+        break;
+      } catch (_) {
+        _appendFailure(buffer, kNexusOllamaUnreachableText);
+        failed = true;
+        break;
       }
-    } on OllamaException catch (error) {
-      _appendFailure(buffer, error.message);
-      failed = true;
-    } on OnDeviceAiException catch (error) {
-      // The model stopped mid-answer: the words it managed are kept, and the
-      // sentence that says so is what the bubble ends with.
-      _appendFailure(buffer, error.message);
-      failed = true;
-    } catch (_) {
-      _appendFailure(buffer, kNexusOllamaUnreachableText);
-      failed = true;
     }
     if (!mounted || index >= _thread.length) return;
     String reply = buffer.toString();
@@ -2729,18 +3417,26 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       reply = kNexusOllamaUnreachableText;
       failed = true;
     }
-    // An answer that is one of the five actions is not an answer: it is the
-    // model asking this phone to do something. It is run here, before anything
-    // is shown, and the thread gets the shell's line about what happened rather
-    // than the JSON that asked for it. A reply that is *nearly* an action — an
-    // unknown name, a missing argument, prose that happens to contain braces —
-    // parses to null and falls through to the bubble below, exactly as written.
+    // An answer that contains an action request is not an answer: it is the
+    // model asking this phone to do something. The request is stripped and run
+    // here, before anything is shown, and the thread gets whatever prose was
+    // left plus the shell's line about what happened — never the JSON that
+    // asked for it. A reply that is *nearly* an action — an unknown name, a
+    // missing argument, an object that is not an action at all — has no calls
+    // to run and becomes the bubble below, with its JSON read into words.
     if (!failed) {
-      final SystemActionCall? call = SystemActionCall.tryParse(reply);
-      if (call != null) {
-        await _runAction(call, index, spoken: spoken);
+      final NexusActionIntercept intercept = interceptSystemActions(reply);
+      if (intercept.acted) {
+        await _runActions(intercept, index, spoken: spoken);
         return;
       }
+      // The interceptor is also where an answer written in JSON becomes words:
+      // the bubble shows what it returned, never the reply as it arrived. Asked
+      // "what is two plus two", a 1B model answers `{"result": 4}`, and "4" is
+      // the answer — the object is how it was said, not what it said.
+      reply = intercept.text.trim().isEmpty
+          ? kNexusNoAnswerText
+          : intercept.text;
     }
     setState(() => _thread[index] = NexusMockMessage(reply, failed: failed));
     // The answer is now half of what the next question will be read against.
@@ -2771,21 +3467,72 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     SystemActionCall call,
     int index, {
     required bool spoken,
+  }) => _runActions(
+    NexusActionIntercept('', <SystemActionCall>[call]),
+    index,
+    spoken: spoken,
+  );
+
+  /// Runs every action [intercept] found, and puts [intercept]'s prose — if any
+  /// — in the bubble the placeholder was in.
+  ///
+  /// The line that lands is the shell's, not the model's: [SystemActionOutcome]
+  /// carries what it did ("Flashlight on.") or the phone's own reason it could
+  /// not ("What app should I open?"). A model that wrote a sentence *and* an
+  /// action keeps its sentence: it is a real answer, and throwing it away
+  /// because the model also asked for something would be losing the half of the
+  /// reply the user can read. The pills follow it, one per action, in the order
+  /// they were asked for — and a request for an action this phone does not have
+  /// gets a pill of its own rather than the JSON the model wrote.
+  Future<void> _runActions(
+    NexusActionIntercept intercept,
+    int index, {
+    required bool spoken,
   }) async {
-    final SystemActionOutcome outcome = await SystemActions.current.execute(call);
+    final String prose = intercept.text.trim();
     if (!mounted || index >= _thread.length) return;
-    setState(
-      () => _thread[index] = NexusMockMessage(
-        outcome.message,
-        system: true,
-        ok: outcome.ok,
-      ),
-    );
-    // The action is half of what the next question will be read against, and it
-    // is stored as what it is: a line the shell wrote, not an answer.
-    _persistThread();
-    _scrollToLatest();
-    if (spoken) unawaited(SpeechOutput.current.speak(outcome.message));
+    int at = index;
+    if (prose.isEmpty) {
+      // The placeholder asked "Nexus is thinking…"; the first pill answers it.
+      // Removing it here and inserting at the same index keeps the exchange in
+      // the same place the answer would have taken.
+      setState(() => _thread.removeAt(index));
+    } else {
+      setState(() => _thread[index] = NexusMockMessage(prose));
+      at = index + 1;
+      _persistThread();
+      _scrollToLatest();
+    }
+    // What the model asked for, in the order it asked, each with whether the
+    // phone could do it: the actions first, then the requests with no action
+    // behind them. Both are the shell speaking about the phone, which is what a
+    // system line is.
+    final List<(String, bool)> lines = <(String, bool)>[];
+    for (final SystemActionCall call in intercept.calls) {
+      final SystemActionOutcome outcome = await SystemActions.current.execute(
+        call,
+      );
+      if (!mounted) return;
+      lines.add((outcome.message, outcome.ok));
+    }
+    for (final String name in intercept.refused) {
+      lines.add((nexusUnknownActionLine(name), false));
+    }
+    for (final (String line, bool ok) in lines) {
+      if (!mounted) return;
+      setState(
+        () => _thread.insert(
+          at.clamp(0, _thread.length),
+          NexusMockMessage(line, system: true, ok: ok),
+        ),
+      );
+      at++;
+      // The action is half of what the next question will be read against, and
+      // it is stored as what it is: a line the shell wrote, not an answer.
+      _persistThread();
+      _scrollToLatest();
+      if (spoken) unawaited(SpeechOutput.current.speak(line));
+    }
   }
 
   /// Appends a failure sentence to what has been streamed so far.
@@ -2854,7 +3601,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // are editable again the moment Stop or X ends the session (see
     // [_Composer], whose field is read-only for exactly this window).
     _focus.unfocus();
-    final int session = ++_micSessions;    setState(() {
+    final int session = ++_micSessions;
+    setState(() {
       _micSession = session;
       _micMode = mode;
     });
@@ -3162,6 +3910,15 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // voice yet, has not asked for a transcript, and has no pause running.
     _liveQuiet?.cancel();
     _liveQuiet = null;
+    // The next turn is the user's, so any speech left over from the last answer
+    // is cut off here rather than allowed to talk over them. Its completion
+    // listener and its reopen timer belong to that turn and go with it.
+    if (_speaking) unawaited(SpeechOutput.current.stop());
+    _speechDone?.cancel();
+    _speechDone = null;
+    _autoListen?.cancel();
+    _autoListen = null;
+    _speaking = false;
     _liveVoice = false;
     _liveFinished = false;
     _liveTurns++;
@@ -3178,7 +3935,72 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       _liveIdle = _LivePhase.waiting;
       _liveThinking = false;
     }
+    _syncLive();
     await _listen(_MicMode.live);
+  }
+
+  /// Reads [text] out loud and reopens the microphone once the voice is done.
+  ///
+  /// The completion comes from the platform (`done` on the speech-out channel),
+  /// not from a guessed duration: a second after the last word is the right
+  /// pause, and a second after the *first* word would talk over the answer.
+  /// Devices with no speech engine answer `false` immediately, and the turn is
+  /// handed back the same way.
+  void _speakThenListen(String text) {
+    _speechDone?.cancel();
+    _autoListen?.cancel();
+    _autoListen = null;
+    if (!mounted || !_liveOpen) return;
+    final SpeechOutput speech = SpeechOutput.current;
+    _speechDone = speech.spoken.listen((_) {
+      _speechDone?.cancel();
+      _speechDone = null;
+      _finishSpeaking();
+    });
+    setState(() => _speaking = true);
+    _syncLive();
+    unawaited(
+      speech.speak(text).then((bool spoke) {
+        // No engine, or it refused: there is nothing to listen for, so the turn
+        // comes back on the same 1.5 s beat as a finished sentence.
+        if (!spoke) _finishSpeaking();
+      }),
+    );
+  }
+
+  /// The voice has stopped: show the closed microphone, then hand the turn back.
+  ///
+  /// Guarded by [_speaking], so the platform's `done`, a stop, and a page close
+  /// racing each other cannot schedule the microphone twice.
+  void _finishSpeaking() {
+    if (!mounted || !_speaking) return;
+    setState(() => _speaking = false);
+    _syncLive();
+    _autoListen?.cancel();
+    _autoListen = Timer(_autoListenGap, () {
+      _autoListen = null;
+      if (!mounted ||
+          !_liveOpen ||
+          _listening ||
+          _liveThinking ||
+          _liveAnswering) {
+        return;
+      }
+      unawaited(_liveTurn());
+    });
+  }
+
+  /// Cut the voice off now, and do not reopen the microphone: the user asked
+  /// for quiet, and a page that starts listening 1.5 s later would be ignoring
+  /// the one control they pressed. The page stays on "tap to continue".
+  void _stopSpeaking() {
+    _speechDone?.cancel();
+    _speechDone = null;
+    _autoListen?.cancel();
+    _autoListen = null;
+    if (_speaking) setState(() => _speaking = false);
+    _syncLive();
+    unawaited(SpeechOutput.current.stop());
   }
 
   /// The guard ended a live turn: the microphone is closed and it stays closed.
@@ -3199,8 +4021,9 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _syncLive();
   }
 
-  /// The tap that opens a live turn — the only way one ever opens after the
-  /// first, whether the last one was heard or swept up by the guard.
+  /// The tap that opens a live turn by hand — after a Stop speaking, or after
+  /// the guard swept a silent room up. (An answer that finishes normally hands
+  /// the turn back on its own; see [_finishSpeaking].)
   ///
   /// Refused while an answer is on its way: the user tapping a *thinking* orb is
   /// asking to interrupt a request that is already out, and the honest answer is
@@ -3212,14 +4035,15 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
 
   /// A live turn ended with [text] — or with nothing, when the room was quiet.
   ///
-  /// The microphone closes here and stays closed until a tap: the old version
-  /// restarted itself after a pause, which on real hardware looked exactly like
-  /// an app recording a room nobody had asked about. What happens next depends on
-  /// whether there is anything to answer. A quiet turn has nothing to send, so it
-  /// lands straight in [waiting] with the previous sentence still on screen. A
-  /// turn with words in it goes to [thinking] while the PC is asked, and the
-  /// answer — or the reason there isn't one — replaces the large type when it
-  /// arrives, in [_liveAnswer].
+  /// The microphone closes here and does not reopen until an answer has been
+  /// spoken — the old version restarted itself after a pause, which on real
+  /// hardware looked exactly like an app recording a room nobody had asked
+  /// about. What happens next depends on whether there is anything to answer. A
+  /// quiet turn has nothing to send, so it lands straight in [waiting] with the
+  /// previous sentence still on screen. A turn with words in it goes to
+  /// [thinking] while the PC is asked, and the answer — or the reason there
+  /// isn't one — replaces the large type when it arrives, in [_liveAnswer]; that
+  /// is also where the 1.5 s hand-back is scheduled.
   void _onLiveHeard(String text) {
     if (!_liveOpen || !mounted) return;
     final String prompt = text.trim();
@@ -3237,6 +4061,22 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     unawaited(_liveAnswer(prompt, _liveTurns));
   }
 
+  /// Puts [text] on the live page as the answer, says it, and hands the turn
+  /// back — the shell answering as itself, with something it worked out.
+  void _answerLiveLocally(String text, int turn) {
+    if (!mounted || !_liveOpen || turn != _liveTurns) return;
+    setState(() {
+      _liveThinking = false;
+      _liveAnswering = false;
+      _liveIdle = _LivePhase.waiting;
+      _liveSaid = text;
+      _liveAnswerText = '';
+      _addLiveTurn(NexusMockMessage(text));
+    });
+    _syncLive();
+    _speakThenListen(text);
+  }
+
   /// Asks the model on the PC and puts its answer on the page.
   ///
   /// The wait is a state of the page, not a spinner on top of it: the orb goes
@@ -3247,63 +4087,12 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// is information the user needs, not something to hide behind a state that
   /// looks like listening.
   Future<void> _liveAnswer(String prompt, int turn) async {
-    final StringBuffer buffer = StringBuffer();
-    // Read once, before the request goes out: the history is the conversation
-    // *up to* this question, and a later turn must not be able to change what
-    // this one was asked with.
-    final List<AiTurn> history = _liveHistory;
-    // Only a sentence the model actually said is read out loud. The unreachable
-    // notice is the shell talking, and hearing a machine apologise for its PC is
-    // worse than reading it.
-    bool spoken = true;
-    try {
-      await for (final String piece in LocalAiService.current
-          .generateResponseStream(prompt, history: history)) {
-        // Dropped when the page is gone or the user has already moved on: an
-        // answer belongs to the turn that asked for it.
-        if (!mounted || !_liveOpen || turn != _liveTurns) return;
-        buffer.write(piece);
-        // Same rule as the thread: a reply that opens with `{` may be an action
-        // request, and the page says "Thinking…" for the half-second it takes
-        // to be whole rather than spelling raw JSON out in large type.
-        if (buffer.toString().trimLeft().startsWith('{')) continue;
-        // The words are the page now: the orb keeps its working colour while
-        // the answer is being written, but the large type shows the answer
-        // arriving instead of leaving the screen on "Thinking…".
-        setState(() {
-          _liveAnswering = true;
-          _liveAnswerText = buffer.toString();
-        });
-        _syncLive();
-      }
-    } on OllamaException catch (error) {
-      buffer.write(buffer.isEmpty ? error.message : '\n\n${error.message}');
-      spoken = false;
-    } on OnDeviceAiException catch (error) {
-      buffer.write(buffer.isEmpty ? error.message : '\n\n${error.message}');
-      spoken = false;
-    } catch (_) {
-      buffer.write(
-        buffer.isEmpty
-            ? kNexusOllamaUnreachableText
-            : '\n\n$kNexusOllamaUnreachableText',
-      );
-      spoken = false;
-    }
-    if (buffer.isEmpty) {
-      buffer.write(kNexusOllamaUnreachableText);
-      spoken = false;
-    }
-    if (!mounted || !_liveOpen || turn != _liveTurns) return;
-    // An action asked for out loud is run here too, and its line takes the
-    // large type exactly as an answer would: a user who says "it's dark in here"
-    // to the live page should see the flashlight turn on, not a JSON object.
-    final SystemActionCall? call = spoken
-        ? SystemActionCall.tryParse(buffer.toString())
-        : null;
-    if (call != null) {
+    // A spoken clock question gets the same treatment as a typed one: the shell
+    // answers from the phone's clock, and the model — which would invent a time
+    // — is never asked. It is shown and said exactly as an action result is.
+    if (isClockQuestion(prompt)) {
       final SystemActionOutcome outcome = await SystemActions.current.execute(
-        call,
+        const SystemActionCall('get_time'),
       );
       if (!mounted || !_liveOpen || turn != _liveTurns) return;
       setState(() {
@@ -3317,28 +4106,175 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         );
       });
       _syncLive();
-      unawaited(SpeechOutput.current.speak(outcome.message));
+      _speakThenListen(outcome.message);
       return;
     }
+    // And arithmetic is the shell's here too. A spoken "what is six times
+    // seven" must not become a timer any more than a typed one did — the same
+    // question said out loud is the same question.
+    final String? sum = nexusMathAnswer(prompt);
+    if (sum != null) {
+      _answerLiveLocally(sum, turn);
+      return;
+    }
+    final StringBuffer buffer = StringBuffer();
+    // Read once, before the request goes out: the history is the conversation
+    // *up to* this question, and a later turn must not be able to change what
+    // this one was asked with.
+    final List<AiTurn> history = _liveHistory;
+    // Only a sentence the model actually said is read out loud. The unreachable
+    // notice is the shell talking, and hearing a machine apologise for its PC is
+    // worse than reading it.
+    bool spoken = true;
+    // Same one-retry rule as the thread: a model that does not fit is answered
+    // by the smaller one the user has, and the live turn keeps going — the mic
+    // stays closed for the whole of it, so nothing is heard twice.
+    for (int attempt = 0; ; attempt++) {
+      try {
+        await for (final String piece
+            in LocalAiService.current.generateResponseStream(
+              prompt,
+              history: history,
+            )) {
+          // Dropped when the page is gone or the user has already moved on: an
+          // answer belongs to the turn that asked for it.
+          if (!mounted || !_liveOpen || turn != _liveTurns) return;
+          buffer.write(piece);
+          // Same rule as the thread: once a `{` arrives the reply may be an
+          // action request, and the page says "Thinking…" for the half-second
+          // it takes to be whole rather than spelling raw JSON out in large
+          // type.
+          final String visible = nexusStreamingProse(buffer.toString());
+          if (visible.trim().isEmpty && buffer.toString().contains('{')) {
+            continue;
+          }
+          // The words are the page now: the orb keeps its working colour while
+          // the answer is being written, but the large type shows the answer
+          // arriving instead of leaving the screen on "Thinking…".
+          setState(() {
+            _liveAnswering = true;
+            _liveAnswerText = visible;
+          });
+          _syncLive();
+        }
+        break;
+      } on InsufficientMemoryException catch (error) {
+        if (attempt == 0 && await _switchToSmallerModel(error)) {
+          buffer.clear();
+          if (mounted) {
+            setState(() {
+              _liveAnswering = false;
+              _liveAnswerText = '';
+            });
+          }
+          continue;
+        }
+        buffer.write(
+          buffer.isEmpty
+              ? kNexusNotEnoughMemoryText
+              : '\n\n$kNexusNotEnoughMemoryText',
+        );
+        spoken = false;
+        break;
+      } on OllamaException catch (error) {
+        buffer.write(buffer.isEmpty ? error.message : '\n\n${error.message}');
+        spoken = false;
+        break;
+      } on OnDeviceAiException catch (error) {
+        buffer.write(buffer.isEmpty ? error.message : '\n\n${error.message}');
+        spoken = false;
+        break;
+      } catch (_) {
+        buffer.write(
+          buffer.isEmpty
+              ? kNexusOllamaUnreachableText
+              : '\n\n$kNexusOllamaUnreachableText',
+        );
+        spoken = false;
+        break;
+      }
+    }
+    if (buffer.isEmpty) {
+      buffer.write(kNexusOllamaUnreachableText);
+      spoken = false;
+    }
+    if (!mounted || !_liveOpen || turn != _liveTurns) return;
+    // An action asked for out loud is run here too, and its line takes the
+    // large type exactly as an answer would: a user who says "it's dark in here"
+    // to the live page should see the flashlight turn on, not a JSON object —
+    // whether the model wrote strict JSON or the loose `{action: …}` a small
+    // model actually produces.
+    final NexusActionIntercept intercept = spoken
+        ? interceptSystemActions(buffer.toString())
+        : const NexusActionIntercept('', <SystemActionCall>[]);
+    if (intercept.acted) {
+      final List<SystemActionOutcome> outcomes = <SystemActionOutcome>[];
+      for (final SystemActionCall call in intercept.calls) {
+        outcomes.add(await SystemActions.current.execute(call));
+        if (!mounted || !_liveOpen || turn != _liveTurns) return;
+      }
+      final String prose = intercept.text.trim();
+      // The sentence the page shows and says: what happened, then what the
+      // phone has no answer for. A refusal is information too — the user asked
+      // for something, and "not one of my phone actions" is the honest reply.
+      final String line = <String>[
+        for (final SystemActionOutcome outcome in outcomes) outcome.message,
+        for (final String name in intercept.refused)
+          nexusUnknownActionLine(name),
+      ].join(' ');
+      setState(() {
+        _liveThinking = false;
+        _liveAnswering = false;
+        _liveIdle = _LivePhase.waiting;
+        _liveSaid = prose.isEmpty ? line : '$prose\n$line';
+        _liveAnswerText = '';
+        if (prose.isNotEmpty) _addLiveTurn(NexusMockMessage(prose));
+        for (final SystemActionOutcome outcome in outcomes) {
+          _addLiveTurn(
+            NexusMockMessage(outcome.message, system: true, ok: outcome.ok),
+          );
+        }
+        for (final String name in intercept.refused) {
+          _addLiveTurn(
+            NexusMockMessage(
+              nexusUnknownActionLine(name),
+              system: true,
+              ok: false,
+            ),
+          );
+        }
+      });
+      _syncLive();
+      _speakThenListen(line);
+      return;
+    }
+    // The same reading happens here as in the thread: the large type is a
+    // reply, so a JSON answer becomes words before it is shown or said. A
+    // failure is not a reply and is left exactly as the shell wrote it.
+    final String answer = !spoken
+        ? buffer.toString()
+        : (intercept.text.trim().isEmpty ? kNexusNoAnswerText : intercept.text);
     setState(() {
       _liveThinking = false;
       _liveAnswering = false;
       _liveIdle = _LivePhase.waiting;
-      _liveSaid = buffer.toString();
+      _liveSaid = answer;
       _liveAnswerText = '';
       // The answer joins the conversation, so the next question can be asked
       // about it — and so the chat thread has the whole exchange to inherit.
       // A failure joins it too, marked as one: it is a line the user has to be
       // able to read back in the thread, it is just not something the model
       // said (see [_liveHistory]).
-      _addLiveTurn(NexusMockMessage(buffer.toString(), failed: !spoken));
+      _addLiveTurn(NexusMockMessage(answer, failed: !spoken));
     });
     _syncLive();
     // The answer is said once it is whole, and the page is already in the grey
     // "tap to continue" state by the time the voice starts: what the user sees
     // is the reply they can read, and what they hear is the same reply —
-    // neither of which is a microphone that could still be open.
-    if (spoken) unawaited(SpeechOutput.current.speak(buffer.toString()));
+    // neither of which is a microphone that could still be open. The microphone
+    // comes back 1.5 s after the voice stops, which is what makes this a
+    // conversation rather than a page that needs a tap after every answer.
+    if (spoken) _speakThenListen(answer);
   }
 
   /// Pushes the overlay and keeps a handle on it.
@@ -3353,16 +4289,18 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       settings: const RouteSettings(name: 'live-conversation'),
       transitionDuration: const Duration(milliseconds: 260),
       reverseTransitionDuration: const Duration(milliseconds: 200),
-      pageBuilder: (
-        BuildContext context,
-        Animation<double> animation,
-        Animation<double> secondary,
-      ) => _LivePage(
-        state: _live,
-        onClose: _closeLive,
-        onResume: _liveResume,
-        level: _micLevel,
-      ),
+      pageBuilder:
+          (
+            BuildContext context,
+            Animation<double> animation,
+            Animation<double> secondary,
+          ) => _LivePage(
+            state: _live,
+            onClose: _closeLive,
+            onResume: _liveResume,
+            onStopSpeaking: _stopSpeaking,
+            level: _micLevel,
+          ),
       transitionsBuilder: (
         BuildContext context,
         Animation<double> animation,
@@ -3391,6 +4329,17 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // Only a live session is this method's to end. A dictation session that a
     // race left open belongs to the button that opened it.
     if (_micMode == _MicMode.live) _stopListening(reason: reason);
+    // The page is going away and so is the voice: leaving it talking to an
+    // empty room is the same bug as leaving a microphone open. No auto-listen
+    // is scheduled from here — the session is over.
+    _speechDone?.cancel();
+    _speechDone = null;
+    _autoListen?.cancel();
+    _autoListen = null;
+    if (_speaking) {
+      _speaking = false;
+      unawaited(SpeechOutput.current.stop());
+    }
     final PageRoute<void>? route = _liveRoute;
     _liveRoute = null;
     // What was said in the room belongs to the conversation, not to the room:
@@ -3410,6 +4359,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         _liveSaid = '';
         _liveAnswerText = '';
         _livePartial = '';
+        _speaking = false;
         if (spoken.isNotEmpty) _thread.addAll(spoken);
       });
       if (spoken.isNotEmpty) {
@@ -3450,6 +4400,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       partial: _livePartial,
       said: _liveSaid,
       answer: _liveAnswerText,
+      speaking: _speaking,
       // A copy: the page draws from this while the next turn mutates the list,
       // and a list that changes under a paint is a list that paints half of two
       // conversations.
@@ -3684,26 +4635,26 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                 constraints: const BoxConstraints(
                   maxWidth: NexusLayout.content,
                 ),
-                // Everything said on this screen can be highlighted, word by
-                // word or across several bubbles, the way text on a page can.
-                // The per-bubble Copy button stays as it was: a selection is
-                // the fine case, and one tap to take the whole sentence is
-                // still the common one. A long press now belongs to the
-                // selection rather than to a copy that took the entire line.
-                child: SelectionArea(
-                  child: SingleChildScrollView(
-                    controller: _threadScroll,
-                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: <Widget>[
-                        if (_thread.isEmpty)
-                          const _Welcome()
-                        else
-                          const SizedBox(height: 30),
-                        for (final message in _thread)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
+                // One [SelectionArea] per bubble, not one around the thread.
+                // A thread-wide region let "Select all" sweep every message on
+                // the screen into one clipboard, so copying a reply also copied
+                // the question above it. Each message is its own page now: the
+                // long press still selects, and it stops at the end of the
+                // bubble it started in.
+                child: SingleChildScrollView(
+                  controller: _threadScroll,
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      if (_thread.isEmpty)
+                        _Welcome(onSuggestion: _useSuggestion)
+                      else
+                        const SizedBox(height: 30),
+                      for (final message in _thread)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: SelectionArea(
                             // A failure is not a reply: it takes a notice of its
                             // own instead of a bubble, so a red, bordered
                             // sentence with a warning sign can never be mistaken
@@ -3738,8 +4689,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                                     maxWidth: bubbleWidth,
                                   ),
                           ),
-                      ],
-                    ),
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -3806,15 +4757,32 @@ class _HomeHeader extends StatelessWidget {
   }
 }
 
-/// The screen an empty thread shows: a heading and the one promise that is true
-/// before anything has been said.
+/// The three things a first-time user can do from an empty screen, as chips
+/// that fill the composer rather than sending anything.
+///
+/// A blank thread with a single heading asks the user to invent a request. These
+/// are the three requests the app can prove it handles — a phone action, a
+/// pairing, and a file — so the first tap is a demonstration of the vocabulary
+/// rather than a guess.
+const List<(String, String)> kNexusHomeSuggestions = <(String, String)>[
+  ('Turn on flashlight', 'Turn on the flashlight'),
+  ('Pair a device', 'Pair a device'),
+  ('Find a file', 'Find a file'),
+];
+
+/// The screen an empty thread shows: a heading, the one promise that is true
+/// before anything has been said, and the three suggestions above.
 ///
 /// Deliberately not a message. The two bubbles that used to sit here were drawn
 /// by the same code path as a real answer, which made them indistinguishable
 /// from one — and the first thing a user learned about the app was a sentence
 /// the app had put in the assistant's mouth.
 class _Welcome extends StatelessWidget {
-  const _Welcome();
+  const _Welcome({required this.onSuggestion});
+
+  /// Called with the sentence a chip stands for: the screen puts it in the
+  /// draft, and the user decides whether to send it.
+  final ValueChanged<String> onSuggestion;
 
   @override
   Widget build(BuildContext context) {
@@ -3833,6 +4801,38 @@ class _Welcome extends StatelessWidget {
           'cloud.',
           textAlign: TextAlign.center,
           style: NexusType.lede(c),
+        ),
+        const SizedBox(height: 22),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: <Widget>[
+            for (final (String label, String prompt) in kNexusHomeSuggestions)
+              ActionChip(
+                key: ValueKey<String>('nexus-suggestion-$label'),
+                avatar: Icon(
+                  switch (label) {
+                    'Turn on flashlight' => Icons.flashlight_on_outlined,
+                    'Pair a device' => Icons.devices_other_rounded,
+                    _ => Icons.folder_open_rounded,
+                  },
+                  size: 15,
+                  color: c.accent,
+                ),
+                label: Text(label),
+                labelStyle: NexusType.rowMeta(c)
+                    .copyWith(color: c.textStrong, fontSize: 12.5),
+                backgroundColor: c.surface,
+                side: BorderSide(color: c.hairline),
+                shape: const StadiumBorder(),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 7,
+                ),
+                onPressed: () => onSuggestion(prompt),
+              ),
+          ],
         ),
       ],
     );
@@ -3943,10 +4943,7 @@ class NexusChatBubble extends StatelessWidget {
             // still inside the painted box, and long-pressing it starts a
             // selection wherever the finger landed.
             Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 15,
-                vertical: 11,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
               decoration: BoxDecoration(
                 color: mine ? c.bubbleMine : c.bubbleTheirs,
                 border: mine ? null : Border.all(color: c.hairline),
@@ -4009,12 +5006,9 @@ Future<void> showSendToSheet(
     builder: (sheetContext) => _SendToSheet(
       path: path,
       caption: caption,
-      send: (PairedDevice device, void Function(double) onProgress) =>
-          FileLink.instance.send(
-            path: path,
-            device: device,
-            onProgress: onProgress,
-          ),
+      send: (PairedDevice device, void Function(double) onProgress) => FileLink
+          .instance
+          .send(path: path, device: device, onProgress: onProgress),
     ),
   );
 }
@@ -4092,10 +5086,7 @@ class _SendToSheetState extends State<_SendToSheet> {
             const SizedBox(height: 14),
             Text(kNexusSendToLabel, style: NexusType.rowTitle(c)),
             const SizedBox(height: 4),
-            Text(
-              widget.caption ?? 'This image',
-              style: NexusType.rowMeta(c),
-            ),
+            Text(widget.caption ?? 'This image', style: NexusType.rowMeta(c)),
             const SizedBox(height: 14),
             if (_target == null && devices.isEmpty)
               Text(
@@ -4276,9 +5267,11 @@ class NexusAttachmentBubble extends StatelessWidget {
                           ? Image.file(
                               File(path),
                               fit: BoxFit.cover,
-                              errorBuilder:
-                                  (BuildContext context, Object error, _) =>
-                                      const _MissingThumbnail(),
+                              errorBuilder: (
+                                BuildContext context,
+                                Object error,
+                                _,
+                              ) => const _MissingThumbnail(),
                             )
                           : const _MissingThumbnail(),
                     ),
@@ -4287,10 +5280,8 @@ class NexusAttachmentBubble extends StatelessWidget {
                     padding: const EdgeInsets.fromLTRB(8, 7, 8, 0),
                     child: Text(
                       caption,
-                      style: NexusType.bubble(c).copyWith(
-                        fontSize: 14,
-                        color: c.textMuted,
-                      ),
+                      style: NexusType.bubble(c)
+                          .copyWith(fontSize: 14, color: c.textMuted),
                     ),
                   ),
                   // The way out of the bubble that is not "look at it": a
@@ -4311,18 +5302,12 @@ class NexusAttachmentBubble extends StatelessWidget {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: <Widget>[
-                            Icon(
-                              Icons.send_rounded,
-                              size: 14,
-                              color: c.accent,
-                            ),
+                            Icon(Icons.send_rounded, size: 14, color: c.accent),
                             const SizedBox(width: 6),
                             Text(
                               kNexusSendToLabel,
-                              style: NexusType.rowMeta(c).copyWith(
-                                fontSize: 12.5,
-                                color: c.accent,
-                              ),
+                              style: NexusType.rowMeta(c)
+                                  .copyWith(fontSize: 12.5, color: c.accent),
                             ),
                           ],
                         ),
@@ -4412,10 +5397,8 @@ class NexusSystemBubble extends StatelessWidget {
               Flexible(
                 child: Text(
                   text,
-                  style: NexusType.rowMeta(c).copyWith(
-                    fontSize: 13,
-                    color: c.textStrong,
-                  ),
+                  style: NexusType.rowMeta(c)
+                      .copyWith(fontSize: 13, color: c.textStrong),
                 ),
               ),
             ],
@@ -4464,10 +5447,7 @@ class NexusErrorBubble extends StatelessWidget {
           children: <Widget>[
             Container(
               key: kNexusErrorBubble,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 12,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: wash,
                 border: Border.all(color: rim),
@@ -5513,12 +6493,18 @@ class _LiveState {
     required this.partial,
     required this.said,
     required this.answer,
+    this.speaking = false,
     this.turns = const <NexusMockMessage>[],
   });
 
   final _LivePhase phase;
   final String partial;
   final String said;
+
+  /// True while the assistant's answer is being read out loud. The page draws a
+  /// Stop speaking control in place of "Tap to continue" — a tap anywhere on the
+  /// page cuts the voice off, and that tap does **not** reopen the microphone.
+  final bool speaking;
 
   /// The answer being written, empty unless [phase] is [_LivePhase.answering].
   final String answer;
@@ -5553,6 +6539,7 @@ class _LivePalette {
     required this.ink,
     required this.muted,
     required this.accent,
+    required this.onAccent,
     required this.closeWash,
     required this.pausedWash,
     required this.idleCore,
@@ -5568,6 +6555,12 @@ class _LivePalette {
   final Color muted;
 
   final Color accent;
+
+  /// The ink that sits *on* [accent] in a filled control.
+  ///
+  /// Asked of the accent rather than assumed white: a pale pick is a colour the
+  /// user is allowed to make, and white on a near-white button is unreadable.
+  final Color onAccent;
 
   /// The disc behind the X, and the pill behind the paused badge.
   final Color closeWash;
@@ -5588,6 +6581,7 @@ class _LivePalette {
         // The chosen accent, not the shipped one: the room is dark either way,
         // but which colour means "the mic is open" is the user's choice.
         accent: c.accent,
+        onAccent: c.onAccent,
         closeWash: Colors.white.withValues(alpha: 0.08),
         pausedWash: Colors.white.withValues(alpha: 0.06),
         idleCore: const <Color>[
@@ -5602,6 +6596,7 @@ class _LivePalette {
       ink: c.textStrong,
       muted: c.textMuted,
       accent: c.accent,
+      onAccent: c.onAccent,
       closeWash: c.raised,
       pausedWash: c.raised,
       idleCore: const <Color>[
@@ -5618,10 +6613,12 @@ class _LivePalette {
 /// A page rather than a sheet, because it must cover the tab bar — nothing about
 /// this mode is a draft in the composer, and nothing underneath it should look
 /// like it still is. It listens on the frame it opens, shows what was said in
-/// large type, and then **stops**: the microphone closes, the orb goes grey, and
-/// the next turn begins only when the user taps. With no conversation behind it
-/// yet, the user's own sentence is the honest thing to put on it. The two ways
-/// on are the X at the bottom and the orb itself.
+/// large type, shows the answer, and then hands the turn back: the microphone
+/// closes while the answer is read out, and reopens 1.5 s after the voice stops.
+/// The voice itself can be cut off with the Stop speaking control or a tap
+/// anywhere on the page, and that stop leaves the microphone closed. With no
+/// conversation behind it yet, the user's own sentence is the honest thing to put
+/// on it. The two ways on are the X at the bottom and the orb itself.
 ///
 /// The page follows the app's brightness. In dark mode it is the immersive room
 /// the design asks for; in light mode it is the theme's own surface with the
@@ -5638,6 +6635,7 @@ class _LivePage extends StatelessWidget {
     required this.state,
     required this.onClose,
     required this.onResume,
+    required this.onStopSpeaking,
     required this.level,
   });
 
@@ -5647,10 +6645,15 @@ class _LivePage extends StatelessWidget {
   final ValueListenable<_LiveState> state;
   final VoidCallback onClose;
 
-  /// Opens the next turn. The only thing that may: every state of this page
-  /// that is not [listening] waits for this tap, and is drawn so the tap is
-  /// obviously what it waits for.
+  /// Opens the next turn by hand. Every state of this page that is not
+  /// [listening] draws this tap as the obvious thing to do — after a stop, or
+  /// after the guard — even though a normal answer now hands the turn back on
+  /// its own.
   final VoidCallback onResume;
+
+  /// Cuts the voice off now. Shown as a control while [state.speaking], and
+  /// wired to a tap anywhere else on the page.
+  final VoidCallback onStopSpeaking;
   final ValueListenable<double> level;
 
   @override
@@ -5681,9 +6684,7 @@ class _LivePage extends StatelessWidget {
               // the last of it is the line in flight's place — so the headline
               // for these phases is the *last turn itself*, drawn once, in the
               // same spot. A quiet room with nothing said yet still says so.
-              _ => live.turns.isEmpty
-                  ? 'Say something.'
-                  : live.turns.last.text,
+              _ => live.turns.isEmpty ? 'Say something.' : live.turns.last.text,
             };
             // True when the tap on the pulse would resume, i.e. whenever the
             // page is not in the middle of something it has to finish.
@@ -5695,216 +6696,269 @@ class _LivePage extends StatelessWidget {
             // last turn is the headline, so the transcript stops one short of
             // the end — otherwise the last thing said would be printed twice.
             final List<NexusMockMessage> olderTurns = idle
-                ? live.turns.sublist(0, live.turns.isEmpty ? 0 : live.turns.length - 1)
+                ? live.turns.sublist(
+                    0,
+                    live.turns.isEmpty ? 0 : live.turns.length - 1,
+                  )
                 : live.turns;
-            return Column(
-              children: <Widget>[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
-                  child: Row(
-                    children: <Widget>[
-                      SizedBox(
-                        height: 34,
-                        // The badge swaps with the microphone, not with the
-                        // animation: "Recording" only ever describes an open
-                        // mic, and the grey "Mic off" is the closed state made
-                        // visible instead of leaving a screen that looks live.
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 200),
-                          child: switch (live.phase) {
-                            _LivePhase.listening => _LiveRecordingBadge(
-                              ink: palette.ink,
-                            ),
-                            _LivePhase.waiting => _LivePausedBadge(
-                              muted: palette.muted,
-                              wash: palette.pausedWash,
-                            ),
-                            _LivePhase.guarded => const SizedBox.shrink(),
-                            // The orb is the badge while an answer is being
-                            // written: two signals for one state is one too
-                            // many.
-                            _LivePhase.thinking => const SizedBox.shrink(),
-                            _LivePhase.answering => const SizedBox.shrink(),
-                          },
-                        ),
-                      ),
-                      // A name for the page, not a control: it shrinks rather
-                      // than pushing the badge off the edge when the text scale
-                      // or a narrow phone leaves no room for both.
-                      Expanded(
-                        child: Text(
-                          'Live conversation',
-                          textAlign: TextAlign.right,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.inter(
-                            color: palette.muted,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
+            // "Tap anywhere to stop" is a real gesture, not just a sentence: the
+            // page's own background is the largest control on it, and a voice that
+            // cannot be silenced from the screen it is coming out of is the
+            // interruption bug this fixes. Child controls still win their own
+            // taps, and closing the page stops the voice on the way out.
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: live.speaking ? onStopSpeaking : null,
+              child: Column(
+                children: <Widget>[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+                    child: Row(
+                      children: <Widget>[
+                        SizedBox(
+                          height: 34,
+                          // The badge swaps with the microphone, not with the
+                          // animation: "Recording" only ever describes an open
+                          // mic, and the grey "Mic off" is the closed state made
+                          // visible instead of leaving a screen that looks live.
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 200),
+                            child: switch (live.phase) {
+                              _LivePhase.listening => _LiveRecordingBadge(
+                                ink: palette.ink,
+                              ),
+                              _LivePhase.waiting => _LivePausedBadge(
+                                muted: palette.muted,
+                                wash: palette.pausedWash,
+                              ),
+                              _LivePhase.guarded => const SizedBox.shrink(),
+                              // The orb is the badge while an answer is being
+                              // written: two signals for one state is one too
+                              // many.
+                              _LivePhase.thinking => const SizedBox.shrink(),
+                              _LivePhase.answering => const SizedBox.shrink(),
+                            },
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                ),
-                // The conversation, which is what this page is now made of:
-                // reversed, so it is anchored to the bottom — the newest line
-                // sits just above the controls and older ones read upward, the
-                // way a conversation does. The page used to be one sentence
-                // around a two-inch orb; a room you can talk in has to show
-                // what was said in it.
-                Expanded(
-                  child: ListView(
-                    key: kNexusLiveTranscript,
-                    reverse: true,
-                    padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
-                    children: <Widget>[
-                      // Bottom-most first, because the list is reversed: the
-                      // line in flight, or the last thing said once the turn is
-                      // over. It is the same widget either way, and the only one
-                      // carrying [kNexusLiveText].
-                      _LiveLine(
-                        text: headline,
-                        mine: live.phase == _LivePhase.listening,
-                        primary: true,
-                        palette: palette,
-                      ),
-                      for (final NexusMockMessage turn in olderTurns.reversed)
-                        _LiveLine(
-                          text: turn.text,
-                          mine: turn.mine,
-                          failed: turn.failed,
-                          palette: palette,
-                        ),
-                    ],
-                  ),
-                ),
-                // The meter while it listens, and the same promise the Privacy
-                // page makes — said here too, where the microphone actually is.
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                  child: Column(
-                    children: <Widget>[
-                      // The pulse: the page's heartbeat, small and at the
-                      // bottom where the controls are. It is also the resume
-                      // control — with the microphone closed its grey light is
-                      // the obvious thing to press, and "tap it to go again" is
-                      // the one instruction this page has.
-                      GestureDetector(
-                        // A control exactly when the tap would do something:
-                        // while a turn is live there is nothing to resume, and
-                        // while an answer is being written the tap is refused by
-                        // [_liveResume] anyway — better inert than ignored.
-                        onTap: idle ? onResume : null,
-                        behavior: HitTestBehavior.opaque,
-                        child: _LivePulse(phase: live.phase, palette: palette),
-                      ),
-                      const SizedBox(height: 12),
-                      // The voice, drawn: a rolling waveform whose bars are the
-                      // microphone's own readings, interpolated between them by
-                      // a ticker (see [_LiveWaveform]).
-                      SizedBox(
-                        height: 56,
-                        child: _LiveWaveform(
-                          level: level,
-                          listening: live.listening,
-                          color: live.listening
-                              ? palette.accent
-                              : palette.muted,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        switch (live.phase) {
-                          _LivePhase.listening => 'Listening — just speak.',
-                          _LivePhase.thinking =>
-                            // Not "on your PC": the same page is shown when the
-                            // answer is coming from this device, and the line
-                            // names the wait, not the machine.
-                            'Mic off — asking the AI…',
-                          _LivePhase.answering => 'Mic off — answering…',
-                          _LivePhase.waiting => 'Mic off — tap to continue.',
-                          _LivePhase.guarded => 'Mic off. Nothing is recording.',
-                        },
-                        key: kNexusLiveStatus,
-                        textAlign: TextAlign.center,
-                        style: GoogleFonts.inter(
-                          color: palette.muted,
-                          fontSize: 14,
-                        ),
-                      ),
-                      // The other way on. Deliberately a button and never a
-                      // countdown: the microphone is closed until a person asks
-                      // for it, which is the whole fix for a phone that used to
-                      // restart itself after every turn.
-                      if (idle) ...<Widget>[
-                        const SizedBox(height: 14),
-                        FilledButton.icon(
-                          key: kNexusLiveResume,
-                          onPressed: onResume,
-                          icon: const Icon(Icons.mic_rounded, size: 18),
-                          label: const Text('Tap to continue'),
-                          style: FilledButton.styleFrom(
-                            backgroundColor: palette.accent,
-                            foregroundColor: Colors.white,
-                            minimumSize: const Size(0, 48),
-                            padding: const EdgeInsets.symmetric(horizontal: 22),
-                            textStyle: GoogleFonts.inter(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
+                        // A name for the page, not a control: it shrinks rather
+                        // than pushing the badge off the edge when the text scale
+                        // or a narrow phone leaves no room for both.
+                        Expanded(
+                          child: Text(
+                            'Live conversation',
+                            textAlign: TextAlign.right,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.inter(
+                              color: palette.muted,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
                             ),
-                            shape: const StadiumBorder(),
                           ),
                         ),
                       ],
-                      const SizedBox(height: 14),
-                      // The way out, where a thumb is: the bottom of the screen.
-                      // Large on purpose — the one control this page has must not
-                      // be a hunt.
-                      IconButton(
-                        key: kNexusLiveClose,
-                        tooltip: 'Close live conversation',
-                        onPressed: onClose,
-                        icon: Icon(
-                          Icons.close_rounded,
-                          size: 34,
-                          color: palette.ink,
+                    ),
+                  ),
+                  // The conversation, which is what this page is now made of:
+                  // reversed, so it is anchored to the bottom — the newest line
+                  // sits just above the controls and older ones read upward, the
+                  // way a conversation does. The page used to be one sentence
+                  // around a two-inch orb; a room you can talk in has to show
+                  // what was said in it.
+                  Expanded(
+                    child: ListView(
+                      key: kNexusLiveTranscript,
+                      reverse: true,
+                      padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+                      children: <Widget>[
+                        // Bottom-most first, because the list is reversed: the
+                        // line in flight, or the last thing said once the turn is
+                        // over. It is the same widget either way, and the only one
+                        // carrying [kNexusLiveText].
+                        _LiveLine(
+                          text: headline,
+                          mine: live.phase == _LivePhase.listening,
+                          primary: true,
+                          palette: palette,
                         ),
-                        style: IconButton.styleFrom(
-                          backgroundColor: palette.closeWash,
-                          minimumSize: const Size(72, 72),
-                          shape: const CircleBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: <Widget>[
-                          Icon(
-                            Icons.lock_outline,
-                            size: 13,
-                            color: palette.muted,
+                        for (final NexusMockMessage turn in olderTurns.reversed)
+                          _LiveLine(
+                            text: turn.text,
+                            mine: turn.mine,
+                            failed: turn.failed,
+                            palette: palette,
                           ),
-                          const SizedBox(width: 6),
-                          // Flexible, not fixed: the promise is a sentence, and a
-                          // sentence has to be able to wrap on a narrow phone (and
-                          // at a large text size) rather than run off the edge.
-                          Flexible(
-                            child: Text(
-                              'Processed on this device. Audio never leaves it.',
-                              textAlign: TextAlign.center,
-                              style: GoogleFonts.inter(
-                                color: palette.muted,
-                                fontSize: 11.5,
+                      ],
+                    ),
+                  ),
+                  // The meter while it listens, and the same promise the Privacy
+                  // page makes — said here too, where the microphone actually is.
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                    child: Column(
+                      children: <Widget>[
+                        // The pulse: the page's heartbeat, small and at the
+                        // bottom where the controls are. It is also the resume
+                        // control — with the microphone closed its grey light is
+                        // the obvious thing to press, and "tap it to go again" is
+                        // the one instruction this page has.
+                        GestureDetector(
+                          // A control exactly when the tap would do something:
+                          // while a turn is live there is nothing to resume, and
+                          // while an answer is being written the tap is refused by
+                          // [_liveResume] anyway — better inert than ignored.
+                          onTap: live.speaking
+                              ? onStopSpeaking
+                              : (idle ? onResume : null),
+                          behavior: HitTestBehavior.opaque,
+                          child: _LivePulse(
+                            phase: live.phase,
+                            palette: palette,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        // The voice, drawn: a rolling waveform whose bars are the
+                        // microphone's own readings, interpolated between them by
+                        // a ticker (see [_LiveWaveform]).
+                        SizedBox(
+                          height: 56,
+                          child: _LiveWaveform(
+                            level: level,
+                            listening: live.listening,
+                            color: live.listening
+                                ? palette.accent
+                                : palette.muted,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          live.speaking
+                              ? 'Speaking — tap to stop.'
+                              : switch (live.phase) {
+                                  _LivePhase.listening =>
+                                    'Listening — just speak.',
+                                  _LivePhase.thinking =>
+                                    // Not "on your PC": the same page is shown when
+                                    // the answer is coming from this device, and
+                                    // the line names the wait, not the machine.
+                                    'Mic off — asking the AI…',
+                                  _LivePhase.answering =>
+                                    'Mic off — answering…',
+                                  _LivePhase.waiting =>
+                                    'Mic off — tap to continue.',
+                                  _LivePhase.guarded =>
+                                    'Mic off. Nothing is recording.',
+                                },
+                          key: kNexusLiveStatus,
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.inter(
+                            color: palette.muted,
+                            fontSize: 14,
+                          ),
+                        ),
+                        // The other way on, and the way off the voice. A button
+                        // rather than a countdown: after a stop or a guard the
+                        // microphone waits for a person, and while the answer is
+                        // being read out the same slot says how to silence it.
+                        if (live.speaking) ...<Widget>[
+                          const SizedBox(height: 14),
+                          FilledButton.icon(
+                            key: kNexusLiveStopSpeaking,
+                            onPressed: onStopSpeaking,
+                            icon: const Icon(
+                              Icons.volume_off_rounded,
+                              size: 18,
+                            ),
+                            label: const Text(kNexusLiveStopSpeakingLabel),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: palette.accent,
+                              // The palette's ink, not white: a pale accent is a
+                              // colour the user is allowed to pick, and a white
+                              // label on a near-white button is a control that
+                              // cannot be read.
+                              foregroundColor: palette.onAccent,
+                              minimumSize: const Size(0, 48),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 22,
                               ),
+                              textStyle: GoogleFonts.inter(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                              shape: const StadiumBorder(),
+                            ),
+                          ),
+                        ] else if (idle) ...<Widget>[
+                          const SizedBox(height: 14),
+                          FilledButton.icon(
+                            key: kNexusLiveResume,
+                            onPressed: onResume,
+                            icon: const Icon(Icons.mic_rounded, size: 18),
+                            label: const Text('Tap to continue'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: palette.accent,
+                              foregroundColor: palette.onAccent,
+                              minimumSize: const Size(0, 48),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 22,
+                              ),
+                              textStyle: GoogleFonts.inter(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                              shape: const StadiumBorder(),
                             ),
                           ),
                         ],
-                      ),
-                    ],
+                        const SizedBox(height: 14),
+                        // The way out, where a thumb is: the bottom of the screen.
+                        // Large on purpose — the one control this page has must not
+                        // be a hunt.
+                        IconButton(
+                          key: kNexusLiveClose,
+                          tooltip: 'Close live conversation',
+                          onPressed: onClose,
+                          icon: Icon(
+                            Icons.close_rounded,
+                            size: 34,
+                            color: palette.ink,
+                          ),
+                          style: IconButton.styleFrom(
+                            backgroundColor: palette.closeWash,
+                            minimumSize: const Size(72, 72),
+                            shape: const CircleBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: <Widget>[
+                            Icon(
+                              Icons.lock_outline,
+                              size: 13,
+                              color: palette.muted,
+                            ),
+                            const SizedBox(width: 6),
+                            // Flexible, not fixed: the promise is a sentence, and a
+                            // sentence has to be able to wrap on a narrow phone (and
+                            // at a large text size) rather than run off the edge.
+                            Flexible(
+                              child: Text(
+                                'Processed on this device. Audio never leaves it.',
+                                textAlign: TextAlign.center,
+                                style: GoogleFonts.inter(
+                                  color: palette.muted,
+                                  fontSize: 11.5,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             );
           },
         ),
@@ -6125,8 +7179,14 @@ class _LivePulseState extends State<_LivePulse>
         final double pulse = math.sin(t * math.pi);
         // Thinking pulses a little harder than listening breathes: it is a
         // shorter, more urgent state, and the two are never on screen together.
-        final double breathe = 1 +
-            (widget.thinking ? 0.16 : widget.listening ? 0.10 : 0) * pulse;
+        final double breathe =
+            1 +
+            (widget.thinking
+                    ? 0.16
+                    : widget.listening
+                    ? 0.10
+                    : 0) *
+                pulse;
         final Color glow = widget.listening
             ? palette.accent
             : widget.thinking
@@ -6189,9 +7249,7 @@ class _LivePulseState extends State<_LivePulse>
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: palette.accent.withValues(
-                        alpha: 0.55 * (1 - t),
-                      ),
+                      color: palette.accent.withValues(alpha: 0.55 * (1 - t)),
                       width: 1.5,
                     ),
                   ),
@@ -6442,8 +7500,7 @@ class _LiveWaveformState extends State<_LiveWaveform>
   /// a waveform rather than as a ruler.
   double _nextSample() {
     final int i = _sampleIndex++;
-    final double wobble =
-        0.58 + 0.42 * math.sin(i * 0.7) * math.cos(i * 0.31);
+    final double wobble = 0.58 + 0.42 * math.sin(i * 0.7) * math.cos(i * 0.31);
     return (_level * wobble).clamp(0.0, 1.0);
   }
 
@@ -6481,12 +7538,22 @@ class NexusMockDevice {
 
 /// A row in the file list. Mock only.
 class NexusMockFile {
-  const NexusMockFile(this.name, this.size, this.date, this.icon);
+  const NexusMockFile(
+    this.name,
+    this.size,
+    this.date,
+    this.icon, {
+    this.folder = false,
+  });
 
   final String name;
   final String size;
   final String date;
   final IconData icon;
+
+  /// True for a folder row. A folder opens something, so the row says so with a
+  /// chevron instead of the "more" dots a file uses.
+  final bool folder;
 }
 
 const List<NexusMockDevice> kNexusMockDevices = <NexusMockDevice>[
@@ -6505,7 +7572,13 @@ const List<NexusMockDevice> kNexusMockDevices = <NexusMockDevice>[
 ];
 
 const List<NexusMockFile> kNexusMockFiles = <NexusMockFile>[
-  NexusMockFile('Downloads', 'Folder · 6 items', 'Today', Icons.folder_rounded),
+  NexusMockFile(
+    'Downloads',
+    'Folder · 6 items',
+    'Today',
+    Icons.folder_rounded,
+    folder: true,
+  ),
   NexusMockFile('report.pdf', '4.0 KB', 'Oct 11', Icons.picture_as_pdf_rounded),
   NexusMockFile('studio_shoot_01.jpg', '3.4 MB', 'Oct 9', Icons.image_rounded),
   NexusMockFile('mix_v3.wav', '48.2 MB', 'Oct 4', Icons.graphic_eq_rounded),
@@ -6762,7 +7835,13 @@ class NexusFileRow extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.more_horiz_rounded, size: 18, color: c.textMuted),
+            // A folder is a door: the chevron is the affordance that says a tap
+            // goes somewhere. A file keeps the "more" dots, because a tap on it
+            // opens the file rather than a list of things to do with it.
+            if (file.folder)
+              const NexusChevron()
+            else
+              Icon(Icons.more_horiz_rounded, size: 18, color: c.textMuted),
           ],
         ),
       ),
@@ -6999,6 +8078,10 @@ class _DevicesTabState extends State<DevicesTab> {
     );
     if (!confirmed || !mounted) return;
     if (!_paired.forget(device.id)) return;
+    // And out of discovery too: otherwise the next announcement re-adds the
+    // same device to the Nearby section a second later, which looks exactly
+    // like the Forget button having done nothing.
+    _nearby.forget(device.id);
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -7043,6 +8126,9 @@ class _DevicesTabState extends State<DevicesTab> {
         port: device.port,
       ),
     );
+    // Pairing is the user asking for this device again, so a previous Forget no
+    // longer keeps it out of the Nearby list.
+    _nearby.remember(device.id);
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -7280,8 +8366,7 @@ class PairQrPageState extends State<PairQrPage> {
   }
 
   Future<void> _readAddresses() async {
-    final List<String> found =
-        await (widget.addresses ?? localAddresses)();
+    final List<String> found = await (widget.addresses ?? localAddresses)();
     if (!mounted) return;
     setState(() => _addresses = found);
   }
@@ -7304,7 +8389,8 @@ class PairQrPageState extends State<PairQrPage> {
   /// The identity half of the code, without addresses — what the page can say
   /// before the interface list comes back, and what an older `nexus_pair` code
   /// carried.
-  String get payload => (widget.identity ?? PairIdentity.current).invite.encode();
+  String get payload =>
+      (widget.identity ?? PairIdentity.current).invite.encode();
 
   @override
   Widget build(BuildContext context) {
@@ -7487,9 +8573,7 @@ class _PairScanPageState extends State<PairScanPage> {
                     child: Text(
                       _notice!,
                       textAlign: TextAlign.center,
-                      style: NexusType.rowMeta(
-                        c,
-                      ).copyWith(color: Colors.white),
+                      style: NexusType.rowMeta(c).copyWith(color: Colors.white),
                     ),
                   ),
                 ),
@@ -7669,7 +8753,8 @@ class _SettingsTabState extends State<SettingsTab> {
   /// status row stays, because "where do the answers come from" is still a
   /// question with a real answer (the PC, or nothing), and the download and
   /// delete rows are replaced by one sentence naming the way out.
-  bool get _onDeviceSupported => DeviceCapabilities.current.supportsOnDeviceAi();
+  bool get _onDeviceSupported =>
+      DeviceCapabilities.current.supportsOnDeviceAi();
 
   /// What the status row says under its label.
   ///
@@ -7723,15 +8808,15 @@ class _SettingsTabState extends State<SettingsTab> {
 
   /// Which models are on the disk, so the picker can say so before the user
   /// taps one and waits for a download that is already there.
-  Map<OnDeviceModelChoice, bool> _present =
-      const <OnDeviceModelChoice, bool>{};
+  Map<OnDeviceModelChoice, bool> _present = const <OnDeviceModelChoice, bool>{};
 
   /// The selection itself, shared with the brain — not a copy of it. A switch
   /// made here is what the next question loads.
   late final ModelChoice _choice = ModelChoice.instance;
 
   /// The model the rows below the picker are about: the selected one.
-  OnDeviceModel get _selectedModel => _onDevice.model.withChoice(_choice.choice);
+  OnDeviceModel get _selectedModel =>
+      _onDevice.model.withChoice(_choice.choice);
 
   /// True from the tap on the appearance switch until the frame that paints the
   /// new theme. The switch becomes a small spinner for that window.
@@ -7743,7 +8828,8 @@ class _SettingsTabState extends State<SettingsTab> {
   bool _themeBusy = false;
 
   /// The scroll position, either the shell's or this screen's own.
-  late final ScrollController _scroll = widget.scrollController ?? ScrollController();
+  late final ScrollController _scroll =
+      widget.scrollController ?? ScrollController();
 
   /// The conversation on this device. This screen does not draw it — the Home
   /// tab does — but it is the only screen that can offer to delete it, so it
@@ -7942,9 +9028,9 @@ class _SettingsTabState extends State<SettingsTab> {
     setState(() => _brainError = null);
     final int freed = await _onDevice.delete();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Freed ${_megabytes(freed)} MB.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Freed ${_megabytes(freed)} MB.')));
     await _refreshBrain();
   }
 
@@ -7990,13 +9076,21 @@ class _SettingsTabState extends State<SettingsTab> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     ),
                   )
-                : Switch(
-                    value: widget.darkMode,
-                    // While the phone is in charge, the switch reports what the
-                    // phone decided and cannot be overridden from here: an
-                    // enabled switch that bounced straight back would look
-                    // broken, and the row above it is the one that has to move.
-                    onChanged: widget.followSystem ? null : _toggleDark,
+                // Greyed out as well as disabled: `onChanged: null` alone leaves
+                // a Material switch looking almost normal, and an enabled-looking
+                // control that ignores taps is the definition of "broken". The
+                // opacity is the visible statement that the row above owns this.
+                : Opacity(
+                    key: kNexusDarkModeLocked,
+                    opacity: widget.followSystem ? 0.38 : 1,
+                    child: Switch(
+                      value: widget.darkMode,
+                      // While the phone is in charge, the switch reports what the
+                      // phone decided and cannot be overridden from here: an
+                      // enabled switch that bounced straight back would look
+                      // broken, and the row above it is the one that has to move.
+                      onChanged: widget.followSystem ? null : _toggleDark,
+                    ),
                   ),
           ),
           _AccentRow(
@@ -8263,10 +9357,7 @@ class _BrainProgress extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Text(
-                      'Downloading $label',
-                      style: NexusType.rowTitle(c),
-                    ),
+                    Text('Downloading $label', style: NexusType.rowTitle(c)),
                     const SizedBox(height: 3),
                     Text(
                       '$percent% of $megabytes MB — keep Nexus open',

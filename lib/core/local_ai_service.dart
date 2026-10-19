@@ -56,7 +56,8 @@ class AiTurn {
   final String text;
 
   /// The shape the on-device engine's own seam speaks.
-  ChatTurn get chatTurn => (role: fromUser ? 'user' : 'assistant', content: text);
+  ChatTurn get chatTurn =>
+      (role: fromUser ? 'user' : 'assistant', content: text);
 
   @override
   String toString() => 'AiTurn(${fromUser ? 'user' : 'assistant'}: $text)';
@@ -81,8 +82,9 @@ const int kAiHistoryLimit = 10;
 /// Trimming from the front may therefore drop one turn more than [limit] asks
 /// for.
 List<AiTurn> trimAiHistory(List<AiTurn> turns, {int limit = kAiHistoryLimit}) {
-  final List<AiTurn> recent =
-      turns.length <= limit ? turns : turns.sublist(turns.length - limit);
+  final List<AiTurn> recent = turns.length <= limit
+      ? turns
+      : turns.sublist(turns.length - limit);
   var start = 0;
   while (start < recent.length && !recent[start].fromUser) {
     start++;
@@ -194,6 +196,12 @@ class FallbackAiService implements LocalAiService {
       debugPrint('AI: on-device answered with nothing; trying the PC');
     } on ModelNotFoundException catch (error) {
       debugPrint('AI: ${error.message} Trying the PC.');
+    } on InsufficientMemoryException catch (error) {
+      // Not a brain that failed: a model that does not fit. Asking the PC would
+      // hide the one fact the user can act on — the model they picked is too big
+      // for this phone — and the shell switches down to the smaller one.
+      debugPrint('AI: ${error.message} Not asking the PC.');
+      rethrow;
     } on Object catch (error) {
       debugPrint('AI: on-device failed ($error); trying the PC');
     }
@@ -238,6 +246,10 @@ class FallbackAiService implements LocalAiService {
       // The contract says answer or throw; an empty stream is neither, and it
       // is not worth showing to a user who asked a question.
       debugPrint('AI: on-device answered with nothing; trying the PC');
+    } on InsufficientMemoryException catch (error) {
+      // See [generateResponse]: too big is the user's decision to make.
+      debugPrint('AI: ${error.message} Not asking the PC.');
+      rethrow;
     } on OnDeviceAiException catch (error) {
       if (answered) rethrow;
       debugPrint('AI: ${error.message} Trying the PC.');

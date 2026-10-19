@@ -83,6 +83,13 @@ class _FakeNearby extends NearbyDevices {
 
   @override
   Future<void> stop() async {}
+
+  /// A fake's version of the real thing: the announcement stream would put this
+  /// device straight back, so Forget takes it out of the heard list.
+  @override
+  void forget(String id) {
+    heard.removeWhere((DiscoveredDevice d) => d.id == id);
+  }
 }
 
 const PairInvite _ocean = PairInvite(
@@ -250,6 +257,44 @@ void main() {
       );
       expect(stored.addresses, <String>['192.168.1.44']);
       expect(stored.port, 51820);
+    });
+
+    testWidgets('forgetting a heard device removes it from Nearby too', (
+      tester,
+    ) async {
+      final _FakeNearby nearby = _FakeNearby(<DiscoveredDevice>[_kettle]);
+      NearbyDevices.debugOverride = () => nearby;
+      addTearDown(NearbyDevices.debugReset);
+      await _pumpDevices(tester, paired: paired);
+
+      // Pair it by tapping the Nearby row, then forget it: the paired row goes
+      // away, and so must the Nearby row — otherwise the next announcement puts
+      // the deleted device back on screen a second later.
+      final Finder heardRow = find.byKey(
+        ValueKey<String>('nearby-${_kettle.id}'),
+      );
+      await tester.ensureVisible(heardRow);
+      await tester.pumpAndSettle();
+      await tester.tap(heardRow);
+      await tester.pumpAndSettle();
+      // Paired rows and Nearby rows are different sections, so the same device
+      // that moved up is no longer listed as heard-but-unpaired.
+      expect(
+        find.byKey(ValueKey<String>('nearby-${_kettle.id}')),
+        findsNothing,
+      );
+
+      await tester.tap(
+        find.byKey(ValueKey<String>('forget-${_kettle.id}')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kNexusConfirmAction));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Kitchen tablet'), findsNothing);
+      expect(find.byKey(ValueKey<String>('forget-${_kettle.id}')), findsNothing);
+      expect(paired.contains(_kettle.id), isFalse);
+      expect(nearby.devices, isEmpty);
     });
 
     testWidgets('a paired device that is being heard says so', (tester) async {

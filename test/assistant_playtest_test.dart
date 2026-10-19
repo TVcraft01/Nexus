@@ -51,14 +51,14 @@ class _FakeSpeechInput extends SpeechInput {
 /// A speaker that records every utterance instead of saying it — the test
 /// stand-in for Android's text-to-speech engine.
 class _FakeSpeechOutput extends SpeechOutput {
-  final List<String> spoken = [];
+  final List<String> said = [];
 
   @override
   bool get available => true;
 
   @override
   Future<bool> speak(String text) async {
-    spoken.add(text);
+    said.add(text);
     return true;
   }
 }
@@ -610,7 +610,7 @@ void main() {
       // card, nothing spoken, nothing run on the user's behalf.
       expect(find.textContaining('didn\'t catch'), findsNothing);
       expect(find.textContaining('Voice input isn\'t set up'), findsNothing);
-      expect(speaker.spoken, isEmpty);
+      expect(speaker.said, isEmpty);
       expect(find.textContaining("It's "), findsNothing);
       // And the microphone is closed again.
       expect(find.byTooltip('Speak your question'), findsOneWidget);
@@ -637,13 +637,13 @@ void main() {
       await tester.pump(); // recognized text resolves
 
       // The spoken ask got a spoken answer — the reply was handed to TTS.
-      expect(speaker.spoken, isNotEmpty);
-      expect(speaker.spoken.last, startsWith("It's "));
+      expect(speaker.said, isNotEmpty);
+      expect(speaker.said.last, startsWith("It's "));
 
       // The same ask typed afterwards stays quiet — no new utterance.
-      final before = speaker.spoken.length;
+      final before = speaker.said.length;
       await ask(tester, 'what time is it');
-      expect(speaker.spoken.length, before);
+      expect(speaker.said.length, before);
     } finally {
       SpeechInput.override = null;
       SpeechOutput.override = null;
@@ -715,14 +715,14 @@ void main() {
       brain.gates[1].complete((text: 'Second answer!', reachable: true));
       await tester.pump();
       await tester.pump();
-      expect(speaker.spoken, ['Second answer!']);
+      expect(speaker.said, ['Second answer!']);
 
       // …then the slower first exchange's reply lands mid-thread — and it
       // still speaks, because its card kept its spoken attribution.
       brain.gates[0].complete((text: 'First answer!', reachable: true));
       await tester.pump();
       await tester.pump();
-      expect(speaker.spoken, ['Second answer!', 'First answer!']);
+      expect(speaker.said, ['Second answer!', 'First answer!']);
     } finally {
       SpeechInput.override = null;
       SpeechOutput.override = null;
@@ -750,16 +750,16 @@ void main() {
       await tester.pump();
       expect(brain.replyCalls, 1);
       expect(find.textContaining('brain answer'), findsWidgets);
-      expect(speaker.spoken, ['brain answer: rough days are allowed.']);
+      expect(speaker.said, ['brain answer: rough days are allowed.']);
 
       // The same ask typed afterwards stays quiet — no new utterance.
-      final before = speaker.spoken.length;
+      final before = speaker.said.length;
       await ask(tester, 'blorble typed');
       await tester.pump();
       await tester.pump();
       expect(brain.replyCalls, 2);
       expect(find.textContaining('brain answer'), findsWidgets);
-      expect(speaker.spoken.length, before);
+      expect(speaker.said.length, before);
     } finally {
       SpeechInput.override = null;
       SpeechOutput.override = null;

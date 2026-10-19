@@ -2,11 +2,12 @@
 // from the camera, and a screenshot of the phone.
 //
 // The words matter as much as the bytes. Each attachment leaves a caption in
-// the thread ("Photo attached") and is given to the brain as a bracketed
-// sentence instead of its pixels — the local model this app ships cannot see
-// images, and a prompt that pretended otherwise would be a lie the model then
-// answers. One place decides both strings so the thread and the prompt can
-// never drift apart.
+// the thread ("Photo attached") and a bracketed sentence describing it, which
+// travels with the path to `VisionAiService` — never to a text model. The
+// brains this app ships cannot see images, and a model given the bracketed
+// sentence as its only context answers a question about a picture with an
+// invention. One place decides both strings so the thread and the question put
+// to the vision layer can never drift apart.
 //
 // Files are copied out of the camera's and the screenshot's own temporary
 // folders into one attachments folder, because the conversation is persisted
@@ -31,9 +32,9 @@ enum AttachmentKind {
     AttachmentKind.screenshot => kScreenshotCaption,
   };
 
-  /// What the brain is handed in place of the picture. Bracketed on purpose:
-  /// it reads as an annotation about the turn, not as something the user
-  /// typed, so a model quoting it back is obviously quoting.
+  /// What a picture turn says about itself: bracketed on purpose, so it reads
+  /// as an annotation about the turn rather than as something the user typed.
+  /// It is handed to [VisionAiService] with the path — never to a text brain.
   String get prompt => switch (this) {
     AttachmentKind.photo => kPhotoPrompt,
     AttachmentKind.screenshot => kScreenshotPrompt,
@@ -58,11 +59,11 @@ const String kPhotoCaption = 'Photo attached';
 /// The caption left in the thread by a screen capture.
 const String kScreenshotCaption = 'Screenshot attached';
 
-/// What the brain is told when the user attaches a photo. The model cannot
-/// see the image; this sentence is what it gets instead.
+/// What a photo turn is described by — the question put to the vision layer.
 const String kPhotoPrompt = '[User attached a photo]';
 
-/// What the brain is told when the user attaches a screenshot.
+/// What a screenshot turn is described by — the question put to the vision
+/// layer.
 const String kScreenshotPrompt = '[User attached a screenshot]';
 
 /// Keeps captured images where the conversation can find them again.
@@ -92,9 +93,8 @@ class AttachmentStore {
       final Directory documents = await getApplicationDocumentsDirectory();
       // Awaited inside the try so a refused mkdir is caught here rather than
       // surfacing as an unhandled error in the caller's future.
-      return await Directory('${documents.path}/attachments').create(
-        recursive: true,
-      );
+      return await Directory('${documents.path}/attachments')
+          .create(recursive: true);
     } catch (error) {
       // No path provider (desktop, tests): the capture's own file is enough.
       debugPrint('ATTACH: no documents folder ($error)');
@@ -107,7 +107,10 @@ class AttachmentStore {
   /// Answers [sourcePath] unchanged when the copy cannot be made, so a capture
   /// is never thrown away because a folder was not there. A source that has
   /// already gone missing answers null — there is no picture to keep.
-  Future<String?> keep(String sourcePath, {required AttachmentKind kind}) async {
+  Future<String?> keep(
+    String sourcePath, {
+    required AttachmentKind kind,
+  }) async {
     final File source = File(sourcePath);
     if (!await source.exists()) return null;
     final Directory? folder = await _directory();

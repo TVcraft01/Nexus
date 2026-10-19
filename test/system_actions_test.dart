@@ -35,20 +35,18 @@ class _Recorder extends DeviceActionBackend {
 void main() {
   group('the rules the model is given', () {
     test('name every action exactly once, and nothing else', () {
-      expect(
-        kSystemActionNames,
-        <String>{
-          'set_flashlight',
-          'set_alarm',
-          'set_timer',
-          'open_app',
-          'get_battery_level',
-          'set_wifi',
-          'set_bluetooth',
-          'set_volume',
-          'set_brightness',
-        },
-      );
+      expect(kSystemActionNames, <String>{
+        'set_flashlight',
+        'set_alarm',
+        'set_timer',
+        'open_app',
+        'get_battery_level',
+        'set_wifi',
+        'set_bluetooth',
+        'set_volume',
+        'set_brightness',
+        'get_time',
+      });
       // The prompt is the only place the model can learn the vocabulary, so
       // every name in the set has to appear in it — a name the rules forget is
       // an action the model will never ask for.
@@ -69,14 +67,28 @@ void main() {
         contains('Never say you did something yourself'),
         reason: 'the model asks; the app acts and says so',
       );
+      // The A25 hallucinated an alarm after a long paste. The rule is explicit,
+      // not inferred from "do not act unless asked": a small model needs the
+      // exception named or it treats a message with a time in it as a request.
+      expect(
+        kSystemActionRules,
+        contains('ONLY set an alarm if the user explicitly asks you to'),
+      );
+      expect(kSystemActionRules, contains('pasted in'));
     });
 
     test('the composed prompt is the persona with the rules after it', () {
       const String persona = 'You are Nexus.';
-      expect(
-        systemWithActions(persona),
-        '$persona\n\n$kSystemActionRules',
-      );
+      expect(systemWithActions(persona), '$persona\n\n$kSystemActionRules');
+    });
+
+    test('the model is told not to do math with its actions', () {
+      // Measured on the A25: asked "what is 6 times 7", the model answered
+      // `{"action":"set_timer","seconds":420}` — it read the numbers as a
+      // length of time. The shell answers sums itself now; this is the rule
+      // that tells the model why it must not reach for an action instead.
+      expect(kSystemActionRules, contains('Do not use tools to do math'));
+      expect(kSystemActionRules, contains('If you cannot answer, just say so'));
     });
   });
 
@@ -85,7 +97,11 @@ void main() {
       expect(
         SystemActionCall.tryParse('{"action":"set_flashlight","state":"on"}'),
         isA<SystemActionCall>()
-            .having((SystemActionCall c) => c.action, 'action', 'set_flashlight')
+            .having(
+              (SystemActionCall c) => c.action,
+              'action',
+              'set_flashlight',
+            )
             .having((SystemActionCall c) => c.args['state'], 'state', 'on'),
       );
       expect(
@@ -144,7 +160,11 @@ void main() {
       expect(
         SystemActionCall.tryParse('{"action":"set_brightness","level":"70"}'),
         isA<SystemActionCall>()
-            .having((SystemActionCall c) => c.action, 'action', 'set_brightness')
+            .having(
+              (SystemActionCall c) => c.action,
+              'action',
+              'set_brightness',
+            )
             .having((SystemActionCall c) => c.args['level'], 'level', 70),
       );
       // The near-miss a 0.5B writes for the same intent, understood rather than
@@ -245,7 +265,41 @@ void main() {
     });
   });
 
+  group('a model with no clock', () {
+    test('a time object is read as a request for the clock, not as an answer', () {
+      // Verbatim from the A25 at 14:24. Before this rule the thread showed
+      // `{"time": "07:30"}` as though it were the time; the shell now answers
+      // the request with its own clock instead.
+      expect(
+        SystemActionCall.tryParse('{"time": "07:30"}')?.action,
+        'get_time',
+      );
+      // A block that is not about the clock is still prose: the rule is narrow
+      // on purpose, so a model discussing arbitrary JSON is not overruled.
+      expect(SystemActionCall.tryParse('{"colour": "red"}'), isNull);
+    });
+  });
+
   group('running an action', () {
+    test('the clock is answered by the shell, not the phone', () async {
+      // The model asked for this action on the A25 before it existed, so the
+      // vocabulary now has it — and the answer is the shell's own clock: no
+      // permission, no channel, and nothing the model could have guessed.
+      final _Recorder phone = _Recorder();
+      final DeviceSystemActions actions = DeviceSystemActions(
+        backend: phone,
+        clock: () => DateTime(2026, 10, 19, 15, 5),
+      );
+
+      final SystemActionOutcome outcome = await actions.execute(
+        SystemActionCall.tryParse('{"action":"get_time"}')!,
+      );
+
+      expect(outcome.ok, isTrue);
+      expect(outcome.message, "It's 15:05 on Monday 19 October 2026.");
+      expect(phone.calls, isEmpty, reason: 'the clock needs no native call');
+    });
+
     test('speaks the app\'s own name for each action, and passes the arguments '
         'the native side expects', () async {
       final _Recorder phone = _Recorder();
@@ -304,17 +358,22 @@ void main() {
         SystemActionCall.tryParse('{"action":"set_volume","level":40}')!,
       );
       expect(phone.calls.last.$1, AgentActions.volumeSet);
-      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'set', 'level': 40});
+      expect(phone.calls.last.$2, <String, dynamic>{
+        'mode': 'set',
+        'level': 40,
+      });
 
       await withPhone.execute(
         SystemActionCall.tryParse('{"action":"set_brightness","level":70}')!,
       );
       expect(phone.calls.last.$1, AgentActions.brightnessSet);
-      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'set', 'level': 70});
+      expect(phone.calls.last.$2, <String, dynamic>{
+        'mode': 'set',
+        'level': 70,
+      });
     });
 
-    test('never writes its own sentence over the phone\'s for a setting',
-        () async {
+    test('never writes its own sentence over the phone\'s for a setting', () async {
       final _Recorder phone = _Recorder();
       final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
 
@@ -324,29 +383,28 @@ void main() {
       phone.reply = const ActionResult(
         true,
         "Android won't let an app switch Wi-Fi — I opened the Wi-Fi panel, "
-            "flip it there.",
+        "flip it there.",
       );
       expect(
         (await actions.execute(
           SystemActionCall.tryParse('{"action":"set_wifi","state":"on"}')!,
         )).message,
         "Android won't let an app switch Wi-Fi — I opened the Wi-Fi panel, "
-            "flip it there.",
+        "flip it there.",
       );
 
       // And what the phone achieved is what it reports when it did switch.
       phone.reply = const ActionResult(true, 'Bluetooth off.');
       expect(
         (await actions.execute(
-          SystemActionCall.tryParse('{"action":"set_bluetooth","state":"off"}')!,
+          SystemActionCall.tryParse(
+            '{"action":"set_bluetooth","state":"off"}',
+          )!,
         )).message,
         'Bluetooth off.',
       );
 
-      phone.reply = const ActionResult(
-        true,
-        'Volume set to 40%.',
-      );
+      phone.reply = const ActionResult(true, 'Volume set to 40%.');
       expect(
         (await actions.execute(
           SystemActionCall.tryParse('{"action":"set_volume","level":40}')!,
@@ -398,28 +456,33 @@ void main() {
       );
     });
 
-    test('the phone\'s own sentence wins for the two it knows better', () async {
-      final _Recorder phone = _Recorder();
-      final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
+    test(
+      'the phone\'s own sentence wins for the two it knows better',
+      () async {
+        final _Recorder phone = _Recorder();
+        final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
 
-      phone.reply = const ActionResult(true, 'Battery at 84%.');
-      expect(
-        (await actions.execute(
-          SystemActionCall.tryParse('{"action":"get_battery_level"}')!,
-        )).message,
-        'Battery at 84%.',
-      );
+        phone.reply = const ActionResult(true, 'Battery at 84%.');
+        expect(
+          (await actions.execute(
+            SystemActionCall.tryParse('{"action":"get_battery_level"}')!,
+          )).message,
+          'Battery at 84%.',
+        );
 
-      // Opening an app is the case where the phone knows *what* it opened —
-      // "Opened Maps." is the part the user cannot see for themselves.
-      phone.reply = const ActionResult(true, 'Opened Maps.');
-      expect(
-        (await actions.execute(
-          SystemActionCall.tryParse('{"action":"open_app","app_name":"maps"}')!,
-        )).message,
-        'Opened Maps.',
-      );
-    });
+        // Opening an app is the case where the phone knows *what* it opened —
+        // "Opened Maps." is the part the user cannot see for themselves.
+        phone.reply = const ActionResult(true, 'Opened Maps.');
+        expect(
+          (await actions.execute(
+            SystemActionCall.tryParse(
+              '{"action":"open_app","app_name":"maps"}',
+            )!,
+          )).message,
+          'Opened Maps.',
+        );
+      },
+    );
 
     test('a refusal keeps the phone\'s reason and is not a success', () async {
       final _Recorder phone = _Recorder();
@@ -437,17 +500,21 @@ void main() {
       expect(outcome.message, 'What app should I open?');
     });
 
-    test('a channel that throws becomes a sentence, never a stack trace',
-        () async {
-      final _Recorder phone = _Recorder()..error = StateError('no plugin');
-      final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
+    test(
+      'a channel that throws becomes a sentence, never a stack trace',
+      () async {
+        final _Recorder phone = _Recorder()..error = StateError('no plugin');
+        final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
 
-      final SystemActionOutcome outcome = await actions.execute(
-        SystemActionCall.tryParse('{"action":"set_flashlight","state":"on"}')!,
-      );
-      expect(outcome.ok, isFalse);
-      expect(outcome.message, notOnThisSystem(AgentActions.flashlightToggle));
-      expect(outcome.message, isNot(contains('StateError')));
-    });
+        final SystemActionOutcome outcome = await actions.execute(
+          SystemActionCall.tryParse(
+            '{"action":"set_flashlight","state":"on"}',
+          )!,
+        );
+        expect(outcome.ok, isFalse);
+        expect(outcome.message, notOnThisSystem(AgentActions.flashlightToggle));
+        expect(outcome.message, isNot(contains('StateError')));
+      },
+    );
   });
 }

@@ -11,6 +11,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart' show CameraDescription;
+import 'package:flutter/foundation.dart' show DebugPrintCallback, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -20,6 +21,7 @@ import 'package:nexus/core/local_ai_service.dart';
 import 'package:nexus/core/onboarding.dart';
 import 'package:nexus/core/screen_capture.dart';
 import 'package:nexus/core/system_actions.dart';
+import 'package:nexus/core/vision_ai.dart';
 import 'package:nexus/main_ui.dart';
 import 'package:nexus/ui/camera_page.dart';
 import 'package:nexus/ui/image_viewer_page.dart';
@@ -34,8 +36,10 @@ class _MemoryStore extends AttachmentStore {
   _MemoryStore() : super(directory: () async => null);
 
   @override
-  Future<String?> keep(String sourcePath, {required AttachmentKind kind}) async =>
-      sourcePath;
+  Future<String?> keep(
+    String sourcePath, {
+    required AttachmentKind kind,
+  }) async => sourcePath;
 }
 
 /// A brain that answers immediately and remembers what it was asked.
@@ -156,7 +160,9 @@ void main() {
 
     test('keeps the capture where it is when there is no folder', () async {
       final File source = await shot();
-      final AttachmentStore store = AttachmentStore(directory: () async => null);
+      final AttachmentStore store = AttachmentStore(
+        directory: () async => null,
+      );
 
       expect(
         await store.keep(source.path, kind: AttachmentKind.screenshot),
@@ -174,8 +180,10 @@ void main() {
       );
 
       expect(
-        await store.keep('${folder.path}/never-existed.png',
-            kind: AttachmentKind.photo),
+        await store.keep(
+          '${folder.path}/never-existed.png',
+          kind: AttachmentKind.photo,
+        ),
         isNull,
       );
     });
@@ -215,9 +223,7 @@ void main() {
       final Map<String, Object?> json = entry.toJson();
       expect(json['image'], '/tmp/shot.png');
 
-      final ChatEntry? read = ChatEntry.fromJson(
-        Map<String, Object?>.of(json),
-      );
+      final ChatEntry? read = ChatEntry.fromJson(Map<String, Object?>.of(json));
       expect(read!.imagePath, '/tmp/shot.png');
       expect(read.text, 'Photo attached');
       expect(read.mine, isTrue);
@@ -272,14 +278,58 @@ void main() {
       expect(find.text('Message Nexus'), findsOneWidget);
     });
 
+    testWidgets('both attachment buttons log that they fired', (tester) async {
+      // The buttons were in the tree and still "not reachable" in the report.
+      // These are the lines `adb logcat | grep -E 'camera:|screen:'` shows when
+      // a thumb actually lands on each one.
+      final List<String> lines = <String>[];
+      final DebugPrintCallback original = debugPrint;
+      debugPrint = (String? line, {int? wrapWidth}) {
+        if (line != null &&
+            (line.startsWith('camera:') || line.startsWith('screen:'))) {
+          lines.add(line);
+        }
+      };
+      try {
+        final File file = (await tester.runAsync(shot))!;
+        ScreenCapture.override = () async => ScreenCaptureResult(file.path);
+        await pumpShell(tester);
+
+        await tester.tap(find.byKey(kAttachCamera));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.tap(find.byKey(kCameraClose));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(kAttachScreen));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 600));
+
+        expect(
+          lines.any(
+            (String line) => line.startsWith('camera: attach button tapped'),
+          ),
+          isTrue,
+          reason: 'the camera button has to prove it fired',
+        );
+        expect(
+          lines.any(
+            (String line) => line.startsWith('screen: share button tapped'),
+          ),
+          isTrue,
+          reason: 'the screen button has to prove it fired',
+        );
+      } finally {
+        debugPrint = original;
+      }
+    });
+
     testWidgets('a device with no camera says so instead of a black screen', (
       tester,
     ) async {
       await tester.pumpWidget(
         MaterialApp(
-          home: CameraPage(
-            cameras: () async => const <CameraDescription>[],
-          ),
+          home: CameraPage(cameras: () async => const <CameraDescription>[]),
         ),
       );
       await tester.pumpAndSettle();
@@ -289,39 +339,40 @@ void main() {
       expect(find.byKey(kCameraShutter), findsNothing);
     });
 
-    testWidgets('a screenshot becomes a thumbnail and the brain is told', (
-      tester,
-    ) async {
-      // Real file IO has to run outside the fake clock a widget test uses,
-      // or it never completes.
-      final File file = (await tester.runAsync(shot))!;
-      ScreenCapture.override = () async => ScreenCaptureResult(file.path);
-      await pumpShell(tester);
+    testWidgets(
+      'a screenshot becomes a thumbnail and the vision layer is asked',
+      (tester) async {
+        // Real file IO has to run outside the fake clock a widget test uses,
+        // or it never completes.
+        final File file = (await tester.runAsync(shot))!;
+        ScreenCapture.override = () async => ScreenCaptureResult(file.path);
+        await pumpShell(tester);
 
-      await tester.tap(find.byKey(kAttachScreen));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 600));
+        await tester.tap(find.byKey(kAttachScreen));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 600));
 
-      // The user's turn: the caption, and a picture in the same bubble.
-      expect(find.text('Screenshot attached'), findsOneWidget);
-      expect(find.byType(NexusAttachmentBubble), findsOneWidget);
-      // The brain never receives the picture — it receives the sentence.
-      expect(brain.prompts, <String>['[User attached a screenshot]']);
-      // And the conversation remembers the file, not only the words.
-      final ChatEntry stored = chat.entries.firstWhere(
-        (ChatEntry e) => e.text == 'Screenshot attached',
-      );
-      expect(stored.imagePath, isNotNull);
-      expect(File(stored.imagePath!).existsSync(), isTrue);
-    });
+        // The user's turn: the caption, and a picture in the same bubble.
+        expect(find.text('Screenshot attached'), findsOneWidget);
+        expect(find.byType(NexusAttachmentBubble), findsOneWidget);
+        // A text brain is never asked to describe a picture it cannot see; the
+        // picture goes to the vision layer, which has no module yet and says so.
+        expect(brain.prompts, isEmpty);
+        expect(find.text(kNexusVisionMissingText), findsOneWidget);
+        // And the conversation remembers the file, not only the words.
+        final ChatEntry stored = chat.entries.firstWhere(
+          (ChatEntry e) => e.text == 'Screenshot attached',
+        );
+        expect(stored.imagePath, isNotNull);
+        expect(File(stored.imagePath!).existsSync(), isTrue);
+      },
+    );
 
     testWidgets('a refused screenshot explains itself and adds no bubble', (
       tester,
     ) async {
-      ScreenCapture.override = () async => const ScreenCaptureResult(
-        null,
-        'Screen capture was not allowed.',
-      );
+      ScreenCapture.override = () async =>
+          const ScreenCaptureResult(null, 'Screen capture was not allowed.');
       await pumpShell(tester);
 
       await tester.tap(find.byKey(kAttachScreen));
