@@ -38,11 +38,82 @@ void main() {
     expect(answer, 'A dog beside a road.');
     expect(
       prompts.single,
-      '[User attached an image. OCR Text: "STOP\nMain Street", '
-      'Objects in image: Dog, Outdoor, Car, Grass, Sky. '
-      'User asked: "[User attached a photo]"]',
+      '[Image Context: Text="STOP\nMain Street", '
+      'Objects="Dog, Outdoor, Car, Grass, Sky"]\n'
+      '[User Question]: [User attached a photo]',
     );
   });
+
+  test('the system turn carries the strict OCR rule', () {
+    expect(
+      kNexusVisionSystem,
+      contains(
+        "If the user asks what the text says, you MUST repeat the 'OCR Text:' "
+        'exactly as provided. Do not make up an answer. Do not use outside '
+        'knowledge.',
+      ),
+    );
+    // The measured failure this rule exists for: a small model opened with
+    // "The user has uploaded an image…" instead of answering the question.
+    expect(kNexusVisionSystem, contains("Never say 'The user has uploaded'"));
+    expect(kNexusVisionSystem, contains('Answer directly'));
+  });
+
+  test('the evidence is reported before the brain answers', () async {
+    final List<String> order = <String>[];
+    VisionEvidence? seen;
+    final MlVisionService service = MlVisionService(
+      readText: (_) async => '  NEXUS VISION TEST  ',
+      readLabels: (_) async => const <String>['Monochrome', 'Device'],
+      answer: (_) async {
+        order.add('answer');
+        return 'It is a test card.';
+      },
+    );
+
+    await service.describe(
+      '/tmp/photo.jpg',
+      question: kPhotoPrompt,
+      onEvidence: (VisionEvidence evidence) {
+        order.add('evidence');
+        seen = evidence;
+      },
+    );
+
+    expect(order, <String>['evidence', 'answer']);
+    expect(seen!.text, 'NEXUS VISION TEST');
+    expect(seen!.labels, <String>['Monochrome', 'Device']);
+    expect(seen!.isEmpty, isFalse);
+  });
+
+  test('a text question that ignores OCR is answered from it', () async {
+    final MlVisionService service = MlVisionService(
+      readText: (_) async => 'NEXUS VISION TEST',
+      readLabels: (_) async => const <String>['Monochrome'],
+      answer: (_) async => 'A dark rectangle.',
+    );
+
+    expect(
+      await service.describe('/tmp/photo.jpg', question: 'what does it say?'),
+      'The text says: "NEXUS VISION TEST"',
+    );
+  });
+
+  test(
+    'a text question that quotes OCR passes the brain answer through',
+    () async {
+      final MlVisionService service = MlVisionService(
+        readText: (_) async => 'Platform 9',
+        readLabels: (_) async => const <String>[],
+        answer: (_) async => 'The sign says Platform 9.',
+      );
+
+      expect(
+        await service.describe('/tmp/photo.jpg', question: 'what does it say?'),
+        'The sign says Platform 9.',
+      );
+    },
+  );
 
   test(
     'a picture with no words and no objects keeps the placeholder',
@@ -82,9 +153,9 @@ void main() {
 
     await service.describe('/tmp/photo.jpg', question: 'what does it say?');
 
-    expect(prompts.single, contains('OCR Text: "Platform 9"'));
-    expect(prompts.single, contains('Objects in image: none'));
-    expect(prompts.single, contains('User asked: "what does it say?"'));
+    expect(prompts.single, contains('Text="Platform 9"'));
+    expect(prompts.single, contains('Objects="none"'));
+    expect(prompts.single, contains('[User Question]: what does it say?'));
   });
 
   test('an action object from the chat brain becomes the evidence', () async {
@@ -141,8 +212,8 @@ void main() {
       await service.describe('/tmp/photo.jpg', question: kPhotoPrompt),
       'A dog outside.',
     );
-    expect(prompts.single, contains('OCR Text: "none"'));
-    expect(prompts.single, contains('Objects in image: Dog, Outdoor'));
+    expect(prompts.single, contains('Text="none"'));
+    expect(prompts.single, contains('Objects="Dog, Outdoor"'));
   });
 
   test('is available when a reader is installed', () {

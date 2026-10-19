@@ -195,6 +195,18 @@ void main() {
     expect(phone.dials, [null]);
   });
 
+  test('a number-only call from the fast path still dials', () async {
+    // The `call_number` action names its target in `number`, with no contact
+    // line. The phone must ring, not ask who the user meant.
+    final out = await executor.run(
+      req(AgentActions.callPlace, {'number': '0612345678'}),
+    );
+
+    expect(out.ok, isTrue);
+    expect(phone.names, ['0612345678']);
+    expect(phone.dials, ['0612345678']);
+  });
+
   test('video calls carry the app, never the dial path', () async {
     final out = await executor.run(req(
       AgentActions.callPlace,

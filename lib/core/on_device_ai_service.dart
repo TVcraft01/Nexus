@@ -42,8 +42,8 @@ const String kNexusOnDeviceSystemPrompt =
     'Answer in two or three short sentences. '
     'Never say you did something yourself — the app does it and tells them.';
 
-/// The rules the model runs under: the persona above, then the nine actions it
-/// may ask for.
+/// The rules the model runs under: the persona above, then the actions it may
+/// ask for.
 ///
 /// One constant rather than a concatenation at each call site, because the two
 /// brains must be offered the same vocabulary — see [systemWithActions] in
@@ -148,6 +148,7 @@ class OnDeviceAiService implements LocalAiService {
     this.maxTokens = 220,
     this.clock,
     this.includeClock = true,
+    this.includeMemory = true,
   }) : _deviceModel = model,
        _fixedEngine = llm;
 
@@ -181,6 +182,13 @@ class OnDeviceAiService implements LocalAiService {
   /// the vision brain: a picture question has nothing to do with the clock, and
   /// a small model handed both answered the date instead of the picture.
   final bool includeClock;
+
+  /// Whether the app's remembered facts are appended to [system].
+  ///
+  /// True for chat, false for the vision turn: a picture question has nothing
+  /// to do with the user's name, and a 0.5B model given both answered the fact
+  /// instead of the picture.
+  final bool includeMemory;
 
   /// Test seam for the free-memory reading: null reads `/proc/meminfo`.
   ///
@@ -332,9 +340,12 @@ class OnDeviceAiService implements LocalAiService {
     final Llm llm = await _current();
     // The clock goes in per question, not into [system]: "what time is it"
     // has to be answered with the time it is asked at. A vision turn opts out.
-    final String systemTurn = includeClock
+    final String clocked = includeClock
         ? nexusSystemWithClock(system, now: clock?.call())
         : system;
+    final String systemTurn = includeMemory
+        ? LocalAiService.systemWithMemory(clocked)
+        : clocked;
     String answer;
     try {
       answer = await llm.complete(
@@ -383,9 +394,12 @@ class OnDeviceAiService implements LocalAiService {
     if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
     if (_engine == null) await _ensureMemoryForLoad();
     final Llm llm = await _current();
-    final String systemTurn = includeClock
+    final String clocked = includeClock
         ? nexusSystemWithClock(system, now: clock?.call())
         : system;
+    final String systemTurn = includeMemory
+        ? LocalAiService.systemWithMemory(clocked)
+        : clocked;
     bool answered = false;
     try {
       // With history this is a chat, not a question: the model is handed the

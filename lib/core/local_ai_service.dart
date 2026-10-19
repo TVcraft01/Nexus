@@ -135,6 +135,23 @@ abstract class LocalAiService {
   /// model at a temp directory; the app never calls it.
   static void resetDefault() => _default = null;
 
+  /// What the app remembers about the user, as a system-turn suffix.
+  ///
+  /// Read at request time rather than copied into the chain: a fact learned in
+  /// this conversation is available to the next answer, and a fact deleted in
+  /// Privacy is gone from the next answer even though the engine is still warm.
+  /// Null means the app has no memory service installed (a test, a desktop
+  /// shell) and the system turn is left exactly as it was.
+  static String Function()? memoryContext;
+
+  /// [system] with the remembered facts after it, one blank line between.
+  /// Empty memory answers [system] unchanged, so a build with no facts sends
+  /// the same prompt it always did.
+  static String systemWithMemory(String system) {
+    final String memory = memoryContext?.call().trim() ?? '';
+    return memory.isEmpty ? system : '$system\n\n$memory';
+  }
+
   /// Answers [prompt], or throws.
   Future<String> generateResponse(String prompt);
 

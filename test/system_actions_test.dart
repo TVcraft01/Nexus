@@ -47,6 +47,7 @@ void main() {
         'set_brightness',
         'get_time',
         'play_music',
+        'call_number',
       });
       // The prompt is the only place the model can learn the vocabulary, so
       // every name in the set has to appear in it — a name the rules forget is
@@ -136,7 +137,7 @@ void main() {
       expect(named?.args, isEmpty);
     });
 
-    test('reads each of the nine actions', () {
+    test('reads each action in the vocabulary', () {
       expect(
         SystemActionCall.tryParse('{"action":"set_flashlight","state":"on"}'),
         isA<SystemActionCall>()
@@ -370,6 +371,12 @@ void main() {
       );
       expect(phone.calls.last.$1, AgentActions.timerSet);
       expect(phone.calls.last.$2, <String, dynamic>{'seconds': 300});
+
+      await withPhone.execute(
+        SystemActionCall.tryParse('{"action":"call_number","number":"mom"}')!,
+      );
+      expect(phone.calls.last.$1, AgentActions.callPlace);
+      expect(phone.calls.last.$2, <String, dynamic>{'number': 'mom'});
 
       await withPhone.execute(
         SystemActionCall.tryParse('{"action":"open_app","app_name":"Maps"}')!,

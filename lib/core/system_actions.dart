@@ -13,7 +13,7 @@
 //   * the model never acts. It emits a request; the shell decides to run it and
 //     writes the line that says what happened. A model that says "I turned the
 //     flashlight on" is lying, and the fix is to give it something true to say;
-//   * an action that is not one of the nine, or that arrives without the
+//   * an action that is not one of the closed set, or that arrives without the
 //     arguments it needs, is **not** an action — it is text, shown as the
 //     assistant's answer exactly as it was written. That is the whole of the
 //     hallucination policy: a guess costs a sentence on screen, never a torch
@@ -80,12 +80,31 @@ SystemActionCall? actionFromPhrase(String text) {
       return SystemActionCall('set_flashlight', <String, Object?>{
         'state': state,
       });
+    case AgentActions.timerSet:
+      // The fast path exists for the sentences a user says expecting an
+      // instant result, and a timer is one of them: waiting on a model to
+      // translate "set a timer for five minutes" is the delay the path removes.
+      final Object? seconds = command.arguments['seconds'];
+      if (seconds is! int || seconds <= 0) return null;
+      return SystemActionCall('set_timer', <String, Object?>{
+        'seconds': seconds,
+      });
     // "Play some music" is the one media phrase with a device action behind
     // it. Bare "play" and "resume" are deliberately not translated: those may
     // be about a preview or a track that is already loaded, and opening the
     // phone's player over it would be a different request. A named song is not
     // translated either — this app cannot make a named track appear, and the
     // honest answer is not a player opening to something else.
+    case AgentActions.callPlace:
+      // A video call is not a dial: it needs an app and a contact path the
+      // system-actions vocabulary does not have, so it stays with the model and
+      // the phone bridge. A plain call names one target and becomes the dialer.
+      if (command.arguments['mode'] == 'video') return null;
+      final Object? contact = command.arguments['contact'];
+      if (contact is! String || contact.trim().isEmpty) return null;
+      return SystemActionCall('call_number', <String, Object?>{
+        'number': contact.trim(),
+      });
     case AgentActions.mediaPlay:
       if (!RegExp(
         r'\b(music|musique)\b',
@@ -111,7 +130,7 @@ SystemActionCall? actionFromPhrase(String text) {
   return null;
 }
 
-/// The nine actions the model may ask for, by the names it is told to use.
+/// The actions the model may ask for, by the names it is told to use.
 ///
 /// A closed set, deliberately: every name here has a native method behind it
 /// and a sentence in front of it, and anything else the model writes is prose.
@@ -132,6 +151,7 @@ const Set<String> kSystemActionNames = <String>{
   'set_brightness',
   'get_time',
   'play_music',
+  'call_number',
 };
 
 /// What a failed `play_music` says — the same sentence whether Android refused
@@ -166,7 +186,8 @@ const String kSystemActionRules =
     '  {"action":"get_battery_level"}\n'
     '  {"action":"get_time"}   (use this for the date or time — never guess)\n'
     '  {"action":"play_music"}   (only opens the phone\'s music player)\n'
-    'Those eleven are the only actions there are. '
+    '  {"action":"call_number","number":"555-1234"}   (opens the dialer)\n'
+    'Those twelve are the only actions there are. '
     'ONLY set an alarm if the user explicitly asks you to in this message. '
     'Never set an alarm because a message is long, contains a time, or was '
     'pasted in — an alarm nobody asked for is worse than no answer. '
@@ -365,6 +386,18 @@ class SystemActionCall {
         // appear, and pretending the argument was the point is how the invented
         // `song: …` answer got made in the first place.
         return const SystemActionCall('play_music');
+      case 'call_number':
+        // One target: a number, or a contact name the phone can resolve. The
+        // action is deliberately called `call_number` even when the value is a
+        // name, because the vocabulary is the model's and the phone's dialer is
+        // what it reaches.
+        final String? target = _string(
+          decoded['number'] ?? decoded['target'] ?? decoded['name'],
+        );
+        if (target == null) return null;
+        return SystemActionCall('call_number', <String, Object?>{
+          'number': target,
+        });
       case 'get_time':
         // No arguments: the clock is the phone's, not the model's. Measured on
         // the A25: asked the time before this existed, the model asked for
@@ -517,7 +550,7 @@ class DeviceSystemActions implements SystemActions {
   /// The argument names are the native side's, not the model's:
   /// `torch` reads `mode` (anything but `off` means on), `openApp` takes a
   /// `query`, and the alarm takes `hour`/`minute` in the same words. Keeping
-  /// the translation in one function is what stops one of the nine drifting
+  /// the translation in one function is what stops one of them drifting
   /// out of step with its native method.
   (String, Map<String, dynamic>) _plan(SystemActionCall call) {
     switch (call.action) {
@@ -572,6 +605,11 @@ class DeviceSystemActions implements SystemActions {
         );
       case 'play_music':
         return (AgentActions.musicPlay, <String, dynamic>{});
+      case 'call_number':
+        return (
+          AgentActions.callPlace,
+          <String, dynamic>{'number': call.args['number']},
+        );
       default:
         return (AgentActions.batteryGet, <String, dynamic>{});
     }

@@ -57,9 +57,12 @@ const String kMlVisionBrainFailedText =
 const String kNexusVisionSystem =
     'You are Nexus, looking at a photo on this device. The OCR text and object '
     'labels are observations from the phone. Describe the photo in one or two '
-    'short sentences, quoting any visible text exactly. Do not explain or '
-    'define the words. Do not talk about the date or time. Never output JSON, '
-    'actions, or key-value records.';
+    'short sentences, quoting any visible text exactly. STRICT RULE: If the '
+    "user asks what the text says, you MUST repeat the 'OCR Text:' exactly as "
+    'provided. Do not make up an answer. Do not use outside knowledge. Do not '
+    'explain or define the words. Do not talk about the date or time. Never '
+    "say 'The user has uploaded'. Answer directly: describe the picture, and "
+    'never call it an upload. Never output JSON, actions, or key-value records.';
 
 /// ML Kit's on-device text recognition and image labeling, plus the local brain.
 class MlVisionService implements VisionAiService {
@@ -93,40 +96,106 @@ class MlVisionService implements VisionAiService {
   /// Both model calls are attempted together; one failing does not throw away
   /// what the other saw. When neither finds anything, the turn keeps the
   /// bracketed placeholder it already had — no invented description.
+  ///
+  /// The detection is reported through [onEvidence] before the brain is asked,
+  /// so the bubble can show it immediately.
   @override
-  Future<String> describe(String imagePath, {String question = ''}) async {
+  Future<String> describe(
+    String imagePath, {
+    String question = '',
+    VisionEvidenceCallback? onEvidence,
+  }) async {
     final List<Object> found = await Future.wait(<Future<Object>>[
       _textOrEmpty(imagePath),
       _labelsOrEmpty(imagePath),
     ]);
-    final String text = found[0] as String;
+    final String text = (found[0] as String).trim();
     final List<String> labels = found[1] as List<String>;
 
-    if (text.trim().isEmpty && labels.isEmpty) {
+    // The eyes are done. Hand the detection over now, before the brain is
+    // asked: the bubble can show what was scanned while the answer is still
+    // being written, and a model that answers badly cannot hide the fact that
+    // OCR and labeling succeeded.
+    try {
+      onEvidence?.call(VisionEvidence(text: text, labels: labels));
+    } catch (error) {
+      // A drawing callback that fails is not a reason to lose the answer.
+      debugPrint('VISION: the evidence callback failed ($error)');
+    }
+
+    if (text.isEmpty && labels.isEmpty) {
       // The same annotation the attachment already carries. A screenshot keeps
       // its own noun; everything else is the photo placeholder.
       return question.startsWith('[User attached') ? question : kPhotoPrompt;
     }
 
     final String objects = labels.isEmpty ? 'none' : labels.join(', ');
-    final String ocr = text.trim().isEmpty ? 'none' : text.trim();
+    final String ocr = text.isEmpty ? 'none' : text;
+    // Evidence first, question second, in two labelled lines. A small model
+    // reads the first line as context and the second as the thing to answer;
+    // the old bracketed sentence put the question inside the same clause as
+    // the evidence, and the model answered "The user has uploaded an image…"
+    // instead of the question. The labels are the prompt's grammar now.
     final String context =
-        '[User attached an image. OCR Text: "$ocr", '
-        'Objects in image: $objects. User asked: "$question"]';
+        '[Image Context: Text="$ocr", Objects="$objects"]\n'
+        '[User Question]: $question';
 
     try {
       final String answer = await (_answer ?? _askLocalBrain)(context);
       debugPrint(
-        'VISION: text=${text.trim().length} labels=${labels.length} '
+        'VISION: text=${text.length} labels=${labels.length} '
         'answer=${answer.trim().length}',
       );
-      return _plainAnswer(answer, text: text, labels: labels);
+      final String plain = _plainAnswer(answer, text: text, labels: labels);
+      // The prompt rule is not enough for a 0.5B model: measured on the A25 it
+      // answered "a red sign" when asked what the sign said. If the question is
+      // about the words and the answer does not actually contain them, the
+      // evidence is the only honest answer left.
+      if (text.isNotEmpty &&
+          _asksForText(question) &&
+          !_mentions(plain, text)) {
+        return 'The text says: "$text"';
+      }
+      return plain;
     } on OllamaException catch (error) {
       return error.message;
     } catch (error) {
       debugPrint('VISION: the local brain failed ($error)');
       return kMlVisionBrainFailedText;
     }
+  }
+
+  /// Whether [question] asks what the words in the picture say.
+  ///
+  /// Narrow on purpose: this is the one question the model must answer from
+  /// OCR, and a broad pattern would replace an ordinary description with the
+  /// raw text. The same words as the strict system rule, in the shell's hands.
+  static bool _asksForText(String question) {
+    final String said = question
+        .toLowerCase()
+        .replaceAll(RegExp(r"[^a-z0-9\s]"), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (said.isEmpty) return false;
+    return RegExp(
+      r'^(?:what (?:does|do) (?:it|this|that|the (?:text|sign|label|note|'
+      r'screen|image|words?)) say'
+      r'|whats? (?:is )?written'
+      r'|read (?:it|this|that|the (?:text|sign|label|note|screen|image))'
+      r'|can you read (?:it|this|that|the text))',
+    ).hasMatch(said);
+  }
+
+  /// Whether [answer] repeats [evidence], ignoring case and whitespace.
+  ///
+  /// OCR often arrives with line breaks the model rewrites as spaces, so an
+  /// exact string comparison would reject an answer that is faithfully quoting
+  /// the text. Normalising both sides is what makes the check about the words.
+  static bool _mentions(String answer, String evidence) {
+    String normalised(String value) =>
+        value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final String wanted = normalised(evidence);
+    return wanted.isNotEmpty && normalised(answer).contains(wanted);
   }
 
   /// Turns a brain answer into something a bubble can show.
@@ -217,10 +286,12 @@ class MlVisionService implements VisionAiService {
         onDevice: OnDeviceAiService(
           system: kNexusVisionSystem,
           includeClock: false,
+          includeMemory: false,
         ),
         pc: const OllamaService(
           system: kNexusVisionSystem,
           includeClock: false,
+          includeMemory: false,
         ),
       );
 

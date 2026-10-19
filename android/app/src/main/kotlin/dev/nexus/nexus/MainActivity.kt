@@ -132,6 +132,10 @@ class MainActivity : FlutterActivity() {
     private var pendingCallName: String? = null
     private var pendingCallResult: MethodChannel.Result? = null
     private var pendingCallRequested: List<String> = emptyList()
+    // A fast-path call only ever opens the dialer. It shares the call
+    // permission result, but must not be upgraded to ACTION_CALL just because
+    // CALL_PHONE happens to be granted.
+    private var pendingCallDialerOnly = false
 
     // "text mom": resolving the recipient needs READ_CONTACTS too, requested
     // on first use with the MethodChannel result held across the dialog.
@@ -207,6 +211,13 @@ class MainActivity : FlutterActivity() {
     // it: every interim result is forwarded to Dart as `partial`, so the
     // composer can show the sentence while it is still being spoken.
     private var speechChannel: MethodChannel? = null
+
+    // The language the recognizer and the voice use. The Settings dropdown
+    // sets both through the same channel; the device's own locale is the
+    // starting point, so a phone that has never opened Settings still listens
+    // in the language its owner speaks.
+    private var speechLocale: String = java.util.Locale.getDefault().toLanguageTag()
+    private var ttsLocale: String = java.util.Locale.getDefault().toLanguageTag()
 
     // Voice output: the system TextToSpeech engine says the assistant's
     // reply aloud. No runtime permission needed.
@@ -374,6 +385,13 @@ class MainActivity : FlutterActivity() {
                     "listen" -> listenSpeech(result)
                     "finish" -> finishSpeech(result)
                     "stop" -> stopSpeech(result)
+                    "setLanguage" -> {
+                        speechLocale = call.argument<String>("locale")
+                            ?.trim()
+                            ?.takeIf { it.isNotEmpty() }
+                            ?: speechLocale
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -414,6 +432,18 @@ class MainActivity : FlutterActivity() {
             .also { speechOutChannel = it }
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "warmUp" -> {
+                        warmUpTts()
+                        result.success(true)
+                    }
+                    "setLanguage" -> {
+                        ttsLocale = call.argument<String>("locale")
+                            ?.trim()
+                            ?.takeIf { it.isNotEmpty() }
+                            ?: ttsLocale
+                        tts?.language = java.util.Locale.forLanguageTag(ttsLocale)
+                        result.success(true)
+                    }
                     "speak" -> speakText(call.argument<String>("text") ?: "", result)
                     "stop" -> {
                         // Drop a held utterance too: stopping means stopping, not
@@ -556,6 +586,17 @@ class MainActivity : FlutterActivity() {
                     requestCalendarEvents(
                         result,
                         args?.get("when")?.toString() ?: "today",
+                    )
+                } else if (call.method == "callNumber") {
+                    // Resolving a name needs READ_CONTACTS, requested on first
+                    // use — the result is held across the dialog. A number needs
+                    // no permission at all.
+                    val args = call.arguments as? Map<*, *>
+                    dialNumber(
+                        args?.get("number")?.toString()
+                            ?: args?.get("contact")?.toString()
+                            ?: "",
+                        result,
                     )
                 } else {
                     result.success(runDeviceAction(call.method, call.arguments))
@@ -781,17 +822,24 @@ class MainActivity : FlutterActivity() {
         if (requestCode == REQUEST_CALL_PERMISSIONS) {
             val name = pendingCallName
             val result = pendingCallResult
+            val dialerOnly = pendingCallDialerOnly
             pendingCallName = null
             pendingCallResult = null
+            pendingCallDialerOnly = false
             if (result == null) return
             if (!granted(Manifest.permission.READ_CONTACTS)) {
-                result.success(mapOf("placed" to false, "launched" to false, "candidates" to emptyList<String>(),
+                result.success(mapOf("ok" to false, "placed" to false, "launched" to false, "candidates" to emptyList<String>(),
                     "message" to "Contacts permission was not granted."))
                 return
             }
             val (number, matched, ranked) = lookupContacts(name ?: "")
             if (number == null) {
-                result.success(noContactResult(name ?: "", ranked, matched))
+                result.success(noContactResult(name ?: "", ranked, matched).plus("ok" to false))
+                return
+            }
+            if (dialerOnly) {
+                val dial = openDialer(name ?: "", number)
+                result.success(dial.plus("ok" to (dial["launched"] == true)))
                 return
             }
             result.success(
@@ -1018,6 +1066,8 @@ class MainActivity : FlutterActivity() {
                     args?.get("url")?.toString(),
                 )
                 "playMusic" -> playMusic()
+                // callNumber is intercepted in the channel handler: a name may
+                // need READ_CONTACTS, which holds the result across a dialog.
                 // Both radios take `mode` (on/off, as the action vocabulary
                 // spells it) and fall back to `state`, which is what the
                 // command executor passes for the same two actions.
@@ -1821,21 +1871,7 @@ class MainActivity : FlutterActivity() {
             pendingTtsText = null
             ttsInitPending = false
             val e = tts
-            // `done` is what lets the live page reopen the microphone after the
-            // AI has finished speaking. The callbacks arrive on a binder thread,
-            // and a MethodChannel is only safe to call from the UI one.
-            e?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {}
-
-                override fun onDone(utteranceId: String?) {
-                    runOnUiThread { speechOutChannel?.invokeMethod("done", null) }
-                }
-
-                @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) {
-                    runOnUiThread { speechOutChannel?.invokeMethod("done", null) }
-                }
-            })
+            if (status == TextToSpeech.SUCCESS && e != null) configureTts(e)
             if (status != TextToSpeech.SUCCESS || e == null || r == null || t == null) {
                 r?.success(false) // no speech engine — stay on the card
                 return@TextToSpeech
@@ -1849,6 +1885,99 @@ class MainActivity : FlutterActivity() {
             if (queued == TextToSpeech.ERROR) r.success(false)
             else r.success(true)
         }
+    }
+
+    /// Creates the engine before the first reply needs it, so the first
+    /// sentence does not wait on a constructor and a missing voice. Answers
+    /// nothing: this is a warm-up, and a device with no engine simply stays on
+    /// the card when a reply arrives later.
+    private fun warmUpTts() {
+        if (tts != null || ttsInitPending) return
+        ttsInitPending = true
+        tts = TextToSpeech(this) { status ->
+            ttsInitPending = false
+            val e = tts
+            if (status == TextToSpeech.SUCCESS && e != null) {
+                configureTts(e)
+                Log.i(TAG, "tts: engine warm ($ttsLocale)")
+            } else {
+                tts = null
+                Log.w(TAG, "tts: no engine available")
+            }
+        }
+    }
+
+    /// Gives [engine] the language the Settings dropdown chose and the
+    /// completion callback live conversation waits on.
+    private fun configureTts(engine: TextToSpeech) {
+        engine.language = java.util.Locale.forLanguageTag(ttsLocale)
+        // `done` is what lets the live page reopen the microphone after the
+        // AI has finished speaking. The callbacks arrive on a binder thread,
+        // and a MethodChannel is only safe to call from the UI one.
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+
+            override fun onDone(utteranceId: String?) {
+                runOnUiThread { speechOutChannel?.invokeMethod("done", null) }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                runOnUiThread { speechOutChannel?.invokeMethod("done", null) }
+            }
+        })
+    }
+
+    /// Opens the system dialer with [target] prefilled. A number goes straight
+    /// to `tel:`; a name is resolved against the address book first, but the
+    /// dial is still ACTION_DIAL, never ACTION_CALL — the user presses the
+    /// green button, which is the consent this action promises.
+    private fun dialNumber(target: String, result: MethodChannel.Result) {
+        val raw = target.trim()
+        if (raw.isEmpty()) {
+            result.success(mapOf("ok" to false, "message" to "Who should I call?"))
+            return
+        }
+        // A contact name may contain digits ("TVcraft01"); only a string made
+        // entirely of dial characters is treated as a number. Otherwise a
+        // digit in a name would dial the digit instead of looking the person up.
+        val looksLikeNumber =
+            raw.any { it.isDigit() } && raw.matches(Regex("^[+0-9()\\-\\s.]+$"))
+        if (looksLikeNumber) {
+            val number = raw.filter { it.isDigit() || it == '+' }
+            if (number.isBlank()) {
+                result.success(
+                    mapOf("ok" to false, "message" to "That does not look like a phone number."),
+                )
+                return
+            }
+            val dial = openDialer(raw, number)
+            result.success(dial.plus("ok" to (dial["launched"] == true)))
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            // First use: ask, and keep the Dart side waiting rather than
+            // answering "open Settings" for a permission Android will grant
+            // right here. The dial is still ACTION_DIAL after the answer.
+            pendingCallName = raw
+            pendingCallResult = result
+            pendingCallRequested = listOf(Manifest.permission.READ_CONTACTS)
+            pendingCallDialerOnly = true
+            requestPermissions(
+                arrayOf(Manifest.permission.READ_CONTACTS),
+                REQUEST_CALL_PERMISSIONS,
+            )
+            return
+        }
+        val (found, matched, ranked) = lookupContacts(raw)
+        if (found == null) {
+            result.success(noContactResult(raw, ranked, matched).plus("ok" to false))
+            return
+        }
+        val dial = openDialer(raw, found)
+        result.success(dial.plus("ok" to (dial["launched"] == true)))
     }
 
     /// One utterance, decoded on the phone.
@@ -1962,6 +2091,17 @@ class MainActivity : FlutterActivity() {
             // Never the cloud: if the phone has no offline model it answers
             // "nothing heard" instead of quietly uploading the room.
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            // The words this assistant is about. Android's recognizer uses
+            // these as a vocabulary bias, which is what makes "Nexus" and
+            // "TVCraft" arrive as names rather than as the nearest dictionary
+            // word.
+            putExtra(
+                RecognizerIntent.EXTRA_BIASING_STRINGS,
+                arrayListOf("Nexus", "TVCraft", "Qwen", "Llama", "Musify"),
+            )
+            if (speechLocale.isNotBlank()) {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, speechLocale)
+            }
         }
         recognizer.startListening(intent)
     }
@@ -2539,6 +2679,7 @@ class MainActivity : FlutterActivity() {
             pendingCallName = contact
             pendingCallResult = result
             pendingCallRequested = missing
+            pendingCallDialerOnly = false
             requestPermissions(missing.toTypedArray(), REQUEST_CALL_PERMISSIONS)
             return
         }

@@ -24,6 +24,33 @@ const String kNexusVisionMissingText =
     'I can see you attached a photo, but my vision module is not installed '
     'yet.';
 
+/// What the eyes actually found in a picture.
+///
+/// This is evidence, not a description: [text] is the OCR pass's own string and
+/// [labels] are ML Kit's own object names. It exists separately from the answer
+/// so the bubble can show what the phone saw even when the small language model
+/// answers badly — the user should never have to trust the model to know that
+/// the scan ran.
+class VisionEvidence {
+  const VisionEvidence({this.text = '', this.labels = const <String>[]});
+
+  /// The words ML Kit read, exactly as it read them. May contain newlines.
+  final String text;
+
+  /// The object names, best first. Empty when the labeler found nothing.
+  final List<String> labels;
+
+  /// True when there is nothing worth drawing under the picture.
+  bool get isEmpty => text.trim().isEmpty && labels.isEmpty;
+}
+
+/// Told what the eyes found, before the brain is asked to answer.
+///
+/// A callback rather than a second scan: ML Kit is the slow part, and running
+/// it once for the caption and again for the answer would be two reads of the
+/// same pixels. A caller that only wants the sentence ignores it.
+typedef VisionEvidenceCallback = void Function(VisionEvidence evidence);
+
 /// Something that can look at an image and answer a question about it.
 ///
 /// Deliberately one method: this is the whole contract a sighted implementation
@@ -55,7 +82,15 @@ abstract class VisionAiService {
   ///
   /// Answers a sentence, never throws: a sighted service that fails still owes
   /// the thread something it can draw, and the honest failure is a sentence.
-  Future<String> describe(String imagePath, {String question = ''});
+  ///
+  /// [onEvidence] is called with the OCR text and labels as soon as the eyes
+  /// have finished, before the brain is asked. It is how the bubble can show
+  /// the detection without waiting for an answer, and without a second scan.
+  Future<String> describe(
+    String imagePath, {
+    String question = '',
+    VisionEvidenceCallback? onEvidence,
+  });
 }
 
 /// The shipped service: no vision module is installed, and it says so.
@@ -75,8 +110,11 @@ class MissingVisionAi implements VisionAiService {
   /// one a sighted implementation will need, and a caller that has to special
   /// case the missing one would have two code paths to keep in step.
   @override
-  Future<String> describe(String imagePath, {String question = ''}) async =>
-      kNexusVisionMissingText;
+  Future<String> describe(
+    String imagePath, {
+    String question = '',
+    VisionEvidenceCallback? onEvidence,
+  }) async => kNexusVisionMissingText;
 }
 
 /// Whether [text] asks about the picture, rather than about the world.

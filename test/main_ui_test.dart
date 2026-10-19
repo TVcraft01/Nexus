@@ -21,6 +21,7 @@ import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/device_capabilities.dart';
 import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
+import 'package:nexus/core/memory_service.dart';
 import 'package:nexus/core/mic_access.dart';
 import 'package:nexus/core/ollama_service.dart';
 import 'package:nexus/core/on_device_ai_service.dart';
@@ -32,6 +33,7 @@ import 'package:nexus/core/speech.dart';
 import 'package:nexus/core/system_actions.dart';
 import 'package:nexus/core/version.dart';
 import 'package:nexus/core/vision_ai.dart';
+import 'package:nexus/core/voice_settings.dart';
 import 'package:nexus/main_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -670,12 +672,14 @@ void main() {
   ) async {
     await pumpShell(tester);
 
-    // Three, not a wall: the three things this build can actually do — a phone
-    // action, a pairing and a file. A blank screen asks the user to invent a
-    // request; a chip shows them the vocabulary.
-    expect(kNexusHomeSuggestions.length, 3);
-    for (final (String label, String prompt) in kNexusHomeSuggestions) {
-      expect(find.text(label), findsOneWidget);
+    // Three, not a wall: three of the five commands this build can actually
+    // run, chosen fresh on each launch. A blank screen asks the user to invent
+    // a request; a chip shows them the vocabulary.
+    expect(kNexusSuggestionPool.length, 5);
+    int shown = 0;
+    for (final (String label, String prompt) in kNexusSuggestionPool) {
+      if (find.text(label).evaluate().isEmpty) continue;
+      shown++;
       await tester.tap(find.text(label));
       await tester.pumpAndSettle();
       // Filled, not sent: the suggestion is a draft the user can finish.
@@ -685,6 +689,7 @@ void main() {
       );
       expect(ollama.prompts, isEmpty, reason: 'a chip is a draft, not a send');
     }
+    expect(shown, 3);
   });
 
   testWidgets('the composer turns the mic into send, and posts the message', (
@@ -1858,7 +1863,7 @@ void main() {
     await openTab(tester, 'Settings', 3);
 
     expect(find.text('Accent colour'), findsOneWidget);
-    expect(find.text('Pick a custom color'), findsOneWidget);
+    expect(find.text('Choose accent color'), findsOneWidget);
     expect(
       tabIconColor(tester, Icons.settings_rounded),
       NexusAccent.purple.light,
@@ -2043,6 +2048,30 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Wake word'), findsNothing);
     expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 3);
+  });
+
+  testWidgets('a new language is shown as soon as it is chosen', (
+    tester,
+  ) async {
+    // The row reads the value from VoiceSettings, a notifier. Picking a
+    // language must update the closed dropdown on the same frame — showing the
+    // old one until the page is reopened made a working setting look ignored.
+    final VoiceSettings voice = VoiceSettings(initial: 'en-US');
+    VoiceSettings.override = () => voice;
+    addTearDown(() => VoiceSettings.override = null);
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+    await tester.tap(find.text('Voice & speech'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('nexus-voice-language')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('English (UK)').last);
+    await tester.pumpAndSettle();
+
+    expect(voice.language, 'en-GB');
+    expect(find.text('English (UK)'), findsOneWidget);
+    expect(find.text('English (US)'), findsNothing);
   });
 
   testWidgets('Settings pushes to Customization, and back returns to the tab', (
@@ -4217,6 +4246,46 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Full privacy policy: <link>'), findsNothing);
     expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 3);
+  });
+
+  testWidgets('Privacy deletes every remembered fact and every chat', (
+    tester,
+  ) async {
+    final MemoryService memory = MemoryService(store: MemoryMemoryStore());
+    await memory.remember('My name is TVCraft');
+    await memory.remember('I live in Lyon');
+    MemoryService.override = () => memory;
+    AttachmentStore.override = () =>
+        AttachmentStore(directory: () async => null);
+    addTearDown(() {
+      MemoryService.override = null;
+      MemoryService.debugReset();
+      AttachmentStore.override = null;
+    });
+    chat.save(<ChatEntry>[
+      const ChatEntry('what is the weather?', mine: true),
+      const ChatEntry('Warm and clear.'),
+    ]);
+
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+    await tester.tap(find.text('Privacy'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(kNexusDeleteAllDataRow), findsOneWidget);
+    await tester.tap(find.byKey(kNexusDeleteAllData));
+    await tester.pumpAndSettle();
+
+    // The dialog names what is lost, then the one red button loses it.
+    expect(find.text(kNexusDeleteAllDataTitle), findsOneWidget);
+    expect(find.textContaining('1 chat, 2 remembered facts'), findsOneWidget);
+    await tester.tap(find.byKey(kNexusConfirmAction));
+    await tester.pumpAndSettle();
+
+    expect(memory.notes, isEmpty);
+    expect(chat.sessionCount, 0);
+    expect(chat.entries, isEmpty);
+    expect(find.text('Memory, chats and attachments deleted.'), findsOneWidget);
   });
 
   testWidgets('the shell\'s App icon row switches the launcher alias', (

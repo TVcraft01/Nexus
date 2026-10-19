@@ -181,6 +181,23 @@ class SpeechInput {
     }
   }
 
+  /// Sets the recognizer's language for the next utterance.
+  ///
+  /// A BCP-47 tag (`en-US`, `fr-FR`). The platform owns the actual model; a
+  /// language it does not have installed falls back to the device's own, which
+  /// is the honest outcome and not something this seam can promise around.
+  /// Never throws: a missing channel leaves the recognizer on its own default.
+  Future<void> setLanguage(String locale) async {
+    if (!available) return;
+    try {
+      await _channel.invokeMethod<void>('setLanguage', <String, Object?>{
+        'locale': locale,
+      });
+    } catch (_) {
+      // No channel: the platform's own locale is still a working answer.
+    }
+  }
+
   /// One controller for every [partials] subscriber, one for every [rms]
   /// subscriber, and one handler for the platform's calls. Installed on the
   /// first [listen] rather than at import time, so a build that never opens the
@@ -319,6 +336,39 @@ class SpeechOutput {
           false;
     } catch (_) {
       return false; // never crash the assistant for a speech failure
+    }
+  }
+
+  /// Creates the platform's speech engine before the first reply needs it.
+  ///
+  /// Text-to-speech is constructed asynchronously, and a first sentence that
+  /// arrives while it is still initialising is the one that feels slow. Asking
+  /// at startup moves that cost to the launch screen, where nobody is waiting
+  /// on a voice. Never throws and never blocks a frame.
+  Future<bool> warmUp() async {
+    if (!available) return false;
+    _wireChannel();
+    try {
+      return await _channel.invokeMethod<bool>('warmUp') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Sets the spoken language for every later utterance.
+  ///
+  /// Same tag as [SpeechInput.setLanguage]; the two are set together by
+  /// `VoiceSettings` so a user who chooses French does not get an English
+  /// voice reading French words.
+  Future<void> setLanguage(String locale) async {
+    if (!available) return;
+    _wireChannel();
+    try {
+      await _channel.invokeMethod<void>('setLanguage', <String, Object?>{
+        'locale': locale,
+      });
+    } catch (_) {
+      // A speaker that refuses a language still speaks in its own.
     }
   }
 

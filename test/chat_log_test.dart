@@ -1,8 +1,11 @@
 // The conversation that survives a restart, at the level below the screen:
 // what is written, what is read back, and what happens when what is on disk is
 // not what this build wrote.
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/chat_log.dart';
+import 'package:nexus/core/vision_ai.dart' show kNexusVisionMissingText;
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -152,6 +155,64 @@ void main() {
     });
   });
 
+  group('the old no-vision notice', () {
+    test('is recognised without catching ordinary prose', () {
+      expect(looksLikeOldVisionNotice(kNexusVisionMissingText), isTrue);
+      expect(
+        looksLikeOldVisionNotice(
+          'I can see you attached a photo, but my vision module is not '
+          'installed yet.',
+        ),
+        isTrue,
+      );
+      expect(looksLikeOldVisionNotice('The vision module is ready.'), isFalse);
+    });
+
+    test('is rewritten as active on attach, and kept with its photo', () async {
+      final store = MemoryChatLogStore(<ChatEntry>[
+        const ChatEntry(
+          kNexusVisionMissingText,
+          imagePath: '/tmp/nexus-photo.png',
+        ),
+        const ChatEntry(kNexusVisionMissingText, mine: true),
+      ]);
+      final chat = ChatLog(store: store);
+
+      await chat.attach();
+
+      expect(chat.entries.first.text, kVisionActiveText);
+      expect(
+        chat.entries.first.imagePath,
+        '/tmp/nexus-photo.png',
+        reason: 'the repaired line still belongs to its picture',
+      );
+      expect(
+        chat.entries.last.text,
+        kNexusVisionMissingText,
+        reason: 'the migration never edits the user\'s words',
+      );
+
+      await Future<void>.delayed(Duration.zero);
+      final List<ChatEntry>? stored = await store.read();
+      expect(stored!.first.text, kVisionActiveText);
+    });
+  });
+
+  test('vision evidence round-trips through the stored row', () {
+    const ChatEntry entry = ChatEntry(
+      'Photo attached',
+      mine: true,
+      imagePath: '/tmp/photo.jpg',
+      visionText: 'NEXUS VISION TEST',
+      visionLabels: <String>['Monochrome', 'Device'],
+    );
+
+    final ChatEntry? back = ChatEntry.fromJson(entry.toJson());
+    expect(back!.visionText, 'NEXUS VISION TEST');
+    expect(back.visionLabels, <String>['Monochrome', 'Device']);
+    expect(back.imagePath, '/tmp/photo.jpg');
+  });
+
   test('one line of junk does not lose the rest of the file', () {
     expect(
       ChatEntry.fromJson(const <String, Object?>{'text': 'hello', 'mine': true})
@@ -193,5 +254,79 @@ void main() {
       SharedPrefsChatLogStore.key: 'not json at all',
     });
     expect(await SharedPrefsChatLogStore().read(), isNull);
+  });
+
+  test('the documents store survives a restart and a wipe', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final Directory documents = await Directory.systemTemp.createTemp(
+      'nexus-chats-',
+    );
+    addTearDown(() async {
+      if (await documents.exists()) await documents.delete(recursive: true);
+    });
+    final store = DocumentsChatLogStore(directory: () async => documents);
+    final ChatSession session = ChatSession(
+      id: 'chat-1',
+      createdAt: DateTime.utc(2026, 10, 19),
+      updatedAt: DateTime.utc(2026, 10, 19),
+      entries: const <ChatEntry>[
+        ChatEntry('what is the weather?', mine: true),
+        ChatEntry('Warm and clear.'),
+      ],
+    );
+
+    await store.writeSessions(<ChatSession>[session], 'chat-1');
+
+    // The next launch reads the same conversation, from a file in documents —
+    // not from a preference, and not from a cache somewhere else.
+    final ChatLog next = ChatLog(store: store, sessions: store);
+    await next.attach();
+    expect(next.entries, hasLength(2));
+    expect(next.entries.last.text, 'Warm and clear.');
+
+    await next.clearAll();
+    expect(await store.readSessions(), isNull);
+    expect(await store.read(), isNull);
+  });
+
+  test('overlapping saves all land, and the newest one wins', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final Directory documents = await Directory.systemTemp.createTemp(
+      'nexus-chats-race-',
+    );
+    addTearDown(() async {
+      if (await documents.exists()) await documents.delete(recursive: true);
+    });
+    final store = DocumentsChatLogStore(directory: () async => documents);
+
+    // Two saves started in the same turn share a `.tmp` file. The second used
+    // to lose its rename to the first and log a PathNotFoundException even
+    // though nothing was wrong — so start a burst and demand a clean result.
+    final List<Future<void>> saves = <Future<void>>[];
+    for (int i = 0; i < 8; i++) {
+      final String id = 'chat-$i';
+      saves.add(
+        store.writeSessions(<ChatSession>[
+          ChatSession(
+            id: id,
+            createdAt: DateTime.utc(2026, 10, 19),
+            updatedAt: DateTime.utc(2026, 10, 19),
+            entries: <ChatEntry>[ChatEntry('save $i', mine: true)],
+          ),
+        ], id),
+      );
+    }
+    await Future.wait(saves);
+
+    final ChatSessionData? data = await store.readSessions();
+    expect(data, isNotNull);
+    expect(data!.sessions.single.id, 'chat-7');
+    expect(data.activeId, 'chat-7');
+    expect(data.sessions.single.entries.single.text, 'save 7');
+    final leftovers = await documents
+        .list()
+        .where((FileSystemEntity e) => e.path.endsWith('.tmp'))
+        .toList();
+    expect(leftovers, isEmpty, reason: 'a finished save leaves no temp file');
   });
 }

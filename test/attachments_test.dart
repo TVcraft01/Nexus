@@ -360,10 +360,19 @@ void main() {
       await tester.pumpAndSettle();
 
       // No preview page of our own: the phone's camera app is the camera.
+      // The pick lands in the composer, not the thread, with an X to undo it.
       expect(pickers.cameraPicks, 1);
+      expect(find.byKey(kNexusPendingAttachment), findsOneWidget);
+      expect(find.byKey(kNexusRemoveAttachment), findsOneWidget);
+      expect(find.byType(NexusAttachmentBubble), findsNothing);
+      expect(find.text('Message Nexus'), findsOneWidget);
+
+      // Send is what puts the picture and the words in the thread together.
+      await tester.tap(find.byKey(const ValueKey<String>('send')));
+      await tester.pumpAndSettle();
       expect(find.text('Photo attached'), findsOneWidget);
       expect(find.byType(NexusAttachmentBubble), findsOneWidget);
-      expect(find.text('Message Nexus'), findsOneWidget);
+      expect(find.byKey(kNexusPendingAttachment), findsNothing);
     });
 
     testWidgets('backing out of the camera leaves the thread untouched', (
@@ -396,10 +405,15 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(pickers.imagePicks, 1);
-      expect(find.text('Photo attached'), findsOneWidget);
-      expect(find.byType(NexusAttachmentBubble), findsOneWidget);
+      expect(find.byKey(kNexusPendingAttachment), findsOneWidget);
+      expect(find.byType(NexusAttachmentBubble), findsNothing);
       // A text brain is never asked to describe a picture it cannot see.
       expect(brain.prompts, isEmpty);
+
+      await tester.tap(find.byKey(const ValueKey<String>('send')));
+      await tester.pumpAndSettle();
+      expect(find.text('Photo attached'), findsOneWidget);
+      expect(find.byType(NexusAttachmentBubble), findsOneWidget);
       expect(find.text(kNexusVisionMissingText), findsOneWidget);
     });
 
@@ -431,15 +445,35 @@ void main() {
       await tester.tap(find.byKey(kSheetPhotos));
       await tester.pumpAndSettle();
 
+      // Nothing is scanned until the picture is actually sent.
+      expect(prompts, isEmpty);
+      expect(find.byKey(kNexusPendingAttachment), findsOneWidget);
+
+      await tester.enterText(
+        find.byType(TextField),
+        'What is happening in this photo?',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>('send')));
+      await tester.pumpAndSettle();
+
       expect(prompts, hasLength(1));
       expect(
         prompts.single,
-        '[User attached an image. OCR Text: "STOP\nMain Street", '
-        'Objects in image: Dog, Outdoor, Car, Grass, Sky. '
-        'User asked: "[User attached a photo]"]',
+        '[Image Context: Text="STOP\nMain Street", '
+        'Objects="Dog, Outdoor, Car, Grass, Sky"]\n'
+        '[User Question]: What is happening in this photo?',
       );
       expect(find.text('A dog beside a road.'), findsOneWidget);
       expect(find.text(kNexusVisionMissingText), findsNothing);
+      // The scan is visible without asking the model about it: both lines sit
+      // under the picture, in the bubble, as soon as ML Kit is done.
+      expect(find.byKey(kNexusVisionCaption), findsOneWidget);
+      expect(find.text('Detected text: "STOP\nMain Street"'), findsOneWidget);
+      expect(
+        find.text('Objects: Dog, Outdoor, Car, Grass, Sky'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('the files door attaches a document as a file chip', (
@@ -455,12 +489,17 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(pickers.filePicks, 1);
-      expect(find.byType(NexusFileBubble), findsOneWidget);
-      expect(find.text('File attached: notes.pdf'), findsOneWidget);
+      expect(find.byKey(kNexusPendingAttachment), findsOneWidget);
+      expect(find.byType(NexusFileBubble), findsNothing);
       // A document is not a picture: nothing is asked about it, and nothing
       // pretends to have read it.
       expect(brain.prompts, isEmpty);
       expect(find.text(kNexusVisionMissingText), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey<String>('send')));
+      await tester.pumpAndSettle();
+      expect(find.byType(NexusFileBubble), findsOneWidget);
+      expect(find.text('File attached: notes.pdf'), findsOneWidget);
       final ChatEntry stored = chat.entries.single;
       expect(stored.filePath, isNotNull);
       expect(stored.text, 'File attached: notes.pdf');
@@ -580,7 +619,13 @@ void main() {
       // listens to the same log, or the restore lands in a different one.
       chat = ChatLog(
         store: MemoryChatLogStore(<ChatEntry>[
-          ChatEntry('Photo attached', mine: true, imagePath: file.path),
+          ChatEntry(
+            'Photo attached',
+            mine: true,
+            imagePath: file.path,
+            visionText: 'NEXUS VISION TEST',
+            visionLabels: const <String>['Monochrome'],
+          ),
           const ChatEntry('Looks like a cat.'),
         ]),
       );
@@ -591,6 +636,10 @@ void main() {
       expect(find.byType(NexusAttachmentBubble), findsOneWidget);
       expect(find.text('Photo attached'), findsOneWidget);
       expect(find.text('Looks like a cat.'), findsOneWidget);
+      // The evidence is part of the stored line: reopening the app shows the
+      // same scan under the same picture, not just the caption.
+      expect(find.text('Detected text: "NEXUS VISION TEST"'), findsOneWidget);
+      expect(find.text('Objects: Monochrome'), findsOneWidget);
     });
 
     testWidgets('a picture that has gone keeps its caption', (tester) async {

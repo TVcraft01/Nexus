@@ -991,7 +991,13 @@ class DeviceExecutor {
   }
 
   Future<ActionResult> _placeCall(String contact, String? number) async {
-    if (contact.isEmpty) {
+    // The system-action fast path (`call_number`) names the target in `number`
+    // rather than in `contact`: it is the same phone call, and refusing it here
+    // for an empty name would make "call mom" ask who to call.
+    final String target = contact.trim().isNotEmpty
+        ? contact.trim()
+        : (number?.trim() ?? '');
+    if (target.isEmpty) {
       return const ActionResult(false, AgentAsks.whoToCall, needsDetail: true);
     }
     try {
@@ -1002,7 +1008,7 @@ class DeviceExecutor {
         // the address book (asking READ_CONTACTS / CALL_PHONE on first use)
         // and names the closest matches when nothing fits.
         final outcome = await _phoneBackend.callContact(
-          contact,
+          target,
           number: number,
         );
         return ActionResult(

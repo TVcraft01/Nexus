@@ -122,6 +122,7 @@ class OllamaService implements LocalAiService {
     this.system = kNexusOllamaSystem,
     this.clock,
     this.includeClock = true,
+    this.includeMemory = true,
   });
 
   /// The PC and port, without a trailing slash (`http://192.168.1.100:11434`).
@@ -162,6 +163,10 @@ class OllamaService implements LocalAiService {
   /// Whether the clock is appended to [system]. Chat keeps it; the vision turn
   /// does not, because a picture question is not a question about today.
   final bool includeClock;
+
+  /// Whether the app's remembered facts are appended to [system]. Chat keeps
+  /// them; vision does not, for the same reason it has no clock.
+  final bool includeMemory;
 
   /// The whole answer as one piece.
   ///
@@ -235,9 +240,12 @@ class OllamaService implements LocalAiService {
     // Built per request, not stored: the answer to "what time is it" has to be
     // the time now, not the time the service was constructed. A vision turn
     // opts out of the clock entirely.
-    final String systemTurn = includeClock
+    final String clocked = includeClock
         ? nexusSystemWithClock(system, now: clock?.call())
         : system;
+    final String systemTurn = includeMemory
+        ? LocalAiService.systemWithMemory(clocked)
+        : clocked;
     final Map<String, Object?> payload = chat
         ? <String, Object?>{
             'model': model,
