@@ -32,9 +32,10 @@ dependencies:
   http: ^1.6.0
   device_info_plus: ^13.3.0
   flutter_colorpicker: ^1.1.0
-  camera: ^0.12.1
   image_picker: ^1.2.4
   file_picker: ^13.1.0
+  google_mlkit_image_labeling: ^0.16.1
+  google_mlkit_text_recognition: ^0.17.1
 
 dev_dependencies:
   flutter_test:

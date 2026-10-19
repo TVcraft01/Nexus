@@ -49,10 +49,11 @@ void main() {
 
   test('clearing forgets the conversation, and does so on disk', () async {
     final store = MemoryChatLogStore();
-    final chat = ChatLog(store: store)..save(<ChatEntry>[
-      const ChatEntry('what is the weather?', mine: true),
-      const ChatEntry('Warm and clear.'),
-    ]);
+    final chat = ChatLog(store: store)
+      ..save(<ChatEntry>[
+        const ChatEntry('what is the weather?', mine: true),
+        const ChatEntry('Warm and clear.'),
+      ]);
     expect(chat.hasChat, isTrue);
 
     chat.clear();
@@ -84,12 +85,77 @@ void main() {
     expect(chat.entries.single.text, 'remembered');
   });
 
+  group('the old key-value hallucination', () {
+    test('is recognised at the start of a line, not in ordinary prose', () {
+      for (final String text in <String>[
+        'song: Yesterday, artist: The Beatles',
+        'title: Yellow\nartist: Coldplay',
+        'Album: Past and Present',
+        'Here it is:\n  artist: The Beatles',
+        'Sure — song: Yesterday, artist: The Beatles',
+      ]) {
+        expect(looksLikeOldHallucination(text), isTrue, reason: text);
+      }
+      for (final String text in <String>[
+        'The title: a history',
+        'I like that song a lot.',
+        'The artist is on tour.',
+        'The title: a history of the album cover',
+        'title',
+      ]) {
+        expect(looksLikeOldHallucination(text), isFalse, reason: text);
+      }
+    });
+
+    test(
+      'is scrubbed from stored answers on attach, and written back',
+      () async {
+        final store = MemoryChatLogStore(<ChatEntry>[
+          const ChatEntry('song: Yesterday, artist: The Beatles'),
+          const ChatEntry('title: Yellow\nalbum: Parachutes'),
+          const ChatEntry('title: my own note', mine: true),
+          const ChatEntry('A real answer.'),
+        ]);
+        final chat = ChatLog(store: store);
+
+        await chat.attach();
+
+        expect(chat.entries[0].text, kOldHallucinationText);
+        expect(chat.entries[1].text, kOldHallucinationText);
+        expect(
+          chat.entries[2].text,
+          'title: my own note',
+          reason: 'the migration never edits the user\'s words',
+        );
+        expect(chat.entries[3].text, 'A real answer.');
+
+        // The repair is on disk, not just in this launch's memory.
+        await Future<void>.delayed(Duration.zero);
+        final List<ChatEntry>? stored = await store.read();
+        expect(stored![0].text, kOldHallucinationText);
+        expect(stored[1].text, kOldHallucinationText);
+
+        final next = ChatLog(store: store);
+        await next.attach();
+        expect(next.entries.first.text, kOldHallucinationText);
+      },
+    );
+
+    test('leaves a failed notice alone', () async {
+      final chat = ChatLog(
+        store: MemoryChatLogStore(<ChatEntry>[
+          const ChatEntry('title: not an answer', failed: true),
+        ]),
+      );
+      await chat.attach();
+      expect(chat.entries.single.text, 'title: not an answer');
+    });
+  });
+
   test('one line of junk does not lose the rest of the file', () {
     expect(
-      ChatEntry.fromJson(const <String, Object?>{
-        'text': 'hello',
-        'mine': true,
-      })?.mine,
+      ChatEntry.fromJson(const <String, Object?>{'text': 'hello', 'mine': true})
+          ?.mine,
       isTrue,
     );
     expect(ChatEntry.fromJson(const <String, Object?>{'text': ''}), isNull);

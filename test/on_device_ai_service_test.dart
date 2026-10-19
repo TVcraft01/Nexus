@@ -174,7 +174,11 @@ class _Device {
   /// asserts does not depend on when the suite ran.
   static final DateTime fixedNow = DateTime(2026, 10, 19, 14, 24);
 
-  OnDeviceAiService service({Future<int?> Function()? availableMemory}) {
+  OnDeviceAiService service({
+    Future<int?> Function()? availableMemory,
+    String system = kNexusOnDeviceSystem,
+    bool includeClock = true,
+  }) {
     OnDeviceAiService.availableMemoryOverride = availableMemory;
     addTearDown(() => OnDeviceAiService.availableMemoryOverride = null);
     return OnDeviceAiService(
@@ -184,6 +188,8 @@ class _Device {
         runtime: runtime,
         modelsDir: model.directoryFor,
       ),
+      system: system,
+      includeClock: includeClock,
       clock: () => fixedNow,
     );
   }
@@ -257,6 +263,22 @@ void main() {
       expect(prompt.first.content, contains('"action":"set_flashlight"'));
       expect(prompt.last.role, 'user');
       expect(prompt.last.content, 'what is a mesh?');
+    });
+
+    test('a vision turn is not told the clock', () async {
+      final device = _device();
+      device.writeModel();
+      final service = device.service(
+        system: 'Describe only the image.',
+        includeClock: false,
+      );
+
+      await service.generateResponse('[User attached a photo]');
+
+      final List<ChatTurn> prompt = device.runtime.prompts.single;
+      expect(prompt.first.role, 'system');
+      expect(prompt.first.content, 'Describe only the image.');
+      expect(prompt.first.content, isNot(contains('19 October 2026')));
     });
 
     test('a model that does not fit in memory is refused before it loads', () async {

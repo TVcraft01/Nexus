@@ -3,14 +3,14 @@
 // decision makes, the bubble that draws a picture in the thread, and the
 // full-screen viewer behind a tap.
 //
-// The camera itself is not opened here — a widget test has no lens — so
-// CameraPage is walked only as far as its own fallback, and the screenshot is
-// driven through the same seam the phone uses ([ScreenCapture.override]) with a
-// real PNG on disk. That is the whole capture path minus the platform dialog.
+// The phone camera itself is not opened here — a widget test has no lens — so
+// the camera door is driven through [AttachmentPickers.override], the same seam
+// the composer uses, and the screenshot is driven through the same seam the
+// phone uses ([ScreenCapture.override]) with a real PNG on disk. That is the
+// whole capture path minus the system apps.
 import 'dart:async';
 import 'dart:io';
 
-import 'package:camera/camera.dart' show CameraDescription;
 import 'package:flutter/foundation.dart' show DebugPrintCallback, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,11 +19,11 @@ import 'package:nexus/core/attachment_pickers.dart';
 import 'package:nexus/core/attachments.dart';
 import 'package:nexus/core/chat_log.dart';
 import 'package:nexus/core/local_ai_service.dart';
+import 'package:nexus/core/ml_vision_service.dart';
 import 'package:nexus/core/onboarding.dart';
 import 'package:nexus/core/system_actions.dart';
 import 'package:nexus/core/vision_ai.dart';
 import 'package:nexus/main_ui.dart';
-import 'package:nexus/ui/camera_page.dart';
 import 'package:nexus/ui/image_viewer_page.dart';
 
 /// The store, without the disk.
@@ -46,10 +46,18 @@ class _MemoryStore extends AttachmentStore {
 /// platform dialog. Records which door was opened, and hands back whatever the
 /// test put in it.
 class _FakePickers implements AttachmentPickers {
+  PickedAttachment? camera;
   PickedAttachment? image;
   PickedAttachment? file;
+  int cameraPicks = 0;
   int imagePicks = 0;
   int filePicks = 0;
+
+  @override
+  Future<PickedAttachment?> captureImage() async {
+    cameraPicks++;
+    return camera;
+  }
 
   @override
   Future<PickedAttachment?> pickImage() async {
@@ -339,23 +347,40 @@ void main() {
       expect(row.height, greaterThanOrEqualTo(72));
     });
 
-    testWidgets('the camera door opens the capture page, and X comes back', (
+    testWidgets('the camera door takes the system camera\'s photo', (
       tester,
     ) async {
+      final File file = (await tester.runAsync(shot))!;
+      pickers.camera = PickedAttachment(path: file.path, name: 'shot.png');
       await pumpShell(tester);
 
       await tester.tap(find.byKey(kComposerAdd));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kSheetCamera));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 500));
-
-      expect(find.byKey(kCameraClose), findsOneWidget);
-
-      await tester.tap(find.byKey(kCameraClose));
       await tester.pumpAndSettle();
-      expect(find.byKey(kCameraClose), findsNothing);
+
+      // No preview page of our own: the phone's camera app is the camera.
+      expect(pickers.cameraPicks, 1);
+      expect(find.text('Photo attached'), findsOneWidget);
+      expect(find.byType(NexusAttachmentBubble), findsOneWidget);
       expect(find.text('Message Nexus'), findsOneWidget);
+    });
+
+    testWidgets('backing out of the camera leaves the thread untouched', (
+      tester,
+    ) async {
+      pickers.camera = null;
+      await pumpShell(tester);
+
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kSheetCamera));
+      await tester.pumpAndSettle();
+
+      expect(pickers.cameraPicks, 1);
+      expect(find.text('Photo attached'), findsNothing);
+      expect(find.byType(NexusAttachmentBubble), findsNothing);
+      expect(chat.entries, isEmpty);
     });
 
     testWidgets('the gallery door attaches a photo and asks the vision layer', (
@@ -376,6 +401,45 @@ void main() {
       // A text brain is never asked to describe a picture it cannot see.
       expect(brain.prompts, isEmpty);
       expect(find.text(kNexusVisionMissingText), findsOneWidget);
+    });
+
+    testWidgets('the vision layer sends OCR and labels to the local brain', (
+      tester,
+    ) async {
+      final List<String> prompts = <String>[];
+      VisionAiService.override = () => MlVisionService(
+        readText: (_) async => 'STOP\nMain Street',
+        readLabels: (_) async => const <String>[
+          'Dog',
+          'Outdoor',
+          'Car',
+          'Grass',
+          'Sky',
+          'Tree',
+        ],
+        answer: (String prompt) async {
+          prompts.add(prompt);
+          return 'A dog beside a road.';
+        },
+      );
+      final File file = (await tester.runAsync(shot))!;
+      pickers.image = PickedAttachment(path: file.path, name: 'shot.png');
+      await pumpShell(tester);
+
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kSheetPhotos));
+      await tester.pumpAndSettle();
+
+      expect(prompts, hasLength(1));
+      expect(
+        prompts.single,
+        '[User attached an image. OCR Text: "STOP\nMain Street", '
+        'Objects in image: Dog, Outdoor, Car, Grass, Sky. '
+        'User asked: "[User attached a photo]"]',
+      );
+      expect(find.text('A dog beside a road.'), findsOneWidget);
+      expect(find.text(kNexusVisionMissingText), findsNothing);
     });
 
     testWidgets('the files door attaches a document as a file chip', (
@@ -445,19 +509,37 @@ void main() {
       }
     });
 
-    testWidgets('a device with no camera says so instead of a black screen', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: CameraPage(cameras: () async => const <CameraDescription>[]),
-        ),
-      );
-      await tester.pumpAndSettle();
+    testWidgets('the camera door logs that it fired', (tester) async {
+      final List<String> lines = <String>[];
+      final DebugPrintCallback original = debugPrint;
+      debugPrint = (String? line, {int? wrapWidth}) {
+        if (line != null && line.startsWith('camera:')) lines.add(line);
+      };
+      try {
+        final File file = (await tester.runAsync(shot))!;
+        pickers.camera = PickedAttachment(path: file.path, name: 'shot.png');
+        await pumpShell(tester);
 
-      expect(find.text(kCameraUnavailableText), findsOneWidget);
-      expect(find.byKey(kCameraClose), findsOneWidget);
-      expect(find.byKey(kCameraShutter), findsNothing);
+        await tester.tap(find.byKey(kComposerAdd));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(kSheetCamera));
+        await tester.pumpAndSettle();
+
+        expect(
+          lines.any(
+            (String line) => line.startsWith('camera: attach button tapped'),
+          ),
+          isTrue,
+          reason: 'the camera door has to prove it fired',
+        );
+        expect(
+          lines.any((String line) => line.startsWith('camera: captured')),
+          isTrue,
+          reason: 'the system camera has to prove it came back',
+        );
+      } finally {
+        debugPrint = original;
+      }
     });
   });
 

@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:nexus/core/clock_context.dart';
 import 'package:nexus/core/local_ai_service.dart' show AiTurn;
+import 'package:nexus/core/ml_vision_service.dart' show kNexusVisionSystem;
 import 'package:nexus/core/ollama_service.dart';
 
 /// The PC's Ollama, on the wire.
@@ -82,6 +83,32 @@ void main() {
     // can read: the date, the weekday and the time, then the rule about them.
     expect(clockedSystem, contains('Monday 19 October 2026, 14:24'));
     expect(clockedSystem, contains('never invent'));
+  });
+
+  test('a vision turn is not told the clock', () async {
+    late http.Request seen;
+    final OllamaService ollama = OllamaService(
+      client: MockClient((http.Request request) async {
+        seen = request;
+        return http.Response(
+          jsonEncode(<String, Object?>{'response': 'A dog outside.'}),
+          200,
+        );
+      }),
+      system: kNexusVisionSystem,
+      includeClock: false,
+      clock: () => fixedNow,
+    );
+
+    expect(
+      await ollama.generateResponse('[User attached a photo]'),
+      'A dog outside.',
+    );
+
+    final Map<String, dynamic> body =
+        jsonDecode(seen.body) as Map<String, dynamic>;
+    expect(body['system'], kNexusVisionSystem);
+    expect(body['system'], isNot(contains('Monday 19 October 2026')));
   });
 
   test(

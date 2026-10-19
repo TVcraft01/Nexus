@@ -26,6 +26,42 @@ import 'package:flutter/foundation.dart'
     show ChangeNotifier, debugPrint, immutable, visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// What a stored answer is replaced with when it is one of the old
+/// key-value hallucinations.
+///
+/// A model asked to name a song sometimes answered as a record instead of a
+/// sentence — `song: Yesterday, artist: The Beatles` — and those lines were
+/// saved like any other answer. They are not a description of anything the app
+/// did, and leaving them in the thread is leaving a lie in the user's history.
+/// The text is named here so the migration and its test cannot disagree about
+/// what the replacement says.
+const String kOldHallucinationText = '[Old hallucination removed]';
+
+/// The keys the old invented answers used, at the start of a line.
+///
+/// Anchored to a line rather than to the whole message so a record inside a
+/// longer answer is caught too, and deliberately limited to the fields those
+/// answers invented. A sentence that merely mentions a title — "the title is on
+/// the cover" — does not have a colon after the word and is left alone.
+final RegExp _oldKeyValueLine = RegExp(
+  r'(^|\n)\s*(?:song|title|artist|album)\s*:\s*\S',
+  caseSensitive: false,
+);
+
+/// The same record written inline, inside a sentence, as two known fields
+/// separated by a comma: "Here it is: song: Yesterday, artist: The Beatles".
+/// Two known keys — not one — so ordinary prose that happens to mention a
+/// title is still left alone.
+final RegExp _oldKeyValuePair = RegExp(
+  r'\b(?:song|title|artist|album)\s*:\s*[^\n,]+,\s*'
+  r'(?:song|title|artist|album)\s*:',
+  caseSensitive: false,
+);
+
+/// Whether [text] is one of the old key-value hallucinations.
+bool looksLikeOldHallucination(String text) =>
+    _oldKeyValueLine.hasMatch(text) || _oldKeyValuePair.hasMatch(text);
+
 /// One line of the conversation, as it is stored.
 ///
 /// [thinking] is deliberately absent: a placeholder is the screen saying "an
@@ -245,7 +281,32 @@ class ChatLog extends ChangeNotifier {
     _attached = true;
     final List<ChatEntry>? stored = await _store.read();
     if (stored == null) return;
-    _entries = stored;
+    // One-time history cleanup at launch. Old model answers that were stored as
+    // `song: …` records are not something the user can act on, and a prompt
+    // change cannot repair what is already on disk — only a migration can.
+    // The user's own lines are never touched: they may legitimately write
+    // "title: …" and the app has no business editing their words.
+    var scrubbed = false;
+    final List<ChatEntry> cleaned = <ChatEntry>[];
+    for (final ChatEntry entry in stored) {
+      if (!entry.mine &&
+          !entry.system &&
+          !entry.failed &&
+          looksLikeOldHallucination(entry.text)) {
+        cleaned.add(
+          ChatEntry(
+            kOldHallucinationText,
+            imagePath: entry.imagePath,
+            filePath: entry.filePath,
+          ),
+        );
+        scrubbed = true;
+      } else {
+        cleaned.add(entry);
+      }
+    }
+    _entries = cleaned;
+    if (scrubbed) _persist();
     notifyListeners();
   }
 

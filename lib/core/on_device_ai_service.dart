@@ -147,6 +147,7 @@ class OnDeviceAiService implements LocalAiService {
     this.system = kNexusOnDeviceSystem,
     this.maxTokens = 220,
     this.clock,
+    this.includeClock = true,
   }) : _deviceModel = model,
        _fixedEngine = llm;
 
@@ -173,6 +174,13 @@ class OnDeviceAiService implements LocalAiService {
   /// A field so a test can pin the sentence it asserts; the app leaves it null
   /// and every request is told the time it is being asked at.
   final DateTime Function()? clock;
+
+  /// Whether the device's date and time are appended to [system].
+  ///
+  /// True for chat, where "what time is it" must never be guessed. False for
+  /// the vision brain: a picture question has nothing to do with the clock, and
+  /// a small model handed both answered the date instead of the picture.
+  final bool includeClock;
 
   /// Test seam for the free-memory reading: null reads `/proc/meminfo`.
   ///
@@ -323,8 +331,10 @@ class OnDeviceAiService implements LocalAiService {
     if (_engine == null) await _ensureMemoryForLoad();
     final Llm llm = await _current();
     // The clock goes in per question, not into [system]: "what time is it"
-    // has to be answered with the time it is asked at.
-    final String systemTurn = nexusSystemWithClock(system, now: clock?.call());
+    // has to be answered with the time it is asked at. A vision turn opts out.
+    final String systemTurn = includeClock
+        ? nexusSystemWithClock(system, now: clock?.call())
+        : system;
     String answer;
     try {
       answer = await llm.complete(
@@ -373,7 +383,9 @@ class OnDeviceAiService implements LocalAiService {
     if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
     if (_engine == null) await _ensureMemoryForLoad();
     final Llm llm = await _current();
-    final String systemTurn = nexusSystemWithClock(system, now: clock?.call());
+    final String systemTurn = includeClock
+        ? nexusSystemWithClock(system, now: clock?.call())
+        : system;
     bool answered = false;
     try {
       // With history this is a chat, not a question: the model is handed the

@@ -36,9 +36,17 @@ abstract class VisionAiService {
   /// never sets it.
   static VisionAiService Function()? override;
 
-  /// The service this build uses: whatever a test installed, else no eyes.
+  /// The service the app installs at startup — [MlVisionService] on a phone.
+  ///
+  /// A factory rather than an instance so the models are not built before the
+  /// first picture; and separate from [override] so a widget test that states
+  /// its own service never has to know what production installed.
+  static VisionAiService Function()? defaultFactory;
+
+  /// The service this build uses: whatever a test installed, else what the app
+  /// installed, else no eyes.
   static VisionAiService get current =>
-      override?.call() ?? const MissingVisionAi();
+      override?.call() ?? defaultFactory?.call() ?? const MissingVisionAi();
 
   /// Whether this build can look at images at all.
   bool get available;

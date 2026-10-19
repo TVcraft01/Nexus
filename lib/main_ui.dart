@@ -94,6 +94,7 @@ import 'core/file_link.dart';
 import 'core/local_ai_service.dart';
 import 'core/math_helper.dart';
 import 'core/mic_access.dart';
+import 'core/ml_vision_service.dart';
 import 'core/ollama_service.dart';
 import 'core/on_device_ai_service.dart';
 import 'core/on_device_model.dart';
@@ -107,7 +108,6 @@ import 'core/services/icon_service.dart';
 import 'mesh/discovery.dart' show DiscoveredDevice;
 import 'mesh/nearby.dart' show NearbyDevices;
 import 'core/version.dart';
-import 'ui/camera_page.dart';
 import 'ui/image_viewer_page.dart';
 import 'ui/local_files.dart' show openLocalFile;
 import 'core/speech.dart';
@@ -792,6 +792,10 @@ void main() async {
   // user's eyes. Both reads are one file, and the model's is still not awaited
   // by the brain — see `OnDeviceAiService._warmChoice`.
   WidgetsFlutterBinding.ensureInitialized();
+  // The eyes. Installed here rather than inside [VisionAiService.current] so
+  // the interface does not import ML Kit and a widget test never builds a
+  // platform model it cannot run.
+  VisionAiService.defaultFactory = MlVisionService.new;
   unawaited(ModelChoice.instance.ensureLoaded());
   final int? seed = await Appearance.accentSeed();
   runApp(NexusUiApp(initialAccent: accentFromSeed(seed)));
@@ -3189,23 +3193,39 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     if (spoken) unawaited(SpeechOutput.current.speak(answer));
   }
 
-  /// The composer's camera button: a full-screen preview, one shutter, and the
-  /// kept photo back into the thread.
+  /// The composer's camera button: the phone's own camera app, one shot, and
+  /// the kept photo back into the thread.
+  ///
+  /// Deliberately not a preview of our own. A Flutter camera preview on some
+  /// Samsung phones returns a black frame — the shutter can fire before the
+  /// sensor exposes, and the JPEG that comes back is the dark one. The system
+  /// camera app owns its warm-up, its metering and its own shutter, and hands
+  /// `image_picker` a finished file, which is the reliability this button owes
+  /// the user.
   Future<void> _openCamera() async {
     // One line on the log Flutter already writes, so `adb logcat | grep
-    // camera:` answers "did the button fire?" without a debugger. The page has
-    // its own `CAMERA:` lines for what happened after it opened; this one is the
-    // tap itself, which is the half that kept being assumed rather than proven.
+    // camera:` answers "did the button fire?" without a debugger. The picker
+    // logs its own failure; this line is the tap itself.
     debugPrint('camera: attach button tapped ${_stamp()}');
-    // Closing the keyboard first: the camera page is full screen, and coming
-    // back to a raised keyboard over the thread would cover the new bubble.
+    // Closing the keyboard first: the system camera is a full screen, and
+    // coming back to a raised keyboard over the thread would cover the bubble.
     _focus.unfocus();
-    final String? path = await CameraPage.open(context);
+    final PickedAttachment? picked = await AttachmentPickers.current
+        .captureImage();
     debugPrint(
-      'camera: page closed path=${path == null ? 'none' : 'kept'} ${_stamp()}',
+      'camera: ${picked == null ? 'cancelled' : 'captured'} ${_stamp()}',
     );
-    if (path == null || !mounted) return;
-    _sendAttachment(path, AttachmentKind.photo);
+    if (picked == null || !mounted) return;
+    final String? kept = await AttachmentStore.instance.keep(
+      picked.path,
+      kind: AttachmentKind.photo,
+    );
+    if (!mounted) return;
+    if (kept == null) {
+      _say('That photo could not be read.');
+      return;
+    }
+    _sendAttachment(kept, AttachmentKind.photo);
   }
 
   /// The `+`: one sheet, three doors, and no dialog of its own. The sheet is
