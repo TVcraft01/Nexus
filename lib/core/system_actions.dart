@@ -80,6 +80,20 @@ SystemActionCall? actionFromPhrase(String text) {
       return SystemActionCall('set_flashlight', <String, Object?>{
         'state': state,
       });
+    // "Play some music" is the one media phrase with a device action behind
+    // it. Bare "play" and "resume" are deliberately not translated: those may
+    // be about a preview or a track that is already loaded, and opening the
+    // phone's player over it would be a different request. A named song is not
+    // translated either — this app cannot make a named track appear, and the
+    // honest answer is not a player opening to something else.
+    case AgentActions.mediaPlay:
+      if (!RegExp(
+        r'\b(music|musique)\b',
+        caseSensitive: false,
+      ).hasMatch(phrase)) {
+        return null;
+      }
+      return const SystemActionCall('play_music');
     case AgentActions.volumeSet:
     case AgentActions.brightnessSet:
       // Up/down are relative steps the vocabulary cannot express, and a level

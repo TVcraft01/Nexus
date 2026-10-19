@@ -106,6 +106,19 @@ void main() {
     expect(kSystemActionRules, contains('Never name a song or an artist'));
   });
 
+  group('the phrase bridge', () {
+    test('a music request becomes play_music before the model is asked', () {
+      expect(actionFromPhrase('play some music')?.action, 'play_music');
+      expect(actionFromPhrase('play music')?.action, 'play_music');
+      // Bare play/resume may be about a track or preview already loaded; it is
+      // not the same request as opening a player.
+      expect(actionFromPhrase('resume'), isNull);
+      expect(actionFromPhrase('play'), isNull);
+      // And a named song is not something this action can make appear.
+      expect(actionFromPhrase('play yesterday by the beatles'), isNull);
+    });
+  });
+
   group('parsing what the model wrote', () {
     test('play_music is an action with no arguments', () {
       expect(

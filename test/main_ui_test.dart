@@ -3911,6 +3911,54 @@ void main() {
     expect(find.textContaining('song:'), findsNothing);
   });
 
+  testWidgets(
+    'a music phrase is run by the shell, never claimed by the model',
+    (tester) async {
+      // The measured failure: asked "play some music", the model answered "The
+      // phone's music player has opened" and nothing opened. The phrase is one
+      // the shell already understands, so the model is not asked at all.
+      final _FakePhoneBackend phone = _FakePhoneBackend();
+      phone.reply = const ActionResult(true, 'Opened Spotify.');
+      SystemActions.override = () => DeviceSystemActions(backend: phone);
+      await pumpShell(tester);
+
+      await tester.enterText(find.byType(TextField), 'play some music');
+      await tester.pump();
+      await tapTheButton(tester, sendButton());
+      await tester.pumpAndSettle();
+
+      expect(ollama.prompts, isEmpty, reason: 'no model had to guess');
+      expect(phone.calls.single.$1, AgentActions.musicPlay);
+      expect(find.text('Opened Spotify.'), findsOneWidget);
+      final NexusSystemBubble pill = tester.widget<NexusSystemBubble>(
+        find.byType(NexusSystemBubble),
+      );
+      expect(pill.ok, isTrue);
+    },
+  );
+
+  testWidgets('a music phrase spoken into live mode is run there too', (
+    tester,
+  ) async {
+    grantMic();
+    final mic = _FakeSpeechInput();
+    SpeechInput.override = () => mic;
+    addTearDown(() => SpeechInput.override = null);
+    final _FakePhoneBackend phone = _FakePhoneBackend();
+    phone.reply = const ActionResult(true, 'Opened Spotify.');
+    SystemActions.override = () => DeviceSystemActions(backend: phone);
+    await pumpShell(tester);
+    await openLive(tester);
+
+    mic.hear('play some music');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    expect(ollama.prompts, isEmpty, reason: 'no model had to guess');
+    expect(phone.calls.single.$1, AgentActions.musicPlay);
+    expect(liveText(tester), 'Opened Spotify.');
+  });
+
   testWidgets('the X ends live conversation and the microphone with it', (
     tester,
   ) async {

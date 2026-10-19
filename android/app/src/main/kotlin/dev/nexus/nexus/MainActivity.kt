@@ -2254,14 +2254,12 @@ class MainActivity : FlutterActivity() {
         }
         return try {
             startActivity(intent)
-            val label = handlers.firstOrNull()
-                ?.loadLabel(packageManager)
-                ?.toString()
-                ?.trim()
-            mapOf(
-                "ok" to true,
-                "message" to if (label.isNullOrEmpty()) "Opened your music player." else "Opened $label.",
-            )
+            // Deliberately not "Opened <name>": with several players installed,
+            // the first handler's label is not necessarily the one Android
+            // launches (measured: the chooser opened Deezer while the first
+            // handler was Spotify). The only fact this side knows is that the
+            // player intent was started.
+            mapOf("ok" to true, "message" to "Opened your music player.")
         } catch (e: Exception) {
             Log.e(TAG, "playMusic: the player could not be opened", e)
             failure

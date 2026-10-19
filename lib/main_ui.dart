@@ -4344,6 +4344,31 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       _answerLiveLocally(sum, turn);
       return;
     }
+    // And the phrase bridge: a request the shell already understands is run
+    // here too, before the model is asked. "Play some music" said into the
+    // room must open a player or say it could not — never come back as the
+    // model claiming it did, which is exactly what it wrote on the A25.
+    final SystemActionCall? known = actionFromPhrase(prompt);
+    if (known != null) {
+      if (_leavesTheApp(known)) _holdLiveForAction();
+      final SystemActionOutcome outcome = await SystemActions.current.execute(
+        known,
+      );
+      if (!mounted || !_liveOpen || turn != _liveTurns) return;
+      setState(() {
+        _liveThinking = false;
+        _liveAnswering = false;
+        _liveIdle = _LivePhase.waiting;
+        _liveSaid = outcome.message;
+        _liveAnswerText = '';
+        _addLiveTurn(
+          NexusMockMessage(outcome.message, system: true, ok: outcome.ok),
+        );
+      });
+      _syncLive();
+      _speakThenListen(outcome.message);
+      return;
+    }
     final StringBuffer buffer = StringBuffer();
     // Read once, before the request goes out: the history is the conversation
     // *up to* this question, and a later turn must not be able to change what
