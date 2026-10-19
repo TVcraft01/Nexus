@@ -2676,6 +2676,15 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   bool _liveActionPending = false;
   Timer? _liveActionGuard;
 
+  /// True while Android's own screen-projection dialog is up.
+  ///
+  /// The dialog takes the app out of the foreground exactly as another app
+  /// would. That is not the user closing live conversation — the capture is
+  /// still running, and its frame is about to join the room — so the page stays
+  /// and the lifecycle handler waits for the capture to finish rather than
+  /// closing the overlay or opening the microphone underneath it.
+  bool _liveCapturePending = false;
+
   /// True while the live conversation overlay is on screen.
   ///
   /// It is this state's rather than the overlay's because the microphone is the
@@ -2876,12 +2885,17 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      if (!_liveOpen) return;
       // Back from an action's own app (the clock, the music player): the page
       // that was live is still the page, and the conversation continues.
-      if (_liveOpen && _liveActionPending) {
-        _liveActionPending = false;
-        _liveActionGuard?.cancel();
-        _liveActionGuard = null;
+      _liveActionPending = false;
+      _liveActionGuard?.cancel();
+      _liveActionGuard = null;
+      // The projection dialog is still open; its capture flow owns what happens
+      // next, and opening the microphone here would talk over the answer it is
+      // about to ask for.
+      if (_liveCapturePending) return;
+      if (!_listening && !_liveThinking && !_liveAnswering && !_speaking) {
         unawaited(_liveTurn());
       }
       return;
@@ -2889,7 +2903,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // A system action opening another app is not the user ending the room. The
     // microphone still closes — a page nobody is looking at must not listen —
     // and everything else waits for the user to come back.
-    if (_liveOpen && _liveActionPending) {
+    if (_liveOpen && (_liveActionPending || _liveCapturePending)) {
       _speechDone?.cancel();
       _speechDone = null;
       _autoListen?.cancel();
@@ -4509,8 +4523,18 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _liveQuiet?.cancel();
     _liveQuiet = null;
     final int turn = _liveTurns;
+    // The projection dialog is a system window over this app; without this the
+    // lifecycle handler would read it as the user leaving and close the page
+    // while the capture was still being decided.
+    _liveCapturePending = true;
     final String? path = await _captureScreen();
-    if (path == null || !mounted || !_liveOpen || turn != _liveTurns) return;
+    _liveCapturePending = false;
+    if (path == null) {
+      // A refusal leaves the room where it was, listening again.
+      if (mounted && _liveOpen && turn == _liveTurns) unawaited(_liveTurn());
+      return;
+    }
+    if (!mounted || !_liveOpen || turn != _liveTurns) return;
     setState(() {
       _liveIdle = _LivePhase.waiting;
       _liveThinking = true;
@@ -4582,6 +4606,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// point of it being its own page.
   void _closeLive({String reason = 'closed'}) {
     _liveActionPending = false;
+    _liveCapturePending = false;
     _liveActionGuard?.cancel();
     _liveActionGuard = null;
     // Only a live session is this method's to end. A dictation session that a
@@ -7420,7 +7445,9 @@ class _LivePage extends StatelessWidget {
                         // the only place it exists. Quietly drawn while the
                         // voice is going, because the interruption control owns
                         // that moment.
-                        if (!live.speaking) ...<Widget>[
+                        if (!live.speaking &&
+                            live.phase != _LivePhase.thinking &&
+                            live.phase != _LivePhase.answering) ...<Widget>[
                           const SizedBox(height: 10),
                           TextButton.icon(
                             key: kNexusLiveScreenShare,
