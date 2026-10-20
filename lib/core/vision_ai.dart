@@ -58,6 +58,8 @@ typedef VisionEvidenceCallback = void Function(VisionEvidence evidence);
 /// caller is drawing a bubble — an exception would reach the user as a red
 /// notice about a bug, when the honest thing to say is what went wrong.
 abstract class VisionAiService {
+  const VisionAiService();
+
   /// Test seam, in the shape of [ChatLog.override] and [AttachmentStore.override]:
   /// a test states its own service instead of touching a platform. The app
   /// never sets it.
@@ -91,13 +93,40 @@ abstract class VisionAiService {
     String question = '',
     VisionEvidenceCallback? onEvidence,
   });
+
+  /// What a turn carrying several pictures shows, in answer to [question].
+  ///
+  /// The default is one [describe] per picture and the first real answer, which
+  /// is what every implementation got for free before this method existed.
+  /// [MlVisionService] overrides it because asking the brain once per image
+  /// means the last answer is chosen by iteration order, and because a handful
+  /// of images cannot share one prompt without a batch shape.
+  ///
+  /// [onEvidence] receives each picture's evidence with the index it belongs
+  /// to, so a caller can draw it under the right bubble.
+  Future<String> describeMany(
+    List<String> imagePaths, {
+    String question = '',
+    void Function(int index, VisionEvidence evidence)? onEvidence,
+  }) async {
+    String answer = '';
+    for (int i = 0; i < imagePaths.length; i++) {
+      final String next = await describe(
+        imagePaths[i],
+        question: question,
+        onEvidence: (VisionEvidence evidence) => onEvidence?.call(i, evidence),
+      );
+      if (answer.trim().isEmpty && next.trim().isNotEmpty) answer = next;
+    }
+    return answer;
+  }
 }
 
 /// The shipped service: no vision module is installed, and it says so.
 ///
 /// [available] false is the fact the shell branches on when it wants to tell
 /// the user before they ask; [describe] is the answer for when they ask anyway.
-class MissingVisionAi implements VisionAiService {
+class MissingVisionAi extends VisionAiService {
   const MissingVisionAi();
 
   /// No eyes at all.

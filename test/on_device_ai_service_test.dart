@@ -265,6 +265,31 @@ void main() {
       expect(prompt.last.content, 'what is a mesh?');
     });
 
+    test(
+      'the standing instruction reaches the system turn the model gets',
+      () async {
+        final device = _device();
+        device.writeModel();
+        // What Settings › Brain › System prompt writes. Read per request, so a
+        // test can state it without rebuilding the service.
+        LocalAiService.customInstructions = () => 'Answer in French.';
+        addTearDown(() => LocalAiService.customInstructions = null);
+        final service = device.service();
+
+        await service.generateResponse('how are you today');
+
+        final List<ChatTurn> prompt = device.runtime.prompts.single;
+        expect(prompt.first.role, 'system');
+        expect(
+          prompt.first.content,
+          contains(
+            'Standing instructions from the user. Follow them in every '
+            'answer:\nAnswer in French.',
+          ),
+        );
+      },
+    );
+
     test('a vision turn is not told the clock', () async {
       final device = _device();
       device.writeModel();

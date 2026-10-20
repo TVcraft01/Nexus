@@ -144,12 +144,36 @@ abstract class LocalAiService {
   /// shell) and the system turn is left exactly as it was.
   static String Function()? memoryContext;
 
-  /// [system] with the remembered facts after it, one blank line between.
-  /// Empty memory answers [system] unchanged, so a build with no facts sends
-  /// the same prompt it always did.
+  /// The user's standing instructions (Settings › Brain › System prompt).
+  ///
+  /// Read at request time for the same reason [memoryContext] is: editing the
+  /// field applies to the very next answer without rebuilding the brain.
+  static String Function()? customInstructions;
+
+  /// [system] with the remembered facts and the user's standing instructions
+  /// after it, one blank line between each block.
+  ///
+  /// Empty memory and an empty custom field answer [system] unchanged, so a
+  /// build with neither sends exactly the prompt it always did.
   static String systemWithMemory(String system) {
     final String memory = memoryContext?.call().trim() ?? '';
-    return memory.isEmpty ? system : '$system\n\n$memory';
+    final String custom = customInstructions?.call().trim() ?? '';
+    final StringBuffer out = StringBuffer(system);
+    if (memory.isNotEmpty) {
+      out
+        ..write('\n\n')
+        ..write(memory);
+    }
+    if (custom.isNotEmpty) {
+      out
+        ..write('\n\n')
+        ..write(
+          'Standing instructions from the user. Follow them in every '
+          'answer:\n',
+        )
+        ..write(custom);
+    }
+    return out.toString();
   }
 
   /// Answers [prompt], or throws.

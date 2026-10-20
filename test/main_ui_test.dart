@@ -32,6 +32,7 @@ import 'package:nexus/core/screen_capture.dart';
 import 'package:nexus/core/services/icon_service.dart';
 import 'package:nexus/core/speech.dart';
 import 'package:nexus/core/system_actions.dart';
+import 'package:nexus/core/system_prompt.dart';
 import 'package:nexus/core/version.dart';
 import 'package:nexus/core/vision_ai.dart';
 import 'package:nexus/core/voice_settings.dart';
@@ -496,6 +497,8 @@ void main() {
     // touches the preferences store for it.
     Onboarding.debugOverride = true;
     HomeTab.updateCheckOverride = null;
+    SystemPrompt.override = null;
+    SystemPrompt.debugReset();
   });
   tearDown(() {
     LocalAiService.override = null;
@@ -508,6 +511,8 @@ void main() {
     Onboarding.debugOverride = null;
     SpeechOutput.override = null;
     HomeTab.updateCheckOverride = null;
+    SystemPrompt.override = null;
+    SystemPrompt.debugReset();
     LogService.debugReset();
   });
 
@@ -1891,7 +1896,7 @@ void main() {
     await openTab(tester, 'Settings', 3);
 
     expect(find.text('Accent colour'), findsOneWidget);
-    expect(find.text('Choose accent color'), findsOneWidget);
+    expect(find.textContaining('choose accent color'), findsOneWidget);
     expect(
       tabIconColor(tester, Icons.settings_rounded),
       NexusAccent.purple.light,
@@ -2100,6 +2105,58 @@ void main() {
     expect(voice.language, 'en-GB');
     expect(find.text('English (UK)'), findsOneWidget);
     expect(find.text('English (US)'), findsNothing);
+  });
+
+  testWidgets('Speak replies is live and persisted', (tester) async {
+    final VoiceSettings voice = VoiceSettings(initial: 'en-US');
+    VoiceSettings.override = () => voice;
+    addTearDown(() => VoiceSettings.override = null);
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+    await tester.tap(find.text('Voice & speech'));
+    await tester.pumpAndSettle();
+
+    expect(voice.speakReplies, isTrue);
+    await tester.tap(find.byKey(const Key('nexus-speak-replies')));
+    await tester.pumpAndSettle();
+    expect(voice.speakReplies, isFalse);
+
+    // And the dead wake-word switch says why it is dead.
+    expect(
+      find.text('Requires background service (disabled for privacy).'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a custom system prompt is saved from Settings', (tester) async {
+    final SystemPrompt prompt = SystemPrompt();
+    SystemPrompt.override = () => prompt;
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('nexus-system-prompt')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+
+    // Honest expectations under the field: the on-device model may ignore a
+    // complex instruction, so the note says to keep it brief.
+    expect(
+      find.text(
+        'Note: Small on-device models may ignore complex instructions. '
+        'For best results, keep it brief (e.g., \'My name is TVCraft\').',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('nexus-system-prompt')),
+      'The user is TVCraft. Always answer in French.',
+    );
+    await tester.pumpAndSettle();
+
+    expect(prompt.text, 'The user is TVCraft. Always answer in French.');
   });
 
   testWidgets('Settings pushes to Customization, and back returns to the tab', (
@@ -3601,7 +3658,9 @@ void main() {
     // exactly what the route covered.
     expect(
       tester
-          .widget<TextField>(find.byType(TextField, skipOffstage: false))
+          .widget<TextField>(
+            find.byKey(kNexusComposerField, skipOffstage: false),
+          )
           .controller!
           .text,
       'draft',
@@ -5623,20 +5682,20 @@ void main() {
     expect(find.text('Clear Logs'), findsOneWidget);
   });
 
-  testWidgets('the accent block is large and taps anywhere open the wheel', (
+  testWidgets('the accent preview is a small swatch that opens the wheel', (
     tester,
   ) async {
     await pumpShell(tester);
     await openTab(tester, 'Settings', 3);
 
-    final Size block = tester.getSize(find.byKey(kNexusPickColor));
-    expect(block.width, greaterThan(260));
-    expect(block.height, greaterThanOrEqualTo(90));
+    // A 40dp disc, not a full-width sheet of colour: the hex block read as a
+    // white panel in dark mode. The row around it is still the whole target.
+    final Size swatch = tester.getSize(find.byKey(kNexusAccentSwatch));
+    expect(swatch.width, 40);
+    expect(swatch.height, 40);
+    expect(tester.getSize(find.byKey(kNexusPickColor)).height, lessThan(90));
 
-    // A tap in the empty corner, not on the old button's centre: the whole
-    // block is the control now.
-    final Rect rect = tester.getRect(find.byKey(kNexusPickColor));
-    await tester.tapAt(rect.bottomRight - const Offset(10, 10));
+    await tester.tap(find.byKey(kNexusPickColor));
     await tester.pumpAndSettle();
     expect(find.byKey(kNexusColorWheel), findsOneWidget);
   });
@@ -5662,6 +5721,33 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey<String>('update-banner')), findsNothing);
+  });
+
+  testWidgets('a waiting answer counts the seconds until the first token', (
+    tester,
+  ) async {
+    final _StreamingBrain brain = _StreamingBrain();
+    LocalAiService.override = () => brain;
+    await pumpShell(tester);
+
+    await tester.enterText(find.byKey(kNexusComposerField), 'what is a mesh?');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey<String>('thinking-timer')), findsNothing);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('(1s)'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 2));
+    expect(find.text('(3s)'), findsOneWidget);
+
+    brain.write('A mesh shares one connection.');
+    // The stream delivers after the pump's microtask drain, so the first token
+    // lands in the next frame; the timer is gone once that frame is built.
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey<String>('thinking-timer')), findsNothing);
+    expect(find.text('A mesh shares one connection.'), findsOneWidget);
   });
 
   test('a thought block splits into reasoning and answer, even mid-stream', () {

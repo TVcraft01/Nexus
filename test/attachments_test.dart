@@ -466,8 +466,11 @@ void main() {
       );
       expect(find.text('A dog beside a road.'), findsOneWidget);
       expect(find.text(kNexusVisionMissingText), findsNothing);
-      // The scan is visible without asking the model about it: both lines sit
-      // under the picture, in the bubble, as soon as ML Kit is done.
+      // The scan is kept, but behind the ⓘ: the bubble leads with the picture
+      // and the caption, and machine labels are one deliberate tap away.
+      expect(find.byKey(kNexusVisionCaption), findsNothing);
+      await tester.tap(find.byKey(kNexusVisionInfo));
+      await tester.pumpAndSettle();
       expect(find.byKey(kNexusVisionCaption), findsOneWidget);
       expect(find.text('Detected text: "STOP\nMain Street"'), findsOneWidget);
       expect(
@@ -636,8 +639,12 @@ void main() {
       expect(find.byType(NexusAttachmentBubble), findsOneWidget);
       expect(find.text('Photo attached'), findsOneWidget);
       expect(find.text('Looks like a cat.'), findsOneWidget);
-      // The evidence is part of the stored line: reopening the app shows the
-      // same scan under the same picture, not just the caption.
+      // The evidence is part of the stored line: reopening the app can show the
+      // same scan under the same picture, not just the caption. It stays hidden
+      // until the ⓘ is tapped.
+      expect(find.byKey(kNexusVisionCaption), findsNothing);
+      await tester.tap(find.byKey(kNexusVisionInfo));
+      await tester.pumpAndSettle();
       expect(find.text('Detected text: "NEXUS VISION TEST"'), findsOneWidget);
       expect(find.text('Objects: Monochrome'), findsOneWidget);
     });

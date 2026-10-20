@@ -31,6 +31,8 @@ import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'thought.dart' show NexusThoughtSplit, splitNexusThought;
+
 /// What a stored answer is replaced with when it is one of the old
 /// key-value hallucinations.
 ///
@@ -99,6 +101,7 @@ class ChatEntry {
     this.system = false,
     this.ok = true,
     this.imagePath,
+    this.imagePaths = const <String>[],
     this.filePath,
     this.visionText,
     this.visionLabels = const <String>[],
@@ -134,6 +137,11 @@ class ChatEntry {
   /// by a build that predates attachments loses the picture, not the line.
   final String? imagePath;
 
+  /// Every picture this line carries. Empty for a line without one; a single
+  /// [imagePath] is kept beside it because every older build and every piece of
+  /// history written before multi-image turns reads that field.
+  final List<String> imagePaths;
+
   /// Where a picked document lives, if this line carries one. Separate from
   /// [imagePath] because a document is not decoded as a picture — the thread
   /// draws a file chip from its name — and a build that predates it loses the
@@ -164,6 +172,7 @@ class ChatEntry {
     if (system) 'system': true,
     if (!ok) 'ok': false,
     if (imagePath != null) 'image': imagePath,
+    if (imagePaths.length > 1) 'images': imagePaths,
     if (filePath != null) 'file': filePath,
     if (visionText != null && visionText!.trim().isNotEmpty)
       'visionText': visionText,
@@ -172,6 +181,11 @@ class ChatEntry {
       'reasoning': reasoning,
   };
 
+  /// Every image path, with the legacy single [imagePath] folded in.
+  List<String> get allImagePaths => imagePaths.isNotEmpty
+      ? imagePaths
+      : (imagePath == null ? const <String>[] : <String>[imagePath!]);
+
   /// Reads one stored line. Null for anything that is not one — a file half
   /// written by a killed process is not a reason to lose the rest of it.
   static ChatEntry? fromJson(Object? raw) {
@@ -179,7 +193,41 @@ class ChatEntry {
     final Object? text = raw['text'];
     if (text is! String || text.trim().isEmpty) return null;
     final Object? image = raw['image'];
+    final Object? images = raw['images'];
     final Object? file = raw['file'];
+    final List<String> imagePaths = <String>[];
+    if (images is List) {
+      for (final Object? path in images) {
+        if (path is String && path.trim().isNotEmpty) {
+          imagePaths.add(path.trim());
+        }
+      }
+    }
+    if (imagePaths.isEmpty && image is String && image.isNotEmpty) {
+      imagePaths.add(image);
+    }
+    final bool mine = raw['mine'] == true;
+    final bool system = raw['system'] == true;
+    String loadedText = text;
+    String? reasoning =
+        raw['reasoning'] is String &&
+            (raw['reasoning'] as String).trim().isNotEmpty
+        ? (raw['reasoning'] as String).trim()
+        : null;
+    // An answer written before this build stored reasoning separately kept the
+    // model's working-out in [text]. Read it back through the same splitter the
+    // live screen uses, so a reopened conversation has a collapsed grey bubble
+    // instead of the assistant narrating its thoughts. Only the assistant's
+    // own lines: the user's words and the shell's notices are never parsed.
+    if (!mine && !system && reasoning == null) {
+      final NexusThoughtSplit split = splitNexusThought(loadedText);
+      final String thought = split.reasoning.trim();
+      if (thought.isNotEmpty) {
+        reasoning = thought;
+        final String answer = split.answer.trim();
+        if (answer.isNotEmpty) loadedText = answer;
+      }
+    }
     final Object? vision = raw['visionText'];
     final Object? labels = raw['visionLabels'];
     final List<String> visionLabels = <String>[];
@@ -191,20 +239,17 @@ class ChatEntry {
       }
     }
     return ChatEntry(
-      text,
-      mine: raw['mine'] == true,
+      loadedText,
+      mine: mine,
       failed: raw['failed'] == true,
-      system: raw['system'] == true,
+      system: system,
       ok: raw['ok'] != false,
-      imagePath: image is String && image.isNotEmpty ? image : null,
+      imagePath: imagePaths.isEmpty ? null : imagePaths.first,
+      imagePaths: imagePaths,
       filePath: file is String && file.isNotEmpty ? file : null,
       visionText: vision is String && vision.trim().isNotEmpty ? vision : null,
       visionLabels: visionLabels,
-      reasoning:
-          raw['reasoning'] is String &&
-              (raw['reasoning'] as String).trim().isNotEmpty
-          ? (raw['reasoning'] as String).trim()
-          : null,
+      reasoning: reasoning,
     );
   }
 

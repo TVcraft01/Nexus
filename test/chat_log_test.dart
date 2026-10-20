@@ -213,6 +213,23 @@ void main() {
     expect(back.imagePath, '/tmp/photo.jpg');
   });
 
+  test('every picture in a multi-image turn survives storage', () {
+    const ChatEntry entry = ChatEntry(
+      'Compare these',
+      mine: true,
+      imagePath: '/tmp/one.jpg',
+      imagePaths: <String>['/tmp/one.jpg', '/tmp/two.jpg', '/tmp/three.jpg'],
+    );
+
+    final ChatEntry back = ChatEntry.fromJson(entry.toJson())!;
+    expect(back.imagePath, '/tmp/one.jpg');
+    expect(back.allImagePaths, <String>[
+      '/tmp/one.jpg',
+      '/tmp/two.jpg',
+      '/tmp/three.jpg',
+    ]);
+  });
+
   test('one line of junk does not lose the rest of the file', () {
     expect(
       ChatEntry.fromJson(const <String, Object?>{'text': 'hello', 'mine': true})
@@ -328,5 +345,39 @@ void main() {
         .where((FileSystemEntity e) => e.path.endsWith('.tmp'))
         .toList();
     expect(leftovers, isEmpty, reason: 'a finished save leaves no temp file');
+  });
+
+  test('an old answer with reasoning is split when it is read back', () {
+    // Written by a build that kept the model's working-out in `text`. The
+    // reopened thread must draw the grey bubble and the answer, not the two
+    // run together.
+    final ChatEntry? labelled = ChatEntry.fromJson(<String, Object?>{
+      'text': 'Thought: check the map\n\nThe map is on the table.',
+    });
+    expect(labelled, isNotNull);
+    expect(labelled!.reasoning, 'check the map');
+    expect(labelled.text, 'The map is on the table.');
+
+    final ChatEntry? tagged = ChatEntry.fromJson(<String, Object?>{
+      'text': '<thought>weigh the options</thought>Choose the left path.',
+    });
+    expect(tagged!.reasoning, 'weigh the options');
+    expect(tagged.text, 'Choose the left path.');
+
+    // The user's own words are never parsed, even if they start with a label.
+    final ChatEntry? mine = ChatEntry.fromJson(<String, Object?>{
+      'text': 'Thought: I should ask Nexus',
+      'mine': true,
+    });
+    expect(mine!.reasoning, isNull);
+    expect(mine.text, 'Thought: I should ask Nexus');
+
+    // A reply whose reasoning was already stored keeps both halves untouched.
+    final ChatEntry? stored = ChatEntry.fromJson(<String, Object?>{
+      'text': 'The map is on the table.',
+      'reasoning': 'check the map',
+    });
+    expect(stored!.reasoning, 'check the map');
+    expect(stored.text, 'The map is on the table.');
   });
 }

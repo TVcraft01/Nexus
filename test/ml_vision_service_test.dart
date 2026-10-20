@@ -44,6 +44,46 @@ void main() {
     );
   });
 
+  test('several pictures share one prompt made of three labels each', () async {
+    final List<String> prompts = <String>[];
+    final Map<int, VisionEvidence> evidence = <int, VisionEvidence>{};
+    int ocrReads = 0;
+    final MlVisionService service = MlVisionService(
+      readText: (_) async {
+        ocrReads++;
+        return 'a wall of OCR text from a screenshot';
+      },
+      readLabels: (String path) async => path == '/tmp/a.jpg'
+          ? const <String>['Sky', 'Space', 'Cloud', 'Moon']
+          : const <String>['Dog', 'Couch'],
+      answer: (String prompt) async {
+        prompts.add(prompt);
+        return 'A sky and a dog.';
+      },
+    );
+
+    final String answer = await service.describeMany(
+      const <String>['/tmp/a.jpg', '/tmp/b.jpg'],
+      question: 'what do you see',
+      onEvidence: (int index, VisionEvidence seen) => evidence[index] = seen,
+    );
+
+    expect(answer, 'A sky and a dog.');
+    // One brain call, numbered labels, no OCR at all: concatenated OCR from
+    // several screenshots is what garbled the answer on the A25.
+    expect(
+      prompts.single,
+      '[Image 1: Sky, Space, Cloud] [Image 2: Dog, Couch]\n'
+      '[User Question]: what do you see',
+    );
+    expect(ocrReads, 0);
+    // The bubble still gets every label the phone found, not just the three
+    // the prompt used.
+    expect(evidence[0]!.labels, <String>['Sky', 'Space', 'Cloud', 'Moon']);
+    expect(evidence[0]!.text, isEmpty);
+    expect(evidence[1]!.labels, <String>['Dog', 'Couch']);
+  });
+
   test('the system turn carries the strict OCR rule', () {
     expect(
       kNexusVisionSystem,

@@ -37,6 +37,15 @@ import 'vision_ai.dart';
 /// would name first; a list of twenty is noise the model has to filter itself.
 const int kMlVisionLabelLimit = 5;
 
+/// How many labels each picture contributes to a multi-image turn.
+///
+/// Fewer than [kMlVisionLabelLimit] on purpose: with three pictures the prompt
+/// is three short lists plus a question, and three names are enough for the
+/// model to tell the pictures apart. The OCR pass is skipped entirely for a
+/// multi-image turn — concatenated OCR from several screenshots is what made a
+/// two-photo answer read as one garbled wall of text on the A25.
+const int kMlVisionMultiLabelLimit = 3;
+
 /// Reads the text in an image and answers it, or an empty string.
 typedef ImageTextReader = Future<String> Function(String path);
 
@@ -157,6 +166,79 @@ class MlVisionService implements VisionAiService {
         return 'The text says: "$text"';
       }
       return plain;
+    } on OllamaException catch (error) {
+      return error.message;
+    } catch (error) {
+      debugPrint('VISION: the local brain failed ($error)');
+      return kMlVisionBrainFailedText;
+    }
+  }
+
+  /// Answers a turn that carries several pictures from their object labels.
+  ///
+  /// One brain call, not one per image: the pictures share the question, so a
+  /// single prompt naming each image is the shape the model can actually
+  /// reason about. Each picture contributes at most [kMlVisionMultiLabelLimit]
+  /// labels and no OCR text:
+  ///
+  ///     [Image 1: Sky, Space] [Image 2: Dog, Couch]
+  ///     [User Question]: what do you see?
+  ///
+  /// Evidence is still reported per picture before the brain is asked, so the
+  /// bubbles show what ML Kit saw even if the answer is weak. A picture with
+  /// no labels contributes `no objects`, which keeps the numbering honest.
+  @override
+  Future<String> describeMany(
+    List<String> imagePaths, {
+    String question = '',
+    void Function(int index, VisionEvidence evidence)? onEvidence,
+  }) async {
+    if (imagePaths.length < 2) {
+      return describe(
+        imagePaths.isEmpty ? '' : imagePaths.first,
+        question: question,
+        onEvidence: (VisionEvidence evidence) => onEvidence?.call(0, evidence),
+      );
+    }
+    final List<List<String>> labelsByImage = <List<String>>[];
+    for (int i = 0; i < imagePaths.length; i++) {
+      final List<String> labels = await _labelsOrEmpty(imagePaths[i]);
+      // The bubble shows everything the labeler found; the prompt gets the top
+      // three, because five names times three pictures is a list the model has
+      // to filter before it can answer.
+      labelsByImage.add(
+        labels.take(kMlVisionMultiLabelLimit).toList(growable: false),
+      );
+      try {
+        onEvidence?.call(i, VisionEvidence(labels: labels));
+      } catch (error) {
+        debugPrint('VISION: the evidence callback failed ($error)');
+      }
+    }
+    final bool anyLabels = labelsByImage.any(
+      (List<String> labels) => labels.isNotEmpty,
+    );
+    if (!anyLabels) {
+      return question.startsWith('[User attached') ? question : kPhotoPrompt;
+    }
+    final String context =
+        '${<String>[for (int i = 0; i < labelsByImage.length; i++) '[Image ${i + 1}: '
+              '${labelsByImage[i].isEmpty ? 'no objects' : labelsByImage[i].join(', ')}]'].join(' ')}\n'
+        '[User Question]: $question';
+    try {
+      final String answer = await (_answer ?? _askLocalBrain)(context);
+      debugPrint(
+        'VISION: images=${imagePaths.length} '
+        'labels=${labelsByImage.fold<int>(0, (int n, List<String> l) => n + l.length)} '
+        'answer=${answer.trim().length}',
+      );
+      return _plainAnswer(
+        answer,
+        text: '',
+        labels: <String>[
+          for (final List<String> labels in labelsByImage) ...labels,
+        ],
+      );
     } on OllamaException catch (error) {
       return error.message;
     } catch (error) {

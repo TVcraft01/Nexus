@@ -12,6 +12,8 @@
 // one falls back to its system language honestly.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart'
     show ChangeNotifier, debugPrint, visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -66,10 +68,38 @@ class VoiceSettings extends ChangeNotifier {
 
   static const String key = 'nexus.voice.language';
 
+  /// The preference that says whether replies may be read aloud.
+  ///
+  /// It is a *permission* for the speaker, not a mode of listening: a reply to
+  /// a spoken turn is read aloud only while this is true. Defaults to true so
+  /// the voice conversation the app already had keeps working on an install
+  /// that has never opened Settings.
+  static const String speakRepliesKey = 'nexus.voice.speakReplies';
+
   String _language;
+  bool _speakReplies = true;
   bool _attached = false;
 
   String get language => _language;
+
+  /// Whether chat may speak an answer out loud.
+  bool get speakReplies => _speakReplies;
+
+  set speakReplies(bool value) {
+    if (value == _speakReplies) return;
+    _speakReplies = value;
+    notifyListeners();
+    unawaited(_storeSpeakReplies(value));
+  }
+
+  Future<void> _storeSpeakReplies(bool value) async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(speakRepliesKey, value);
+    } catch (error) {
+      debugPrint('VOICE: could not store the spoken-reply choice ($error)');
+    }
+  }
 
   VoiceLanguage get choice {
     for (final VoiceLanguage language in kVoiceLanguages) {
@@ -90,6 +120,7 @@ class VoiceSettings extends ChangeNotifier {
         _language = stored.trim();
         notifyListeners();
       }
+      _speakReplies = prefs.getBool(speakRepliesKey) ?? true;
     } catch (error) {
       debugPrint('VOICE: no language preference ($error)');
     }
@@ -112,6 +143,9 @@ class VoiceSettings extends ChangeNotifier {
   }
 
   Future<void> _apply() async {
+    // Both halves are always told, even when only one seam is available on
+    // this platform: a desktop that grows a recognizer later must not inherit
+    // a language that was never sent to it.
     await SpeechInput.current.setLanguage(_language);
     await SpeechOutput.current.setLanguage(_language);
   }

@@ -71,6 +71,19 @@ void main() {
     expect(output.languages, isEmpty);
   });
 
+  test('Speak replies is on by default and survives a restart', () async {
+    final VoiceSettings voice = VoiceSettings();
+    await voice.attach();
+    expect(voice.speakReplies, isTrue);
+
+    voice.speakReplies = false;
+    await Future<void>.delayed(Duration.zero);
+
+    final VoiceSettings next = VoiceSettings();
+    await next.attach();
+    expect(next.speakReplies, isFalse);
+  });
+
   test('the dropdown has a readable entry for the chosen tag', () {
     expect(VoiceSettings(initial: 'ja-JP').choice.label, '日本語');
     expect(VoiceSettings(initial: 'not-a-language').choice.tag, 'en-US');

@@ -23,6 +23,8 @@ class _FakeBrain extends LocalAiService {
 void main() {
   tearDown(() {
     LocalAiService.override = null;
+    LocalAiService.memoryContext = null;
+    LocalAiService.customInstructions = null;
     LocalAiService.resetDefault();
   });
 
@@ -48,6 +50,29 @@ void main() {
     // One chain for the life of the app: rebuilding it per message would throw
     // away a loaded 470 MB model every time somebody spoke.
     expect(LocalAiService.current, same(chain));
+  });
+
+  test('a custom instruction joins memory in the system turn', () {
+    LocalAiService.memoryContext = () =>
+        'What I remember:\n- TVCraft is the user.';
+    LocalAiService.customInstructions = () =>
+        'The user is TVCraft. Always answer in French.';
+
+    final String system = LocalAiService.systemWithMemory('You are Nexus.');
+    expect(system, startsWith('You are Nexus.'));
+    expect(system, contains('TVCraft is the user'));
+    expect(
+      system,
+      contains(
+        'Standing instructions from the user. Follow them in every answer:\n'
+        'The user is TVCraft. Always answer in French.',
+      ),
+    );
+  });
+
+  test('an empty custom instruction leaves the prompt untouched', () {
+    LocalAiService.customInstructions = () => '   ';
+    expect(LocalAiService.systemWithMemory('You are Nexus.'), 'You are Nexus.');
   });
 
   test('the failure sentence names the two things a user can do', () {

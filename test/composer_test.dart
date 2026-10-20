@@ -275,7 +275,9 @@ void main() {
     expect(chat.entries, isEmpty);
   });
 
-  testWidgets('a new pick replaces the previous draft', (tester) async {
+  testWidgets('a second pick queues beside the first, not over it', (
+    tester,
+  ) async {
     await pumpShell(tester);
     await pickPhoto(tester);
 
@@ -289,7 +291,64 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('second.png'), findsOneWidget);
-    expect(find.text('shot.png'), findsNothing);
+    expect(find.text('shot.png'), findsOneWidget);
     expect(chat.entries, isEmpty);
+  });
+
+  testWidgets('three pictures queue, and a fourth is refused', (tester) async {
+    await pumpShell(tester);
+    for (int i = 0; i < 4; i++) {
+      final File file = File('${folder.path}/picture-$i.png')
+        ..writeAsBytesSync(_png);
+      AttachmentPickers.override = () =>
+          _Pickers(PickedAttachment(path: file.path, name: 'picture-$i.png'));
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kSheetPhotos));
+      await tester.pumpAndSettle();
+    }
+
+    expect(find.text('picture-0.png'), findsOneWidget);
+    expect(find.text('picture-1.png'), findsOneWidget);
+    expect(find.text('picture-2.png'), findsOneWidget);
+    expect(find.text('picture-3.png'), findsNothing);
+    final String limit = 'You can only attach up to 3 images at a time.';
+    expect(find.text(limit), findsOneWidget);
+    // Red, not the neutral grey the shell uses for ordinary notices: this is a
+    // request the app refused.
+    final BuildContext context = tester.element(find.byType(Scaffold).first);
+    final SnackBar snack = tester.widget<SnackBar>(find.byType(SnackBar));
+    expect(
+      snack.backgroundColor,
+      Theme.of(context).extension<NexusUiColors>()!.danger,
+    );
+  });
+
+  testWidgets('two pictures and one caption become one turn', (tester) async {
+    await pumpShell(tester);
+    final List<String> paths = <String>[];
+    for (int i = 0; i < 2; i++) {
+      final File file = File('${folder.path}/pair-$i.png')
+        ..writeAsBytesSync(_png);
+      paths.add(file.path);
+      AttachmentPickers.override = () =>
+          _Pickers(PickedAttachment(path: file.path, name: 'pair-$i.png'));
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kSheetPhotos));
+      await tester.pumpAndSettle();
+    }
+
+    await tester.enterText(find.byType(TextField), 'Compare these two.');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey<String>('send')));
+    await tester.pumpAndSettle();
+
+    final NexusAttachmentBubble bubble = tester.widget<NexusAttachmentBubble>(
+      find.byType(NexusAttachmentBubble),
+    );
+    expect(bubble.paths, paths);
+    expect(chat.entries.first.allImagePaths, paths);
+    expect(find.text('Compare these two.'), findsOneWidget);
   });
 }
