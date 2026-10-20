@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="flutter.on_device_model">qwen2.5-0.5b</string>
+    <long name="flutter.accent_seed" value="4294967295" />
+    <string name="flutter.paired_devices">[{&quot;id&quot;:&quot;this-device&quot;,&quot;name&quot;:&quot;This Phone&quot;,&quot;public_key&quot;:&quot;&quot;,&quot;detail&quot;:&quot;This device · Android&quot;,&quot;online&quot;:true,&quot;is_this_device&quot;:true}]</string>
+    <string name="flutter.nexus.voice.language">fr-FR</string>
+    <boolean name="flutter.has_onboarded" value="true" />
+    <boolean name="flutter.nexus.voice.speakReplies" value="true" />
+    <boolean name="flutter.developer_mode" value="true" />
+</map>
