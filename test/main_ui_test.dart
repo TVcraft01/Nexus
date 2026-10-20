@@ -30,6 +30,7 @@ import 'package:nexus/core/ollama_service.dart';
 import 'package:nexus/core/on_device_ai_service.dart';
 import 'package:nexus/core/on_device_model.dart';
 import 'package:nexus/core/onboarding.dart';
+import 'package:nexus/core/paired_devices.dart';
 import 'package:nexus/core/screen_capture.dart';
 import 'package:nexus/core/services/icon_service.dart';
 import 'package:nexus/core/speech.dart';
@@ -39,6 +40,7 @@ import 'package:nexus/core/version.dart';
 import 'package:nexus/core/vision_ai.dart';
 import 'package:nexus/core/voice_settings.dart';
 import 'package:nexus/main_ui.dart';
+import 'package:nexus/ui/artifact_page.dart';
 import 'package:nexus/ui/text_file_page.dart';
 import 'package:nexus/mesh/updater.dart' show UpdateCheck, UpdateInfo;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6013,6 +6015,80 @@ void main() {
     await tester.tap(find.byKey(const ValueKey<String>('reasoning-toggle')));
     await tester.pumpAndSettle();
     expect(find.text('Check the map.'), findsOneWidget);
+  });
+
+  testWidgets('an artifact reply is a card below the message, not raw tags', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+    ollama.reply =
+        'Here is the page.\n\n'
+        '<artifact filename="hello.html" language="html">\n'
+        '<h1>Hello</h1>\n'
+        '</artifact>';
+
+    await tester.enterText(find.byType(TextField), 'make me a page');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    // The sentence is the bubble's; the file is a card of its own below it. The
+    // tag itself never reaches the thread.
+    expect(find.textContaining('Here is the page.'), findsOneWidget);
+    expect(find.textContaining('<artifact'), findsNothing);
+    expect(find.text('hello.html'), findsOneWidget);
+    expect(find.text('html'), findsOneWidget);
+
+    // Tapping the card opens the code full screen, with a way to keep it.
+    await tester.tap(find.text('hello.html'));
+    await tester.pumpAndSettle();
+    expect(find.byType(NexusArtifactPage), findsOneWidget);
+    expect(find.byKey(kArtifactSave), findsOneWidget);
+    expect(
+      tester.widget<SelectableText>(find.byKey(kArtifactCode)).data,
+      contains('<h1>Hello</h1>'),
+    );
+  });
+
+  testWidgets('a paired PC with RAM to spare offers the 3B model', (
+    tester,
+  ) async {
+    // The mesh's point: a desktop across the room can answer better than the
+    // phone. The row shares its memory when it pairs, and the Home screen is
+    // where the advice belongs — before the user asks, not after a slow answer.
+    final PairedDevices paired = PairedDevices(
+      store: MemoryPairedDevicesStore(),
+      seed: <PairedDevice>[
+        const PairedDevice(
+          id: 'this-device',
+          name: 'This Phone',
+          publicKey: '',
+          online: true,
+          isThisDevice: true,
+        ),
+        const PairedDevice(
+          id: 'pc',
+          name: 'My PC',
+          publicKey: 'pc-key',
+          detail: 'Windows desktop',
+          online: true,
+          ramBytes: 16 * 1024 * 1024 * 1024,
+        ),
+      ],
+    );
+    PairedDevices.override = () => paired;
+    addTearDown(() => PairedDevices.override = null);
+    await pumpShell(tester);
+
+    expect(find.byKey(kNexusPcUpgradeBanner), findsOneWidget);
+    expect(find.text(kNexusPcUpgradeText), findsOneWidget);
+    expect(find.text(kNexusPcUpgradeCommand), findsOneWidget);
+    expect(find.byKey(kNexusPcUpgradeCopy), findsOneWidget);
+
+    // The same fact on Devices, as the number the mesh adds up.
+    await openTab(tester, 'Devices', 2);
+    expect(find.text('Mesh Total RAM'), findsOneWidget);
+    expect(find.text('16 GB'), findsWidgets);
   });
 
   test('the destructive red is solid, not a faded pink', () {
