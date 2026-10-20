@@ -851,6 +851,17 @@ abstract final class NexusTheme {
 // App root
 // ---------------------------------------------------------------------------
 
+/// What the model is told this device remembers, at the moment it is asked.
+///
+/// A function rather than a captured string because the `+` sheet's Memory
+/// switch has to change the *next* answer, not the next launch: the switch is
+/// consulted here, and off answers the empty string instead of a flag the
+/// model would have to interpret.
+@visibleForTesting
+String nexusMemoryContext() => ComposerSettings.instance.memoryEnabled
+    ? MemoryService.instance.systemContext
+    : '';
+
 void main() async {
   // Preferences are read before the first frame: the model, so the first
   // question after a restart loads the file the user picked, and the accent, so
@@ -871,9 +882,7 @@ void main() async {
   // The `+` sheet's switches are read at the moment the model is asked, not
   // when the closure is installed: turning Memory off must change the very
   // next answer, without a restart.
-  LocalAiService.memoryContext = () => ComposerSettings.instance.memoryEnabled
-      ? MemoryService.instance.systemContext
-      : '';
+  LocalAiService.memoryContext = nexusMemoryContext;
   LocalAiService.customInstructions = () {
     final String custom = SystemPrompt.instance.context;
     // The first-run mode is a style instruction, appended after whatever the

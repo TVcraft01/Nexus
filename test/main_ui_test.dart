@@ -17,6 +17,7 @@ import 'package:nexus/core/agent_contract.dart' show AgentActions;
 import 'package:nexus/core/ai_status.dart';
 import 'package:nexus/core/attachments.dart';
 import 'package:nexus/core/chat_log.dart';
+import 'package:nexus/core/composer_settings.dart';
 import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/device_capabilities.dart';
 import 'package:nexus/core/fast_path.dart' show kNoWeatherText;
@@ -6016,6 +6017,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Check the map.'), findsOneWidget);
   });
+
+  testWidgets(
+    'the Memory switch in the + sheet stops the model seeing memory',
+    (tester) async {
+      // The sheet's second switch is not a label: off means the next answer is
+      // asked with no remembered facts at all, which is the one thing a user
+      // turning it off is asking for.
+      final ComposerSettings settings = ComposerSettings(
+        store: MemoryComposerSettingsStore(),
+      );
+      ComposerSettings.override = () => settings;
+      addTearDown(() {
+        ComposerSettings.override = null;
+        ComposerSettings.debugReset();
+      });
+      await pumpShell(tester);
+
+      await tester.tap(find.byKey(kComposerAdd));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Remembered facts are given to the model'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(kSheetMemory));
+      await tester.pumpAndSettle();
+
+      expect(settings.memoryEnabled, isFalse);
+      expect(
+        find.text('Off — nothing remembered is sent to the model'),
+        findsOneWidget,
+      );
+      expect(nexusMemoryContext(), isEmpty);
+    },
+  );
 
   testWidgets('an artifact reply is a card below the message, not raw tags', (
     tester,
