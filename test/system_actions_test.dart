@@ -47,6 +47,7 @@ void main() {
         'set_brightness',
         'get_time',
         'play_music',
+        'pause_music',
         'call_number',
       });
       // The prompt is the only place the model can learn the vocabulary, so
@@ -389,11 +390,20 @@ void main() {
       expect(phone.calls.last.$1, AgentActions.appOpen);
       expect(phone.calls.last.$2, <String, dynamic>{'query': 'Maps'});
 
+      // The media pair drives the phone's media key. It used to launch the
+      // music app instead, which is not playback: "pause" opened a player over
+      // the music rather than stopping it.
       await withPhone.execute(
         SystemActionCall.tryParse('{"action":"play_music"}')!,
       );
-      expect(phone.calls.last.$1, AgentActions.musicPlay);
-      expect(phone.calls.last.$2, isEmpty);
+      expect(phone.calls.last.$1, 'mediaKey');
+      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'play'});
+
+      await withPhone.execute(
+        SystemActionCall.tryParse('{"action":"pause_music"}')!,
+      );
+      expect(phone.calls.last.$1, 'mediaKey');
+      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'pause'});
 
       await withPhone.execute(
         SystemActionCall.tryParse('{"action":"get_battery_level"}')!,

@@ -38,6 +38,13 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            // The default Flutter release rules, plus the project's own: R8
+            // fails the build on ML Kit's references to text-recognizer
+            // scripts this app never asks for — see proguard-rules.pro.
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }

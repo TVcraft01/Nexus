@@ -104,11 +104,11 @@ void main() {
     expect(kSpeechLoudDb, greaterThanOrEqualTo(kSpeechVoiceDb));
 
     // The pause is a pause: long enough to sit through a breath — and, since
-    // 1.2s proved too short on a real phone, long enough to sit through a
-    // thought — while still short enough that the page does not look broken
-    // while it waits.
-    expect(kSpeechTurnGap.inMilliseconds, inInclusiveRange(1500, 2500));
-    expect(kSpeechTurnGap, const Duration(seconds: 2));
+    // 1.2s and then 2s both proved too short on a real phone, long enough to
+    // sit through a thought — while still short enough that the page does not
+    // look broken while it waits.
+    expect(kSpeechTurnGap.inMilliseconds, inInclusiveRange(3000, 4000));
+    expect(kSpeechTurnGap, const Duration(milliseconds: 3500));
   });
 
   test('spoken filenames are written back as files', () {

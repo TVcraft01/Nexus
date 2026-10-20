@@ -86,9 +86,38 @@ void main() {
       expect(timer.args['seconds'], 300);
     });
 
-    test('music opens the player, and only when it was asked for', () {
+    test('music is played and paused, and only when it was asked for', () {
       expect(fastPathAction('Play some music')!.action, 'play_music');
+      // The other half of the pair: "pause music" used to reach the model,
+      // which answered by opening the player over the music that was playing.
+      for (final String phrase in <String>[
+        'pause music',
+        'Pause the music',
+        'stop music',
+      ]) {
+        expect(fastPathAction(phrase)!.action, 'pause_music', reason: phrase);
+      }
+      // A bare "pause" may be about a video or a preview, so it stays a
+      // conversation rather than becoming a media key.
+      expect(fastPathAction('pause'), isNull);
       expect(fastPathAction('play that again'), isNull);
+    });
+
+    test('the battery is read by the phone, not asked of the model', () {
+      expect(fastPathAction('battery')!.action, 'get_battery_level');
+      expect(
+        fastPathAction('how much battery is left')!.action,
+        'get_battery_level',
+      );
+    });
+
+    test('the weather is answered honestly, and only for weather', () {
+      expect(fastPathReply("what's the weather?"), kNoWeatherText);
+      expect(fastPathReply('will it rain tomorrow'), kNoWeatherText);
+      expect(kNoWeatherText, contains('internet access'));
+      // A remark is not a request: "it's raining" is a conversation.
+      expect(fastPathReply("it's raining"), isNull);
+      expect(fastPathReply('what is a mesh?'), isNull);
     });
 
     test('a mood is not a command', () {

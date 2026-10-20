@@ -24,6 +24,7 @@ import 'package:flutter/foundation.dart'
         defaultTargetPlatform,
         visibleForTesting;
 
+import '../core/device_memory.dart' show DeviceMemory;
 import '../core/identity.dart' show DeviceInfo;
 import '../core/pair_invite.dart' show PairIdentity;
 import 'discovery.dart'
@@ -151,6 +152,15 @@ class NearbyDevices extends ChangeNotifier {
     if (_running) return;
     _running = true;
     _problem = null;
+    // The RAM this device shares with the room. Read once per start rather
+    // than per announcement, and allowed to fail: a device that will not say
+    // simply does not advertise a number, which is better than advertising a
+    // zero the other side would add up.
+    try {
+      DiscoveryService.ramBytes = await DeviceMemory.totalBytes();
+    } catch (_) {
+      DiscoveryService.ramBytes = null;
+    }
     _service = _discoveryFactory(_note);
     _sweep = Timer.periodic(_sweepInterval, (_) => _dropQuietDevices());
     try {

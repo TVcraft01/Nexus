@@ -17,7 +17,13 @@
 // its own dialer rather than asking a 0.5B model to write JSON about it.
 library;
 
+import 'agent_contract.dart' show AgentActions;
+import 'command_interpreter.dart' show CommandInterpreter, InterpretOutcome, InterpretResult;
 import 'system_actions.dart';
+
+/// The interpreter the battery bridge reads with. Const and stateless, like the
+/// one in system_actions.dart.
+const CommandInterpreter _phrases = CommandInterpreter();
 
 /// The call phrase, anchored to the whole sentence. Deliberately narrower than
 /// the interpreter's: "ring the changes" is a conversation, and "call it a day"
@@ -41,6 +47,41 @@ const Set<String> _callNotActions = <String>{
   'off',
   'out',
 };
+
+/// What Nexus says when it is asked about the weather.
+///
+/// Pinned word for word, because it is a promise rather than an apology: this
+/// app is local-first, nothing here reaches a weather service, and a model
+/// asked for tomorrow's forecast will invent a plausible one. A sentence that
+/// names the limit is the only honest answer, and it is a fast path because the
+/// user should not wait four seconds to be told so.
+const String kNoWeatherText =
+    "I don't have internet access to check the weather. I am a local AI.";
+
+/// A weather question, anchored to the words that make one.
+///
+/// Narrow on purpose: "it's raining" is a remark and stays a conversation. A
+/// question about the weather names the weather, a forecast, or the temperature
+/// — and gets the one true sentence instead of a guess.
+final RegExp _weather = RegExp(
+  r'\b(weather|forecast|temperature outside|how (?:hot|cold) is it|'
+  r'is it (?:going to )?(?:rain|snow)|will it (?:rain|snow)|'
+  r'meteo|météo)\b',
+  caseSensitive: false,
+);
+
+/// A question whose answer is a fixed sentence rather than the model's, or
+/// null when the model is the right place to ask.
+///
+/// Only the weather lives here: the clock, the date and arithmetic are answered
+/// by their own functions ([isClockQuestion], [nexusMathAnswer]) and the battery
+/// is a device action, so none of them needs a canned sentence — they need a
+/// fast path *to* the thing that really knows.
+String? fastPathReply(String text) {
+  final String said = text.trim();
+  if (said.isEmpty) return null;
+  return _weather.hasMatch(said) ? kNoWeatherText : null;
+}
 
 /// A strict command in [text], or null when it is a conversation.
 ///
@@ -92,6 +133,17 @@ SystemActionCall? fastPathAction(String text) {
       });
     }
     return parsed;
+  }
+  // "Battery" and "how much battery is left" are the phone's to answer, and
+  // waiting on a model to translate a closed phrase is the four-second torch
+  // problem again. The interpreter already recognises the whole family; this is
+  // only the bridge from its action to the shell's vocab entry.
+  if (said.toLowerCase().contains('battery')) {
+    final InterpretResult battery = _phrases.interpret(said);
+    if (battery.outcome == InterpretOutcome.matched &&
+        battery.command?.action == AgentActions.batteryGet) {
+      return const SystemActionCall('get_battery_level');
+    }
   }
   return actionFromPhrase(said);
 }

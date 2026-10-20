@@ -2,7 +2,7 @@ name: nexus
 description: "Nexus — your devices, one system. A local-first mesh where your devices find, pair, and talk to each other directly — no cloud, no account."
 publish_to: 'none'
 
-version: 0.4.0+157
+version: 1.0.0+158
 
 environment:
   sdk: ^3.13.0
@@ -39,6 +39,7 @@ dependencies:
   package_info_plus: ^10.2.2
   flutter_localizations:
     sdk: flutter
+  share_plus: ^13.3.1
 
 dev_dependencies:
   flutter_test:
@@ -46,6 +47,7 @@ dev_dependencies:
 
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.8
 
 # Two launcher marks, because Android can only show one icon per activity
 # alias and the app switches between those aliases at runtime (see
@@ -54,10 +56,10 @@ dev_dependencies:
 # the second block in dark_icons.yaml, generated with
 # `dart run flutter_launcher_icons -f dark_icons.yaml`.
 #
-# The sources are build-time inputs only — they are deliberately not listed
-# under `flutter: assets:`, so nothing ships in the APK. They are the flat
-# renderings of the mesh mark: the token-coloured background with the mark
-# on top, at the footprint the previous mark used (52.08% of the canvas).
+# The source is the user's own artwork, assets/logo.png, used for both the
+# square icons and the adaptive foreground. It is a build-time input only —
+# the splash needs it at runtime, so it is also listed under `flutter:
+# assets:` below.
 #
 # Regenerating rewrites every `android:icon` line in AndroidManifest.xml to
 # whichever set ran last, so the two alias icons (and the application's own)
@@ -66,12 +68,56 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "ic_launcher_light"
   ios: false
-  image_path: "assets/icon/icon_light.png"
+  image_path: "assets/logo.png"
+  adaptive_icon_background: "#FAFAF8"
+  adaptive_icon_foreground: "assets/logo.png"
+
+# The native splash: the user's mark on the same field the artwork itself is
+# drawn on, in both system themes. The field colour is sampled from the
+# artwork's own corners — pure white for the light mark, #131315 for the dark
+# one — so the flat window and the image have no seam, and a square image is
+# never laid on a contrasting colour (which read as a white photo on purple).
+#
+# The image is the tile inside a field-coloured canvas, 768 px wide — 192 dp at
+# the 4x `flutter_native_splash` assumes for its generated bitmaps. That number
+# is not arbitrary: Android 12 draws this image at 192 dp and masks it to a
+# 192 dp circle, so the tile has to sit inside the circle's 136 dp inscribed
+# square or its corners get sliced off (they did, on the first attempt: the
+# platform showed a circle-clipped tile for half a second, then Flutter drew
+# the whole square). The tile is 126 dp of the canvas, comfortably inside, and
+# the canvas edge is the field colour, so the mask has nothing to cut.
+#
+# Regenerate with `dart run flutter_native_splash:create`. That rewrites
+# android/.../drawable/launch_background.xml, values/styles.xml and
+# values-v31/styles.xml, so check afterwards that the window still paints
+# @color/nexus_bg once Flutter owns it — see LaunchTheme's NormalTheme.
+#
+# No iOS block: this repository has no ios/ project to write into.
+flutter_native_splash:
+  color: "#FFFFFF"
+  image: assets/splash_mark.png
+  color_dark: "#131315"
+  image_dark: assets/splash_mark_dark.png
+  android: true
+  ios: false
+  web: false
+  android_12:
+    color: "#FFFFFF"
+    image: assets/splash_mark.png
+    icon_background_color: "#FFFFFF"
+    color_dark: "#131315"
+    image_dark: assets/splash_mark_dark.png
+    icon_background_color_dark: "#131315"
 
 flutter:
   uses-material-design: true
 
   assets:
+    # The splash's own marks (one per system theme), also drawn under the first
+    # Flutter frame by SplashFade so the hand-off from the native splash is
+    # invisible.
+    - assets/splash_mark.png
+    - assets/splash_mark_dark.png
     - assets/tray_icon.png
     - assets/wake/melspectrogram.onnx
     - assets/wake/embedding_model.onnx

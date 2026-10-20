@@ -98,6 +98,7 @@ class PairInvite {
     this.addresses = const <String>[],
     this.port = 0,
     this.code = '',
+    this.ramBytes,
   });
 
   /// What the other user sees on their screen — "Paired with My phone".
@@ -129,6 +130,14 @@ class PairInvite {
   /// was already made can be completed without asking the user to scan again.
   final String code;
 
+  /// The memory the device says it has, in bytes, or null when it did not say.
+  ///
+  /// Part of the pairing code because this is the one moment the two devices
+  /// are certainly talking: a phone that knows its PC has 16 GB can offer the
+  /// bigger model on it without another round trip, and the Devices screen can
+  /// add up the mesh's RAM from the list it already has.
+  final int? ramBytes;
+
   /// The first address, or null. What a row shows when it shows one address.
   String? get address => addresses.isEmpty ? null : addresses.first;
 
@@ -149,6 +158,7 @@ class PairInvite {
     if (addresses.length > 1) 'ips': addresses.join(','),
     if (port > 0) 'port': '$port',
     if (code.isNotEmpty) 'code': code,
+    if (ramBytes != null && ramBytes! > 0) 'ram_bytes': '$ramBytes',
   });
 
   /// Reads a scanned string, or null when it is not a Nexus pairing code.
@@ -180,6 +190,7 @@ class PairInvite {
     final List<String> addresses = _addressesOf(decoded);
     final String? port = _field(decoded, 'port');
     final String? code = _field(decoded, 'code');
+    final int? ramBytes = int.tryParse(_field(decoded, 'ram_bytes') ?? '');
     // A device id too short to be an id is a payload somebody typed by hand or
     // a field that lost half its value in a paste. The real id is 32
     // characters (see `generateDeviceId`), and refusing a 3-character one here
@@ -192,6 +203,7 @@ class PairInvite {
       addresses: addresses,
       port: port == null ? 0 : int.tryParse(port) ?? 0,
       code: code ?? '',
+      ramBytes: ramBytes != null && ramBytes > 0 ? ramBytes : null,
     );
   }
 
@@ -241,6 +253,7 @@ class PairInvite {
       ],
       port: mesh.port,
       code: mesh.code,
+      ramBytes: mesh.ramBytes,
     );
   }
 
@@ -273,6 +286,7 @@ class PairIdentity {
     required this.publicKey,
     this.addresses = const <String>[],
     this.port = 0,
+    this.ramBytes,
   });
 
   /// Test seam, in the same shape as [SpeechInput.override]: a test states who
@@ -311,12 +325,18 @@ class PairIdentity {
   /// The mesh port this device listens on, 0 when the identity does not know.
   final int port;
 
+  /// This device's RAM, when it has been read. Null until a caller fills it in
+  /// with [withHardware]; the identity is built synchronously and the probe is
+  /// not, which is why it is a field rather than a getter that lies.
+  final int? ramBytes;
+
   PairInvite get invite => PairInvite(
     deviceName: name,
     deviceId: id,
     publicKey: publicKey,
     addresses: addresses,
     port: port,
+    ramBytes: ramBytes,
   );
 
   /// The same identity, with the addresses the device actually has.
@@ -327,7 +347,18 @@ class PairIdentity {
         publicKey: publicKey,
         addresses: addresses,
         port: port ?? this.port,
+        ramBytes: ramBytes,
       );
+
+  /// The same identity, with the hardware facts the code can carry.
+  PairIdentity withHardware({int? ramBytes}) => PairIdentity(
+    name: name,
+    id: id,
+    publicKey: publicKey,
+    addresses: addresses,
+    port: port,
+    ramBytes: ramBytes ?? this.ramBytes,
+  );
 }
 
 /// This device's own non-loopback IPv4 addresses, best first.

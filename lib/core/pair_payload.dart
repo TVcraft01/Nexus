@@ -17,6 +17,10 @@ class PairPayload {
   final String? ip;
   final List<String> ips;
 
+  /// The device's RAM in bytes, when the code carries it. Optional: codes
+  /// written by older builds have no `ram` parameter and still pair.
+  final int? ramBytes;
+
   const PairPayload({
     required this.version,
     required this.id,
@@ -25,6 +29,7 @@ class PairPayload {
     required this.code,
     this.ip,
     this.ips = const [],
+    this.ramBytes,
   });
 
   /// Parses a scanned/typed URI. Returns null if it is not a Nexus pairing QR.
@@ -57,9 +62,11 @@ class PairPayload {
     if (!RegExp(r'^[A-Z2-9]{4}-[A-Z2-9]{4}$').hasMatch(code)) {
       return null;
     }
+    final int? ramBytes = int.tryParse(params['ram'] ?? '');
     return PairPayload(
       version: version, id: id, name: name, port: port, code: code,
       ip: ip, ips: ips,
+      ramBytes: ramBytes != null && ramBytes > 0 ? ramBytes : null,
     );
   }
 
@@ -71,6 +78,7 @@ class PairPayload {
     required String code,
     String? ip,
     List<String>? ips,
+    int? ramBytes,
   }) {
     final allIps = <String>[];
     if (ip != null && ip.isNotEmpty) allIps.add(ip);
@@ -92,6 +100,7 @@ class PairPayload {
         params['ips'] = allIps.join(',');
       }
     }
+    if (ramBytes != null && ramBytes > 0) params['ram'] = '$ramBytes';
     return 'nexus://pair?${Uri(queryParameters: params).query}';
   }
 }

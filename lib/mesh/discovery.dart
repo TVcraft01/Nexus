@@ -15,6 +15,11 @@ class DiscoveredDevice {
   final int port; // the device's Nexus TCP port
   final DateTime lastSeen;
 
+  /// The memory the device says it has, in bytes, or null when it did not
+  /// say. Shared so a phone can add up the mesh's RAM and answer "is the PC
+  /// strong enough to run the bigger model?" without asking it anything else.
+  final int? ramBytes;
+
   const DiscoveredDevice({
     required this.id,
     required this.name,
@@ -22,6 +27,7 @@ class DiscoveredDevice {
     required this.address,
     required this.port,
     required this.lastSeen,
+    this.ramBytes,
   });
 
   DiscoveredDevice withSeen(DateTime seen) => DiscoveredDevice(
@@ -30,6 +36,7 @@ class DiscoveredDevice {
       platform: platform,
       address: address,
       port: port,
+      ramBytes: ramBytes,
       lastSeen: seen);
 }
 
@@ -144,6 +151,11 @@ class DiscoveryService {
   Timer? _reboundTimer;
   bool _started = false;
 
+  /// The RAM every announcement carries, in bytes. Set once by the front end
+  /// before [start]; null keeps the field out of the payload entirely, so an
+  /// older peer reads exactly the frame it used to.
+  static int? ramBytes;
+
   /// Honest counters behind [status].
   int _announced = 0;
   int _failedSends = 0;
@@ -248,6 +260,7 @@ class DiscoveryService {
       'name': identity.name,
       'platform': identity.platform,
       'port': _tcpPort,
+      if (ramBytes != null) 'ram': ramBytes,
     }));
     final socket = _socket;
     if (socket == null) return;
@@ -318,6 +331,7 @@ class DiscoveryService {
         platform: (json['platform'] as String?) ?? 'other',
         address: datagram.address.address,
         port: port,
+        ramBytes: (json['ram'] as num?)?.toInt(),
         lastSeen: DateTime.now(),
       );
       await onDiscovered(device);
@@ -332,6 +346,7 @@ class DiscoveryService {
         'name': identity.name,
         'platform': identity.platform,
         'port': _tcpPort,
+        if (ramBytes != null) 'ram': ramBytes,
       }));
       socket.send(reply, datagram.address, datagram.port);
     } catch (_) {

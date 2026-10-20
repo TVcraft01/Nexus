@@ -746,7 +746,11 @@ void main() {
         );
 
         expect(status.source, AiSource.onDevice);
-        expect(status.label, 'On-Device (Loaded)');
+        // The label names the engine *and* the model: "(Loaded)" on its own
+        // told the user nothing about which weights were answering.
+        expect(status.label, startsWith('On-Device AI: '));
+        expect(status.label, endsWith(' (Loaded)'));
+        expect(status.model, isNotEmpty);
       },
     );
 
@@ -763,7 +767,8 @@ void main() {
       );
 
       expect(status.source, AiSource.none);
-      expect(status.label, 'No AI available');
+      // One sentence, and it ends with the thing the user can do about it.
+      expect(status.label, 'No AI: Download a model in Settings.');
     });
 
     test('no model, but the PC answers: PC (Ollama)', () async {

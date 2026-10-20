@@ -16,7 +16,11 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, visibleForTesting;
+    show
+        TargetPlatform,
+        ValueNotifier,
+        defaultTargetPlatform,
+        visibleForTesting;
 import 'package:flutter/services.dart' show MethodCall, MethodChannel;
 
 import 'log_service.dart';
@@ -272,6 +276,14 @@ double rmsToLevel(double rmsDb) =>
 /// keeps a fan from ending a sentence.
 const double kSpeechVoiceDb = 2;
 
+/// Where a live answer being read out loud counts as interrupted.
+///
+/// Higher than [kSpeechVoiceDb] on purpose: the phone's own speaker is close to
+/// the microphone, and a threshold that a loud answer could clear would make the
+/// assistant interrupt itself. Six decibels is a raised human voice at arm's
+/// length — the user talking over the reply, not the reply arriving.
+const double kBargeInDb = 6;
+
 /// Where a room counts as quiet enough for a live turn to be over — see
 /// [kSpeechVoiceDb]. Above Android's own reference level (0 dB) on purpose: a
 /// phone on a desk hums above silence, and a threshold at silence would never
@@ -285,12 +297,14 @@ const double kSpeechQuietDb = 0.5;
 /// result) and every loud reading, so it only ever fires on a speaker who has
 /// actually stopped.
 ///
-/// Two seconds, raised from 1.2s on the strength of using it: the shorter window
-/// ended turns while the speaker was still thinking — mid-sentence, at the pause
-/// before the point — and the user watched their own turn close under them. The
-/// cost is the other side of the same coin: a sentence that is over waits two
-/// seconds before it is answered, which is a pause a listener takes too.
-const Duration kSpeechTurnGap = Duration(milliseconds: 2000);
+/// Three and a half seconds, raised from two on the strength of using it: the
+/// shorter window still ended turns while the speaker was drawing breath before
+/// the last clause — the user watched their own sentence close under them and
+/// the model answer half a thought. The costs are symmetric and both real: a
+/// sentence that is over waits 3.5 s before it is answered, and a page opened
+/// onto a quiet room waits that long before it decides nobody is coming. The
+/// interruption path does not pay either cost — see [_HomeTabState]
+const Duration kSpeechTurnGap = Duration(milliseconds: 3500);
 
 /// How long live conversation waits after the assistant's voice stops before it
 /// opens the microphone again.
@@ -316,6 +330,15 @@ class SpeechOutput {
 
   static SpeechOutput get current => override?.call() ?? const SpeechOutput();
 
+  /// True while an utterance is in flight. The chat bubble with the speaker
+  /// beside it pulses from this, so "the phone is talking" is visible on the
+  /// message it is reading rather than only audible.
+  ///
+  /// A process-wide notifier for the same reason [SpeechOutput.current] is a
+  /// seam: there is one speaker, and two copies of its state would disagree the
+  /// moment one of them missed a `done`.
+  static final ValueNotifier<bool> speaking = ValueNotifier<bool>(false);
+
   /// Whether this device can read replies out loud at all.
   bool get available => defaultTargetPlatform == TargetPlatform.android;
 
@@ -335,8 +358,10 @@ class SpeechOutput {
     if (!available) return false;
     _wireChannel();
     try {
-      return await _channel.invokeMethod<bool>('speak', {'text': text}) ??
-          false;
+      final bool spoke =
+          await _channel.invokeMethod<bool>('speak', {'text': text}) ?? false;
+      if (spoke) speaking.value = true;
+      return spoke;
     } catch (error) {
       LogService.instance.log('SPEECH: speak failed ($error)');
       return false; // never crash the assistant for a speech failure
@@ -388,6 +413,7 @@ class SpeechOutput {
     } catch (_) {
       // A speaker that cannot be stopped is not something the caller can fix.
     } finally {
+      speaking.value = false;
       _spoken.add(null);
     }
   }
@@ -403,7 +429,10 @@ class SpeechOutput {
     if (_wired) return;
     _wired = true;
     _channel.setMethodCallHandler((MethodCall call) async {
-      if (call.method == 'done') _spoken.add(null);
+      if (call.method == 'done') {
+        speaking.value = false;
+        _spoken.add(null);
+      }
       return null;
     });
   }

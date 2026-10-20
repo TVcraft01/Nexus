@@ -223,6 +223,10 @@ class RealDeviceActionBackend implements DeviceActionBackend {
           // Not an agent action — a Kotlin-side playback method for the
           // in-app 30s Deezer preview ("play hotline bling" actually plays).
           'mediaPreview' => 'mediaPreview',
+          // A real media key rather than the player's launch intent. The
+          // system-actions layer sends this for "play" and "pause" — see
+          // MainActivity.mediaKey — because opening a player is not playback.
+          'mediaKey' => 'mediaKey',
           _ => 'unknown',
         },
         args,

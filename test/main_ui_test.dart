@@ -19,8 +19,10 @@ import 'package:nexus/core/attachments.dart';
 import 'package:nexus/core/chat_log.dart';
 import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/device_capabilities.dart';
+import 'package:nexus/core/fast_path.dart' show kNoWeatherText;
 import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
+import 'package:nexus/core/local_library.dart';
 import 'package:nexus/core/log_service.dart';
 import 'package:nexus/core/memory_service.dart';
 import 'package:nexus/core/mic_access.dart';
@@ -37,6 +39,7 @@ import 'package:nexus/core/version.dart';
 import 'package:nexus/core/vision_ai.dart';
 import 'package:nexus/core/voice_settings.dart';
 import 'package:nexus/main_ui.dart';
+import 'package:nexus/ui/text_file_page.dart';
 import 'package:nexus/mesh/updater.dart' show UpdateCheck, UpdateInfo;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -437,13 +440,58 @@ class _LateAnswerSpeechInput extends SpeechInput {
   Future<void> stop() async => stops++;
 }
 
+/// The phone's two folders, as the Files tab reads them: one real text file in
+/// a temp directory, and an empty Downloads. The tab is allowed to read a disk;
+/// the suite is not allowed to read the *developer's* disk, which is what made
+/// opening Files a ten-minute `pumpAndSettle` before this existed.
+class _TempLibrary implements LocalLibrary {
+  _TempLibrary(this.root, this.notes);
+
+  final Directory root;
+  final File notes;
+
+  /// Answered without real IO on purpose: a widget test's clock is fake, and a
+  /// file-stat that waits on the disk never completes inside `pumpAndSettle`.
+  /// The sync calls are the same numbers the async ones would return.
+  @override
+  Future<List<LocalFolder>> read() async => <LocalFolder>[
+    LocalFolder(
+      label: 'Documents',
+      path: root.path,
+      entries: <LocalFileEntry>[
+        LocalFileEntry(
+          name: 'notes.txt',
+          path: notes.path,
+          bytes: notes.lengthSync(),
+          modified: notes.lastModifiedSync(),
+        ),
+      ],
+    ),
+    const LocalFolder(label: 'Downloads', path: '/nowhere/downloads'),
+  ];
+}
+
 /// The UI shell is standalone, so it is tested standalone: pump [NexusUiApp],
 /// drive it like a thumb would, and check what is actually on screen.
 void main() {
+  /// The folder the Files tab reads for the whole file, and the one file in it.
+  late Directory filesRoot;
+  late File notes;
+
   setUpAll(() {
     // The shell asks google_fonts for Inter; in a test there is no network, so
     // tell the package not to try and let text fall back to the test font.
     GoogleFonts.config.allowRuntimeFetching = false;
+    // One temp folder for the whole file: the Files tab needs a real path to
+    // open, and creating a directory per test would be 150 directories nobody
+    // reads.
+    filesRoot = Directory.systemTemp.createTempSync('nexus_files');
+    notes = File('${filesRoot.path}/notes.txt')
+      ..writeAsStringSync('Remember the milk.');
+  });
+
+  tearDownAll(() {
+    if (filesRoot.existsSync()) filesRoot.deleteSync(recursive: true);
   });
 
   /// Every test in this file gets the same canned PC. The answer path is walked
@@ -499,6 +547,9 @@ void main() {
     HomeTab.updateCheckOverride = null;
     SystemPrompt.override = null;
     SystemPrompt.debugReset();
+    // The Files tab reads whatever this says, so every test starts with the
+    // temp folders rather than with the machine's own Documents.
+    LocalLibrary.override = () => _TempLibrary(filesRoot, notes);
   });
   tearDown(() {
     LocalAiService.override = null;
@@ -514,6 +565,7 @@ void main() {
     SystemPrompt.override = null;
     SystemPrompt.debugReset();
     LogService.debugReset();
+    LocalLibrary.override = null;
   });
 
   /// A phone-shaped surface — the layout the shell is designed against.
@@ -952,7 +1004,7 @@ void main() {
 
     // The phone has the model: the status says so, and the row that frees the
     // space is there instead of a download button.
-    expect(find.text('On-Device (Loaded)'), findsOneWidget);
+    expect(find.text('On-Device AI: Qwen 2.5 (Loaded)'), findsOneWidget);
     expect(find.text('Delete model'), findsOneWidget);
     expect(find.text('Download model'), findsNothing);
 
@@ -979,7 +1031,7 @@ void main() {
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(File('${dir.path}/$kOnDeviceModelFileName').existsSync(), isTrue);
-    expect(find.text('On-Device (Loaded)'), findsOneWidget);
+    expect(find.text('On-Device AI: Qwen 2.5 (Loaded)'), findsOneWidget);
 
     // Confirming does it.
     await tester.tap(find.text('Delete model'));
@@ -992,8 +1044,8 @@ void main() {
     // next question falls back to the PC, which with no PC on this network is
     // exactly what the status reports.
     expect(File('${dir.path}/$kOnDeviceModelFileName').existsSync(), isFalse);
-    expect(find.text('On-Device (Loaded)'), findsNothing);
-    expect(find.text('No AI available'), findsOneWidget);
+    expect(find.text('On-Device AI: Qwen 2.5 (Loaded)'), findsNothing);
+    expect(find.text('No AI: Download a model in Settings.'), findsOneWidget);
     expect(find.text('Download model'), findsOneWidget);
   });
 
@@ -1035,7 +1087,7 @@ void main() {
     // device that owns its model shows.
     expect(File('${dir.path}/$kOnDeviceModelFileName').existsSync(), isTrue);
     expect(find.byKey(kNexusBrainProgress), findsNothing);
-    expect(find.text('On-Device (Loaded)'), findsOneWidget);
+    expect(find.text('On-Device AI: Qwen 2.5 (Loaded)'), findsOneWidget);
     expect(find.text('Delete model'), findsOneWidget);
     expect(find.text('Download model'), findsNothing);
   });
@@ -1281,7 +1333,7 @@ void main() {
     addTearDown(() => SpeechOutput.override = null);
     await pumpShell(tester);
 
-    await tester.enterText(find.byType(TextField), 'what is the weather?');
+    await tester.enterText(find.byType(TextField), 'what is a mesh?');
     await tester.pump();
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
@@ -1318,7 +1370,7 @@ void main() {
     // The user's own words get neither: they are already theirs to copy, and the
     // thread is not a player for their own voice.
     final Finder mine = find.ancestor(
-      of: find.text('what is the weather?'),
+      of: find.text('what is a mesh?'),
       matching: find.byType(NexusChatBubble),
     );
     expect(
@@ -1349,13 +1401,13 @@ void main() {
     // Dictated: the finger is on the button, the recognizer hands over the
     // sentence, and the words land in the field as a draft.
     final TestGesture finger = await holdMic(tester);
-    mic.say('what is the weather');
+    mic.say('what is a mesh');
     await tester.pump();
-    mic.hear('what is the weather');
+    mic.hear('what is a mesh');
     await finger.up();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    expect(fieldText(tester), 'what is the weather');
+    expect(fieldText(tester), 'what is a mesh');
     expect(speech.said, isEmpty, reason: 'nothing is spoken before the answer');
 
     await tapTheButton(tester, sendButton());
@@ -1525,75 +1577,58 @@ void main() {
     expect(tabIconColor(tester, Icons.home_outlined), isNot(kNexusAccent));
   });
 
-  testWidgets('Files lists files for the chosen device', (tester) async {
+  testWidgets('Files shows this device, its peers, and the two folders', (
+    tester,
+  ) async {
     await pumpShell(tester);
     await openTab(tester, 'Files', 1);
 
-    expect(find.text('This Phone'), findsWidgets);
-    expect(find.text('report.pdf'), findsOneWidget);
-    expect(find.text('3.4 MB · Oct 9'), findsOneWidget);
+    // The top half is who is here: this phone, and the example PC from the
+    // paired seed — each with the state the store knows.
+    expect(find.text('CONNECTED DEVICES'), findsOneWidget);
+    expect(find.text('This Phone'), findsOneWidget);
+    expect(find.text('This phone'), findsOneWidget);
 
-    // A folder is a door: the chevron says a tap goes into something, where a
-    // file keeps the "more" dots because it opens itself.
-    final Finder folder = find.ancestor(
-      of: find.text('Downloads'),
-      matching: find.byType(NexusFileRow),
-    );
+    // The bottom half is the disk: both folders, and the real file the temp
+    // directory holds. Sizes and dates are the file's own, not a mock row's.
+    expect(find.text('LOCAL FILES'), findsOneWidget);
+    expect(find.text('Documents'), findsOneWidget);
+    expect(find.text('Downloads'), findsOneWidget);
+    expect(find.text('1 file'), findsOneWidget);
+    expect(find.text('notes.txt'), findsOneWidget);
+    expect(find.text('Nothing in Downloads yet.'), findsOneWidget);
+
+    // The promise the tab makes in words, at the bottom where it is read last.
     expect(
-      find.descendant(
-        of: folder,
-        matching: find.byIcon(Icons.chevron_right_rounded),
-      ),
+      find.textContaining('These folders stay on this device'),
       findsOneWidget,
     );
-    final Finder file = find.ancestor(
-      of: find.text('report.pdf'),
-      matching: find.byType(NexusFileRow),
-    );
-    expect(
-      find.descendant(
-        of: file,
-        matching: find.byIcon(Icons.chevron_right_rounded),
-      ),
-      findsNothing,
-    );
-    expect(
-      find.descendant(
-        of: file,
-        matching: find.byIcon(Icons.more_horiz_rounded),
-      ),
-      findsOneWidget,
-    );
-
-    // Switch device through the dropdown.
-    await tester.tap(find.text('This Phone').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('My PC').last);
-    await tester.pumpAndSettle();
-    expect(find.text('On My PC'), findsOneWidget);
   });
 
-  testWidgets('long-pressing a file opens its action sheet', (tester) async {
+  testWidgets('tapping a text file opens its preview, not a mystery', (
+    tester,
+  ) async {
     await pumpShell(tester);
     await openTab(tester, 'Files', 1);
 
-    await tester.longPress(find.text('report.pdf'));
+    // The page asks its reader for the words: a widget test's clock cannot wait
+    // on the disk, so the seam answers with the file's content rather than the
+    // test reaching for real IO.
+    TextFilePage.readOverride = (String path, int maxBytes) async =>
+        notes.readAsStringSync();
+    addTearDown(() => TextFilePage.readOverride = null);
+
+    await tester.tap(find.text('notes.txt'));
     await tester.pumpAndSettle();
 
-    final sheet = find.byType(BottomSheet);
-    expect(sheet, findsOneWidget);
-    expect(
-      find.descendant(of: sheet, matching: find.text('4.0 KB · Oct 11')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: sheet, matching: find.text('Send to a device')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: sheet, matching: find.text('Rename')),
-      findsOneWidget,
-    );
+    // The preview is the app's own page: the file's words, and its name at the
+    // top — no second app to install just to read four lines.
+    expect(find.byType(TextFilePage), findsOneWidget);
+    expect(find.text('Remember the milk.'), findsOneWidget);
+
+    await tester.tap(find.byKey(kTextFileClose));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextFilePage), findsNothing);
   });
 
   testWidgets('each bubble is its own selection, not the whole thread', (
@@ -2074,8 +2109,12 @@ void main() {
     await tester.tap(find.text('Voice & speech'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Wake word'), findsOneWidget);
-    expect(find.text('Speak replies'), findsOneWidget);
+    // The language and nothing else: the wake-word switch is gone (its engine
+    // needs a foreground service this build does not run) and "Speak replies"
+    // moved to the composer, one tap from the conversation it changes.
+    expect(find.byKey(const Key('nexus-voice-language')), findsOneWidget);
+    expect(find.text('Wake word'), findsNothing);
+    expect(find.text('Speak replies'), findsNothing);
 
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
@@ -2107,25 +2146,29 @@ void main() {
     expect(find.text('English (US)'), findsNothing);
   });
 
-  testWidgets('Speak replies is live and persisted', (tester) async {
+  testWidgets('Speak replies is a speaker on the composer, and it is live', (
+    tester,
+  ) async {
     final VoiceSettings voice = VoiceSettings(initial: 'en-US');
     VoiceSettings.override = () => voice;
     addTearDown(() => VoiceSettings.override = null);
     await pumpShell(tester);
-    await openTab(tester, 'Settings', 3);
-    await tester.tap(find.text('Voice & speech'));
-    await tester.pumpAndSettle();
 
+    // It lives on Home, beside the `+`, because it is a switch about the
+    // conversation: the user who wants the voice to stop is already here.
+    expect(find.byKey(kSpeakRepliesToggle), findsOneWidget);
+    expect(find.byIcon(Icons.volume_up_rounded), findsWidgets);
     expect(voice.speakReplies, isTrue);
-    await tester.tap(find.byKey(const Key('nexus-speak-replies')));
+
+    await tester.tap(find.byKey(kSpeakRepliesToggle));
     await tester.pumpAndSettle();
     expect(voice.speakReplies, isFalse);
+    expect(find.byIcon(Icons.volume_off_rounded), findsOneWidget);
 
-    // And the dead wake-word switch says why it is dead.
-    expect(
-      find.text('Requires background service (disabled for privacy).'),
-      findsOneWidget,
-    );
+    // And back, so the toggle is a switch and not a one-way door.
+    await tester.tap(find.byKey(kSpeakRepliesToggle));
+    await tester.pumpAndSettle();
+    expect(voice.speakReplies, isTrue);
   });
 
   testWidgets('a custom system prompt is saved from Settings', (tester) async {
@@ -3263,10 +3306,10 @@ void main() {
     await openLive(tester);
 
     // The first question, asked with nothing behind it.
-    mic.hear('what is the weather');
+    mic.hear('what is a mesh');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 260));
-    expect(ollama.prompts, <String>['what is the weather']);
+    expect(ollama.prompts, <String>['what is a mesh']);
     expect(ollama.histories.single, isEmpty);
 
     // The second one, a moment later: "it" has a referent now, and the model is
@@ -3281,11 +3324,11 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 260));
 
-    expect(ollama.prompts, <String>['what is the weather', 'and tomorrow?']);
+    expect(ollama.prompts, <String>['what is a mesh', 'and tomorrow?']);
     final List<AiTurn> history = ollama.histories.last;
     expect(history, hasLength(2));
     expect(history.first.fromUser, isTrue);
-    expect(history.first.text, 'what is the weather');
+    expect(history.first.text, 'what is a mesh');
     expect(history.last.fromUser, isFalse);
     expect(history.last.text, 'Hello from the PC.');
     expect(
@@ -3584,13 +3627,42 @@ void main() {
     // and a widget nobody can see does not tell the user the mic is open.
     expect(find.byKey(kNexusLiveRecordingIndicator), findsOneWidget);
 
-    // The way out is at the bottom of the screen, centred, and large: the one
-    // control this page has must not be a hunt.
+    // Five controls in one row at the bottom — share, photos, the big pill,
+    // the microphone, and the way out — with the pill in the middle and the X
+    // at the right edge, the way Gemini lays them out. None of them is a hunt:
+    // the row is the only thing down here.
     final Rect page = tester.getRect(liveOverlay);
+    final Rect pill = tester.getRect(find.byKey(kNexusLiveOrb));
     final Rect close = tester.getRect(find.byKey(kNexusLiveClose));
     expect(close.center.dy, greaterThan(page.center.dy));
-    expect(close.center.dx, closeTo(page.center.dx, 1));
-    expect(close.width, greaterThanOrEqualTo(70));
+    expect(pill.center.dx, closeTo(page.center.dx, 2));
+    expect(pill.width, greaterThan(close.width));
+    expect(close.center.dx, greaterThan(pill.center.dx));
+    expect(
+      tester.getRect(find.byKey(kNexusLiveScreenShare)).center.dx,
+      lessThan(pill.center.dx),
+    );
+    expect(
+      tester.getRect(find.byKey(kNexusLivePhotos)).center.dx,
+      lessThan(pill.center.dx),
+    );
+    expect(
+      tester.getRect(find.byKey(kNexusLiveMic)).center.dx,
+      allOf(greaterThan(pill.center.dx), lessThan(close.center.dx)),
+    );
+    // The four circles are one size, and they sit on one baseline.
+    for (final Key key in <Key>[
+      kNexusLiveScreenShare,
+      kNexusLivePhotos,
+      kNexusLiveMic,
+      kNexusLiveClose,
+    ]) {
+      expect(tester.getRect(find.byKey(key)).size, close.size, reason: '$key');
+      expect(
+        tester.getRect(find.byKey(key)).center.dy,
+        closeTo(close.center.dy, 0.5),
+      );
+    }
 
     // The guess is shown while it is still being spoken, in the same large type
     // the captured sentence will use.
@@ -3673,7 +3745,7 @@ void main() {
     expect(mic.stops, 1);
   });
 
-  testWidgets('the wait for an answer is a state, not a spinner', (
+  testWidgets('the wait is a spinner and a clock, the way Gemini shows it', (
     tester,
   ) async {
     grantMic();
@@ -3684,25 +3756,35 @@ void main() {
     ollama.stall();
     await openLive(tester);
 
-    mic.say('what is the weather');
+    mic.say('what is a mesh');
     await tester.pump();
-    mic.hear('what is the weather');
+    mic.hear('what is a mesh');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 260));
 
-    // Thinking: the microphone is closed, the orb is blue and moving, and the
-    // large type says what is happening. This is not a spinner laid over a live
-    // page — the page itself changed state.
-    expect(ollama.prompts, <String>['what is the weather']);
+    // Thinking: the microphone is closed, the pill turns the working blue, and
+    // the wait is drawn the way Gemini draws it — a white spinner over the
+    // room, with an honest clock under it. The clock is why this test never
+    // `pumpAndSettle`s here: a spinner is a motion that does not end.
+    expect(ollama.prompts, <String>['what is a mesh']);
     expect(find.byKey(kNexusLiveOrbThinking), findsOneWidget);
     expect(find.byKey(kNexusLiveOrbIdle), findsNothing);
     expect(find.byKey(kNexusLiveRecordingIndicator), findsNothing);
     expect(liveText(tester), kNexusThinking);
     expect(mic.listens, 1);
+    expect(find.byKey(kNexusLiveSpinner), findsOneWidget);
     expect(
       tester.widget<Text>(find.byKey(kNexusLiveStatus)).data,
       'Mic off — asking the AI…',
     );
+
+    // The clock starts at zero and counts the wait while the request is out.
+    final Finder clock = find.byKey(kNexusLiveThinkTimer);
+    expect(tester.widget<Text>(clock).data, 'Thinking... (0s)');
+    await tester.pump(const Duration(seconds: 1));
+    expect(tester.widget<Text>(clock).data, 'Thinking... (1s)');
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.widget<Text>(clock).data, 'Thinking... (3s)');
 
     // The blue is the point, not just the key: this is the one state that says
     // "working", and it must not be mistakable for the purple of an open mic.
@@ -3710,12 +3792,12 @@ void main() {
       find.byKey(kNexusLiveOrbThinking),
     );
     expect(
-      ((core.decoration! as BoxDecoration).gradient! as RadialGradient).colors,
+      ((core.decoration! as BoxDecoration).gradient! as LinearGradient).colors,
       contains(kNexusLiveThinking),
     );
     expect(kNexusLiveThinking, isNot(kNexusAccent));
 
-    // The orb is inert while the answer is being written: tapping it is asking
+    // The pill is inert while the answer is being written: tapping it is asking
     // to interrupt a request that is already out.
     await tester.tap(find.byKey(kNexusLiveOrb));
     await tester.pump(const Duration(milliseconds: 260));
@@ -3730,6 +3812,10 @@ void main() {
     expect(liveText(tester), 'Twenty degrees and clear.');
     expect(find.byKey(kNexusLiveOrbIdle), findsOneWidget);
     expect(find.byKey(kNexusLivePausedIndicator), findsOneWidget);
+    // The wait is over, so its spinner and clock are gone — not left behind
+    // under the answer.
+    expect(find.byKey(kNexusLiveSpinner), findsNothing);
+    expect(find.byKey(kNexusLiveThinkTimer), findsNothing);
     expect(tester.widget<Text>(find.byKey(kNexusLiveStatus)).data, 'Mic off.');
 
     // The answer is read out, and 1.5 s after the voice stops the page hands
@@ -3797,7 +3883,7 @@ void main() {
     // words it is forming.
     mic.loudness(8);
     await tester.pump();
-    mic.say('what is the weather');
+    mic.say('what is a mesh');
     await tester.pump();
 
     // A speaker who is still talking is never cut off, however long they take:
@@ -3823,10 +3909,10 @@ void main() {
     expect(find.byKey(kNexusLiveRecordingIndicator), findsOneWidget);
 
     // The transcript arrives, and goes to the model on the PC.
-    mic.hear('what is the weather');
+    mic.hear('what is a mesh');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 260));
-    expect(ollama.prompts, <String>['what is the weather']);
+    expect(ollama.prompts, <String>['what is a mesh']);
     expect(liveText(tester), 'It is twenty degrees and clear.');
 
     // Read out loud as it lands, in the same words — and the page is already in
@@ -3867,15 +3953,15 @@ void main() {
     // A spoken turn, ended the way the quiet ends one.
     mic.loudness(8);
     await tester.pump();
-    mic.say('what is the weather');
+    mic.say('what is a mesh');
     await tester.pump();
     mic.loudness(-2);
     await tester.pump();
     await tester.pump(kSpeechTurnGap + const Duration(milliseconds: 100));
-    mic.hear('what is the weather');
+    mic.hear('what is a mesh');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 260));
-    expect(brain.prompts, <String>['what is the weather']);
+    expect(brain.prompts, <String>['what is a mesh']);
 
     // While the model is thinking the large type says so — and the first token
     // replaces it, instead of the page sitting on "Thinking…" until the answer
@@ -4018,7 +4104,11 @@ void main() {
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
 
-    expect(phone.calls.single.$1, AgentActions.musicPlay);
+    // A media key, not the player's launch intent: opening the music app is
+    // not playing anything, and the review's report was that "pause" opened a
+    // player over the music instead of stopping it.
+    expect(phone.calls.single.$1, 'mediaKey');
+    expect(phone.calls.single.$2['mode'], 'play');
     expect(find.text(kMusicUnavailableText), findsOneWidget);
     final NexusSystemBubble pill = tester.widget<NexusSystemBubble>(
       find.byType(NexusSystemBubble),
@@ -4044,7 +4134,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(ollama.prompts, isEmpty, reason: 'no model had to guess');
-      expect(phone.calls.single.$1, AgentActions.musicPlay);
+      expect(phone.calls.single.$1, 'mediaKey');
+      expect(phone.calls.single.$2['mode'], 'play');
       expect(find.text('Opened Spotify.'), findsOneWidget);
       final NexusSystemBubble pill = tester.widget<NexusSystemBubble>(
         find.byType(NexusSystemBubble),
@@ -4052,6 +4143,27 @@ void main() {
       expect(pill.ok, isTrue);
     },
   );
+
+  testWidgets('a weather question is answered by the app, not guessed at', (
+    tester,
+  ) async {
+    // The review's report: "weather" is a question a local-first app cannot
+    // answer, and a model asked for tomorrow's forecast invents one. The shell
+    // says so itself, instantly, before the model is asked a single token.
+    await pumpShell(tester);
+
+    await tester.enterText(find.byType(TextField), "what's the weather?");
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(
+      ollama.prompts,
+      isEmpty,
+      reason: 'there is no forecast to ask any model about',
+    );
+    expect(find.text(kNoWeatherText), findsOneWidget);
+  });
 
   testWidgets('a music phrase spoken into live mode is run there too', (
     tester,
@@ -4071,7 +4183,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 260));
 
     expect(ollama.prompts, isEmpty, reason: 'no model had to guess');
-    expect(phone.calls.single.$1, AgentActions.musicPlay);
+    expect(phone.calls.single.$1, 'mediaKey');
+    expect(phone.calls.single.$2['mode'], 'play');
     expect(liveText(tester), 'Opened Spotify.');
   });
 
@@ -4316,9 +4429,9 @@ void main() {
     await tester.tap(find.text('Privacy'));
     await tester.pumpAndSettle();
 
-    // The screen is a stub with nothing to configure, and that is the point: the
-    // one thing this build can promise about voice is a sentence long, and the
-    // policy it will point at is a placeholder until somebody writes one.
+    // The screen is mostly a statement: the one thing this build can promise
+    // about voice is a sentence long — and the policy it used to point at with
+    // a placeholder link is now a page of its own, one row away.
     expect(
       find.text(
         'Voice input is processed on this device. Audio is never sent '
@@ -4326,12 +4439,12 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.text('Full privacy policy: <link>'), findsOneWidget);
+    expect(find.text('Privacy Policy'), findsOneWidget);
 
     // A real page, reached and left like the other one: back returns to the tab.
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
-    expect(find.text('Full privacy policy: <link>'), findsNothing);
+    expect(find.text('Privacy Policy'), findsNothing);
     expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 3);
   });
 
@@ -4350,7 +4463,7 @@ void main() {
       AttachmentStore.override = null;
     });
     chat.save(<ChatEntry>[
-      const ChatEntry('what is the weather?', mine: true),
+      const ChatEntry('what is a mesh?', mine: true),
       const ChatEntry('Warm and clear.'),
     ]);
 
@@ -4475,7 +4588,7 @@ void main() {
     tester,
   ) async {
     await pumpShell(tester);
-    await tester.enterText(find.byType(TextField), 'what is the weather?');
+    await tester.enterText(find.byType(TextField), 'what is a mesh?');
     await tester.pump();
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
@@ -4487,7 +4600,7 @@ void main() {
     await tester.pumpWidget(const NexusUiApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('what is the weather?'), findsOneWidget);
+    expect(find.text('what is a mesh?'), findsOneWidget);
     expect(find.text(ollama.reply), findsOneWidget);
     expect(
       find.text('Hey, what do you need?'),
@@ -4509,7 +4622,7 @@ void main() {
     }
 
     // The first question, asked with nothing behind it.
-    await ask('what is the weather?');
+    await ask('what is a mesh?');
     expect(ollama.histories.single, isEmpty);
 
     // The second: "and tomorrow?" has no referent unless the model is handed
@@ -4518,11 +4631,11 @@ void main() {
     ollama.reply = 'Warm and clear.';
     await ask('and tomorrow?');
 
-    expect(ollama.prompts, <String>['what is the weather?', 'and tomorrow?']);
+    expect(ollama.prompts, <String>['what is a mesh?', 'and tomorrow?']);
     final List<AiTurn> history = ollama.histories.last;
     expect(history, hasLength(2));
     expect(history.first.fromUser, isTrue);
-    expect(history.first.text, 'what is the weather?');
+    expect(history.first.text, 'what is a mesh?');
     expect(history.last.fromUser, isFalse);
     expect(history.last.text, 'Hello from the PC.');
     expect(
@@ -4570,7 +4683,7 @@ void main() {
     tester,
   ) async {
     await pumpShell(tester);
-    await tester.enterText(find.byType(TextField), 'what is the weather?');
+    await tester.enterText(find.byType(TextField), 'what is a mesh?');
     await tester.pump();
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
@@ -4592,7 +4705,7 @@ void main() {
     // Nothing was deleted on the way through Settings.
     expect(chat.hasChat, isTrue);
     await openTab(tester, 'Home', 0);
-    expect(find.text('what is the weather?'), findsOneWidget);
+    expect(find.text('what is a mesh?'), findsOneWidget);
   });
 
   testWidgets('the Devices header offers a + that opens the pairing sheet', (
@@ -5635,7 +5748,10 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey<String>('chat-menu-pin')));
     await tester.pumpAndSettle();
-    expect(find.text('PINNED'), findsOneWidget);
+    // No "Pinned" heading: the pinned chat simply sits at the top, with a pin
+    // glyph that explains why it is out of date order.
+    expect(find.text('PINNED'), findsNothing);
+    expect(find.byKey(ValueKey<String>('chat-pin-$id')), findsOneWidget);
     expect(chat.sessions.single.pinned, isTrue);
     expect(chat.sessions.single.title, 'Project notes');
   });
@@ -5680,6 +5796,29 @@ void main() {
     expect(find.textContaining('Instance of'), findsNothing);
     expect(find.text('Copy to Clipboard'), findsOneWidget);
     expect(find.text('Clear Logs'), findsOneWidget);
+
+    // Seven taps the other way put it away again: the tab is hidden, and the
+    // shell lands back on Settings instead of an index that no longer exists.
+    await tester.tap(tab('Settings'));
+    await tester.pumpAndSettle();
+    // Settings opens at its first row, so the version row has to be scrolled
+    // back into the list before it can be tapped.
+    await tester.scrollUntilVisible(
+      version,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+    for (int i = 0; i < 7; i++) {
+      await tester.tap(version);
+      await tester.pump(const Duration(milliseconds: 80));
+    }
+    await tester.pumpAndSettle();
+
+    expect(find.text('Developer Mode Locked'), findsOneWidget);
+    expect(tab('Logs'), findsNothing);
+    expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 3);
+    expect(LogService.instance.developerUnlocked, isFalse);
   });
 
   testWidgets('the accent preview is a small swatch that opens the wheel', (
@@ -5688,11 +5827,19 @@ void main() {
     await pumpShell(tester);
     await openTab(tester, 'Settings', 3);
 
-    // A 40dp disc, not a full-width sheet of colour: the hex block read as a
+    // A 40dp tile, not a full-width sheet of colour: the hex block read as a
     // white panel in dark mode. The row around it is still the whole target.
     final Size swatch = tester.getSize(find.byKey(kNexusAccentSwatch));
     expect(swatch.width, 40);
     expect(swatch.height, 40);
+
+    // A rounded square, like every other leading mark on the screen — a single
+    // disc was the one shape that read as a different kind of control.
+    final BoxDecoration swatchPaint =
+        tester.widget<Container>(find.byKey(kNexusAccentSwatch)).decoration!
+            as BoxDecoration;
+    expect(swatchPaint.shape, BoxShape.rectangle);
+    expect(swatchPaint.borderRadius, isNotNull);
     expect(tester.getSize(find.byKey(kNexusPickColor)).height, lessThan(90));
 
     await tester.tap(find.byKey(kNexusPickColor));

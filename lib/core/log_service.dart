@@ -105,15 +105,31 @@ class LogService extends ChangeNotifier {
 
   /// Unlocks Developer Logs and remembers it for the next launch.
   Future<void> unlockDeveloperMode() async {
-    if (!_developerUnlocked) {
-      _developerUnlocked = true;
+    await setDeveloperMode(true);
+  }
+
+  /// Locks Developer Logs again, and remembers that too.
+  ///
+  /// The same seven taps that unlock the tab also hide it: without this, the
+  /// only way back out of a developer screen a user opened by exploring was to
+  /// clear the app's data. The preference is written either way, so a lock is
+  /// as durable as an unlock.
+  Future<void> lockDeveloperMode() async {
+    await setDeveloperMode(false);
+  }
+
+  /// Puts the hidden tab in or out of reach. Idempotent, and safe on a platform
+  /// with no preference store: the tab still follows this session.
+  Future<void> setDeveloperMode(bool unlocked) async {
+    if (_developerUnlocked != unlocked) {
+      _developerUnlocked = unlocked;
       notifyListeners();
     }
     try {
       final SharedPreferences prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(kDeveloperModeKey, true);
+      await prefs.setBool(kDeveloperModeKey, unlocked);
     } catch (_) {
-      // The tab still works for this session.
+      // The tab still follows this session.
     }
   }
 

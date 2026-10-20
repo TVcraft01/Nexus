@@ -15,6 +15,7 @@ import '../mesh/mesh_service.dart';
 import '../mesh/updater.dart';
 import 'about_view.dart';
 import 'components/nexus_ui.dart';
+import 'privacy_policy_view.dart';
 import 'theme.dart';
 
 /// Settings, in the order a person asks about them: who am I, what is
@@ -206,6 +207,13 @@ class _SettingsViewState extends State<SettingsView> {
     }
   }
 
+  /// The promises, on their own screen, the same way About holds the facts.
+  void _openPrivacy() {
+    Navigator.of(context).push<void>(
+      CupertinoPageRoute(builder: (_) => const PrivacyPolicyView()),
+    );
+  }
+
   /// The facts this list used to explain in place, on their own screen.
   void _openAbout() {
     // The iOS push: horizontal, with the edge-swipe back the platform has.
@@ -335,19 +343,22 @@ class _SettingsViewState extends State<SettingsView> {
           ],
         ),
 
-        // The one privacy control this device has: what other devices may see.
-        // The promises themselves are on About, not between the settings.
-        if (isAndroid) ...[
-          const NexusSectionHeader('Privacy'),
-          NexusGroup(
-            children: [
+        // What other devices may see, and — one tap away — the promise in
+        // full. The policy row is here on every platform; the storage row is
+        // Android's, because the broad-storage permission is.
+        const NexusSectionHeader('Privacy'),
+        NexusGroup(
+          children: [
+            if (isAndroid)
               NexusRow(
                 title: 'Show your files to paired devices',
                 subtitle: filesOff
                     ? 'Off — they see only what Nexus downloaded.'
                     : 'On — they can browse and delete files you allow.',
                 leading: Icon(
-                  filesOff ? Icons.lock_outline_rounded : Icons.folder_open_rounded,
+                  filesOff
+                      ? Icons.lock_outline_rounded
+                      : Icons.folder_open_rounded,
                   size: 20,
                   color: icon,
                 ),
@@ -355,9 +366,19 @@ class _SettingsViewState extends State<SettingsView> {
                 chevron: true,
                 onTap: MeshService.openAllFilesAccessSettings,
               ),
-            ],
-          ),
-        ],
+            NexusRow(
+              title: 'Privacy Policy',
+              subtitle: 'Local-first, no accounts, no telemetry.',
+              leading: Icon(
+                Icons.privacy_tip_outlined,
+                size: 20,
+                color: icon,
+              ),
+              chevron: true,
+              onTap: _openPrivacy,
+            ),
+          ],
+        ),
 
         const NexusSectionHeader('Assistant'),
         NexusGroup(

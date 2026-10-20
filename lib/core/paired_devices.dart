@@ -33,6 +33,7 @@ class PairedDevice {
     this.addresses = const <String>[],
     this.port = 0,
     this.code = '',
+    this.ramBytes,
   });
 
   /// The mesh id from the pairing code — the key the list is unique on, so the
@@ -80,6 +81,11 @@ class PairedDevice {
   /// anybody should have to make.
   final String code;
 
+  /// The RAM the device shared when it paired, in bytes, or null when it did
+  /// not say. This is what the Devices screen adds up into "Mesh Total RAM"
+  /// and what decides whether the PC is strong enough for the 3B model.
+  final int? ramBytes;
+
   PairedDevice copyWith({
     String? name,
     bool? online,
@@ -88,6 +94,7 @@ class PairedDevice {
     List<String>? addresses,
     int? port,
     String? code,
+    int? ramBytes,
   }) => PairedDevice(
     id: id,
     name: name ?? this.name,
@@ -98,6 +105,7 @@ class PairedDevice {
     addresses: addresses ?? this.addresses,
     port: port ?? this.port,
     code: code ?? this.code,
+    ramBytes: ramBytes ?? this.ramBytes,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -110,6 +118,7 @@ class PairedDevice {
     if (addresses.isNotEmpty) 'addresses': addresses,
     if (port > 0) 'port': port,
     if (code.isNotEmpty) 'code': code,
+    if (ramBytes != null) 'ram_bytes': ramBytes,
   };
 
   /// Reads one address list back, dropping anything that is not a string.
@@ -143,6 +152,9 @@ class PairedDevice {
       addresses: _addressesFrom(raw['addresses']),
       port: raw['port'] is int ? raw['port'] as int : 0,
       code: raw['code'] is String ? raw['code'] as String : '',
+      ramBytes: raw['ram_bytes'] is int && (raw['ram_bytes'] as int) > 0
+          ? raw['ram_bytes'] as int
+          : null,
     );
   }
 
@@ -158,6 +170,7 @@ class PairedDevice {
     addresses: invite.addresses,
     port: invite.port,
     code: invite.code,
+    ramBytes: invite.ramBytes,
   );
 
   @override
@@ -368,12 +381,18 @@ const List<PairedDevice> kSeedPairedDevices = <PairedDevice>[
     online: true,
     isThisDevice: true,
   ),
+  // The example PC carries a RAM figure because the shell's whole device list
+  // is an example: a paired Windows desktop is the case the mesh's RAM total
+  // and the "download the 3B model" banner exist for, and a demo build with no
+  // number on any row could not show either. A real pairing replaces it with
+  // the number the other device actually shared.
   PairedDevice(
     id: 'example-pc',
     name: 'My PC',
     publicKey: '',
-    detail: 'Desktop · this room',
+    detail: 'Desktop · this room · 16 GB',
     online: true,
+    ramBytes: 16 * 1024 * 1024 * 1024,
   ),
   PairedDevice(
     id: 'example-mac',

@@ -20,4 +20,6 @@
 flutter_launcher_icons:
   android: "ic_launcher_dark"
   ios: false
-  image_path: "assets/icon/icon_dark.png"
+  image_path: "assets/logo_dark.png"
+  adaptive_icon_background: "#111113"
+  adaptive_icon_foreground: "assets/logo_dark.png"

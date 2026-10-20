@@ -1061,6 +1061,7 @@ class MainActivity : FlutterActivity() {
                 // sendText is intercepted in the channel handler — it resolves
                 // the recipient like calls do, which may request READ_CONTACTS.
                 "mediaControl" -> mediaControl(args?.get("mode")?.toString() ?: "play")
+                "mediaKey" -> mediaKey(args?.get("mode")?.toString() ?: "play")
                 "mediaPreview" -> mediaPreview(
                     args?.get("action")?.toString() ?: "stop",
                     args?.get("url")?.toString(),
@@ -1143,11 +1144,16 @@ class MainActivity : FlutterActivity() {
                 "message" to "No app on this device can do that.",
             )
         }
-        // With several handlers and no default yet, Android shows its own
-        // resolver (package "android") for the user to pick from; a single
-        // handler — or a remembered "Always" pick — launches straight away.
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(intent)
+        // An explicit chooser, not the implicit resolver: the implicit one
+        // launches straight away when a default is already set, which is the
+        // one moment the user cannot change their mind. "Navigate to X" and
+        // "open this file" are exactly the requests where which app answers
+        // matters, and a picker that always appears is a picker the user can
+        // actually use.
+        val chooser = Intent.createChooser(intent, title).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(chooser)
         Log.i(TAG, "$done ($title)")
         return mapOf("ok" to true, "message" to done.replaceFirstChar { it.uppercase() } + ".")
     }
@@ -2361,6 +2367,55 @@ class MainActivity : FlutterActivity() {
         mapOf("ok" to false, "message" to "Could not open messaging.")
     }
 
+    /// Play and pause as real media keys, for the fast-path phrases.
+    ///
+    /// [mediaControl] answers "play" by opening the user's player when nothing
+    /// is playing, which is the right thing for "play music" on a quiet phone —
+    /// but it is not playback, and a user who said "pause" was watching a
+    /// player open over their music instead of it stopping. So this method
+    /// dispatches a key through `AudioManager` to whichever player holds the
+    /// media session:
+    ///
+    /// * pause is `KEYCODE_MEDIA_PAUSE` — the dedicated key, not the toggle.
+    ///   The review asked for `KEYCODE_MEDIA_PLAY_PAUSE`, and the first version
+    ///   of this method used it; on this phone the media stream reports as
+    ///   active while a track sits paused, so a toggle *started the music* and
+    ///   the app said "Paused." The dedicated key can only ever pause, which is
+    ///   what the sentence claims.
+    /// * play is `KEYCODE_MEDIA_PLAY`, which resumes a paused track. A
+    ///   play/pause key here would pause the music the user asked to play.
+    ///
+    /// Neither opens an app: a key is playback, a chooser is not. When nothing
+    /// is loaded, the key is simply a no-op and the sentence says so.
+    private fun mediaKey(mode: String): Map<String, Any?> {
+        val am = getSystemService(AudioManager::class.java)
+        val wasPlaying = am.isMusicActive
+        val key = if (mode == "pause") {
+            KeyEvent.KEYCODE_MEDIA_PAUSE
+        } else {
+            KeyEvent.KEYCODE_MEDIA_PLAY
+        }
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, key))
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, key))
+
+        if (mode == "pause") {
+            // Pausing silence is not a success: the key was sent, but nothing
+            // was playing to stop, and a green check would claim otherwise.
+            return mapOf(
+                "ok" to wasPlaying,
+                "message" to if (wasPlaying) {
+                    "Paused."
+                } else {
+                    "Nothing is playing."
+                },
+            )
+        }
+        return mapOf(
+            "ok" to true,
+            "message" to if (wasPlaying) "Already playing." else "Playing.",
+        )
+    }
+
     /// Sends the media key events most players honour: play, pause, skip.
     /// A plain "play music" with nothing queued asks WHICH app should play
     /// it (the system music-app chooser) instead of silently picking one;
@@ -2427,14 +2482,14 @@ class MainActivity : FlutterActivity() {
             am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY))
             return mapOf("ok" to true, "message" to "Playing.")
         }
-        startActivity(intent)
-        // Several players with none preferred yet: Android's own resolver
-        // asks (Just once / Always) — that is the ask, and it is remembered.
-        val asking = handlers.size > 1
-        return mapOf(
-            "ok" to true,
-            "message" to if (asking) "Which app should play it?" else "Playing.",
-        )
+        // A real chooser even when there is one handler — see
+        // startActionIntentChooser for why. The button the user pressed said
+        // "play music"; which of their players plays it is theirs to say.
+        val chooser = Intent.createChooser(intent, "Play music with").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(chooser)
+        return mapOf("ok" to true, "message" to "Which app should play it?")
     }
 
     /// "play music": opens the phone's own music player through
@@ -2460,13 +2515,17 @@ class MainActivity : FlutterActivity() {
             return failure
         }
         return try {
-            startActivity(intent)
-            // Deliberately not "Opened <name>": with several players installed,
-            // the first handler's label is not necessarily the one Android
-            // launches (measured: the chooser opened Deezer while the first
-            // handler was Spotify). The only fact this side knows is that the
-            // player intent was started.
-            mapOf("ok" to true, "message" to "Opened your music player.")
+            // An explicit chooser: the user asked to play music, not to open
+            // whichever player happens to be first or default. This is the
+            // same ask the navigation path makes, in the same shape.
+            startActivity(
+                Intent.createChooser(intent, "Play music with").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+            // Deliberately not "Opened <name>": the chooser means the player
+            // is not known yet when this line is written.
+            mapOf("ok" to true, "message" to "Which app should play it?")
         } catch (e: Exception) {
             Log.e(TAG, "playMusic: the player could not be opened", e)
             failure

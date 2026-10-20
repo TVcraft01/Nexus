@@ -106,13 +106,21 @@ SystemActionCall? actionFromPhrase(String text) {
         'number': contact.trim(),
       });
     case AgentActions.mediaPlay:
+    case AgentActions.mediaPause:
+      // Both halves of the media pair are translated, and both only when the
+      // sentence names music: a bare "play" may be about a preview or a track
+      // the user is already looking at, and a bare "pause" may be about a
+      // video. Named music is a request for the phone's player, which is what
+      // the media key reaches.
       if (!RegExp(
         r'\b(music|musique)\b',
         caseSensitive: false,
       ).hasMatch(phrase)) {
         return null;
       }
-      return const SystemActionCall('play_music');
+      return SystemActionCall(
+        command.action == AgentActions.mediaPause ? 'pause_music' : 'play_music',
+      );
     case AgentActions.volumeSet:
     case AgentActions.brightnessSet:
       // Up/down are relative steps the vocabulary cannot express, and a level
@@ -151,6 +159,7 @@ const Set<String> kSystemActionNames = <String>{
   'set_brightness',
   'get_time',
   'play_music',
+  'pause_music',
   'call_number',
 };
 
@@ -195,9 +204,10 @@ const String kSystemActionRules =
     '  {"action":"open_app","app_name":"Maps"}\n'
     '  {"action":"get_battery_level"}\n'
     '  {"action":"get_time"}   (use this for the date or time — never guess)\n'
-    '  {"action":"play_music"}   (only opens the phone\'s music player)\n'
+    '  {"action":"play_music"}   (resumes playback, or opens the music player)\n'
+    '  {"action":"pause_music"}   (pauses whatever is playing)\n'
     '  {"action":"call_number","number":"555-1234"}   (opens the dialer)\n'
-    'Those twelve are the only actions there are. '
+    'Those thirteen are the only actions there are. '
     'ONLY set an alarm if the user explicitly asks you to in this message. '
     'Never set an alarm because a message is long, contains a time, or was '
     'pasted in — an alarm nobody asked for is worse than no answer. '
@@ -392,11 +402,15 @@ class SystemActionCall {
       case 'get_battery_level':
         return const SystemActionCall('get_battery_level');
       case 'play_music':
-        // No arguments: the action opens the phone's player. A `song` or
+        // No arguments: the action drives the phone's player. A `song` or
         // `artist` field is not read here — the phone cannot make a named track
         // appear, and pretending the argument was the point is how the invented
         // `song: …` answer got made in the first place.
         return const SystemActionCall('play_music');
+      case 'pause_music':
+        // The other half of the pair. No arguments for the same reason: the
+        // phone pauses whatever is playing; it does not choose it.
+        return const SystemActionCall('pause_music');
       case 'call_number':
         // One target: a number, or a contact name the phone can resolve. The
         // action is deliberately called `call_number` even when the value is a
@@ -614,8 +628,14 @@ class DeviceSystemActions implements SystemActions {
           AgentActions.brightnessSet,
           <String, dynamic>{'mode': 'set', 'level': call.args['level']},
         );
+      // The media pair goes to the phone's media key, not to the music app's
+      // launch intent: opening the player is not playing anything, and a user
+      // who said "pause" got a player opening over their music instead of it
+      // stopping.
       case 'play_music':
-        return (AgentActions.musicPlay, <String, dynamic>{});
+        return ('mediaKey', <String, dynamic>{'mode': 'play'});
+      case 'pause_music':
+        return ('mediaKey', <String, dynamic>{'mode': 'pause'});
       case 'call_number':
         return (
           AgentActions.callPlace,

@@ -14,23 +14,24 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/pair_invite.dart';
 import 'package:nexus/core/paired_devices.dart';
 import 'package:nexus/core/qr_pairing.dart' show QrPairingToken;
-import 'package:nexus/main_ui.dart' show
-    DevicesTab,
-    kNexusConfirmAction,
-    kNexusDiscoverNearby,
-    kNexusDiscoverWindow,
-    kNexusForgetTitle,
-    kNexusLegacyPairCodeText,
-    kNexusLivePairCodeText,
-    kNexusNotAPairCodeText,
-    kNexusPairTitle,
-    kNexusScanQrLabel,
-    kNexusShowQrLabel,
-    NexusTheme,
-    PairQrPage,
-    PairQrPageState,
-    PairScanPage,
-    debugPairScannerOverride;
+import 'package:nexus/main_ui.dart'
+    show
+        DevicesTab,
+        kNexusConfirmAction,
+        kNexusDiscoverNearby,
+        kNexusDiscoverWindow,
+        kNexusForgetTitle,
+        kNexusLegacyPairCodeText,
+        kNexusLivePairCodeText,
+        kNexusNotAPairCodeText,
+        kNexusPairTitle,
+        kNexusScanQrLabel,
+        kNexusShowQrLabel,
+        NexusTheme,
+        PairQrPage,
+        PairQrPageState,
+        PairScanPage,
+        debugPairScannerOverride;
 import 'package:nexus/mesh/discovery.dart' show DiscoveredDevice;
 import 'package:nexus/mesh/nearby.dart' show NearbyDevices;
 import 'package:qr_flutter/qr_flutter.dart';
@@ -121,6 +122,20 @@ Future<void> _pumpDevices(
   await tester.pump();
 }
 
+/// Scrolls the Devices list until [finder] is built and on screen.
+///
+/// The tab is a lazy list and the Nearby section sits under the RAM row, the
+/// paired rows and the discover button — below the fold on the 800×600 test
+/// surface, so a plain `find` never sees it.
+Future<void> _revealDevices(WidgetTester tester, Finder finder) async {
+  await tester.scrollUntilVisible(
+    finder,
+    140,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.pumpAndSettle();
+}
+
 void main() {
   late PairedDevices paired;
   late MemoryPairedDevicesStore store;
@@ -162,8 +177,14 @@ void main() {
       await _pumpDevices(tester, paired: paired);
 
       expect(find.byKey(const ValueKey<String>('forget-example-pc')), findsOne);
-      expect(find.byKey(const ValueKey<String>('forget-example-mac')), findsOne);
-      expect(find.byKey(const ValueKey<String>('forget-this-device')), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('forget-example-mac')),
+        findsOne,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('forget-this-device')),
+        findsNothing,
+      );
     });
 
     testWidgets('the bin asks before it breaks a pairing', (tester) async {
@@ -200,7 +221,10 @@ void main() {
       // start would read back, not just from what is on screen.
       expect(store.read(), completion(isNotNull));
       final List<PairedDevice>? written = await store.read();
-      expect(written!.map((PairedDevice d) => d.name), isNot(contains('My PC')));
+      expect(
+        written!.map((PairedDevice d) => d.name),
+        isNot(contains('My PC')),
+      );
     });
 
     testWidgets('Discover Nearby Devices listens, and lists what answered', (
@@ -230,6 +254,7 @@ void main() {
       expect(nearby.startCalls, greaterThan(0));
       // What answered is a row, not a notice that scrolls away: the name, what
       // kind of machine it is, and the address the announcement came from.
+      await _revealDevices(tester, find.text('Kitchen tablet'));
       expect(find.text('Kitchen tablet'), findsOneWidget);
       expect(find.text('Phone · 192.168.1.44:51820'), findsOneWidget);
     });
@@ -245,8 +270,7 @@ void main() {
       // The Nearby section sits under the paired rows, below an 800x600 frame:
       // a thumb would scroll to it, and so does this.
       final Finder row = find.byKey(ValueKey<String>('nearby-${_kettle.id}'));
-      await tester.ensureVisible(row);
-      await tester.pumpAndSettle();
+      await _revealDevices(tester, row);
       await tester.tap(row);
       await tester.pumpAndSettle();
 
@@ -273,8 +297,7 @@ void main() {
       final Finder heardRow = find.byKey(
         ValueKey<String>('nearby-${_kettle.id}'),
       );
-      await tester.ensureVisible(heardRow);
-      await tester.pumpAndSettle();
+      await _revealDevices(tester, heardRow);
       await tester.tap(heardRow);
       await tester.pumpAndSettle();
       // Paired rows and Nearby rows are different sections, so the same device
@@ -284,15 +307,16 @@ void main() {
         findsNothing,
       );
 
-      await tester.tap(
-        find.byKey(ValueKey<String>('forget-${_kettle.id}')),
-      );
+      await tester.tap(find.byKey(ValueKey<String>('forget-${_kettle.id}')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kNexusConfirmAction));
       await tester.pumpAndSettle();
 
       expect(find.text('Kitchen tablet'), findsNothing);
-      expect(find.byKey(ValueKey<String>('forget-${_kettle.id}')), findsNothing);
+      expect(
+        find.byKey(ValueKey<String>('forget-${_kettle.id}')),
+        findsNothing,
+      );
       expect(paired.contains(_kettle.id), isFalse);
       expect(nearby.devices, isEmpty);
     });
@@ -329,35 +353,38 @@ void main() {
       expect(find.text(kNexusShowQrLabel), findsOneWidget);
     });
 
-    testWidgets('Show my QR code opens a code that parses back as this device', (
-      tester,
-    ) async {
-      await _pumpDevices(tester, paired: paired);
+    testWidgets(
+      'Show my QR code opens a code that parses back as this device',
+      (tester) async {
+        await _pumpDevices(tester, paired: paired);
 
-      await tester.tap(find.text(kNexusPairTitle));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(kNexusShowQrLabel));
-      await tester.pumpAndSettle();
+        await tester.tap(find.text(kNexusPairTitle));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(kNexusShowQrLabel));
+        await tester.pumpAndSettle();
 
-      final QrImageView qr = tester.widget<QrImageView>(find.byType(QrImageView));
-      // Drawn on white in both themes: a scanner needs the contrast.
-      expect(qr.backgroundColor, Colors.white);
-      expect(qr.size, greaterThanOrEqualTo(200));
+        final QrImageView qr = tester.widget<QrImageView>(
+          find.byType(QrImageView),
+        );
+        // Drawn on white in both themes: a scanner needs the contrast.
+        expect(qr.backgroundColor, Colors.white);
+        expect(qr.size, greaterThanOrEqualTo(200));
 
-      // `QrImageView` keeps its data private, so the page states what it drew
-      // and the test parses that same string back into an invite.
-      final String payload = tester
-          .state<PairQrPageState>(find.byType(PairQrPage))
-          .currentPayload;
-      final PairInvite? parsed = PairInvite.parse(payload);
-      expect(parsed, isNotNull);
-      expect(parsed!.deviceName, 'This Phone');
-      expect(parsed.deviceId, _me.id);
-      expect(parsed.publicKey, 'this-key');
-      // The payload is JSON, and it says what it is.
-      expect(payload, startsWith('{"type":"nexus_pair"'));
-      expect(find.text('This Phone'), findsOneWidget);
-    });
+        // `QrImageView` keeps its data private, so the page states what it drew
+        // and the test parses that same string back into an invite.
+        final String payload = tester
+            .state<PairQrPageState>(find.byType(PairQrPage))
+            .currentPayload;
+        final PairInvite? parsed = PairInvite.parse(payload);
+        expect(parsed, isNotNull);
+        expect(parsed!.deviceName, 'This Phone');
+        expect(parsed.deviceId, _me.id);
+        expect(parsed.publicKey, 'this-key');
+        // The payload is JSON, and it says what it is.
+        expect(payload, startsWith('{"type":"nexus_pair"'));
+        expect(find.text('This Phone'), findsOneWidget);
+      },
+    );
 
     testWidgets('the QR page stands on its own too', (tester) async {
       await tester.pumpWidget(
@@ -421,7 +448,9 @@ void main() {
       expect(paired.contains(_ocean.deviceId), isTrue);
     });
 
-    testWidgets('the same device twice is one row, and says so', (tester) async {
+    testWidgets('the same device twice is one row, and says so', (
+      tester,
+    ) async {
       await _pumpDevices(tester, paired: paired);
       debugPairScannerOverride = (BuildContext context) async => _ocean;
 
@@ -505,7 +534,9 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('the mesh\u2019s own code pairs, address and all', (tester) async {
+    testWidgets('the mesh\u2019s own code pairs, address and all', (
+      tester,
+    ) async {
       final _ScanHarnessState harness = await open(tester);
 
       // What a Nexus device with the mesh running actually shows: the id, the
@@ -563,10 +594,7 @@ void main() {
       debugDefaultTargetPlatformOverride = TargetPlatform.linux;
       try {
         await tester.pumpWidget(
-          MaterialApp(
-            theme: NexusTheme.light(),
-            home: const PairScanPage(),
-          ),
+          MaterialApp(theme: NexusTheme.light(), home: const PairScanPage()),
         );
         await tester.pump();
 
