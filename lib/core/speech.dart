@@ -19,6 +19,8 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, visibleForTesting;
 import 'package:flutter/services.dart' show MethodCall, MethodChannel;
 
+import 'log_service.dart';
+
 /// What a recognizer hands back is what it *heard*, not what was meant:
 /// "report.pdf" comes back as "report dot pdf", and the file-fetch grammar
 /// needs the extension to see a file at all. So the spoken seam writes the
@@ -145,7 +147,8 @@ class SpeechInput {
     _wireChannel();
     try {
       return await _channel.invokeMethod<String>('listen');
-    } catch (_) {
+    } catch (error) {
+      LogService.instance.log('SPEECH: listen failed ($error)');
       return null; // never crash the composer for a mic failure
     }
   }
@@ -334,7 +337,8 @@ class SpeechOutput {
     try {
       return await _channel.invokeMethod<bool>('speak', {'text': text}) ??
           false;
-    } catch (_) {
+    } catch (error) {
+      LogService.instance.log('SPEECH: speak failed ($error)');
       return false; // never crash the assistant for a speech failure
     }
   }

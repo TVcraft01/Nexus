@@ -21,6 +21,7 @@ import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/device_capabilities.dart';
 import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
+import 'package:nexus/core/log_service.dart';
 import 'package:nexus/core/memory_service.dart';
 import 'package:nexus/core/mic_access.dart';
 import 'package:nexus/core/ollama_service.dart';
@@ -35,6 +36,7 @@ import 'package:nexus/core/version.dart';
 import 'package:nexus/core/vision_ai.dart';
 import 'package:nexus/core/voice_settings.dart';
 import 'package:nexus/main_ui.dart';
+import 'package:nexus/mesh/updater.dart' show UpdateCheck, UpdateInfo;
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// A recognizer that holds the utterance open until it is told what to do with
@@ -493,6 +495,7 @@ void main() {
     // precondition — and the seam rather than a preference, so nothing here
     // touches the preferences store for it.
     Onboarding.debugOverride = true;
+    HomeTab.updateCheckOverride = null;
   });
   tearDown(() {
     LocalAiService.override = null;
@@ -504,6 +507,8 @@ void main() {
     ModelChoice.debugReset();
     Onboarding.debugOverride = null;
     SpeechOutput.override = null;
+    HomeTab.updateCheckOverride = null;
+    LogService.debugReset();
   });
 
   /// A phone-shaped surface — the layout the shell is designed against.
@@ -1180,7 +1185,7 @@ void main() {
     );
   });
 
-  testWidgets('a long press selects words, and copy is still one tap', (
+  testWidgets('a long press on a user bubble opens its action sheet', (
     tester,
   ) async {
     // The clipboard as Android sees it: every write is a `Clipboard.setData`
@@ -1218,12 +1223,35 @@ void main() {
       findsOneWidget,
     );
 
-    // The user's own line, held: nothing reaches the clipboard, so the gesture
-    // belongs to the selection above it and never lands as an invisible copy.
+    // The user's own line, held: a sheet offers the three things a sent line
+    // can still do. Nothing reaches the clipboard until one of them is chosen,
+    // so the hold never lands as an invisible copy.
     await tester.longPress(find.text('remember this'));
-    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('Copy'), findsOneWidget);
+    expect(find.text('Select Text'), findsOneWidget);
+    expect(find.text('Edit'), findsOneWidget);
     expect(copied, isEmpty);
     expect(find.text(kNexusCopied), findsNothing);
+
+    // Copy writes the whole line and says so.
+    await tester.tap(find.text('Copy'));
+    await tester.pumpAndSettle();
+    expect(copied, <String>['remember this']);
+    expect(find.text(kNexusCopied), findsOneWidget);
+
+    // Edit puts the sent words back in the composer, where they can be said
+    // differently. The bubble is not removed: nothing is unsent until the user
+    // sends the edited version.
+    await tester.longPress(find.text('remember this'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller?.text,
+      'remember this',
+    );
+    expect(find.text('remember this'), findsWidgets);
 
     // The reply, which is usually the half worth keeping, keeps its copy
     // control: the fine case is a selection, and the whole sentence is still
@@ -1238,7 +1266,7 @@ void main() {
     expect(replyCopy, findsOneWidget);
     await tester.tap(replyCopy);
     await tester.pump();
-    expect(copied, <String>[ollama.reply]);
+    expect(copied, <String>['remember this', ollama.reply]);
     expect(find.text(kNexusCopied), findsOneWidget);
   });
 
@@ -4479,7 +4507,7 @@ void main() {
     expect(history.any((AiTurn turn) => turn.text == 'and now?'), isFalse);
   });
 
-  testWidgets('Clear chat asks first, then forgets it everywhere', (
+  testWidgets('Clear chat is gone from Settings, and the thread survives it', (
     tester,
   ) async {
     await pumpShell(tester);
@@ -4490,41 +4518,22 @@ void main() {
     expect(chat.hasChat, isTrue);
 
     await openTab(tester, 'Settings', 3);
+    // The row used to sit under the Privacy section. Scroll the whole list to
+    // its end so "not found" means absent, not merely below the fold: deleting
+    // chats now lives in the drawer's multi-select, where the chats are.
     await tester.scrollUntilVisible(
-      find.text(kNexusClearChatRow),
-      200,
+      find.text('Version'),
+      300,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
-
-    // The title is the danger colour, so the row reads as destructive before it
-    // is read, and the subtitle says what exactly would go.
-    final Text title = tester.widget<Text>(find.text(kNexusClearChatRow));
-    expect(title.style?.color, NexusUiColors.light.danger);
-    expect(find.textContaining('2 messages'), findsOneWidget);
-
-    await tester.tap(find.text(kNexusClearChatRow));
-    await tester.pumpAndSettle();
-    expect(find.text(kNexusClearChatTitle), findsOneWidget);
-    expect(find.textContaining('nothing can be recovered'), findsOneWidget);
-
-    // Backing out leaves the conversation alone.
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-    expect(chat.hasChat, isTrue);
-
-    // Confirming forgets it: the store, the row that counts it, and the thread.
-    await tester.tap(find.text(kNexusClearChatRow));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(kNexusConfirmAction));
-    await tester.pumpAndSettle();
-
-    expect(chat.hasChat, isFalse);
     expect(find.text(kNexusClearChatRow), findsNothing);
+    expect(find.text(kNexusClearChatTitle), findsNothing);
 
+    // Nothing was deleted on the way through Settings.
+    expect(chat.hasChat, isTrue);
     await openTab(tester, 'Home', 0);
-    expect(find.text('Hey, what do you need?'), findsOneWidget);
-    expect(find.text('what is the weather?'), findsNothing);
+    expect(find.text('what is the weather?'), findsOneWidget);
   });
 
   testWidgets('the Devices header offers a + that opens the pairing sheet', (
@@ -5490,6 +5499,287 @@ void main() {
     expect(find.text(kNexusNotEnoughMemoryText), findsNothing);
     expect(ollama.prompts, hasLength(2));
     expect(modelChoice.choice, OnDeviceModelChoice.qwen);
+  });
+
+  testWidgets('a drag from the left edge opens the chat drawer', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+    expect(find.text('Chats'), findsNothing);
+
+    // From the edge itself, which is the gesture a phone user makes. The
+    // scaffold gives the first 32 points to the drawer.
+    await tester.dragFrom(const Offset(2, 300), const Offset(260, 0));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Chats'), findsOneWidget);
+    expect(find.byKey(kNexusNewChat), findsOneWidget);
+  });
+
+  testWidgets('long-press offers the menu, and multi-select comes second', (
+    tester,
+  ) async {
+    chat.save(const <ChatEntry>[
+      ChatEntry('A chat to manage', mine: true),
+      ChatEntry('Here to help.'),
+    ]);
+    await pumpShell(tester);
+    // `attach` migrates the single-thread store into a session of its own, so
+    // the id is read after the screen has restored, not before.
+    final String id = chat.activeSessionId!;
+    await tester.tap(find.byKey(kNexusChatMenu));
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.byKey(ValueKey<String>('chat-session-$id')));
+    await tester.pumpAndSettle();
+    expect(find.text('Rename'), findsOneWidget);
+    expect(find.text('Pin'), findsOneWidget);
+    expect(find.text('Multi-select'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
+    expect(find.text('1 selected'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-menu-multiselect')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 selected'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('delete-all-chats')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('rename and pin persist on the drawer row', (tester) async {
+    chat.save(const <ChatEntry>[
+      ChatEntry('An old name', mine: true),
+      ChatEntry('An answer.'),
+    ]);
+    await pumpShell(tester);
+    final String id = chat.activeSessionId!;
+    await tester.tap(find.byKey(kNexusChatMenu));
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.byKey(ValueKey<String>('chat-session-$id')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey<String>('chat-menu-rename')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('rename-chat-field')),
+      'Project notes',
+    );
+    await tester.tap(find.byKey(const ValueKey<String>('rename-chat-save')));
+    await tester.pumpAndSettle();
+    expect(find.text('Project notes'), findsOneWidget);
+
+    await tester.longPress(find.byKey(ValueKey<String>('chat-session-$id')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey<String>('chat-menu-pin')));
+    await tester.pumpAndSettle();
+    expect(find.text('PINNED'), findsOneWidget);
+    expect(chat.sessions.single.pinned, isTrue);
+    expect(chat.sessions.single.title, 'Project notes');
+  });
+
+  testWidgets('seven taps on the version row unlock Developer Logs', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    LogService.debugReset();
+    LogService.instance.log('TEST: developer logs are visible');
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey<String>('app-version-row')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+
+    final Finder version = find.byKey(
+      const ValueKey<String>('app-version-row'),
+    );
+    for (int i = 0; i < 7; i++) {
+      await tester.tap(version);
+      await tester.pump(const Duration(milliseconds: 80));
+    }
+    await tester.pumpAndSettle();
+
+    expect(find.text('Developer Mode Unlocked!'), findsOneWidget);
+    expect(tab('Logs'), findsOneWidget);
+    await tester.tap(tab('Logs'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('developer-logs-list')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('TEST: developer logs'), findsOneWidget);
+    // The count is a number, not the list's own `toString()`: the header once
+    // printed `[Instance of 'LogLine', …].length` over the page.
+    expect(find.text('1 of 500 lines — newest last'), findsOneWidget);
+    expect(find.textContaining('Instance of'), findsNothing);
+    expect(find.text('Copy to Clipboard'), findsOneWidget);
+    expect(find.text('Clear Logs'), findsOneWidget);
+  });
+
+  testWidgets('the accent block is large and taps anywhere open the wheel', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+
+    final Size block = tester.getSize(find.byKey(kNexusPickColor));
+    expect(block.width, greaterThan(260));
+    expect(block.height, greaterThanOrEqualTo(90));
+
+    // A tap in the empty corner, not on the old button's centre: the whole
+    // block is the control now.
+    final Rect rect = tester.getRect(find.byKey(kNexusPickColor));
+    await tester.tapAt(rect.bottomRight - const Offset(10, 10));
+    await tester.pumpAndSettle();
+    expect(find.byKey(kNexusColorWheel), findsOneWidget);
+  });
+
+  testWidgets('a newer release becomes a dismissible Home banner', (
+    tester,
+  ) async {
+    HomeTab.updateCheckOverride = () async => const UpdateCheck(
+      UpdateInfo(
+        version: '9.9.9',
+        downloadUrl: 'https://example.com/nexus-9.9.9.apk',
+      ),
+    );
+    await pumpShell(tester);
+    // The launch check is an async read of the package version followed by the
+    // (injected) release lookup; give those two turns a frame to land.
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump();
+
+    expect(find.text('Nexus v9.9.9 is available'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey<String>('update-banner-dismiss')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey<String>('update-banner')), findsNothing);
+  });
+
+  test('a thought block splits into reasoning and answer, even mid-stream', () {
+    final NexusThoughtSplit finished = splitNexusThought(
+      '<thought>check the map</thought>It is on the table.',
+    );
+    expect(finished.thinking, isFalse);
+    expect(finished.reasoning, 'check the map');
+    expect(finished.answer, 'It is on the table.');
+
+    final NexusThoughtSplit streaming = splitNexusThought(
+      '<thought>check the map',
+    );
+    expect(streaming.thinking, isTrue);
+    expect(streaming.reasoning, 'check the map');
+    expect(streaming.answer, isEmpty);
+
+    // A half-written opening tag is hidden rather than flashed for one frame.
+    expect(splitNexusThought('Hello <thou').answer, 'Hello');
+  });
+
+  test('labelled reasoning splits into a bubble and an answer', () {
+    for (final String label in <String>[
+      'Thought:',
+      'Thinking:',
+      'Reasoning:',
+    ]) {
+      final NexusThoughtSplit split = splitNexusThought(
+        '$label check the map\n\nThe map is on the table.',
+      );
+      expect(split.thinking, isFalse);
+      expect(split.reasoning, 'check the map');
+      expect(split.answer, 'The map is on the table.');
+    }
+
+    // The labels repeat on every line; the divider is still the answer.
+    final NexusThoughtSplit many = splitNexusThought(
+      'Thought: first\nThought: second\n\nfinal answer',
+    );
+    expect(many.reasoning, 'first\nsecond');
+    expect(many.answer, 'final answer');
+
+    // No divider: the last labelled block is the best final answer there is.
+    final NexusThoughtSplit noBoundary = splitNexusThought(
+      'Thought: first\nThought: second',
+    );
+    expect(noBoundary.reasoning, 'first');
+    expect(noBoundary.answer, 'second');
+
+    // While the stream is still arriving, the label is working-out, not an
+    // answer that happens to begin with the word "Thought".
+    final NexusThoughtSplit streaming = splitNexusThought(
+      'Thought: check the map',
+      finished: false,
+    );
+    expect(streaming.thinking, isTrue);
+    expect(streaming.reasoning, 'check the map');
+    expect(streaming.answer, isEmpty);
+
+    // Two paragraphs with no reasoning label stay one answer. The divider is
+    // only a reasoning boundary once the model has named a reasoning block.
+    final NexusThoughtSplit plain = splitNexusThought(
+      'Once upon a time\n\nThe end.',
+    );
+    expect(plain.reasoning, isEmpty);
+    expect(plain.answer, 'Once upon a time\n\nThe end.');
+  });
+
+  testWidgets('the thinking bubble streams above the answer and collapses', (
+    tester,
+  ) async {
+    ollama.reply = '<thought>Check the map.</thought>The map is on the table.';
+    await pumpShell(tester);
+    await tester.enterText(find.byType(TextField), 'where is the map?');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('reasoning-bubble')),
+      findsOneWidget,
+    );
+    expect(find.text('Thinking...'), findsOneWidget);
+    expect(find.text('The map is on the table.'), findsOneWidget);
+    expect(
+      find.text('Check the map.'),
+      findsNothing,
+      reason: 'finished reasoning starts collapsed',
+    );
+
+    await tester.tap(find.byKey(const ValueKey<String>('reasoning-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.text('Check the map.'), findsOneWidget);
+  });
+
+  testWidgets('a Thought: label gets the same thinking bubble', (tester) async {
+    ollama.reply = 'Thought: Check the map.\n\nThe map is on the table.';
+    await pumpShell(tester);
+    await tester.enterText(find.byType(TextField), 'where is the map?');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('reasoning-bubble')),
+      findsOneWidget,
+    );
+    expect(find.text('Thinking...'), findsOneWidget);
+    expect(find.text('The map is on the table.'), findsOneWidget);
+    expect(
+      find.text('Check the map.'),
+      findsNothing,
+      reason: 'finished reasoning starts collapsed',
+    );
+
+    await tester.tap(find.byKey(const ValueKey<String>('reasoning-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.text('Check the map.'), findsOneWidget);
   });
 
   test('the destructive red is solid, not a faded pink', () {

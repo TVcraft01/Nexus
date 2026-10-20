@@ -171,6 +171,16 @@ const String kMusicUnavailableText =
 /// than a description of a protocol. The last two lines matter as much as the
 /// JSON: a model told only "output JSON" starts answering "hello" with a
 /// flashlight, and one told only "answer normally" never acts at all.
+/// The one instruction that makes the thread's collapsible "Thinking…" bubble
+/// possible. Kept beside the action rules rather than in either brain so the
+/// phone's model and the PC's model are asked for the same shape, and phrased
+/// so a JSON action still ends up alone after the closing tag.
+const String kNexusReasoningRules =
+    'Before answering, think step-by-step. Put reasoning inside <thought> and '
+    '</thought> tags, then give the final answer outside them. '
+    'When the answer is a phone action, put ONLY the JSON object after '
+    '</thought>, with no sentence around it. Never mention the tags.';
+
 const String kSystemActionRules =
     'You can ask this phone to do a few things. '
     'When the user asks for one of them, reply with ONLY one JSON object, '
@@ -214,7 +224,8 @@ const String kSystemActionRules =
 ///
 /// One definition, used by both brains, so the phone's model and the PC's model
 /// are never offered different vocabularies.
-String systemWithActions(String system) => '$system\n\n$kSystemActionRules';
+String systemWithActions(String system) =>
+    '$system\n\n$kNexusReasoningRules\n\n$kSystemActionRules';
 
 /// One action the model asked for, already checked against
 /// [kSystemActionNames] and carrying the arguments it needs.

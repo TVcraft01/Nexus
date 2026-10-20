@@ -122,6 +122,34 @@ void main() {
     });
   });
 
+  group('corrections replace the fact they are about', () {
+    test("\"no, it's …\" overwrites the previous name", () async {
+      await memory.remember('My name is TVCraft');
+
+      expect(await memory.absorb("no, it's Sam"), <String>['My name is Sam']);
+      expect(memory.length, 1);
+      expect(memory.notes.single.text, 'My name is Sam');
+      expect(memory.systemContext, isNot(contains('TVCraft')));
+    });
+
+    test('"I am …" overwrites the name and leaves other facts alone', () async {
+      await memory.remember('My name is TVCraft');
+      await memory.remember('I live in Lyon');
+
+      expect(await memory.absorb('I am Sam'), <String>['My name is Sam']);
+      expect(memory.length, 2);
+      expect(memory.systemContext, contains('My name is Sam'));
+      expect(memory.systemContext, contains('I live in Lyon'));
+      expect(memory.systemContext, isNot(contains('TVCraft')));
+    });
+
+    test('a mood is still not a name', () async {
+      await memory.remember('My name is TVCraft');
+      await memory.absorb('I am tired');
+      expect(memory.notes.single.text, 'My name is TVCraft');
+    });
+  });
+
   group('delete all memory', () {
     test('removes the file and forgets every fact', () async {
       await memory.remember('My name is TVCraft');

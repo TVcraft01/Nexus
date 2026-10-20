@@ -79,9 +79,14 @@ void main() {
       expect(kSystemActionRules, contains('pasted in'));
     });
 
-    test('the composed prompt is the persona with the rules after it', () {
+    test('the composed prompt asks for thoughts, then the action rules', () {
       const String persona = 'You are Nexus.';
-      expect(systemWithActions(persona), '$persona\n\n$kSystemActionRules');
+      expect(
+        systemWithActions(persona),
+        '$persona\n\n$kNexusReasoningRules\n\n$kSystemActionRules',
+      );
+      expect(kNexusReasoningRules, contains('<thought>'));
+      expect(kNexusReasoningRules, contains('</thought>'));
     });
 
     test('the model is told not to do math with its actions', () {

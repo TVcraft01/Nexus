@@ -73,6 +73,7 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/gestures.dart' show LongPressGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter_localizations/flutter_localizations.dart';
 // The colour wheel in Settings → Theme. A package rather than a hand-rolled
 // wheel for the obvious reason: a wheel that is nearly a colour space is worse
 // than no wheel, and this one is the HSV wheel with the hex bar under it.
@@ -94,6 +95,7 @@ import 'core/device_memory.dart';
 import 'core/fast_path.dart';
 import 'core/file_link.dart';
 import 'core/local_ai_service.dart';
+import 'core/log_service.dart';
 import 'core/memory_service.dart';
 import 'core/math_helper.dart';
 import 'core/mic_access.dart';
@@ -116,6 +118,7 @@ import 'ui/image_viewer_page.dart';
 import 'ui/local_files.dart' show openLocalFile;
 import 'core/speech.dart';
 import 'core/system_actions.dart';
+import 'mesh/updater.dart';
 
 // ---------------------------------------------------------------------------
 // Tokens
@@ -796,6 +799,9 @@ void main() async {
   // user's eyes. Both reads are one file, and the model's is still not awaited
   // by the brain — see `OnDeviceAiService._warmChoice`.
   WidgetsFlutterBinding.ensureInitialized();
+  // The lines the app already writes to `debugPrint` are also kept in memory,
+  // where the hidden Developer Logs tab can show them.
+  LogService.install();
   // The eyes. Installed here rather than inside [VisionAiService.current] so
   // the interface does not import ML Kit and a widget test never builds a
   // platform model it cannot run.
@@ -913,6 +919,15 @@ class _NexusUiAppState extends State<NexusUiApp> {
       theme: NexusTheme.light(accent: _accent),
       darkTheme: NexusTheme.dark(accent: _accent),
       themeMode: _themeMode,
+      // French is prepared rather than translated wholesale: the shell's own
+      // vocabulary is English, but the two lines a French phone meets first —
+      // the greeting and the composer's hint — already speak its language.
+      localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const <Locale>[Locale('en'), Locale('fr')],
       home: switch (onboarded) {
         true => NexusShell(
           followSystem: _followSystem,
@@ -1250,6 +1265,10 @@ class NexusShell extends StatefulWidget {
 class _NexusShellState extends State<NexusShell> {
   int _tab = 0;
 
+  /// True once the hidden Developer Logs tab has been earned. Read from the
+  /// preference store on launch, so unlocking it is not a per-session trick.
+  bool _developerMode = false;
+
   /// The Settings screen's own scroll position, owned here rather than there
   /// for one reason: coming back to the screen has to start at the top, and the
   /// tab that was left halfway down a long section would otherwise return the
@@ -1269,7 +1288,26 @@ class _NexusShellState extends State<NexusShell> {
   int _homeEpoch = 0;
 
   @override
+  void initState() {
+    super.initState();
+    LogService.instance.addListener(_onLogServiceChanged);
+    unawaited(
+      LogService.instance.attach().then((_) {
+        if (!mounted) return;
+        setState(() => _developerMode = LogService.instance.developerUnlocked);
+      }),
+    );
+  }
+
+  void _onLogServiceChanged() {
+    if (!mounted) return;
+    final bool unlocked = LogService.instance.developerUnlocked;
+    if (unlocked != _developerMode) setState(() => _developerMode = unlocked);
+  }
+
+  @override
   void dispose() {
+    LogService.instance.removeListener(_onLogServiceChanged);
     _settingsScroll.dispose();
     super.dispose();
   }
@@ -1305,6 +1343,15 @@ class _NexusShellState extends State<NexusShell> {
     // What the switch reports, which is not always what the user chose: while
     // the app follows the phone, the phone has the last word.
     final bool dark = Theme.of(context).brightness == Brightness.dark;
+    final List<NexusTabSpec> tabs = <NexusTabSpec>[
+      ...NexusTabBar.defaultTabs,
+      if (_developerMode)
+        const NexusTabSpec(
+          'Logs',
+          Icons.terminal_outlined,
+          Icons.terminal_rounded,
+        ),
+    ];
     return Scaffold(
       backgroundColor: c.background,
       body: IndexedStack(
@@ -1323,9 +1370,14 @@ class _NexusShellState extends State<NexusShell> {
             scrollController: _settingsScroll,
             refreshEpoch: _settingsEpoch,
           ),
+          if (_developerMode) const DeveloperLogsTab(),
         ],
       ),
-      bottomNavigationBar: NexusTabBar(index: _tab, onSelected: _select),
+      bottomNavigationBar: NexusTabBar(
+        index: _tab,
+        onSelected: _select,
+        tabs: tabs,
+      ),
     );
   }
 }
@@ -1346,7 +1398,7 @@ class NexusTabBar extends StatelessWidget {
     super.key,
     required this.index,
     required this.onSelected,
-    this.tabs = _defaultTabs,
+    this.tabs = defaultTabs,
   });
 
   /// Which tab is active.
@@ -1358,7 +1410,7 @@ class NexusTabBar extends StatelessWidget {
   /// The four tabs, in order.
   final List<NexusTabSpec> tabs;
 
-  static const List<NexusTabSpec> _defaultTabs = <NexusTabSpec>[
+  static const List<NexusTabSpec> defaultTabs = <NexusTabSpec>[
     NexusTabSpec('Home', Icons.home_outlined, Icons.home_rounded),
     NexusTabSpec('Files', Icons.folder_outlined, Icons.folder_rounded),
     NexusTabSpec('Devices', Icons.devices_outlined, Icons.devices_rounded),
@@ -1458,6 +1510,136 @@ class _TabButton extends StatelessWidget {
   }
 }
 
+/// The hidden Developer Logs tab: the last [kLogLineLimit] lines the app wrote
+/// about itself, oldest first.
+///
+/// Reached only after seven taps on the version row. It is hidden rather than
+/// buried because a log page is a diagnostic tool, not a setting; a user who
+/// needs it has just watched something fail and should not have to hunt.
+class DeveloperLogsTab extends StatelessWidget {
+  const DeveloperLogsTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return ListenableBuilder(
+      listenable: LogService.instance,
+      builder: (BuildContext context, _) {
+        final List<LogLine> lines = LogService.instance.lines;
+        return NexusTabBody(
+          title: 'Developer Logs',
+          subtitle: lines.isEmpty
+              ? 'Nothing logged yet.'
+              : '${lines.length} of $kLogLineLimit lines — newest last',
+          trailing: IconButton(
+            key: const ValueKey<String>('copy-logs-icon'),
+            tooltip: 'Copy to clipboard',
+            onPressed: lines.isEmpty
+                ? null
+                : () => _copy(context, LogService.instance.exportText()),
+            icon: const Icon(Icons.copy_all_rounded),
+          ),
+          child: Column(
+            children: <Widget>[
+              Expanded(
+                child: Container(
+                  key: const ValueKey<String>('developer-logs-list'),
+                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: c.surface,
+                    border: Border.all(color: c.hairline),
+                    borderRadius: const BorderRadius.all(NexusLayout.tile),
+                  ),
+                  child: lines.isEmpty
+                      ? Center(
+                          child: Text(
+                            'Logs from this session will appear here.',
+                            textAlign: TextAlign.center,
+                            style: NexusType.rowMeta(c),
+                          ),
+                        )
+                      : SingleChildScrollView(
+                          reverse: true,
+                          child: SelectableText(
+                            lines
+                                .map((LogLine line) => line.display)
+                                .join('\n'),
+                            style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 11.5,
+                              height: 1.45,
+                              color: c.textStrong,
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: FilledButton.icon(
+                        key: const ValueKey<String>('copy-logs'),
+                        onPressed: lines.isEmpty
+                            ? null
+                            : () => _copy(
+                                context,
+                                LogService.instance.exportText(),
+                              ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: c.accent,
+                          foregroundColor: c.onAccent,
+                          minimumSize: const Size.fromHeight(46),
+                        ),
+                        icon: const Icon(Icons.copy_rounded, size: 18),
+                        label: const Text('Copy to Clipboard'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    OutlinedButton(
+                      key: const ValueKey<String>('clear-logs'),
+                      onPressed: lines.isEmpty
+                          ? null
+                          : () {
+                              LogService.instance.clear();
+                              ScaffoldMessenger.of(context)
+                                ..hideCurrentSnackBar()
+                                ..showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Logs cleared.'),
+                                  ),
+                                );
+                            },
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: c.danger,
+                        minimumSize: const Size(0, 46),
+                        side: BorderSide(color: c.hairline),
+                      ),
+                      child: const Text('Clear Logs'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _copy(BuildContext context, String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(content: Text('Logs copied to clipboard.')),
+      );
+  }
+}
+
 /// The shared body of the three list screens: a title block, then content
 /// centred in [NexusLayout.content].
 class NexusTabBody extends StatelessWidget {
@@ -1534,14 +1716,19 @@ class NexusTabBody extends StatelessWidget {
 
 /// A group label: "APPEARANCE", "PAIRED DEVICES".
 class NexusSectionLabel extends StatelessWidget {
-  const NexusSectionLabel(this.text, {super.key});
+  const NexusSectionLabel(this.text, {super.key, this.first = false});
 
   final String text;
+
+  /// True for the first label on a page: the page header already supplies the
+  /// separation, and a second 22-point gap there reads as an empty line rather
+  /// than as a section boundary.
+  final bool first;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 22, 4, 8),
+      padding: EdgeInsets.fromLTRB(4, first ? 0 : 22, 4, 8),
       child: Text(text.toUpperCase(), style: NexusType.section(context.ui)),
     );
   }
@@ -1744,12 +1931,66 @@ Future<bool> showNexusPermissionDialog(
   return open ?? false;
 }
 
-/// Where the About section sends a user who wants the newest build. The
-/// releases page is the one URL that stays true across versions; the app does
-/// not need a token, an API call, or a second updater to open it.
-const String kNexusReleasesUrl =
-    'https://github.com/tvcraft01/Nexus/releases/latest';
+/// The About section's one update control. It asks GitHub for the latest
+/// release and, when there is one, offers its APK — it never sends the user to
+/// the releases page to find the file themselves.
 const String kNexusCheckUpdatesRow = 'Check for Updates';
+
+/// Offers [info]'s APK in a dialog, and opens its download URL only on a yes.
+///
+/// Shared by the Settings row and the Home banner so the two cannot disagree
+/// about what an update is or where it comes from. The browser is deliberate:
+/// the APK is the release's own artifact, and handing it to Android's download
+/// manager keeps the install permission prompt in the system's hands.
+Future<void> showNexusUpdateDialog(
+  BuildContext context,
+  UpdateInfo info,
+) async {
+  final NexusUiColors c = context.ui;
+  final bool install =
+      await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: c.surface,
+          title: Text(
+            'Update Available (v${info.version})',
+            style: NexusType.rowTitle(c),
+          ),
+          content: Text(
+            'Install now?',
+            style: NexusType.rowMeta(c).copyWith(height: 1.4),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text('Not now', style: TextStyle(color: c.textMuted)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Install now'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+  if (!install || !context.mounted) return;
+  final String? url = info.downloadUrl;
+  if (url == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('This release has no APK to install.')),
+    );
+    return;
+  }
+  final bool opened = await launchUrl(
+    Uri.parse(url),
+    mode: LaunchMode.externalApplication,
+  );
+  if (!opened && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not open the APK download.')),
+    );
+  }
+}
 
 /// The title on the dialog that stands in front of a destructive row.
 const String kNexusDeleteModelTitle = 'Delete AI Model?';
@@ -1879,85 +2120,82 @@ class _AccentRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
-    // Not a [NexusRow] with a trailing button, and deliberately: a row lays its
-    // trailing control out beside the words, and "Pick a custom color" is a
-    // sentence rather than a glyph — beside the title on a 390pt phone it leaves
-    // the second line about fifty points wide and the row unreadable. So the
-    // button goes *under* the words it belongs to, at the disc's full-width
-    // indent, and the row has nothing left that can be squeezed.
-    return Semantics(
-      container: true,
-      label: 'Accent colour. ${selected.label}',
-      child: Padding(
-        key: kNexusAccentRow,
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Row(
-              children: <Widget>[
-                _AccentDisc(color: selected.swatch, size: 52),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text('Accent colour', style: NexusType.rowTitle(c)),
-                      const SizedBox(height: 3),
-                      Text(
-                        'Buttons, switches and the active tab — '
-                        '${selected.label}',
-                        style: NexusType.rowMeta(c),
+    // The whole block is the control. It used to be a row with a button under
+    // it, and the feedback was immediate: users tapped the big colour swatch and
+    // nothing happened, because only the button opened the wheel. Now the block
+    // is a solid field of the accent itself — impossible to mistake for a label
+    // — and every point inside it opens the picker.
+    final Color ink = c.onAccent;
+    return Padding(
+      key: kNexusAccentRow,
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+      child: Semantics(
+        container: true,
+        button: true,
+        label: 'Accent colour. ${selected.label}. Opens the colour wheel.',
+        child: Material(
+          color: c.accent,
+          borderRadius: const BorderRadius.all(NexusLayout.tile),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            key: kNexusPickColor,
+            onTap: onSelected == null ? null : () => _pick(context),
+            borderRadius: const BorderRadius.all(NexusLayout.tile),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 96),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
+                child: Row(
+                  children: <Widget>[
+                    Container(
+                      width: 54,
+                      height: 54,
+                      decoration: BoxDecoration(
+                        color: ink.withValues(alpha: 0.16),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: ink.withValues(alpha: 0.38)),
                       ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            // The picker is the point of the section, so it is a full-width
-            // filled button rather than a text link: a colour wheel hidden
-            // behind eight-point type is a setting most users never find.
-            FilledButton.icon(
-              key: kNexusPickColor,
-              onPressed: onSelected == null ? null : () => _pick(context),
-              style: FilledButton.styleFrom(
-                backgroundColor: c.accent,
-                foregroundColor: Colors.white,
-                minimumSize: const Size.fromHeight(50),
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.all(NexusLayout.tile),
+                      child: Icon(Icons.palette_outlined, color: ink, size: 27),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Text(
+                            'Accent colour',
+                            style: NexusType.rowTitle(
+                              c,
+                            ).copyWith(color: ink, fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Choose accent color',
+                            style: NexusType.rowMeta(c)
+                                .copyWith(color: ink.withValues(alpha: 0.82)),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${selected.label} · tap anywhere on this block',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: ink.withValues(alpha: 0.7),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      color: ink.withValues(alpha: 0.8),
+                    ),
+                  ],
                 ),
               ),
-              icon: const Icon(Icons.palette_outlined, size: 20),
-              label: const Text('Choose accent color'),
             ),
-          ],
+          ),
         ),
-      ),
-    );
-  }
-}
-
-/// The disc that stands where an icon tile would: the accent in full, at the
-/// same size as the tiles beside it, so the row says which colour is in force
-/// before it is read.
-class _AccentDisc extends StatelessWidget {
-  const _AccentDisc({required this.color, this.size = 40});
-
-  final Color color;
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.ui;
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        border: Border.all(color: c.hairline),
       ),
     );
   }
@@ -2088,6 +2326,7 @@ class NexusMockMessage {
     this.filePath,
     this.visionText,
     this.visionLabels = const <String>[],
+    this.reasoning,
   });
 
   final String text;
@@ -2134,6 +2373,7 @@ class NexusMockMessage {
     filePath: filePath,
     visionText: detectedText,
     visionLabels: labels,
+    reasoning: reasoning,
   );
 
   /// True for the user's side of the thread (right, grey, tail on the left).
@@ -2160,6 +2400,178 @@ class NexusMockMessage {
   /// Whether a [system] line reports something that happened (true) or a
   /// refusal. Only the icon changes.
   final bool ok;
+
+  /// The model's `<thought>` text, shown in a collapsible grey bubble above the
+  /// answer. Null for every line that did not think out loud.
+  final String? reasoning;
+}
+
+/// One reply split around its `<thought>` block.
+///
+/// [answer] is what belongs in the main bubble, [reasoning] is what belongs in
+/// the collapsible one, and [thinking] is true while the reasoning has not been
+/// followed by an answer yet — which is the window in which its bubble streams.
+@immutable
+class NexusThoughtSplit {
+  const NexusThoughtSplit({
+    required this.answer,
+    required this.reasoning,
+    required this.thinking,
+  });
+
+  final String answer;
+  final String reasoning;
+  final bool thinking;
+}
+
+/// Splits a model reply around its reasoning.
+///
+/// The prompt asks for `<thought>…</thought>`, but a small on-device model does
+/// not always keep that promise: Qwen 0.5B answers with a plain `Thought:`
+/// label instead. Both shapes are read here, beside each other, so the stream
+/// and the finished reply cannot disagree about which part is the answer.
+///
+/// A labelled reply is split at the first double newline: everything before it
+/// is reasoning and everything after it is the answer. Without a double
+/// newline, the last labelled block is the answer and the blocks before it are
+/// reasoning. A single labelled block stays an answer rather than hiding the
+/// model's only useful sentence behind a collapsed bubble. A normal
+/// multi-paragraph answer with no label is left whole: two paragraphs are not
+/// evidence that the first one is working-out.
+///
+/// [finished] is false while the stream is still arriving. Until the answer
+/// has arrived, labelled text stays in the reasoning bubble and the main bubble
+/// is the placeholder. A standalone call defaults to a finished reply.
+NexusThoughtSplit splitNexusThought(String text, {bool finished = true}) {
+  const String open = '<thought>';
+  const String close = '</thought>';
+  final int start = text.indexOf(open);
+  if (start < 0) {
+    final RegExpMatch? label = _reasoningLabel.firstMatch(text);
+    if (label != null) {
+      return _splitLabelledReasoning(text, label, finished: finished);
+    }
+    return NexusThoughtSplit(
+      answer: _withoutPartialTag(text, open),
+      reasoning: '',
+      thinking: false,
+    );
+  }
+  final int end = text.indexOf(close, start + open.length);
+  final String reasoning = end < 0
+      ? text.substring(start + open.length)
+      : text.substring(start + open.length, end);
+  final String answer = end < 0
+      ? text.substring(0, start)
+      : '${text.substring(0, start)}${text.substring(end + close.length)}';
+  return NexusThoughtSplit(
+    answer: answer.trim(),
+    reasoning: reasoning.trim(),
+    thinking: end < 0,
+  );
+}
+
+/// The labels a small model writes when it forgets the tags. Anchored to a line
+/// start so a sentence that happens to contain the word "reasoning:" mid-line
+/// is not mistaken for a reasoning block.
+final RegExp _reasoningLabel = RegExp(
+  r'^[ \t]*(?:thought|thinking|reasoning):[ \t]*',
+  caseSensitive: false,
+  multiLine: true,
+);
+
+/// Splits `Thought: …`, `Thinking: …` or `Reasoning: …` into the same two
+/// pieces the tag path returns.
+NexusThoughtSplit _splitLabelledReasoning(
+  String text,
+  RegExpMatch label, {
+  required bool finished,
+}) {
+  final String before = text.substring(0, label.start).trim();
+  final String after = text.substring(label.end);
+  final int divider = after.indexOf('\n\n');
+  if (divider >= 0) {
+    final String reasoning = _withoutReasoningLabels(
+      after.substring(0, divider),
+    );
+    final String answer = after.substring(divider + 2).trim();
+    if (answer.isNotEmpty) {
+      return NexusThoughtSplit(
+        answer: _joinParagraphs(before, answer),
+        reasoning: reasoning,
+        thinking: false,
+      );
+    }
+    if (!finished) {
+      return NexusThoughtSplit(
+        answer: before,
+        reasoning: reasoning,
+        thinking: true,
+      );
+    }
+    // The stream ended on the divider. Fall through to the labelled blocks so
+    // a conclusion in the last one is not thrown away.
+  }
+  if (!finished) {
+    return NexusThoughtSplit(
+      answer: before,
+      reasoning: _withoutReasoningLabels(after),
+      thinking: true,
+    );
+  }
+  final List<String> blocks = _reasoningBlocks(after);
+  if (blocks.length > 1) {
+    final String answer = blocks.removeLast();
+    return NexusThoughtSplit(
+      answer: _joinParagraphs(before, answer),
+      reasoning: blocks.join('\n').trim(),
+      thinking: false,
+    );
+  }
+  return NexusThoughtSplit(
+    answer: _joinParagraphs(before, _withoutReasoningLabels(after)),
+    reasoning: '',
+    thinking: false,
+  );
+}
+
+/// Every labelled block after the first label, with the labels removed.
+List<String> _reasoningBlocks(String text) {
+  final List<RegExpMatch> matches = _reasoningLabel.allMatches(text).toList();
+  if (matches.isEmpty) return const <String>[];
+  final List<String> blocks = <String>[];
+  // The first label was consumed by the caller, so the text before the next
+  // label is a block too — without this the first thought disappears whenever
+  // the model labels every line.
+  final String first = text.substring(0, matches.first.start).trim();
+  if (first.isNotEmpty) blocks.add(first);
+  for (int i = 0; i < matches.length; i++) {
+    final int start = matches[i].end;
+    final int end = i + 1 < matches.length ? matches[i + 1].start : text.length;
+    final String block = text.substring(start, end).trim();
+    if (block.isNotEmpty) blocks.add(block);
+  }
+  return blocks;
+}
+
+String _withoutReasoningLabels(String text) =>
+    text.replaceAll(_reasoningLabel, '').trim();
+
+String _joinParagraphs(String before, String after) {
+  final String first = before.trim();
+  final String second = after.trim();
+  if (first.isEmpty) return second;
+  if (second.isEmpty) return first;
+  return '$first\n\n$second';
+}
+
+/// Drops a trailing fragment of [tag] — `<thou`, for example — that the stream
+/// has not finished writing.
+String _withoutPartialTag(String text, String tag) {
+  final int lt = text.lastIndexOf('<');
+  if (lt < 0 || text.length - lt >= tag.length) return text;
+  final String fragment = text.substring(lt).toLowerCase();
+  return tag.startsWith(fragment) ? text.substring(0, lt).trimRight() : text;
 }
 
 // ---------------------------------------------------------------------------
@@ -2618,6 +3030,11 @@ class HomeTab extends StatefulWidget {
   /// [SettingsTab.refreshEpoch] for the same signal on the other screen.
   final int refreshEpoch;
 
+  /// Test seam for the silent launch check. The app never sets it; a widget
+  /// test supplies a canned release instead of reaching GitHub.
+  @visibleForTesting
+  static Future<UpdateCheck> Function()? updateCheckOverride;
+
   @override
   State<HomeTab> createState() => _HomeTabState();
 }
@@ -2644,11 +3061,29 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// thread shows instead is [_Welcome] — a heading, not a message.
   final List<NexusMockMessage> _thread = <NexusMockMessage>[];
 
+  /// Answers the user has thumbed up or down, by their index in [_thread].
+  ///
+  /// Deliberately in memory: a reaction is a note to this session, and a
+  /// relabelled bubble is worse than a forgotten one. The sets are cleared
+  /// whenever the thread is replaced, so an index can never point at a line
+  /// the user did not rate.
+  final Set<int> _liked = <int>{};
+  final Set<int> _disliked = <int>{};
+
   /// Which stored conversation the bubbles belong to. Kept here so the drawer
   /// can change it and the log's notification can tell a switch from this
   /// screen's own save (which must not rebuild the thread under a streaming
   /// answer).
   String? _activeChatId;
+
+  /// A newer release found by the silent check at launch. Null means there is
+  /// nothing to draw — either the check has not finished or there is no newer
+  /// build.
+  UpdateInfo? _startupUpdate;
+
+  /// The user closed the banner. It stays closed for this session; the next
+  /// launch checks again, which is what keeps a release from being forgotten.
+  bool _updateBannerDismissed = false;
 
   /// The three chips this screen offers. Chosen once, when the tab is built,
   /// so a rebuild (a keystroke, a theme change) cannot reshuffle them under the
@@ -2957,6 +3392,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // opens, rather than per message: the point of it is what is on screen when
     // the app comes back, and there is no second moment that matters.
     unawaited(_restoreThread());
+    // Silent on purpose: no dialog and no snackbar at launch. A release that
+    // exists is a banner the user can ignore, not a modal in front of the first
+    // question they wanted to ask.
+    unawaited(_checkStartupUpdate());
     ChatLog.instance.addListener(_onChatLog);
     // The microphone is only ever open while this app is on screen, and this is
     // what makes that true rather than hoped for: Android and Apple both treat a
@@ -3537,6 +3976,21 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       );
   }
 
+  /// Asks GitHub once, quietly, whether this build is the newest. Failures are
+  /// silent by design: a check that could not be made is not news, and a banner
+  /// saying so would be a worse launch than no banner.
+  Future<void> _checkStartupUpdate() async {
+    final UpdateCheck check;
+    if (HomeTab.updateCheckOverride != null) {
+      check = await HomeTab.updateCheckOverride!();
+    } else {
+      final String current = await installedAppVersion();
+      check = await Updater.checkForUpdate(currentVersion: current);
+    }
+    if (!mounted || check.info == null) return;
+    setState(() => _startupUpdate = check.info);
+  }
+
   /// Puts the conversation from the last launch back on screen.
   ///
   /// [ChatLog.attach] is idempotent — the shell builds the tab once and keeps
@@ -3559,6 +4013,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   void _loadThreadFrom(ChatLog log) {
     bool repaired = false;
     setState(() {
+      _liked.clear();
+      _disliked.clear();
       _thread
         ..clear()
         ..addAll(<NexusMockMessage>[
@@ -3573,6 +4029,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
               filePath: entry.filePath,
               visionText: entry.visionText,
               visionLabels: entry.visionLabels,
+              reasoning: entry.reasoning,
             ),
         ]);
     });
@@ -3626,6 +4083,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             filePath: message.filePath,
             visionText: message.visionText,
             visionLabels: message.visionLabels,
+            reasoning: message.reasoning,
           ),
     ]);
   }
@@ -3787,6 +4245,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// spoken, and it cannot be replayed, because it is the shell talking about
   /// itself rather than the assistant answering.
   Future<void> _answer(String prompt, int index, {required bool spoken}) async {
+    final Stopwatch clock = Stopwatch()..start();
     final StringBuffer buffer = StringBuffer();
     // Whether any of the answer has been shown yet: until it has, the bubble is
     // still the placeholder and may be replaced under us; after it has, the
@@ -3819,16 +4278,26 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
           // and the placeholder stays until the request is whole and the
           // interceptor can say what happened. Prose streams exactly as it
           // always did, so nothing that is not an action pays for this.
-          final String visible = nexusStreamingProse(buffer.toString());
-          if (visible.trim().isEmpty && buffer.toString().contains('{')) {
+          final NexusThoughtSplit split = splitNexusThought(
+            buffer.toString(),
+            finished: false,
+          );
+          final String visible = nexusStreamingProse(split.answer);
+          final String reasoning = split.reasoning.trim();
+          if (visible.trim().isEmpty && split.answer.contains('{')) {
             continue;
           }
-          shown = true;
+          shown = shown || visible.isNotEmpty || reasoning.isNotEmpty;
           // A half-written answer is a placeholder, not a reply: the words are
           // on screen as they arrive, and the copy/speaker row waits for the
-          // sentence to be whole. See [NexusChatBubble.thinking].
+          // sentence to be whole. See [NexusChatBubble.thinking]. The reasoning
+          // streams above it in its own bubble while [split.thinking] is true.
           setState(
-            () => _thread[index] = NexusMockMessage(visible, thinking: true),
+            () => _thread[index] = NexusMockMessage(
+              visible.isEmpty ? kNexusThinking : visible,
+              thinking: true,
+              reasoning: reasoning.isEmpty ? null : reasoning,
+            ),
           );
           _scrollToLatestSoon();
         }
@@ -3861,8 +4330,16 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         break;
       }
     }
+    LogService.instance.log(
+      'AI: answer in ${clock.elapsedMilliseconds}ms '
+      '(${prompt.length} chars${failed ? ', failed' : ''})',
+    );
     if (!mounted || index >= _thread.length) return;
-    String reply = buffer.toString();
+    final NexusThoughtSplit thought = splitNexusThought(buffer.toString());
+    final String? reasoning = thought.reasoning.trim().isEmpty
+        ? null
+        : thought.reasoning.trim();
+    String reply = thought.answer;
     if (reply.isEmpty) {
       // Nothing at all came back and nothing threw: a brain that answered with
       // silence is not an answer, and the user is owed the notice.
@@ -3879,7 +4356,12 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     if (!failed) {
       final NexusActionIntercept intercept = interceptSystemActions(reply);
       if (intercept.acted) {
-        await _runActions(intercept, index, spoken: spoken);
+        await _runActions(
+          intercept,
+          index,
+          spoken: spoken,
+          reasoning: reasoning,
+        );
         return;
       }
       // The interceptor is also where an answer written in JSON becomes words:
@@ -3890,7 +4372,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
           ? kNexusNoAnswerText
           : intercept.text;
     }
-    setState(() => _thread[index] = NexusMockMessage(reply, failed: failed));
+    setState(
+      () => _thread[index] = NexusMockMessage(
+        reply,
+        failed: failed,
+        reasoning: reasoning,
+      ),
+    );
     // The answer is now half of what the next question will be read against.
     _persistThread();
     _scrollToLatest();
@@ -3940,6 +4428,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     NexusActionIntercept intercept,
     int index, {
     required bool spoken,
+    String? reasoning,
   }) async {
     final String prose = intercept.text.trim();
     if (!mounted || index >= _thread.length) return;
@@ -3950,7 +4439,9 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       // the same place the answer would have taken.
       setState(() => _thread.removeAt(index));
     } else {
-      setState(() => _thread[index] = NexusMockMessage(prose));
+      setState(
+        () => _thread[index] = NexusMockMessage(prose, reasoning: reasoning),
+      );
       at = index + 1;
       _persistThread();
       _scrollToLatest();
@@ -3963,6 +4454,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     for (final SystemActionCall call in intercept.calls) {
       final SystemActionOutcome outcome = await SystemActions.current.execute(
         call,
+      );
+      LogService.instance.log(
+        'ACTION: ${call.action} ${outcome.ok ? 'ok' : 'failed'} — '
+        '${outcome.message}',
       );
       if (!mounted) return;
       lines.add((outcome.message, outcome.ok));
@@ -4627,8 +5122,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
           // action request, and the page says "Thinking…" for the half-second
           // it takes to be whole rather than spelling raw JSON out in large
           // type.
-          final String visible = nexusStreamingProse(buffer.toString());
-          if (visible.trim().isEmpty && buffer.toString().contains('{')) {
+          final NexusThoughtSplit thought = splitNexusThought(
+            buffer.toString(),
+            finished: false,
+          );
+          final String visible = nexusStreamingProse(thought.answer);
+          if (visible.trim().isEmpty &&
+              (buffer.toString().contains('{') || thought.thinking)) {
             continue;
           }
           // The words are the page now: the orb keeps its working colour while
@@ -4687,8 +5187,9 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // to the live page should see the flashlight turn on, not a JSON object —
     // whether the model wrote strict JSON or the loose `{action: …}` a small
     // model actually produces.
+    final String spokenText = splitNexusThought(buffer.toString()).answer;
     final NexusActionIntercept intercept = spoken
-        ? interceptSystemActions(buffer.toString())
+        ? interceptSystemActions(spokenText)
         : const NexusActionIntercept('', <SystemActionCall>[]);
     if (intercept.acted) {
       // Some of these actions open Android's own app — the clock, the music
@@ -5164,6 +5665,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     return Scaffold(
       key: _homeScaffold,
       backgroundColor: Colors.transparent,
+      // A wider edge than Material's default: on a phone in a case the first
+      // few millimetres belong to the bezel, and a drawer nobody can swipe open
+      // is a drawer that only the menu button reaches.
+      drawerEdgeDragWidth: 32,
       drawer: _ChatDrawer(
         chat: ChatLog.instance,
         onNewChat: _newChat,
@@ -5174,6 +5679,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         child: Column(
           children: <Widget>[
             _HomeHeader(onMenu: () => _homeScaffold.currentState?.openDrawer()),
+            if (_startupUpdate != null && !_updateBannerDismissed)
+              _UpdateBanner(
+                info: _startupUpdate!,
+                onInstall: () =>
+                    unawaited(showNexusUpdateDialog(context, _startupUpdate!)),
+                onDismiss: () => setState(() => _updateBannerDismissed = true),
+              ),
             Expanded(
               // Centred while the thread is short, scrollable once it is not,
               // and never clipped when the keyboard takes the bottom half.
@@ -5201,10 +5713,15 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                           )
                         else
                           const SizedBox(height: 30),
-                        for (final message in _thread)
+                        for (final (int i, NexusMockMessage message)
+                            in _thread.indexed)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 10),
                             child: SelectionArea(
+                              // The index is this line's own name in the thread:
+                              // feedback and regeneration act on the bubble the
+                              // thumb is under, not on whichever answer is newest.
+                              key: ValueKey<String>('thread-$i'),
                               // A failure is not a reply: it takes a notice of its
                               // own instead of a bubble, so a red, bordered
                               // sentence with a warning sign can never be mistaken
@@ -5248,7 +5765,24 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                                       text: message.text,
                                       mine: message.mine,
                                       thinking: message.thinking,
+                                      reasoning: message.reasoning,
                                       maxWidth: bubbleWidth,
+                                      liked: _liked.contains(i),
+                                      disliked: _disliked.contains(i),
+                                      onLongPress: message.mine
+                                          ? () => unawaited(
+                                              _showUserMessageActions(message),
+                                            )
+                                          : null,
+                                      onLike: message.mine
+                                          ? null
+                                          : () => _react(i, true),
+                                      onDislike: message.mine
+                                          ? null
+                                          : () => _react(i, false),
+                                      onRegenerate: message.mine
+                                          ? null
+                                          : () => _regenerate(i),
                                     ),
                             ),
                           ),
@@ -5296,6 +5830,127 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     ChatLog.instance.newChat();
   }
 
+  /// Records a thumb on the answer at [index]. A thumb is a choice, not two
+  /// independent switches: tapping the other one moves the reaction rather
+  /// than leaving both filled.
+  void _react(int index, bool liked) {
+    if (index < 0 || index >= _thread.length || _thread[index].mine) return;
+    setState(() {
+      if (liked) {
+        if (!_liked.remove(index)) {
+          _liked.add(index);
+          _disliked.remove(index);
+        }
+      } else if (!_disliked.remove(index)) {
+        _disliked.add(index);
+        _liked.remove(index);
+      }
+    });
+  }
+
+  /// Re-runs the prompt that produced the answer at [index], in the same
+  /// bubble.
+  ///
+  /// The question is the nearest user line above the answer — not the last
+  /// thing in the thread, which may already be a newer question. The answer is
+  /// replaced by the thinking placeholder, and the history handed to the brain
+  /// stops before that placeholder, so the model rewrites the answer instead of
+  /// reading its old one back to itself.
+  void _regenerate(int index) {
+    if (index <= 0 || index >= _thread.length) return;
+    final NexusMockMessage answer = _thread[index];
+    if (answer.mine || answer.thinking || answer.failed || answer.system) {
+      return;
+    }
+    String? prompt;
+    for (int i = index - 1; i >= 0; i--) {
+      if (_thread[i].mine) {
+        prompt = _thread[i].text;
+        break;
+      }
+    }
+    if (prompt == null) return;
+    setState(() {
+      _thread[index] = const NexusMockMessage(kNexusThinking, thinking: true);
+      _liked.remove(index);
+      _disliked.remove(index);
+    });
+    _persistThread();
+    _scrollToLatestSoon();
+    unawaited(_answer(prompt, index, spoken: false));
+  }
+
+  /// The hold on one of the user's own messages: copy it, read it in a
+  /// selectable page, or put it back in the composer to say differently.
+  Future<void> _showUserMessageActions(NexusMockMessage message) async {
+    final c = context.ui;
+    final String? action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: c.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            ListTile(
+              key: const ValueKey<String>('message-action-copy'),
+              leading: Icon(Icons.copy_rounded, color: c.textMuted),
+              title: const Text('Copy'),
+              onTap: () => Navigator.of(sheetContext).pop('copy'),
+            ),
+            ListTile(
+              key: const ValueKey<String>('message-action-select'),
+              leading: Icon(Icons.text_fields_rounded, color: c.textMuted),
+              title: const Text('Select Text'),
+              onTap: () => Navigator.of(sheetContext).pop('select'),
+            ),
+            ListTile(
+              key: const ValueKey<String>('message-action-edit'),
+              leading: Icon(Icons.edit_outlined, color: c.textMuted),
+              title: const Text('Edit'),
+              onTap: () => Navigator.of(sheetContext).pop('edit'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'copy':
+        await nexusCopyMessage(context, message.text);
+        break;
+      case 'select':
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            backgroundColor: c.surface,
+            title: Text('Select text', style: NexusType.rowTitle(c)),
+            content: SingleChildScrollView(
+              child: SelectableText(message.text, style: NexusType.bubble(c)),
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Done'),
+              ),
+            ],
+          ),
+        );
+        break;
+      case 'edit':
+        setState(() {
+          _message.text = message.text;
+          _message.selection = TextSelection.collapsed(
+            offset: _message.text.length,
+          );
+        });
+        _focus.requestFocus();
+        break;
+    }
+  }
+
   /// Opens an older conversation from the drawer.
   void _selectChat(String id) {
     Navigator.of(context).pop();
@@ -5338,7 +5993,7 @@ const Key kNexusNewChat = Key('nexus-new-chat');
 /// row would be a second conversation to read while looking for the first, and
 /// the title is the first thing the user said. Selecting a row makes it the
 /// active session; the Home tab listens to the log and swaps the thread.
-class _ChatDrawer extends StatelessWidget {
+class _ChatDrawer extends StatefulWidget {
   const _ChatDrawer({
     required this.chat,
     required this.onNewChat,
@@ -5350,8 +6005,176 @@ class _ChatDrawer extends StatelessWidget {
   final ValueChanged<String> onSelect;
 
   @override
+  State<_ChatDrawer> createState() => _ChatDrawerState();
+}
+
+class _ChatDrawerState extends State<_ChatDrawer> {
+  /// The conversations ticked in selection mode. Empty means the drawer is in
+  /// its ordinary state; a long press puts the first id in here.
+  final Set<String> _selected = <String>{};
+
+  bool get _selecting => _selected.isNotEmpty;
+
+  void _toggle(String id) {
+    setState(() {
+      if (!_selected.remove(id)) _selected.add(id);
+    });
+  }
+
+  void _startSelecting(String id) {
+    setState(() => _selected.add(id));
+  }
+
+  /// The hold menu. Multi-select lives *behind* this rather than starting on
+  /// the hold itself: a user who just wants to rename a chat should not be
+  /// dropped into a screen full of checkboxes first.
+  Future<void> _openMenu(ChatSession session) async {
+    final c = context.ui;
+    final String? action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: c.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Text(
+                session.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: NexusType.rowTitle(c),
+              ),
+            ),
+            ListTile(
+              key: const ValueKey<String>('chat-menu-rename'),
+              leading: Icon(Icons.edit_outlined, color: c.textMuted),
+              title: const Text('Rename'),
+              onTap: () => Navigator.of(sheetContext).pop('rename'),
+            ),
+            ListTile(
+              key: const ValueKey<String>('chat-menu-pin'),
+              leading: Icon(
+                session.pinned
+                    ? Icons.push_pin_rounded
+                    : Icons.push_pin_outlined,
+                color: c.textMuted,
+              ),
+              title: Text(session.pinned ? 'Unpin' : 'Pin'),
+              onTap: () => Navigator.of(sheetContext).pop('pin'),
+            ),
+            ListTile(
+              key: const ValueKey<String>('chat-menu-multiselect'),
+              leading: Icon(Icons.checklist_rounded, color: c.textMuted),
+              title: const Text('Multi-select'),
+              onTap: () => Navigator.of(sheetContext).pop('multiselect'),
+            ),
+            ListTile(
+              key: const ValueKey<String>('chat-menu-delete'),
+              leading: Icon(Icons.delete_outline_rounded, color: c.danger),
+              title: Text('Delete', style: TextStyle(color: c.danger)),
+              onTap: () => Navigator.of(sheetContext).pop('delete'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'rename':
+        await _rename(session);
+        break;
+      case 'pin':
+        widget.chat.togglePinned(session.id);
+        break;
+      case 'multiselect':
+        _startSelecting(session.id);
+        break;
+      case 'delete':
+        final bool confirmed = await showNexusConfirm(
+          context,
+          title: 'Delete chat?',
+          message:
+              'This deletes “${session.title}” on this device. Nothing was '
+              'uploaded, and nothing can be recovered.',
+          confirmLabel: 'Delete',
+        );
+        if (confirmed && mounted) {
+          widget.chat.deleteSessions(<String>[session.id]);
+        }
+        break;
+    }
+  }
+
+  Future<void> _rename(ChatSession session) async {
+    final String? name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => _RenameChatDialog(initial: session.title),
+    );
+    if (name != null && name.trim().isNotEmpty) {
+      widget.chat.renameSession(session.id, name);
+    }
+  }
+
+  void _toggleGroup(List<ChatSession> group) {
+    final bool all = group.every(
+      (ChatSession session) => _selected.contains(session.id),
+    );
+    setState(() {
+      for (final ChatSession session in group) {
+        if (all) {
+          _selected.remove(session.id);
+        } else {
+          _selected.add(session.id);
+        }
+      }
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    if (_selected.isEmpty) return;
+    final int count = _selected.length;
+    final bool confirmed = await showNexusConfirm(
+      context,
+      title: 'Delete ${count == 1 ? 'chat' : 'chats'}?',
+      message:
+          'This deletes ${count == 1 ? '1 conversation' : '$count conversations'} '
+          'on this device. Nothing was uploaded, and nothing can be recovered.',
+      confirmLabel: 'Delete',
+    );
+    if (!confirmed || !mounted) return;
+    widget.chat.deleteSessions(_selected);
+    setState(_selected.clear);
+  }
+
+  Future<void> _deleteAll() async {
+    final List<ChatSession> sessions = widget.chat.sessions
+        .where((ChatSession session) => session.entries.isNotEmpty)
+        .toList();
+    if (sessions.isEmpty) return;
+    final bool confirmed = await showNexusConfirm(
+      context,
+      title: 'Delete all chats?',
+      message:
+          'This deletes every conversation on this device. Nothing was '
+          'uploaded, and nothing can be recovered.',
+      confirmLabel: 'Delete all',
+    );
+    if (!confirmed || !mounted) return;
+    widget.chat.deleteSessions(
+      sessions.map((ChatSession session) => session.id),
+    );
+    setState(_selected.clear);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final c = context.ui;
+    final ChatLog chat = widget.chat;
     return Drawer(
       backgroundColor: c.background,
       child: SafeArea(
@@ -5360,35 +6183,89 @@ class _ChatDrawer extends StatelessWidget {
           children: <Widget>[
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 12, 8),
-              child: Row(
-                children: <Widget>[
-                  Text('Chats', style: NexusType.pageTitle(c)),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: 'Close chats',
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: Icon(Icons.close_rounded, color: c.textMuted),
-                  ),
-                ],
-              ),
+              child: _selecting
+                  ? Row(
+                      children: <Widget>[
+                        // Smaller than the page title: three controls share this
+                        // bar, and a 34-point count pushed Delete All off the
+                        // 360-point drawer. Expanded keeps a long count from
+                        // overflowing rather than painting the debug stripes.
+                        Expanded(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              '${_selected.length} selected',
+                              maxLines: 1,
+                              style: NexusType.pageTitle(c)
+                                  .copyWith(fontSize: 22),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          key: const ValueKey<String>('delete-selected-chats'),
+                          tooltip: 'Delete selected',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: _deleteSelected,
+                          icon: Icon(
+                            Icons.delete_outline_rounded,
+                            color: c.danger,
+                          ),
+                        ),
+                        TextButton(
+                          key: const ValueKey<String>('delete-all-chats'),
+                          onPressed: _deleteAll,
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            minimumSize: const Size(0, 40),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          child: Text(
+                            'Delete All',
+                            style: TextStyle(color: c.danger, fontSize: 14),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Cancel selection',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => setState(_selected.clear),
+                          icon: Icon(Icons.close_rounded, color: c.textMuted),
+                        ),
+                      ],
+                    )
+                  : Row(
+                      children: <Widget>[
+                        Text('Chats', style: NexusType.pageTitle(c)),
+                        const Spacer(),
+                        IconButton(
+                          tooltip: 'Close chats',
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: Icon(Icons.close_rounded, color: c.textMuted),
+                        ),
+                      ],
+                    ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-              child: FilledButton.icon(
-                key: kNexusNewChat,
-                onPressed: onNewChat,
-                style: FilledButton.styleFrom(
-                  backgroundColor: c.accent,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size.fromHeight(48),
-                  shape: const RoundedRectangleBorder(
-                    borderRadius: BorderRadius.all(NexusLayout.tile),
+            if (!_selecting)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: FilledButton.icon(
+                  key: kNexusNewChat,
+                  onPressed: widget.onNewChat,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: c.accent,
+                    // The accent may be white (or any pale custom colour): white
+                    // type on it is an invisible button. The palette's onAccent
+                    // is the contrast pair the rest of the app already uses.
+                    foregroundColor: c.onAccent,
+                    minimumSize: const Size.fromHeight(48),
+                    shape: const RoundedRectangleBorder(
+                      borderRadius: BorderRadius.all(NexusLayout.tile),
+                    ),
                   ),
+                  icon: const Icon(Icons.add_comment_outlined, size: 19),
+                  label: const Text('New Chat'),
                 ),
-                icon: const Icon(Icons.add_comment_outlined, size: 19),
-                label: const Text('New Chat'),
               ),
-            ),
             Expanded(
               child: ListenableBuilder(
                 listenable: chat,
@@ -5399,15 +6276,23 @@ class _ChatDrawer extends StatelessWidget {
                       (ChatSession a, ChatSession b) =>
                           b.updatedAt.compareTo(a.updatedAt),
                     );
+                  final List<ChatSession> visible = <ChatSession>[
+                    for (final ChatSession session in sessions)
+                      if (!(session.isEmpty &&
+                          session.id != chat.activeSessionId))
+                        session,
+                  ];
+                  final List<ChatSession> pinned = <ChatSession>[
+                    for (final ChatSession session in visible)
+                      if (session.pinned) session,
+                  ];
                   final Map<String, List<ChatSession>> grouped =
                       <String, List<ChatSession>>{};
-                  for (final ChatSession session in sessions) {
-                    // A blank session is only worth a row while it is the one
-                    // being written in; a pile of abandoned blank drafts is
-                    // noise, not history.
-                    if (session.isEmpty && session.id != chat.activeSessionId) {
-                      continue;
-                    }
+                  for (final ChatSession session in visible) {
+                    // Pinned chats get their own block above the date groups,
+                    // so a month-old favourite cannot be buried under today's
+                    // drafts.
+                    if (session.pinned) continue;
                     grouped
                         .putIfAbsent(
                           chatDateGroup(session.updatedAt, now),
@@ -5415,7 +6300,13 @@ class _ChatDrawer extends StatelessWidget {
                         )
                         .add(session);
                   }
-                  if (grouped.isEmpty) {
+                  final List<MapEntry<String, List<ChatSession>>> groups =
+                      <MapEntry<String, List<ChatSession>>>[
+                        if (pinned.isNotEmpty)
+                          MapEntry<String, List<ChatSession>>('Pinned', pinned),
+                        ...grouped.entries,
+                      ];
+                  if (groups.isEmpty) {
                     return Padding(
                       padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
                       child: Text(
@@ -5428,23 +6319,61 @@ class _ChatDrawer extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 24),
                     children: <Widget>[
                       for (final MapEntry<String, List<ChatSession>> group
-                          in grouped.entries) ...<Widget>[
+                          in groups) ...<Widget>[
                         Padding(
                           padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
-                          child: Text(
-                            group.key.toUpperCase(),
-                            style: NexusType.rowMeta(c).copyWith(
-                              fontSize: 10.5,
-                              letterSpacing: 0.8,
-                              fontWeight: FontWeight.w600,
-                            ),
+                          child: Row(
+                            children: <Widget>[
+                              Expanded(
+                                child: Text(
+                                  group.key.toUpperCase(),
+                                  style: NexusType.rowMeta(c).copyWith(
+                                    fontSize: 10.5,
+                                    letterSpacing: 0.8,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              if (_selecting)
+                                SizedBox(
+                                  width: 32,
+                                  height: 32,
+                                  child: Checkbox(
+                                    key: ValueKey<String>(
+                                      'select-group-${group.key}',
+                                    ),
+                                    value: group.value.every(
+                                      (ChatSession session) =>
+                                          _selected.contains(session.id),
+                                    ),
+                                    onChanged: (_) => _toggleGroup(group.value),
+                                    visualDensity: VisualDensity.compact,
+                                    side: BorderSide(color: c.hairline),
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
                         for (final ChatSession session in group.value)
                           _ChatDrawerRow(
                             session: session,
                             selected: session.id == chat.activeSessionId,
-                            onTap: () => onSelect(session.id),
+                            selecting: _selecting,
+                            ticked: _selected.contains(session.id),
+                            onTap: () {
+                              if (_selecting) {
+                                _toggle(session.id);
+                              } else {
+                                widget.onSelect(session.id);
+                              }
+                            },
+                            onLongPress: () {
+                              if (_selecting) {
+                                _toggle(session.id);
+                              } else {
+                                unawaited(_openMenu(session));
+                              }
+                            },
                           ),
                       ],
                     ],
@@ -5455,8 +6384,11 @@ class _ChatDrawer extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
               child: Text(
-                'Chats stay on this device. Deleting them is in Settings → '
-                'Privacy.',
+                _selecting
+                    ? 'Tap more chats to add them. Use the checkbox on a date '
+                          'to pick the whole group.'
+                    : 'Chats stay on this device. Long-press one to rename, '
+                          'pin, multi-select, or delete.',
                 style: NexusType.rowMeta(c).copyWith(fontSize: 11),
               ),
             ),
@@ -5467,16 +6399,77 @@ class _ChatDrawer extends StatelessWidget {
   }
 }
 
+/// The rename dialog owns its controller for as long as its route does. A
+/// controller disposed the moment `showDialog` returns is still inside the
+/// route's reverse transition, and the TextField that uses it rebuilds once
+/// more on the way out — which is exactly the dispose-after-use crash this
+/// separate State prevents.
+class _RenameChatDialog extends StatefulWidget {
+  const _RenameChatDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_RenameChatDialog> createState() => _RenameChatDialogState();
+}
+
+class _RenameChatDialogState extends State<_RenameChatDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return AlertDialog(
+      backgroundColor: c.surface,
+      title: Text('Rename chat', style: NexusType.rowTitle(c)),
+      content: TextField(
+        key: const ValueKey<String>('rename-chat-field'),
+        controller: _controller,
+        autofocus: true,
+        maxLength: 60,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (String value) => Navigator.of(context).pop(value),
+        decoration: const InputDecoration(hintText: 'Chat name'),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          key: const ValueKey<String>('rename-chat-save'),
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
 class _ChatDrawerRow extends StatelessWidget {
   const _ChatDrawerRow({
     required this.session,
     required this.selected,
+    required this.selecting,
+    required this.ticked,
     required this.onTap,
+    required this.onLongPress,
   });
 
   final ChatSession session;
   final bool selected;
+  final bool selecting;
+  final bool ticked;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -5484,20 +6477,31 @@ class _ChatDrawerRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
       child: Material(
-        color: selected ? c.accent.withValues(alpha: 0.14) : Colors.transparent,
+        color: ticked
+            ? c.accent.withValues(alpha: 0.14)
+            : (selected
+                  ? c.accent.withValues(alpha: 0.14)
+                  : Colors.transparent),
         borderRadius: const BorderRadius.all(NexusLayout.tile),
         child: InkWell(
           key: ValueKey<String>('chat-session-${session.id}'),
           borderRadius: const BorderRadius.all(NexusLayout.tile),
           onTap: onTap,
+          onLongPress: onLongPress,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
             child: Row(
               children: <Widget>[
                 Icon(
-                  Icons.chat_bubble_outline_rounded,
-                  size: 17,
-                  color: selected ? c.accent : c.textMuted,
+                  selecting
+                      ? (ticked
+                            ? Icons.check_circle_rounded
+                            : Icons.circle_outlined)
+                      : Icons.chat_bubble_outline_rounded,
+                  size: selecting ? 19 : 17,
+                  color: ticked || (!selecting && selected)
+                      ? c.accent
+                      : c.textMuted,
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -5507,12 +6511,108 @@ class _ChatDrawerRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: NexusType.rowTitle(c).copyWith(
                       fontSize: 14,
-                      color: selected ? c.accent : c.textStrong,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                      color: ticked || (!selecting && selected)
+                          ? c.accent
+                          : c.textStrong,
+                      fontWeight: ticked || (!selecting && selected)
+                          ? FontWeight.w600
+                          : FontWeight.w400,
                     ),
                   ),
                 ),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The quiet update notice above the thread: one line, one install action, and
+/// an X that makes it go away without another check.
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner({
+    required this.info,
+    required this.onInstall,
+    required this.onDismiss,
+  });
+
+  final UpdateInfo info;
+  final VoidCallback onInstall;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 0),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: NexusLayout.content),
+          child: Material(
+            key: const ValueKey<String>('update-banner'),
+            color: c.accent.withValues(alpha: 0.11),
+            shape: RoundedRectangleBorder(
+              borderRadius: const BorderRadius.all(NexusLayout.tile),
+              side: BorderSide(color: c.accent.withValues(alpha: 0.3)),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onInstall,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 2, 8),
+                child: Row(
+                  children: <Widget>[
+                    Icon(
+                      Icons.system_update_alt_rounded,
+                      size: 20,
+                      color: c.accent,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Text(
+                            'Nexus v${info.version} is available',
+                            style: NexusType.rowTitle(c)
+                                .copyWith(fontSize: 13.5),
+                          ),
+                          Text(
+                            'Tap to install the newer build',
+                            style: NexusType.rowMeta(c)
+                                .copyWith(fontSize: 11.5),
+                          ),
+                        ],
+                      ),
+                    ),
+                    TextButton(
+                      key: const ValueKey<String>('update-banner-install'),
+                      onPressed: onInstall,
+                      style: TextButton.styleFrom(
+                        foregroundColor: c.accent,
+                        minimumSize: const Size(0, 36),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text('Install'),
+                    ),
+                    IconButton(
+                      key: const ValueKey<String>('update-banner-dismiss'),
+                      tooltip: 'Dismiss',
+                      onPressed: onDismiss,
+                      visualDensity: VisualDensity.compact,
+                      icon: Icon(
+                        Icons.close_rounded,
+                        size: 18,
+                        color: c.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
@@ -5615,18 +6715,24 @@ class _Welcome extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
+    final bool french = nexusIsFrench(context);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         Text(
-          'Hey, what do you need?',
+          french
+              ? 'Bonjour, comment puis-je aider ?'
+              : 'Hey, what do you need?',
           textAlign: TextAlign.center,
           style: NexusType.greeting(c),
         ),
         const SizedBox(height: 8),
         Text(
-          'Ask me anything. Your devices answer directly — no account, no '
-          'cloud.',
+          french
+              ? 'Demandez-moi n’importe quoi. Vos appareils répondent '
+                    'directement — sans compte, sans cloud.'
+              : 'Ask me anything. Your devices answer directly — no account, '
+                    'no cloud.',
           textAlign: TextAlign.center,
           style: NexusType.lede(c),
         ),
@@ -5668,6 +6774,15 @@ class _Welcome extends StatelessWidget {
     );
   }
 }
+
+/// True when the phone is asking for French.
+///
+/// Used for the handful of strings that have a French answer already, rather
+/// than for every label in the shell: a half-translated Settings screen is
+/// worse than an English one, and this is preparation rather than a claim that
+/// the app is localised.
+bool nexusIsFrench(BuildContext context) =>
+    Localizations.localeOf(context).languageCode == 'fr';
 
 /// What copying a line says, in one line, next to the thumb that asked.
 const String kNexusCopied = 'Message copied';
@@ -5742,6 +6857,13 @@ class NexusChatBubble extends StatelessWidget {
     required this.mine,
     this.thinking = false,
     this.maxWidth = 320,
+    this.liked = false,
+    this.disliked = false,
+    this.onLongPress,
+    this.onLike,
+    this.onDislike,
+    this.onRegenerate,
+    this.reasoning,
   });
 
   final String text;
@@ -5754,6 +6876,23 @@ class NexusChatBubble extends StatelessWidget {
 
   /// Cap on the bubble, so long messages never reach the screen edge.
   final double maxWidth;
+
+  /// The answer's feedback, held by the thread so the filled thumb survives the
+  /// rebuild that follows the tap.
+  final bool liked;
+  final bool disliked;
+
+  /// A hold on the user's own message opens the copy / select / edit sheet.
+  /// Null on Nexus's side, where the actions are always visible underneath.
+  final VoidCallback? onLongPress;
+
+  final VoidCallback? onLike;
+  final VoidCallback? onDislike;
+  final VoidCallback? onRegenerate;
+
+  /// The model's `<thought>` text. Shown above the answer in a grey collapsible
+  /// bubble; null for a reply that did not reason out loud.
+  final String? reasoning;
 
   @override
   Widget build(BuildContext context) {
@@ -5768,39 +6907,165 @@ class NexusChatBubble extends StatelessWidget {
               : CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
+            if (!mine &&
+                reasoning != null &&
+                reasoning!.trim().isNotEmpty) ...<Widget>[
+              _ReasoningBubble(text: reasoning!.trim(), streaming: thinking),
+              const SizedBox(height: 6),
+            ],
             // No gesture detector around the bubble: a press and a hold both
             // belong to the selection around it. The bubble's own padding is
             // still inside the painted box, and long-pressing it starts a
             // selection wherever the finger landed.
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
-              decoration: BoxDecoration(
-                color: mine ? c.bubbleMine : c.bubbleTheirs,
-                border: mine ? null : Border.all(color: c.hairline),
-                borderRadius: BorderRadius.only(
-                  topLeft: NexusLayout.bubble,
-                  topRight: NexusLayout.bubble,
-                  bottomLeft: mine
-                      ? NexusLayout.bubble
-                      : NexusLayout.bubbleTail,
-                  bottomRight: mine
-                      ? NexusLayout.bubbleTail
-                      : NexusLayout.bubble,
+            GestureDetector(
+              onLongPress: onLongPress,
+              behavior: HitTestBehavior.opaque,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 15,
+                  vertical: 11,
+                ),
+                decoration: BoxDecoration(
+                  color: mine ? c.bubbleMine : c.bubbleTheirs,
+                  border: mine ? null : Border.all(color: c.hairline),
+                  borderRadius: BorderRadius.only(
+                    topLeft: NexusLayout.bubble,
+                    topRight: NexusLayout.bubble,
+                    bottomLeft: mine
+                        ? NexusLayout.bubble
+                        : NexusLayout.bubbleTail,
+                    bottomRight: mine
+                        ? NexusLayout.bubbleTail
+                        : NexusLayout.bubble,
+                  ),
+                ),
+                child: Text(
+                  text,
+                  style: thinking
+                      ? NexusType.bubble(c).copyWith(
+                          color: c.textMuted,
+                          fontStyle: FontStyle.italic,
+                        )
+                      : NexusType.bubble(c),
                 ),
               ),
-              child: Text(
-                text,
-                style: thinking
-                    ? NexusType.bubble(c).copyWith(
-                        color: c.textMuted,
-                        fontStyle: FontStyle.italic,
-                      )
-                    : NexusType.bubble(c),
-              ),
             ),
-            if (!mine && !thinking) _MessageActions(text: text),
+            if (!mine && !thinking)
+              _MessageActions(
+                text: text,
+                liked: liked,
+                disliked: disliked,
+                onLike: onLike,
+                onDislike: onDislike,
+                onRegenerate: onRegenerate,
+              ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The grey reasoning bubble above an answer.
+///
+/// Open while the model is thinking, so the user can watch the reasoning text
+/// arrive; closed once the answer is whole, so the thread stays a conversation
+/// rather than a transcript of every token. Tapping the header toggles it.
+class _ReasoningBubble extends StatefulWidget {
+  const _ReasoningBubble({required this.text, required this.streaming});
+
+  final String text;
+  final bool streaming;
+
+  @override
+  State<_ReasoningBubble> createState() => _ReasoningBubbleState();
+}
+
+class _ReasoningBubbleState extends State<_ReasoningBubble> {
+  late bool _open = widget.streaming;
+
+  @override
+  void didUpdateWidget(covariant _ReasoningBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The answer arrived: collapse the working-out that produced it. The user
+    // can open it again by tapping.
+    if (oldWidget.streaming && !widget.streaming) _open = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Container(
+      key: const ValueKey<String>('reasoning-bubble'),
+      constraints: const BoxConstraints(maxWidth: 320),
+      decoration: BoxDecoration(
+        color: c.raised,
+        border: Border.all(color: c.hairline),
+        borderRadius: const BorderRadius.all(NexusLayout.tile),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          InkWell(
+            key: const ValueKey<String>('reasoning-toggle'),
+            borderRadius: const BorderRadius.all(NexusLayout.tile),
+            onTap: () => setState(() => _open = !_open),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 9, 8, 9),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  if (widget.streaming)
+                    SizedBox(
+                      width: 13,
+                      height: 13,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.8,
+                        color: c.textMuted,
+                      ),
+                    )
+                  else
+                    Icon(
+                      Icons.psychology_outlined,
+                      size: 16,
+                      color: c.textMuted,
+                    ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Thinking...',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: c.textMuted,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    _open
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    size: 18,
+                    color: c.textMuted,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_open)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 11),
+              child: Text(
+                widget.text,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  height: 1.45,
+                  fontStyle: FontStyle.italic,
+                  color: c.textMuted,
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -6514,12 +7779,26 @@ class NexusErrorBubble extends StatelessWidget {
 /// to compete with the composer, close enough to the sentence they belong to
 /// that there is no doubt which line they act on.
 class _MessageActions extends StatelessWidget {
-  const _MessageActions({required this.text, this.speak = true});
+  const _MessageActions({
+    required this.text,
+    this.speak = true,
+    this.liked = false,
+    this.disliked = false,
+    this.onLike,
+    this.onDislike,
+    this.onRegenerate,
+  });
 
   final String text;
 
   /// False on the failure notice, which offers copy and never a speaker.
   final bool speak;
+
+  final bool liked;
+  final bool disliked;
+  final VoidCallback? onLike;
+  final VoidCallback? onDislike;
+  final VoidCallback? onRegenerate;
 
   @override
   Widget build(BuildContext context) {
@@ -6539,6 +7818,33 @@ class _MessageActions extends StatelessWidget {
               icon: Icons.volume_up_outlined,
               onTap: () => unawaited(SpeechOutput.current.speak(text)),
             ),
+          if (onLike != null)
+            _BubbleAction(
+              key: const ValueKey<String>('message-like'),
+              tooltip: liked ? 'Liked' : 'Like',
+              icon: liked
+                  ? Icons.thumb_up_alt_rounded
+                  : Icons.thumb_up_alt_outlined,
+              active: liked,
+              onTap: onLike!,
+            ),
+          if (onDislike != null)
+            _BubbleAction(
+              key: const ValueKey<String>('message-dislike'),
+              tooltip: disliked ? 'Disliked' : 'Dislike',
+              icon: disliked
+                  ? Icons.thumb_down_alt_rounded
+                  : Icons.thumb_down_alt_outlined,
+              active: disliked,
+              onTap: onDislike!,
+            ),
+          if (onRegenerate != null)
+            _BubbleAction(
+              key: const ValueKey<String>('message-regenerate'),
+              tooltip: 'Regenerate',
+              icon: Icons.refresh_rounded,
+              onTap: onRegenerate!,
+            ),
         ],
       ),
     );
@@ -6548,14 +7854,20 @@ class _MessageActions extends StatelessWidget {
 /// One 32dp tap target in a message's action row.
 class _BubbleAction extends StatelessWidget {
   const _BubbleAction({
+    super.key,
     required this.tooltip,
     required this.icon,
     required this.onTap,
+    this.active = false,
   });
 
   final String tooltip;
   final IconData icon;
   final VoidCallback onTap;
+
+  /// True for a thumb the user has pressed: the filled glyph and the accent are
+  /// how the row says the note was taken without a snack bar.
+  final bool active;
 
   @override
   Widget build(BuildContext context) {
@@ -6563,7 +7875,7 @@ class _BubbleAction extends StatelessWidget {
     return IconButton(
       tooltip: tooltip,
       onPressed: onTap,
-      icon: Icon(icon, size: 16, color: c.textMuted),
+      icon: Icon(icon, size: 16, color: active ? c.accent : c.textMuted),
       visualDensity: VisualDensity.compact,
       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
       padding: EdgeInsets.zero,
@@ -6827,7 +8139,9 @@ class _Composer extends StatelessWidget {
                           decoration: InputDecoration(
                             isDense: true,
                             border: InputBorder.none,
-                            hintText: 'Message Nexus',
+                            hintText: nexusIsFrench(context)
+                                ? 'Message'
+                                : 'Message Nexus',
                             hintStyle: NexusType.hint(c),
                           ),
                           // A read-only field has no input connection to submit
@@ -8229,7 +9543,9 @@ class _LivePage extends StatelessWidget {
                             // at a large text size) rather than run off the edge.
                             Flexible(
                               child: Text(
-                                'Processed on this device. Audio never leaves it.',
+                                'Recognized on this device when a language pack '
+                                'is available; otherwise by your phone’s '
+                                'recognizer.',
                                 textAlign: TextAlign.center,
                                 style: GoogleFonts.inter(
                                   color: palette.muted,
@@ -10116,25 +11432,40 @@ class _SettingsTabState extends State<SettingsTab> {
   late final ScrollController _scroll =
       widget.scrollController ?? ScrollController();
 
-  /// The conversation on this device. This screen does not draw it — the Home
-  /// tab does — but it is the only screen that can offer to delete it, so it
-  /// reads the same log and listens for the count changing.
-  late final ChatLog _chat = ChatLog.instance;
+  /// Seven taps on the version row open the hidden Developer Logs tab. The
+  /// counter resets after a few seconds so a slow reader does not unlock it by
+  /// opening About seven times over a week.
+  int _versionTaps = 0;
+  Timer? _versionTapReset;
+
+  void _versionTapped() {
+    _versionTapReset?.cancel();
+    _versionTapReset = Timer(const Duration(seconds: 3), () {
+      _versionTaps = 0;
+    });
+    _versionTaps++;
+    if (_versionTaps < 7) return;
+    _versionTaps = 0;
+    _versionTapReset?.cancel();
+    unawaited(LogService.instance.unlockDeveloperMode());
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          key: ValueKey<String>('developer-mode-unlocked'),
+          content: Text('Developer Mode Unlocked!'),
+        ),
+      );
+  }
 
   @override
   void dispose() {
-    _chat.removeListener(_onChatChanged);
+    _versionTapReset?.cancel();
     _choice.removeListener(_onModelChoiceChanged);
     // Only a controller this state made is this state's to free; the shell's
     // outlives the tab it lent it to.
     if (widget.scrollController == null) _scroll.dispose();
     super.dispose();
-  }
-
-  /// The conversation changed — a message was added on the Home tab, or it was
-  /// just cleared here — so the row that counts it is rebuilt.
-  void _onChatChanged() {
-    if (mounted) setState(() {});
   }
 
   /// The selection changed — here, or somewhere else that shares it — so the
@@ -10178,12 +11509,6 @@ class _SettingsTabState extends State<SettingsTab> {
   void initState() {
     super.initState();
     unawaited(_refreshBrain());
-    // The stored conversation is read here as well as on Home, because this is
-    // the screen that has to know whether there is one to clear — and which
-    // screen was built first is not something to depend on. `attach` is
-    // idempotent.
-    _chat.addListener(_onChatChanged);
-    unawaited(_chat.attach());
     // The model picker draws the selection, and anything else that changes it —
     // a second Settings tab, a future deep link — has to move this one too.
     _choice.addListener(_onModelChoiceChanged);
@@ -10254,38 +11579,6 @@ class _SettingsTabState extends State<SettingsTab> {
     await _refreshBrain();
   }
 
-  /// Asks before clearing the conversation, and clears only on a yes.
-  ///
-  /// The same red confirm the model's delete uses, because it is the same kind
-  /// of row: the user's own words, gone, with no copy anywhere else to restore
-  /// them from. The count in the sentence is read before the dialog, so the
-  /// question says what is about to be deleted.
-  Future<void> _confirmClearChat() async {
-    final int count = _chat.length;
-    final String messages = count == 1 ? '1 message' : '$count messages';
-    final bool confirmed = await showNexusConfirm(
-      context,
-      title: kNexusClearChatTitle,
-      message:
-          'This deletes $messages on this device. Nothing was uploaded, and '
-          'nothing can be recovered.',
-      confirmLabel: 'Clear',
-    );
-    if (!confirmed || !mounted) return;
-    final int cleared = _chat.length;
-    _chat.clear();
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(
-            cleared == 1 ? 'Cleared 1 message.' : 'Cleared $cleared messages.',
-          ),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-  }
-
   /// Asks before deleting, and deletes only on a yes.
   ///
   /// The row is red and the dialog says what the megabytes cost the user — a
@@ -10322,24 +11615,63 @@ class _SettingsTabState extends State<SettingsTab> {
   static int _megabytes(int bytes) =>
       (bytes + 1024 * 1024 - 1) ~/ (1024 * 1024);
 
-  /// Opens the GitHub releases page in the phone's browser.
-  ///
-  /// Deliberately a link rather than a second in-app updater: the About row is
-  /// for a user who wants to see what changed, and the release page is where
-  /// that answer lives. A browser that refuses the URL gets the same sentence
-  /// every other external link failure gets.
-  Future<void> _openReleases() async {
-    final bool opened = await launchUrl(
-      Uri.parse(kNexusReleasesUrl),
-      mode: LaunchMode.externalApplication,
-    );
-    if (!opened && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+  /// True while a release check is in flight, so a second tap cannot start a
+  /// second request or stack two dialogs.
+  bool _checkingUpdate = false;
+
+  /// The Cloud sync row has nothing to switch — there is no cloud — but it is
+  /// still a row, and a tap anywhere on it is answered by the promise it makes.
+  void _showCloudOffNote() {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
         const SnackBar(
-          content: Text('Could not open the GitHub releases page.'),
+          content: Text(
+            'No account, no server copy — your chats and memory stay on this '
+            'device.',
+          ),
+          duration: Duration(seconds: 3),
         ),
       );
+  }
+
+  /// Asks GitHub for the latest release, compares it with the installed
+  /// package's version, and then says one of three things: install it, you are
+  /// up to date, or the check itself could not be made.
+  ///
+  /// The version comes from `package_info_plus`, not from the `appVersion`
+  /// constant: the installed package is the only thing that can prove what is
+  /// running, and a forgotten constant is exactly how an app once offered users
+  /// the build they already had.
+  Future<void> _checkForUpdates() async {
+    if (_checkingUpdate) return;
+    setState(() => _checkingUpdate = true);
+    final String current = await installedAppVersion();
+    final UpdateCheck check = await Updater.checkForUpdate(
+      currentVersion: current,
+    );
+    if (!mounted) return;
+    setState(() => _checkingUpdate = false);
+
+    final UpdateInfo? info = check.info;
+    if (info == null) {
+      final String? failure = check.failure;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              failure == null
+                  ? 'Nexus is up to date!'
+                  : 'Could not check for updates — $failure',
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      return;
     }
+
+    await showNexusUpdateDialog(context, info);
   }
 
   @override
@@ -10351,7 +11683,7 @@ class _SettingsTabState extends State<SettingsTab> {
         controller: _scroll,
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 28),
         children: <Widget>[
-          const NexusSectionLabel('Theme'),
+          const NexusSectionLabel('Theme', first: true),
           NexusRow(
             title: 'Follow system',
             subtitle: 'Use your phone’s light and dark setting',
@@ -10361,6 +11693,10 @@ class _SettingsTabState extends State<SettingsTab> {
               onChanged: (bool value) =>
                   widget.onFollowSystemChanged?.call(value),
             ),
+            // The whole row is the control, not just the switch: a thumb that
+            // lands on the label is asking for the same thing.
+            onTap: () =>
+                widget.onFollowSystemChanged?.call(!widget.followSystem),
           ),
           NexusRow(
             title: 'Dark mode',
@@ -10397,6 +11733,9 @@ class _SettingsTabState extends State<SettingsTab> {
                       onChanged: widget.followSystem ? null : _toggleDark,
                     ),
                   ),
+            onTap: widget.followSystem || _themeBusy
+                ? null
+                : () => unawaited(_toggleDark(!widget.darkMode)),
           ),
           _AccentRow(
             selected: widget.accent,
@@ -10455,26 +11794,8 @@ class _SettingsTabState extends State<SettingsTab> {
             subtitle: 'No account, no server copy',
             leading: const NexusIconTile(Icons.cloud_off_outlined),
             trailing: Text('Off', style: NexusType.rowMeta(c)),
+            onTap: _showCloudOffNote,
           ),
-          // The conversation is the one thing on this screen that is the user's
-          // own words rather than the app's settings, so it gets its own
-          // section — and the row only exists when there is something to
-          // forget.
-          if (_chat.hasChat) ...<Widget>[
-            const NexusSectionLabel('Chat'),
-            NexusRow(
-              title: kNexusClearChatRow,
-              subtitle: _chat.length == 1
-                  ? 'Deletes 1 message on this device'
-                  : 'Deletes ${_chat.length} messages on this device',
-              leading: const NexusIconTile(Icons.delete_sweep_outlined),
-              trailing: const NexusChevron(),
-              // Red, and it asks first: the conversation cannot be fetched back
-              // from anywhere, which is the whole promise this app makes.
-              dangerTitle: true,
-              onTap: _confirmClearChat,
-            ),
-          ],
           // Where the words come from, and the one row that can change it. The
           // status is a value, not a switch: there is nothing to turn on — the
           // app asks the device and then the PC on its own — and the only
@@ -10488,6 +11809,10 @@ class _SettingsTabState extends State<SettingsTab> {
               _aiStatus?.label ?? 'Checking…',
               style: NexusType.rowMeta(c),
             ),
+            // Looking again is the only action this row has, and it is worth
+            // one: a PC started after the app did is exactly what the refresh
+            // is for. The whole row is the target.
+            onTap: () => unawaited(_refreshBrain()),
           ),
           // The download half of the section, which is the half that has to be
           // earned: a device whose platform cannot load the weights, or whose
@@ -10561,26 +11886,40 @@ class _SettingsTabState extends State<SettingsTab> {
                 title: 'Download failed',
                 subtitle: _brainError,
                 leading: const NexusIconTile(Icons.warning_amber_rounded),
+                // The row that reports a failure is also the retry: there is
+                // nothing else to press, and making the user find the download
+                // row again after an error is a second failure.
+                onTap: _downloadModel,
               ),
           ],
           const NexusSectionLabel('About'),
           NexusRow(
             title: kNexusCheckUpdatesRow,
-            subtitle: 'Open the latest release on GitHub',
+            subtitle: _checkingUpdate
+                ? 'Checking GitHub for the latest release…'
+                : 'Download the newest version from GitHub',
             leading: const NexusIconTile(Icons.system_update_alt_rounded),
-            trailing: const NexusChevron(),
-            onTap: _openReleases,
+            trailing: _checkingUpdate
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const NexusChevron(),
+            onTap: _checkForUpdates,
           ),
           // The build's own name, not a description of what is not wired yet:
           // the row used to read "UI shell preview — no model attached" while
           // the model was answering questions, which is the kind of line a user
           // reads once and then trusts.
           NexusRow(
+            key: const ValueKey<String>('app-version-row'),
             title: 'Version',
             subtitle:
                 'Nexus $appVersion — on-device answers, no account, no cloud',
             leading: const NexusIconTile(Icons.info_outline_rounded),
             trailing: Text(appVersion, style: NexusType.rowMeta(c)),
+            onTap: _versionTapped,
           ),
         ],
       ),
@@ -10971,6 +12310,7 @@ class _VoiceSettingsPage extends StatelessWidget {
               subtitle: 'Listen for “Hey Nexus” while the app is open',
               leading: const NexusIconTile(Icons.hearing_outlined),
               trailing: Switch(value: wakeWord, onChanged: onWakeWordChanged),
+              onTap: () => onWakeWordChanged(!wakeWord),
             ),
           if (repliesHere)
             NexusRow(
@@ -10981,6 +12321,7 @@ class _VoiceSettingsPage extends StatelessWidget {
                 value: spokenReplies,
                 onChanged: onSpokenRepliesChanged,
               ),
+              onTap: () => onSpokenRepliesChanged(!spokenReplies),
             ),
           if (!wakeWordHere && !repliesHere)
             const NexusRow(
@@ -10994,8 +12335,9 @@ class _VoiceSettingsPage extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(4, 24, 4, 0),
             child: Text(
-              'Audio is processed on this device. Nothing is streamed to a '
-              'server for recognition or synthesis.',
+              'Speech is recognized on this device when your language pack is '
+              'available. Otherwise your phone’s system recognizer handles it, '
+              'which may use the network.',
               style: NexusType.rowMeta(c).copyWith(height: 1.5),
             ),
           ),

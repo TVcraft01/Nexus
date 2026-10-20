@@ -28,7 +28,7 @@ import 'clock_context.dart' show nexusSystemWithClock;
 import 'llm.dart';
 import 'local_ai_service.dart';
 import 'on_device_model.dart';
-import 'system_actions.dart' show kSystemActionRules;
+import 'system_actions.dart' show kNexusReasoningRules, kSystemActionRules;
 
 /// What the on-device model is told it is.
 ///
@@ -49,7 +49,8 @@ const String kNexusOnDeviceSystemPrompt =
 /// brains must be offered the same vocabulary — see [systemWithActions] in
 /// `system_actions.dart` for the same composition on the PC's side.
 const String kNexusOnDeviceSystem =
-    '$kNexusOnDeviceSystemPrompt\n\n$kSystemActionRules';
+    '$kNexusOnDeviceSystemPrompt\n\n$kNexusReasoningRules\n\n'
+    '$kSystemActionRules';
 
 /// A failure of the on-device brain, with a sentence fit to show.
 ///

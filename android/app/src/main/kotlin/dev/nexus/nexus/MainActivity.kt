@@ -1982,13 +1982,16 @@ class MainActivity : FlutterActivity() {
 
     /// One utterance, decoded on the phone.
     ///
-    /// The offline rule is the point of voice here, not a setting: a phone
-    /// with no signal is exactly where talking to it beats typing. So the
-    /// on-device recognizer is used whenever the ROM has a local model for
-    /// the language — that path cannot reach the network even by accident —
-    /// and the ordinary recognizer, asking for offline results, is the
-    /// fallback. Which one ran is logged, because "it worked in airplane
-    /// mode" is the claim, and the log is how that claim is checked.
+    /// The on-device recognizer is tried first whenever the ROM reports one:
+    /// when its language pack is installed, the words never leave the phone.
+    /// A pack that is missing is not a dead end — the engine answers with
+    /// ERROR_LANGUAGE_UNAVAILABLE (13) before it ever opens the microphone, and
+    /// the same utterance is handed to the system recognizer instead. That
+    /// switch happens inside this session: Dart sees one listening call, one
+    /// transcript, and no retry to explain.
+    ///
+    /// Which engine ran is logged, because "it worked in airplane mode" is the
+    /// claim, and the log is how that claim is checked.
     private fun startSpeech(result: MethodChannel.Result) {
         // One session at a time: a second tap while the first is still
         // listening must not leave two recognizers holding the microphone.
@@ -1996,22 +1999,51 @@ class MainActivity : FlutterActivity() {
         val onDeviceAvailable =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
-        val recognizer = if (onDeviceAvailable) {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
-        } else {
-            SpeechRecognizer.createSpeechRecognizer(this)
+        if (onDeviceAvailable && startSpeechAttempt(result, onDevice = true)) {
+            return
+        }
+        if (!startSpeechAttempt(result, onDevice = false)) {
+            Log.w(TAG, "speech: no recognizer available")
+            result.success(null)
+        }
+    }
+
+    /// Starts one recognizer and its listener. Returns whether listening
+    /// actually began; on false the caller still owns [result] and may try the
+    /// other engine (or answer null). The two engines report the same
+    /// callbacks, so the only difference is creation and the offline hint.
+    private fun startSpeechAttempt(
+        result: MethodChannel.Result,
+        onDevice: Boolean,
+        initialPeakDb: Float = -1f,
+    ): Boolean {
+        val recognizer = try {
+            if (onDevice) {
+                SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+            } else {
+                SpeechRecognizer.createSpeechRecognizer(this)
+            }
+        } catch (e: Exception) {
+            Log.w(
+                TAG,
+                "speech: could not create the ${if (onDevice) "on-device" else "system"} recognizer",
+                e,
+            )
+            return false
         }
         activeRecognizer = recognizer
         Log.i(
             TAG,
-            if (onDeviceAvailable) "speech: listening on-device (no network)"
-            else "speech: listening via the system recognizer, offline preferred",
+            if (onDevice) "speech: listening on-device (no network)"
+            else "speech: listening via the system recognizer",
         )
         // The loudest the microphone got during the utterance, logged with
         // the outcome: a device run that hears nothing can then tell a quiet
         // room from a microphone that never opened — from the result alone
-        // the two are the same null.
-        var peakDb = -1f
+        // the two are the same null. It survives the on-device fallback, so a
+        // transcript heard by the system engine still reports the level the
+        // whole utterance reached.
+        var peakDb = initialPeakDb
         recognizer.setRecognitionListener(object : RecognitionListener {
             override fun onResults(results: Bundle?) {
                 val text = results
@@ -2024,6 +2056,29 @@ class MainActivity : FlutterActivity() {
 
             override fun onError(error: Int) {
                 Log.i(TAG, "speech: nothing recognized (error $error, peak ${peakDb}dB)")
+                // The on-device engine reports a missing language pack as
+                // ERROR_LANGUAGE_NOT_SUPPORTED (12) or
+                // ERROR_LANGUAGE_UNAVAILABLE (13), before any audio is read.
+                // The user asked to talk, not to download a model: drop this
+                // engine and start the system one in the same session. Nothing
+                // is sent back to Dart in between, so the composer keeps its
+                // open microphone and the switch is invisible.
+                if (onDevice && (error == 12 || error == 13)) {
+                    if (!releaseRecognizerIf(recognizer)) return
+                    Log.i(
+                        TAG,
+                        "speech: on-device language unavailable (error $error) — falling back to the system recognizer",
+                    )
+                    if (!startSpeechAttempt(
+                            result,
+                            onDevice = false,
+                            initialPeakDb = peakDb,
+                        )
+                    ) {
+                        result.success(null)
+                    }
+                    return
+                }
                 if (!releaseRecognizerIf(recognizer)) return
                 result.success(null) // nothing heard / mic unavailable
             }
@@ -2088,9 +2143,11 @@ class MainActivity : FlutterActivity() {
             // seeing words arrive before the result is what tells a device run
             // that the recognizer was listening to speech at all.
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            // Never the cloud: if the phone has no offline model it answers
-            // "nothing heard" instead of quietly uploading the room.
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            // The on-device engine never leaves the phone whatever this says.
+            // The system fallback, by contrast, is allowed to use its default
+            // route (which may be the network) — that is the point of having a
+            // fallback at all when the offline pack is missing.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, onDevice)
             // The words this assistant is about. Android's recognizer uses
             // these as a vocabulary bias, which is what makes "Nexus" and
             // "TVCraft" arrive as names rather than as the nearest dictionary
@@ -2103,7 +2160,17 @@ class MainActivity : FlutterActivity() {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, speechLocale)
             }
         }
-        recognizer.startListening(intent)
+        return try {
+            recognizer.startListening(intent)
+            true
+        } catch (e: Exception) {
+            // A recognizer that exists but will not start (busy service, no
+            // activity to bind) is the same dead end as a missing one: release
+            // it and let the caller try the system engine or answer null.
+            Log.e(TAG, "speech: startListening failed", e)
+            if (activeRecognizer === recognizer) releaseRecognizerIf(recognizer)
+            false
+        }
     }
 
     /// Ends the utterance and keeps its words: the finger came up on the

@@ -24,7 +24,8 @@ enum Capability {
   notificationShare,
   // This device shares its location with paired devices.
   locationShare,
-  // The microphone button listens. Audio never leaves this phone.
+  // The microphone button listens. On-device when the language pack is
+  // installed; the system recognizer is the fallback when it is not.
   voiceInput,
   // Say the name to start listening. Audio never leaves this phone.
   wakeWord,
@@ -145,8 +146,9 @@ class CapabilityInfo {
       CapabilityInfo(
         title: 'Voice input',
         description:
-            'Listen when you tap the mic. Audio is processed on this '
-            'phone, never sent anywhere.',
+            'Listen when you tap the mic. Recognized on this phone when your '
+            'language pack is available; otherwise Android’s recognizer '
+            'handles it.',
         needs: 'Needs: Microphone',
         alwaysOn: false,
         read: (s) => s.voiceInput,

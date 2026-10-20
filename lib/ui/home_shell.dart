@@ -149,7 +149,9 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Future<UpdateCheck> _checkForUpdates() async {
-    final check = await Updater.checkForUpdate(currentVersion: appVersion);
+    final check = await Updater.checkForUpdate(
+      currentVersion: await installedAppVersion(),
+    );
     if (check.info != null && mounted) {
       setState(() => _update = check.info);
     }

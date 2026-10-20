@@ -102,6 +102,7 @@ class ChatEntry {
     this.filePath,
     this.visionText,
     this.visionLabels = const <String>[],
+    this.reasoning,
   });
 
   /// What was said, exactly as it was said. Never empty on the way in: an empty
@@ -149,6 +150,11 @@ class ChatEntry {
   /// image, or for an image where nothing was recognised.
   final List<String> visionLabels;
 
+  /// The model's `<thought>` text, kept so a reopened answer still has the
+  /// collapsible reasoning bubble above it. It is never sent back to the model
+  /// as conversation history — see `_historyBefore` in `main_ui.dart`.
+  final String? reasoning;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'text': text,
     'mine': mine,
@@ -162,6 +168,8 @@ class ChatEntry {
     if (visionText != null && visionText!.trim().isNotEmpty)
       'visionText': visionText,
     if (visionLabels.isNotEmpty) 'visionLabels': visionLabels,
+    if (reasoning != null && reasoning!.trim().isNotEmpty)
+      'reasoning': reasoning,
   };
 
   /// Reads one stored line. Null for anything that is not one — a file half
@@ -192,6 +200,11 @@ class ChatEntry {
       filePath: file is String && file.isNotEmpty ? file : null,
       visionText: vision is String && vision.trim().isNotEmpty ? vision : null,
       visionLabels: visionLabels,
+      reasoning:
+          raw['reasoning'] is String &&
+              (raw['reasoning'] as String).trim().isNotEmpty
+          ? (raw['reasoning'] as String).trim()
+          : null,
     );
   }
 
@@ -212,6 +225,8 @@ class ChatSession {
     required this.createdAt,
     required this.updatedAt,
     this.entries = const <ChatEntry>[],
+    this.customTitle,
+    this.pinned = false,
   });
 
   /// Stable across restarts, and never shown. The drawer uses it to say which
@@ -226,8 +241,19 @@ class ChatSession {
 
   final List<ChatEntry> entries;
 
+  /// A title the user typed. Null is the common case: the first thing they
+  /// said is a better title than anything the app could invent.
+  final String? customTitle;
+
+  /// True when the user pinned this conversation to the top of the drawer.
+  final bool pinned;
+
   /// The sentence a drawer row shows.
   String get title {
+    final String? named = customTitle?.trim();
+    if (named != null && named.isNotEmpty) {
+      return named.length <= 42 ? named : '${named.substring(0, 41)}…';
+    }
     for (final ChatEntry entry in entries) {
       final String text = entry.text.trim();
       if (entry.mine && !entry.system && text.isNotEmpty) {
@@ -241,18 +267,26 @@ class ChatSession {
   /// True when there is nothing to reopen.
   bool get isEmpty => entries.isEmpty;
 
-  ChatSession copyWith({DateTime? updatedAt, List<ChatEntry>? entries}) =>
-      ChatSession(
-        id: id,
-        createdAt: createdAt,
-        updatedAt: updatedAt ?? this.updatedAt,
-        entries: entries ?? this.entries,
-      );
+  ChatSession copyWith({
+    DateTime? updatedAt,
+    List<ChatEntry>? entries,
+    String? customTitle,
+    bool? pinned,
+  }) => ChatSession(
+    id: id,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    entries: entries ?? this.entries,
+    customTitle: customTitle ?? this.customTitle,
+    pinned: pinned ?? this.pinned,
+  );
 
   Map<String, Object?> toJson() => <String, Object?>{
     'id': id,
     'createdAt': createdAt.toIso8601String(),
     'updatedAt': updatedAt.toIso8601String(),
+    if (customTitle != null) 'title': customTitle,
+    if (pinned) 'pinned': true,
     'entries': <Map<String, Object?>>[
       for (final ChatEntry entry in entries) entry.toJson(),
     ],
@@ -280,11 +314,14 @@ class ChatSession {
         if (entry != null) entries.add(entry);
       }
     }
+    final String? title = (raw['title'] as String?)?.trim();
     return ChatSession(
       id: id,
       createdAt: created,
       updatedAt: updated,
       entries: entries,
+      customTitle: title == null || title.isEmpty ? null : title,
+      pinned: raw['pinned'] == true,
     );
   }
 
@@ -612,10 +649,7 @@ class DocumentsChatLogStore implements ChatLogStore, ChatSessionStore {
   }
 
   @override
-  Future<void> writeSessions(
-    List<ChatSession> sessions,
-    String? activeId,
-  ) {
+  Future<void> writeSessions(List<ChatSession> sessions, String? activeId) {
     final Future<void> next = _writeQueue.then(
       (_) => _writeSessions(sessions, activeId),
     );
@@ -872,6 +906,30 @@ class ChatLog extends ChangeNotifier {
     _persistSessions();
   }
 
+  /// Gives [id] the name the user typed. Unknown ids are ignored, and a blank
+  /// name is refused rather than stored: a row with no words is a row that
+  /// cannot be found again.
+  void renameSession(String id, String title) {
+    final String cleaned = title.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (cleaned.isEmpty) return;
+    final int index = _sessions.indexWhere((ChatSession item) => item.id == id);
+    if (index < 0) return;
+    _sessions = List<ChatSession>.of(_sessions)
+      ..[index] = _sessions[index].copyWith(customTitle: cleaned);
+    notifyListeners();
+    _persistSessions();
+  }
+
+  /// Pins [id] to the top of the drawer, or unpins it if it is already there.
+  void togglePinned(String id) {
+    final int index = _sessions.indexWhere((ChatSession item) => item.id == id);
+    if (index < 0) return;
+    _sessions = List<ChatSession>.of(_sessions)
+      ..[index] = _sessions[index].copyWith(pinned: !_sessions[index].pinned);
+    notifyListeners();
+    _persistSessions();
+  }
+
   /// Makes [id] the conversation on screen. Unknown ids are ignored: a drawer
   /// row that was deleted under a tap must not empty the thread.
   void selectSession(String id) {
@@ -900,6 +958,40 @@ class ChatLog extends ChangeNotifier {
       );
     notifyListeners();
     _persist();
+  }
+
+  /// Forgets the conversations in [ids] — the drawer's multi-select delete.
+  ///
+  /// Deleting the open conversation does not leave an empty screen pointing at
+  /// nothing: the next most recent conversation becomes active, or a fresh draft
+  /// takes its place when the last one is gone. Unknown ids are ignored, so a
+  /// selection that went stale under the dialog is harmless.
+  void deleteSessions(Iterable<String> ids) {
+    final Set<String> doomed = ids.toSet();
+    if (doomed.isEmpty) return;
+    final bool activeGone = _activeId != null && doomed.contains(_activeId);
+    final List<ChatSession> kept = <ChatSession>[
+      for (final ChatSession session in _sessions)
+        if (!doomed.contains(session.id)) session,
+    ];
+    if (kept.length == _sessions.length) return;
+    if (kept.isEmpty) {
+      final ChatSession fresh = _newSession();
+      _sessions = <ChatSession>[fresh];
+      _activeId = fresh.id;
+    } else {
+      _sessions = kept;
+      if (activeGone) {
+        _sessions = List<ChatSession>.of(kept)
+          ..sort(
+            (ChatSession a, ChatSession b) =>
+                b.updatedAt.compareTo(a.updatedAt),
+          );
+        _activeId = _sessions.first.id;
+      }
+    }
+    notifyListeners();
+    _persistSessions();
   }
 
   /// Forgets every conversation. Used by Settings → Privacy's one destructive
