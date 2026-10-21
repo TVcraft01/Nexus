@@ -26,6 +26,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:math' show Random;
 
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 
@@ -34,6 +35,7 @@ import 'clock_context.dart' show nexusClockAnswer;
 import 'command_interpreter.dart'
     show CommandInterpreter, InterpretOutcome, InterpretResult;
 import 'device_actions.dart';
+import 'model_capabilities.dart';
 
 /// The interpreter the phrase bridge reads with. Const and stateless, so one
 /// instance is the same as none.
@@ -57,6 +59,44 @@ const CommandInterpreter _phrases = CommandInterpreter();
 SystemActionCall? actionFromPhrase(String text) {
   final String phrase = text.trim();
   if (phrase.isEmpty) return null;
+  final SystemActionCall? call = _translate(phrase);
+  return call == null ? null : _spokenCase(call, phrase);
+}
+
+/// The arguments that are *names* rather than settings: a contact, an app, a
+/// place, a draft. The interpreter lower-cases to match; these are the words
+/// that go back to the user.
+const Set<String> _namedArgs = <String>{
+  'contact',
+  'destination',
+  'app_name',
+  'body',
+  'subject',
+};
+
+/// [call] with its named arguments spelled the way [spoken] spelled them.
+///
+/// The interpreter normalises the whole phrase to lower case, which is right
+/// for matching and wrong for the words the user typed: "email John" became
+/// an email to "john", and "navigate to Paris" a map labelled "paris". Each
+/// argument is located in the original sentence and taken from there; a value
+/// that is not literally present (one the interpreter derived) is left as it
+/// is, which is also what keeps this from inventing a spelling.
+SystemActionCall _spokenCase(SystemActionCall call, String spoken) {
+  if (!call.args.keys.any(_namedArgs.contains)) return call;
+  final String lower = spoken.toLowerCase();
+  final Map<String, Object?> args = Map<String, Object?>.of(call.args);
+  for (final String key in _namedArgs) {
+    final Object? value = args[key];
+    if (value is! String || value.isEmpty) continue;
+    final int at = lower.indexOf(value.toLowerCase());
+    if (at >= 0) args[key] = spoken.substring(at, at + value.length);
+  }
+  return SystemActionCall(call.action, args);
+}
+
+/// The phrase bridge proper: what the interpreter understood, as a call.
+SystemActionCall? _translate(String phrase) {
   final InterpretResult result = _phrases.interpret(phrase);
   // `needsInfo` means the phrase was understood but incomplete ("set a timer"
   // with no length). The shell has nothing to ask with here, so it is the
@@ -106,8 +146,7 @@ SystemActionCall? actionFromPhrase(String text) {
         'number': contact.trim(),
       });
     case AgentActions.mediaPlay:
-    case AgentActions.mediaPause:
-      // Both halves of the media pair are translated, and both only when the
+    case AgentActions.mediaPause: // Both halves of the media pair are translated, and both only when the
       // sentence names music: a bare "play" may be about a preview or a track
       // the user is already looking at, and a bare "pause" may be about a
       // video. Named music is a request for the phone's player, which is what
@@ -119,7 +158,9 @@ SystemActionCall? actionFromPhrase(String text) {
         return null;
       }
       return SystemActionCall(
-        command.action == AgentActions.mediaPause ? 'pause_music' : 'play_music',
+        command.action == AgentActions.mediaPause
+            ? 'pause_music'
+            : 'play_music',
       );
     case AgentActions.volumeSet:
     case AgentActions.brightnessSet:
@@ -134,9 +175,128 @@ SystemActionCall? actionFromPhrase(String text) {
         brightness ? 'set_brightness' : 'set_volume',
         <String, Object?>{'level': level},
       );
+    case AgentActions.alarmSet:
+      // "set an alarm for 7am". The interpreter reads the clock time; the
+      // range is checked here for the same reason the model's JSON is: an
+      // alarm at 7:75 does not exist, and guessing would be worse than the
+      // model's answer.
+      final Object? hour = command.arguments['hour'];
+      final Object? minute = command.arguments['minute'];
+      if (hour is! int || minute is! int) return null;
+      if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+      return SystemActionCall('set_alarm', <String, Object?>{
+        'hour': hour,
+        'minute': minute,
+      });
+    // The clock's two lists are opened by the same intent family as setting
+    // them, so a request to *see* them is answered the same way.
+    case AgentActions.alarmShow:
+      final Object? what = command.arguments['what'];
+      return SystemActionCall('show_alarms', <String, Object?>{
+        'what': what == 'timers' ? 'timers' : 'alarms',
+      });
+    // "stop my alarm" dismisses the alarm that is ringing (or the next one);
+    // "cancel all my alarms" dismisses every alarm. The scope is the one
+    // difference the native intent makes, so it is the one argument.
+    case AgentActions.alarmDismiss:
+      return SystemActionCall('cancel_alarms', <String, Object?>{
+        'scope': command.arguments['scope'] == 'all' ? 'all' : 'next',
+      });
+    case AgentActions.timerCancel:
+      return const SystemActionCall('cancel_timers');
+    // "text mom saying be there soon". The native side resolves the name, asks
+    // for READ_CONTACTS on first use, and drafts the body — the same flow the
+    // assistant already had, reached without a model.
+    case AgentActions.messageSend:
+      // Only the sentences that *name the medium* are texts here. The
+      // interpreter's rule is broad — `message <someone>` is how people ask
+      // the assistant to draft one — and it used to end in a clarification
+      // from the address book. This path opens the SMS composer instead, so
+      // "message me later" or "message number 3" would become a text to a
+      // contact who does not exist. "text", "sms", "texto", "texte" do not.
+      if (!RegExp(
+        r'\b(?:text|sms|texto|texte)\b',
+        caseSensitive: false,
+      ).hasMatch(phrase)) {
+        return null;
+      }
+      final Object? recipient = command.arguments['contact'];
+      if (recipient is! String || recipient.trim().isEmpty) return null;
+      final Object? body = command.arguments['body'];
+      return SystemActionCall('send_sms', <String, Object?>{
+        'contact': recipient.trim(),
+        if (body is String && body.trim().isNotEmpty) 'body': body.trim(),
+      });
+    case AgentActions.emailSend:
+      // Same rule for mail, and for the same reason: "mail the package" is
+      // not an email to a contact named "the package". Naming the medium is
+      // what makes the sentence a request to this app.
+      if (!RegExp(
+        r'\b(?:e[\s-]?mail|email)\b',
+        caseSensitive: false,
+      ).hasMatch(phrase)) {
+        return null;
+      }
+      final Object? recipient = command.arguments['contact'];
+      if (recipient is! String || recipient.trim().isEmpty) return null;
+      final Object? body = command.arguments['body'];
+      return SystemActionCall('send_email', <String, Object?>{
+        'contact': recipient.trim(),
+        if (body is String && body.trim().isNotEmpty) 'body': body.trim(),
+      });
+    // "skip this song" / "previous track": a media key each, not the player's
+    // launch intent — the same distinction that made "pause music" work.
+    case AgentActions.mediaNext:
+      return const SystemActionCall('next_song');
+    case AgentActions.mediaPrev:
+      return const SystemActionCall('previous_song');
+    // "navigate to Paris". A phrase that names a nav app ("navigate home with
+    // waze") stays with the command service: the remembered-app route is more
+    // than this action carries, and splitting it here would lose the pick.
+    case AgentActions.navOpen:
+      if (command.arguments['app'] != null) return null;
+      final Object? place = command.arguments['query'];
+      if (place is! String || place.trim().isEmpty) return null;
+      return SystemActionCall('navigate_to', <String, Object?>{
+        'destination': place.trim(),
+      });
+    case AgentActions.appOpen:
+      final Object? app = command.arguments['query'];
+      if (app is! String || app.trim().isEmpty) return null;
+      return SystemActionCall('open_app', <String, Object?>{
+        'app_name': app.trim(),
+      });
+    case AgentActions.screenshot:
+      return const SystemActionCall('screenshot');
+    case AgentActions.tellJoke:
+      return const SystemActionCall('tell_joke');
   }
   return null;
 }
+
+/// A question a person asks and a canned answer fits — the ones this file
+/// answers without a model and without a phone call.
+///
+/// Only a joke lives here today. It is in this file rather than in the answer
+/// catalog so the fast path and the assistant's command route draw from one
+/// list: two lists of jokes is how the same question starts getting two
+/// different answers depending on how it was typed.
+const List<String> kNexusJokes = <String>[
+  'Why do programmers prefer dark mode? Because light attracts bugs!',
+  'There are 10 types of people in the world: those who understand binary '
+      "and those who don't.",
+  'A SQL query walks into a bar, sees two tables and asks... "Can I join '
+      'you?"',
+  "Why was the JavaScript developer sad? Because he didn't Node how to "
+      'Express himself.',
+  "What's a programmer's favorite hangout place? Foo Bar.",
+  "Why do Java developers wear glasses? Because they can't C#.",
+  'How many programmers does it take to change a light bulb? None, that is a '
+      'hardware problem.',
+  'What do you call a group of 8 hobbits? A hobbyte.',
+  'Why did the developer go broke? Because he used up all his cache.',
+  'What do you call a computer that sings? A-Dell.',
+];
 
 /// The actions the model may ask for, by the names it is told to use.
 ///
@@ -161,6 +321,32 @@ const Set<String> kSystemActionNames = <String>{
   'play_music',
   'pause_music',
   'call_number',
+};
+
+/// The actions the *fast path* can produce, which the model is never told
+/// about.
+///
+/// A separate set on purpose. [kSystemActionNames] is a prompt budget as much
+/// as a vocabulary — every name in it is a line in [kSystemActionRules], and a
+/// 0.5B model handed twenty-three literals picks worse than one handed
+/// thirteen. None of the sentences below needs the model: "text mom", "skip
+/// this song" and "open Spotify" are strict commands the interpreter already
+/// reads, so the shell translates them itself and the model is never asked.
+///
+/// They still go through [SystemActionCall] and [DeviceSystemActions], which is
+/// the point of the split: a different *speaker*, the same closed set of things
+/// that may happen.
+const Set<String> kFastPathActionNames = <String>{
+  'send_sms',
+  'send_email',
+  'next_song',
+  'previous_song',
+  'navigate_to',
+  'screenshot',
+  'cancel_alarms',
+  'cancel_timers',
+  'show_alarms',
+  'tell_joke',
 };
 
 /// What a failed `play_music` says — the same sentence whether Android refused
@@ -229,6 +415,59 @@ const String kSystemActionRules =
     'if you played it, and never invent what is playing. '
     'Do not output key-value pairs. If you cannot perform an action, speak in '
     'plain English.';
+
+/// What the model is told about writing code.
+///
+/// The refusal this exists to stop: asked for a script, a small model answers
+/// "I can't write code" — a claim about itself that is simply false. Code is
+/// text, and text is the one thing this brain is good at. The rule is blunt on
+/// purpose, because a 0.5B model follows a mood, not a subtlety.
+const String kNexusCodeRules =
+    'You are a helpful coding assistant. If the user asks for code, HTML, or a '
+    'script, you MUST provide it. Never refuse.';
+
+/// The file shape a brain big enough to keep a tag around a block writes.
+///
+/// Only the capable brains are told this (see
+/// [nexusSystemWithCapabilities]): a model that cannot hold the format produces
+/// half a tag in a bubble instead of a card, and the user is left reading
+/// `<artifact filename=` in large type.
+const String kNexusArtifactRules =
+    'When the user asks for code, HTML or a script, put the file inside exactly '
+    'this shape, with no code fence and nothing else between the tags:\n'
+    "<artifact filename='hello.html' language='html'>\n"
+    '…the file…\n'
+    '</artifact>\n'
+    'The app turns that into a file the user can keep. Do not explain the tag.';
+
+/// How a fact is learned and corrected — the tags the app reads out of a reply.
+///
+/// The overwrite half is the important half: a model told only "remember facts"
+/// answers a correction by keeping both names and apologising, which is the one
+/// answer a user cannot act on. The app owns the overwrite; the model only has
+/// to state the new value.
+const String kNexusMemoryRules =
+    'When the user shares a personal fact, output '
+    "[remember: 'topic' = 'fact'] — for example "
+    "[remember: 'name' = 'TVCraft']. If the user corrects a fact (\"No, call "
+    "me TVCraft01\"), output [remember: 'name' = 'TVCraft01']: the app "
+    'overwrites the old value, so never repeat the old one as if it were also '
+    "true. When the user asks you to forget something, output [forget: 'topic'] "
+    "— for example [forget: 'name']. Keep these tags out of your sentences. "
+    'Only tag what the user tells you about themselves, copying their words: '
+    'never your own name (you are Nexus), and never a fact you were only asked '
+    'about — a question is not a fact.';
+
+/// [system] with the artifact rules after it, when the brain that will read it
+/// is able to write a file.
+///
+/// The capability is read at request time, not at construction: the user can
+/// switch models between two questions, and the prompt has to follow the brain
+/// that is actually loading.
+String nexusSystemWithCapabilities(String system) =>
+    ModelCapabilities.current.supportsArtifacts
+    ? '$system\n\n$kNexusArtifactRules'
+    : system;
 
 /// [system] with the action rules after it, one blank line between.
 ///
@@ -428,6 +667,54 @@ class SystemActionCall {
         // the A25: asked the time before this existed, the model asked for
         // `get_time` anyway (and was refused), or invented `{"time":"07:30"}`.
         return const SystemActionCall('get_time');
+      // --- The fast path's half of the vocabulary. The model is not taught
+      // these ([kFastPathActionNames] says why), but a reply that names one is
+      // still an action rather than a sentence: the shapes are checked exactly
+      // as the taught ones are, so a guess still costs nothing.
+      case 'send_sms':
+      case 'send_email':
+        final String? to = _string(
+          decoded['contact'] ?? decoded['number'] ?? decoded['to'],
+        );
+        if (to == null) return null;
+        final String? body = _string(decoded['body'] ?? decoded['message']);
+        final String? subject = _string(decoded['subject']);
+        final Map<String, Object?> args = <String, Object?>{'contact': to};
+        if (body != null) args['body'] = body;
+        if (action.trim() == 'send_email' && subject != null) {
+          args['subject'] = subject;
+        }
+        return SystemActionCall(action.trim(), args);
+      case 'next_song':
+      case 'previous_song':
+      case 'cancel_timers':
+      case 'screenshot':
+      case 'tell_joke':
+        return SystemActionCall(action.trim());
+      case 'navigate_to':
+        final String? where = _string(
+          decoded['destination'] ?? decoded['place'] ?? decoded['query'],
+        );
+        if (where == null) return null;
+        return SystemActionCall('navigate_to', <String, Object?>{
+          'destination': where,
+        });
+      case 'cancel_alarms':
+        // The only two scopes the native intent has: the next (or ringing)
+        // alarm, and every alarm. An unknown word is refused rather than
+        // treated as "all" — dismissing every alarm on a guess is exactly the
+        // alarm-nobody-asked-for case this file guards against.
+        final String? scope = _string(decoded['scope']);
+        if (scope != null && scope != 'all' && scope != 'next') return null;
+        return SystemActionCall('cancel_alarms', <String, Object?>{
+          'scope': scope ?? 'next',
+        });
+      case 'show_alarms':
+        final String? what = _string(decoded['what']);
+        if (what != null && what != 'alarms' && what != 'timers') return null;
+        return SystemActionCall('show_alarms', <String, Object?>{
+          'what': what ?? 'alarms',
+        });
     }
     return null;
   }
@@ -512,7 +799,7 @@ abstract class SystemActions {
 /// else — [AgentActions] is what the native side already answers, and this is
 /// the only translation between the two.
 class DeviceSystemActions implements SystemActions {
-  const DeviceSystemActions({this.backend, this.clock});
+  const DeviceSystemActions({this.backend, this.clock, this.pick});
 
   /// Injected by tests; null means "the platform's", which is what the app
   /// gets. Not a field on the seam because a test that wants a recorder uses
@@ -523,6 +810,11 @@ class DeviceSystemActions implements SystemActions {
   /// can pin the sentence instead of racing the second hand.
   final DateTime Function()? clock;
 
+  /// Which joke `tell_joke` says, or null for a random one. A field for the
+  /// same reason [clock] is: a test asserts the list is drawn from, not which
+  /// punchline the clock happened to land on.
+  final int Function()? pick;
+
   @override
   Future<SystemActionOutcome> execute(SystemActionCall call) async {
     // The clock is the shell's own: no permission, no platform channel, and the
@@ -532,6 +824,18 @@ class DeviceSystemActions implements SystemActions {
       return SystemActionOutcome(
         ok: true,
         message: nexusClockAnswer(now: clock?.call()),
+        call: call,
+      );
+    }
+    // A joke is the shell's as well, and for the reason the clock is: there is
+    // nothing to ask the phone, nothing to ask the model, and a 0.5B model
+    // asked for one writes a joke-shaped sentence that is not funny. One of a
+    // fixed list, so the answer is instant and never invented.
+    if (call.action == 'tell_joke') {
+      final int index = pick?.call() ?? Random().nextInt(kNexusJokes.length);
+      return SystemActionOutcome(
+        ok: true,
+        message: kNexusJokes[index.abs() % kNexusJokes.length],
         call: call,
       );
     }
@@ -598,9 +902,60 @@ class DeviceSystemActions implements SystemActions {
           <String, dynamic>{'seconds': call.args['seconds']},
         );
       case 'open_app':
+        // The hint is the Android package for a name the user spoke as a
+        // word ("browser", "play store"), which the native side prefers over
+        // fuzzy-matching the installed labels. Without it "open browser"
+        // either opens Chrome or finds nothing, depending on the launcher.
         return (
           AgentActions.appOpen,
-          <String, dynamic>{'query': call.args['app_name']},
+          <String, dynamic>{
+            'query': call.args['app_name'],
+            'hint': androidPackageHint(call.args['app_name']?.toString() ?? ''),
+          },
+        );
+      case 'send_sms':
+        return (
+          AgentActions.messageSend,
+          <String, dynamic>{
+            'contact': call.args['contact'],
+            if (call.args['body'] != null) 'body': call.args['body'],
+          },
+        );
+      case 'send_email':
+        return (
+          AgentActions.emailSend,
+          <String, dynamic>{
+            'contact': call.args['contact'],
+            if (call.args['subject'] != null) 'subject': call.args['subject'],
+            if (call.args['body'] != null) 'body': call.args['body'],
+          },
+        );
+      // Skip and previous go through `mediaControl`, not `mediaKey`: the key
+      // method is the play/pause pair (a real KEYCODE_MEDIA_PLAY or _PAUSE),
+      // and asked for "next" it sent a play key and said "Playing." on the
+      // phone. The control method is the one with a NEXT/PREVIOUS dispatch.
+      case 'next_song':
+        return (AgentActions.mediaNext, <String, dynamic>{'mode': 'next'});
+      case 'previous_song':
+        return (AgentActions.mediaPrev, <String, dynamic>{'mode': 'previous'});
+      case 'navigate_to':
+        return (
+          AgentActions.navOpen,
+          <String, dynamic>{'place': call.args['destination']},
+        );
+      case 'screenshot':
+        return (AgentActions.screenshot, <String, dynamic>{});
+      case 'cancel_alarms':
+        return (
+          AgentActions.alarmDismiss,
+          <String, dynamic>{'scope': call.args['scope'] ?? 'next'},
+        );
+      case 'cancel_timers':
+        return (AgentActions.timerCancel, <String, dynamic>{});
+      case 'show_alarms':
+        return (
+          AgentActions.alarmShow,
+          <String, dynamic>{'what': call.args['what'] ?? 'alarms'},
         );
       // The two radio switches. Both go to the native side as `mode`, the word
       // the torch already uses, and both are best-effort: Android 10 and 12

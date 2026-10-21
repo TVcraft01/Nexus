@@ -12,6 +12,7 @@ import 'command_interpreter.dart';
 import 'memory.dart';
 import 'reminders.dart';
 import 'resource_map.dart';
+import 'system_actions.dart' show kNexusJokes;
 import 'timezones.dart';
 
 /// The window onto the assistant's state the catalog may touch while
@@ -1723,19 +1724,10 @@ AgentDispatchResult localAnswer(ParsedCommand command, AnswerContext ctx) {
         dispatch: AgentMessage('$result'),
       );
     case AgentActions.tellJoke:
-      const jokes = [
-        'Why do programmers prefer dark mode? Because light attracts bugs!',
-        'There are 10 types of people in the world: those who understand binary and those who don\'t.',
-        'A SQL query walks into a bar, sees two tables and asks... "Can I join you?"',
-        'Why was the JavaScript developer sad? Because he didn\'t Node how to Express himself.',
-        'What\'s a programmer\'s favorite hangout place? Foo Bar.',
-        'Why do Java developers wear glasses? Because they can\'t C#.',
-        'How many programmers does it take to change a light bulb? None, that\'s a hardware problem.',
-        'What do you call a group of 8 hobbits? A hobbyte.',
-        'Why did the developer go broke? Because he used up all his cache.',
-        'What do you call a computer that sings? A-Dell.',
-      ];
-      final joke = jokes[Random().nextInt(jokes.length)];
+      // One list for both routes: the fast path says a joke from
+      // [kNexusJokes] too, and two lists is how the same question starts
+      // getting different answers depending on how it was asked.
+      final joke = kNexusJokes[Random().nextInt(kNexusJokes.length)];
       return AgentDispatchResult(
         status: AgentResultStatus.succeeded,
         dispatch: AgentMessage(joke),

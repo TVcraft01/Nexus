@@ -28,7 +28,13 @@ import 'clock_context.dart' show nexusSystemWithClock;
 import 'llm.dart';
 import 'local_ai_service.dart';
 import 'on_device_model.dart';
-import 'system_actions.dart' show kNexusReasoningRules, kSystemActionRules;
+import 'system_actions.dart'
+    show
+        kNexusCodeRules,
+        kNexusMemoryRules,
+        kNexusReasoningRules,
+        kSystemActionRules,
+        nexusSystemWithCapabilities;
 
 /// What the on-device model is told it is.
 ///
@@ -42,15 +48,19 @@ const String kNexusOnDeviceSystemPrompt =
     'Answer in two or three short sentences. '
     'Never say you did something yourself — the app does it and tells them.';
 
-/// The rules the model runs under: the persona above, then the actions it may
-/// ask for.
+/// The rules the model runs under: the persona above, the actions it may ask
+/// for, the code it must never refuse, and the memory tags the app reads back.
 ///
 /// One constant rather than a concatenation at each call site, because the two
-/// brains must be offered the same vocabulary — see [systemWithActions] in
-/// `system_actions.dart` for the same composition on the PC's side.
+/// brains must be offered the same vocabulary — see [kNexusOllamaSystem] for
+/// the same composition on the PC's side.
+///
+/// The artifact format is deliberately *not* here: whether it belongs depends on
+/// the model that is about to load, and [nexusSystemWithCapabilities] appends it
+/// per request.
 const String kNexusOnDeviceSystem =
     '$kNexusOnDeviceSystemPrompt\n\n$kNexusReasoningRules\n\n'
-    '$kSystemActionRules';
+    '$kSystemActionRules\n\n$kNexusCodeRules\n\n$kNexusMemoryRules';
 
 /// A failure of the on-device brain, with a sentence fit to show.
 ///
@@ -341,9 +351,12 @@ class OnDeviceAiService implements LocalAiService {
     final Llm llm = await _current();
     // The clock goes in per question, not into [system]: "what time is it"
     // has to be answered with the time it is asked at. A vision turn opts out.
+    // The artifact format is added here too, and only when the model that is
+    // about to load can actually follow it.
+    final String capable = nexusSystemWithCapabilities(system);
     final String clocked = includeClock
-        ? nexusSystemWithClock(system, now: clock?.call())
-        : system;
+        ? nexusSystemWithClock(capable, now: clock?.call())
+        : capable;
     final String systemTurn = includeMemory
         ? LocalAiService.systemWithMemory(clocked)
         : clocked;
@@ -395,9 +408,10 @@ class OnDeviceAiService implements LocalAiService {
     if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
     if (_engine == null) await _ensureMemoryForLoad();
     final Llm llm = await _current();
+    final String capable = nexusSystemWithCapabilities(system);
     final String clocked = includeClock
-        ? nexusSystemWithClock(system, now: clock?.call())
-        : system;
+        ? nexusSystemWithClock(capable, now: clock?.call())
+        : capable;
     final String systemTurn = includeMemory
         ? LocalAiService.systemWithMemory(clocked)
         : clocked;

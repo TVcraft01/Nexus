@@ -53,6 +53,11 @@ abstract final class AgentActions {
   // --- Productivity ---
   static const alarmSet = 'alarm.set';
   static const alarmDismiss = 'alarm.dismiss';
+
+  /// Opens the clock app on its alarms page — the companion to [alarmSet],
+  /// for "show my alarms". Deliberately not [appOpen] with `clock`: opening
+  /// the app is not opening the list the user asked to see.
+  static const alarmShow = 'alarm.show';
   static const timerStatus = 'timer.status';
   static const timerCancel = 'timer.cancel';
   static const reminderSet = 'reminder.set';
@@ -221,6 +226,74 @@ const Set<String> knownOpenTargets = {
   'store',
   'github',
 };
+
+/// "open spotify" spoken on Android: the package whose launcher entry is a
+/// better target than the spoken word. Keyed by the lower-case name the user
+/// says; the native side prefers the hint and falls back to fuzzy-matching the
+/// installed app labels, so a missing or renamed package is not a dead end.
+///
+/// The map lives here because two callers need it — the command executor's
+/// app routes and the fast path's [AgentActions.appOpen] — and a second copy is
+/// how "open browser" came to mean Chrome in one path and nothing in another.
+const Map<String, String> androidAppPackages = <String, String>{
+  'youtube': 'com.google.android.youtube',
+  'chrome': 'com.android.chrome',
+  'browser': 'com.android.chrome',
+  'gmail': 'com.google.android.gm',
+  'email': 'com.google.android.gm',
+  'mail': 'com.google.android.gm',
+  'maps': 'com.google.android.apps.maps',
+  'camera': 'com.android.camera',
+  'photos': 'com.google.android.apps.photos',
+  'gallery': 'com.google.android.apps.photos',
+  'calendar': 'com.google.android.calendar',
+  'clock': 'com.google.android.deskclock',
+  'calculator': 'com.google.android.calculator',
+  'settings': 'com.android.settings',
+  'messages': 'com.google.android.apps.messaging',
+  'sms': 'com.google.android.apps.messaging',
+  'phone': 'com.google.android.dialer',
+  'dialer': 'com.google.android.dialer',
+  'contacts': 'com.google.android.contacts',
+  'files': 'com.google.android.apps.nbu.files',
+  'spotify': 'com.spotify.music',
+  'music': 'com.google.android.apps.music',
+  'netflix': 'com.netflix.mediaclient',
+  'instagram': 'com.instagram.android',
+  'twitter': 'com.twitter.android',
+  'x': 'com.twitter.android',
+  'facebook': 'com.facebook.katana',
+  'whatsapp': 'com.whatsapp',
+  'telegram': 'org.telegram.messenger',
+  'discord': 'com.discord',
+  'slack': 'com.Slack',
+  'teams': 'com.microsoft.teams',
+  'zoom': 'us.zoom.videomeetings',
+  'tiktok': 'com.zhiliaoapp.musically',
+  'reddit': 'com.reddit.frontpage',
+  'pinterest': 'com.pinterest',
+  'snapchat': 'com.snapchat.android',
+  'linkedin': 'com.linkedin.android',
+  'deezer': 'deezer.android.app',
+  'podcast': 'com.google.android.apps.podcasts',
+  'news': 'com.google.android.apps.magazines',
+  'drive': 'com.google.android.apps.docs',
+  'docs': 'com.google.android.apps.docs',
+  'sheets': 'com.google.android.apps.docs.editors.sheets',
+  'slides': 'com.google.android.apps.docs.editors.slides',
+  'keep': 'com.google.android.apps.keep',
+  'wallet': 'com.google.android.apps.walletnfcrel',
+  'play store': 'com.android.vending',
+  'playstore': 'com.android.vending',
+  'store': 'com.android.vending',
+};
+
+/// The package hint for a spoken app name: the alias when there is one, or the
+/// name itself so the native side's fuzzy match still has something to try.
+String androidPackageHint(String query) {
+  final lower = query.toLowerCase().trim().replaceFirst(RegExp(r'^the '), '');
+  return androidAppPackages[lower] ?? lower;
+}
 
 class ParsedCommand {
   final String action;

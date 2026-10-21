@@ -68,13 +68,15 @@ void main() {
       expect(file.existsSync(), isTrue);
       final Map<String, Object?> raw =
           jsonDecode(await file.readAsString()) as Map<String, Object?>;
-      expect(raw['version'], 1);
+      expect(raw['version'], kMemoryFileVersion);
       final List<Object?> facts = raw['facts']! as List<Object?>;
       expect(facts, hasLength(1));
-      expect(
-        (facts.single! as Map<String, Object?>)['text'],
-        'My name is TVCraft',
-      );
+      // A fact is a topic and the value that belongs to it, not a sentence:
+      // that shape is what lets a correction overwrite instead of append.
+      final Map<String, Object?> row = facts.single! as Map<String, Object?>;
+      expect(row['topic'], 'name');
+      expect(row['fact'], 'TVCraft');
+      expect(memory.notes.single.text, 'My name is TVCraft');
     });
 
     test('survive a restart and reach the system turn', () async {
@@ -86,11 +88,24 @@ void main() {
       await next.attach();
 
       expect(next.notes.single.text, 'My name is TVCraft');
-      expect(next.systemContext, contains('My name is TVCraft'));
+      expect(next.systemContext, contains('- name: TVCraft'));
       expect(
         next.systemContext,
         startsWith('What you remember about the user'),
       );
+    });
+
+    test('are told as facts about the user, never in their voice', () async {
+      await memory.remember('My name is TVCraft');
+      await memory.remember('I live in Lyon');
+      final String context = memory.systemContext;
+      // "My name is TVCraft" in a system turn is a sentence a model can read as
+      // its own name — the 1B answered "You are Nexus" on the phone. Topic and
+      // value cannot be misread that way.
+      expect(context, contains('- name: TVCraft'));
+      expect(context, contains('- location: Lyon'));
+      expect(context, isNot(contains('My name is')));
+      expect(context, contains('not about you'));
     });
 
     test('are told to the brain after the app has installed them', () async {
@@ -138,8 +153,8 @@ void main() {
 
       expect(await memory.absorb('I am Sam'), <String>['My name is Sam']);
       expect(memory.length, 2);
-      expect(memory.systemContext, contains('My name is Sam'));
-      expect(memory.systemContext, contains('I live in Lyon'));
+      expect(memory.systemContext, contains('- name: Sam'));
+      expect(memory.systemContext, contains('- location: Lyon'));
       expect(memory.systemContext, isNot(contains('TVCraft')));
     });
 
@@ -147,6 +162,198 @@ void main() {
       await memory.remember('My name is TVCraft');
       await memory.absorb('I am tired');
       expect(memory.notes.single.text, 'My name is TVCraft');
+    });
+  });
+
+  group('the tags a reply writes', () {
+    test('a remember tag stores the topic it names', () async {
+      expect(
+        await memory.applyTag(const MemoryTag(topic: 'name', fact: 'TVCraft')),
+        '🧠 Memory updated: name is TVCraft',
+      );
+      expect(memory.notes.single.topic, 'name');
+      expect(memory.notes.single.fact, 'TVCraft');
+      // The model still reads a sentence: the topic is the vault's shape, not
+      // the prompt's.
+      expect(memory.systemContext, contains('- name: TVCraft'));
+    });
+
+    test('a second value for the same topic overwrites the first', () async {
+      await memory.applyTag(const MemoryTag(topic: 'name', fact: 'TVCraft'));
+      expect(
+        await memory.applyTag(
+          const MemoryTag(topic: 'name', fact: 'TVCraft01'),
+        ),
+        '🧠 Memory updated: name is TVCraft01',
+      );
+      expect(memory.length, 1);
+      expect(memory.notes.single.fact, 'TVCraft01');
+      expect(memory.systemContext, endsWith('- name: TVCraft01'));
+    });
+
+    test('the same value again is not a change and says nothing', () async {
+      await memory.applyTag(const MemoryTag(topic: 'name', fact: 'TVCraft'));
+      expect(
+        await memory.applyTag(const MemoryTag(topic: 'name', fact: 'TVCraft')),
+        isNull,
+      );
+    });
+
+    test('a forget tag deletes the topic it names', () async {
+      await memory.remember('My name is TVCraft');
+      await memory.remember('I live in Lyon');
+
+      expect(
+        await memory.applyTag(const MemoryTag(topic: 'name', forget: true)),
+        '🧠 Memory deleted: name',
+      );
+      expect(memory.length, 1);
+      expect(memory.systemContext, isNot(contains('TVCraft')));
+      expect(memory.systemContext, contains('- location: Lyon'));
+      // Forgetting what is not there changes nothing, so it says nothing.
+      expect(
+        await memory.applyTag(const MemoryTag(topic: 'name', forget: true)),
+        isNull,
+      );
+    });
+
+    test('a friendly topic and its key are the same slot', () async {
+      await memory.applyTag(
+        const MemoryTag(topic: 'favourite colour', fact: 'green'),
+      );
+      expect(
+        await memory.applyTag(
+          const MemoryTag(topic: 'favourite:colour', fact: 'blue'),
+        ),
+        isNotNull,
+      );
+      expect(memory.length, 1);
+      expect(memory.systemContext, contains('- favourite colour: blue'));
+      expect(await memory.forget('favourite colour'), isTrue);
+      expect(memory.isEmpty, isTrue);
+    });
+
+    test('a tag is taken out of the words, in any spacing', () {
+      final MemoryTagSplit split = splitMemoryTags(
+        "Sure. [remember: 'name' = 'TVCraft']",
+      );
+      expect(split.hasTags, isTrue);
+      expect(split.text.trim(), 'Sure.');
+      expect(split.tags.single.topic, 'name');
+      expect(split.tags.single.fact, 'TVCraft');
+      expect(splitMemoryTags('[forget:name]').tags.single.forget, isTrue);
+      expect(splitMemoryTags('plain words').hasTags, isFalse);
+    });
+
+    test('a half-written tag is hidden while the answer streams', () {
+      expect(
+        splitMemoryTags("Sure, [remember: 'name' = 'TVC", streaming: true).text,
+        'Sure, ',
+      );
+      // A complete one is hidden in both modes.
+      expect(
+        splitMemoryTags("Sure. [forget: 'name' ]", streaming: true).text,
+        'Sure. ',
+      );
+    });
+
+    test('a user who types a tag changes the vault directly', () async {
+      await memory.absorb("[remember: 'name' = 'Sam']");
+      expect(memory.notes.single.text, 'My name is Sam');
+      // The tag itself is not remembered as a sentence.
+      expect(memory.length, 1);
+    });
+  });
+
+  // The tag exists to file what the user said, not to let the model write
+  // whatever it believes. Seen on the phone: asked "what is my name?", the 1B
+  // model answered with a tag for its own name, and the vault would have
+  // overwritten the user's.
+  group('tags are grounded in what the user said', () {
+    test('a fact the question never mentioned is refused', () async {
+      await memory.rememberFact('name', 'TVCraft01');
+      final List<String> lines = await memory.applyTags(const <MemoryTag>[
+        MemoryTag(topic: 'name', fact: 'Nexus'),
+      ], said: 'what is my name');
+      expect(lines, isEmpty);
+      expect(memory.notes.single.fact, 'TVCraft01');
+    });
+
+    test(
+      'a correction the user did say is kept, punctuation and all',
+      () async {
+        await memory.rememberFact('name', 'TVCraft');
+        final List<String> lines = await memory.applyTags(const <MemoryTag>[
+          MemoryTag(topic: 'name', fact: 'TVCraft01'),
+        ], said: "No, call me TVCraft01");
+        expect(lines.single, '🧠 Memory updated: name is TVCraft01');
+        expect(memory.notes.single.fact, 'TVCraft01');
+      },
+    );
+
+    test('a typed tag needs no grounding, because the user wrote it', () async {
+      final List<String> lines = await memory.applyTags(const <MemoryTag>[
+        MemoryTag(topic: 'wifi', fact: 'swordfish'),
+      ], said: "[remember: 'wifi' = 'swordfish']");
+      expect(lines, hasLength(1));
+      expect(memory.notes.single.fact, 'swordfish');
+    });
+
+    test('short words are not a reason to refuse', () {
+      expect(memoryGroundedIn('Lyon', 'I live in lyon!'), isTrue);
+      expect(memoryGroundedIn('name is Nexus', 'what is my name'), isFalse);
+    });
+  });
+
+  group('the vault', () {
+    test('one note can be deleted without touching the others', () async {
+      await memory.remember('My name is TVCraft');
+      await memory.remember('I live in Lyon');
+
+      final MemoryNote name = memory.notes.first;
+      expect(await memory.forgetNote(name), isTrue);
+      expect(memory.length, 1);
+      expect(memory.notes.single.text, 'I live in Lyon');
+      // Deleting it twice is not a second deletion.
+      expect(await memory.forgetNote(name), isFalse);
+      expect(await memory.forgetNote(memory.notes.single), isTrue);
+      expect(memory.isEmpty, isTrue);
+    });
+
+    test('a fact typed by hand is the topic it was given', () async {
+      expect(await memory.rememberFact('home', 'Lyon'), isTrue);
+      expect(memory.notes.single.topicLabel, 'home');
+      expect(memory.notes.single.text, 'My home is Lyon');
+    });
+
+    test('a version 1 file is read as topics', () async {
+      await memoryFile().writeAsString(
+        jsonEncode(<String, Object?>{
+          'version': 1,
+          'facts': <Map<String, Object?>>[
+            <String, Object?>{
+              'text': 'My name is TVCraft',
+              'learnedAt': '2026-01-01T00:00:00.000',
+            },
+            <String, Object?>{
+              'text': 'I live in Lyon',
+              'learnedAt': '2026-01-02T00:00:00.000',
+            },
+          ],
+        }),
+      );
+
+      final MemoryService upgraded = MemoryService(
+        store: FileMemoryStore(directory: () async => documents),
+      );
+      await upgraded.attach();
+
+      expect(upgraded.notes.map((MemoryNote n) => n.topic), <String>[
+        'name',
+        'location',
+      ]);
+      expect(upgraded.notes.first.fact, 'TVCraft');
+      expect(upgraded.systemContext, contains('- name: TVCraft'));
     });
   });
 

@@ -105,6 +105,7 @@ import 'core/memory_service.dart';
 import 'core/math_helper.dart';
 import 'core/mic_access.dart';
 import 'core/ml_vision_service.dart';
+import 'core/model_capabilities.dart';
 import 'core/ollama_service.dart';
 import 'core/on_device_ai_service.dart';
 import 'core/on_device_model.dart';
@@ -1872,7 +1873,11 @@ class _NexusShellState extends State<NexusShell> {
         // The thread's own drawer is disabled while the sidebar owns history:
         // two ways to open the same list, one of them a panel over the other
         // list, is the kind of duplicate a wide layout exists to remove.
-        HomeTab(refreshEpoch: _homeEpoch, wide: wide),
+        HomeTab(
+          refreshEpoch: _homeEpoch,
+          wide: wide,
+          onOpenSettings: () => _select(_settingsIndex),
+        ),
         // The index in this stack is the design: 0 is Home, 1 is Files, and
         // only the page whose index matches the selected tab does work on
         // launch.
@@ -2812,6 +2817,61 @@ const Key kNexusThemeBusy = Key('nexus-theme-busy');
 /// a rendered pixel.
 const Key kNexusDarkModeLocked = Key('nexus-dark-mode-locked');
 
+/// The title, dialog key and Settings button of the lock a small model shows.
+const String kNexusFeatureLockedTitle = 'Feature Locked';
+const Key kNexusFeatureLockedDialog = Key('nexus-feature-locked');
+const Key kNexusFeatureLockedGo = Key('nexus-feature-locked-go');
+
+/// Explains why the feature the user just tapped cannot work, and offers the
+/// screen that changes it.
+///
+/// A locked control that only says "no" is a wall. One sentence covers both
+/// locked features, because it is one situation — the model on this phone is
+/// too small — and it names both things that open the lock (a bigger model, or
+/// the PC). The one button is the trip to Settings, where both live.
+/// [onOpenSettings] is the caller's, because only the caller knows what "there"
+/// is on its screen; when it is null the dialog offers only the way out.
+Future<bool> showNexusFeatureLocked(
+  BuildContext context, {
+  required NexusFeature feature,
+  VoidCallback? onOpenSettings,
+}) async {
+  final NexusUiColors c = context.ui;
+  final bool? go = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      key: kNexusFeatureLockedDialog,
+      backgroundColor: c.surface,
+      title: Text(
+        kNexusFeatureLockedTitle,
+        style: NexusType.rowTitle(dialogContext.ui),
+      ),
+      content: Text(
+        ModelCapabilities.current.lockMessage(feature),
+        style: NexusType.rowMeta(dialogContext.ui).copyWith(height: 1.45),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: Text('Not now', style: TextStyle(color: c.textMuted)),
+        ),
+        if (onOpenSettings != null)
+          TextButton(
+            key: kNexusFeatureLockedGo,
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(
+              'Open Settings',
+              style: TextStyle(color: c.accent, fontWeight: FontWeight.w600),
+            ),
+          ),
+      ],
+    ),
+  );
+  if (!(go ?? false)) return false;
+  onOpenSettings?.call();
+  return true;
+}
+
 /// Asks a yes/no question about something that cannot be undone.
 ///
 /// Returns true only when the user pressed the button that says so; every other
@@ -3675,7 +3735,12 @@ enum _MicMode { continuous, oneShot, live }
 /// The Claude-shaped home screen: a greeting, a short thread, and the composer
 /// pinned at the bottom above the keyboard.
 class HomeTab extends StatefulWidget {
-  const HomeTab({super.key, this.refreshEpoch = 0, this.wide = false});
+  const HomeTab({
+    super.key,
+    this.refreshEpoch = 0,
+    this.wide = false,
+    this.onOpenSettings,
+  });
 
   /// True when the shell is drawing its permanent sidebar beside this tab.
   ///
@@ -3693,6 +3758,11 @@ class HomeTab extends StatefulWidget {
   /// PC's Ollama starts. A new number means "look again"; see
   /// [SettingsTab.refreshEpoch] for the same signal on the other screen.
   final int refreshEpoch;
+
+  /// Switches the shell to Settings, for the one place a chat needs it: the
+  /// lock dialog a small model shows. Null in a widget test that pumps this tab
+  /// on its own, and the dialog then offers only the way out.
+  final VoidCallback? onOpenSettings;
 
   /// Test seam for the silent launch check. The app never sets it; a widget
   /// test supplies a canned release instead of reaching GitHub.
@@ -4083,6 +4153,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
 
   Future<void> _readBrain() async {
     final AiStatus status = await AiStatus.detect();
+    // The same probe answers the gate: which brain is behind the next answer is
+    // exactly which features may be offered. Recorded before the frame so the
+    // `+` sheet opened in the same second already reads the truth.
+    ModelCapabilities.observe(status);
     if (mounted) setState(() => _brain = status);
   }
 
@@ -4187,6 +4261,17 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       call.action == 'set_alarm' ||
       call.action == 'open_app' ||
       call.action == 'play_music' ||
+      // The Core-15 additions that put something else in front of the user:
+      // the SMS and mail composers, the map chooser, the projection dialog and
+      // the clock app's lists. Without these, answering "text mom" out loud
+      // backgrounded Nexus and closed the conversation page.
+      call.action == 'send_sms' ||
+      call.action == 'send_email' ||
+      call.action == 'navigate_to' ||
+      call.action == 'screenshot' ||
+      call.action == 'show_alarms' ||
+      call.action == 'cancel_alarms' ||
+      call.action == 'cancel_timers' ||
       // The dialer is another app. Without this, answering "call mom" in live
       // mode backgrounded Nexus and the lifecycle handler closed the page — the
       // user came back to the text thread instead of the conversation they were
@@ -4285,6 +4370,22 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _focus.requestFocus();
   }
 
+  /// Applies memory tags the user typed, and shows the pill for each change.
+  ///
+  /// The same line the model's own tags produce, because it is the same event:
+  /// the vault changed, and the user should be told which fact it was.
+  Future<void> _applyTypedMemoryTags(List<MemoryTag> tags) async {
+    final List<String> lines = await MemoryService.instance.applyTags(tags);
+    if (!mounted || lines.isEmpty) return;
+    setState(() {
+      for (final String line in lines) {
+        _thread.add(NexusMockMessage(line, system: true));
+      }
+    });
+    _persistThread();
+    _scrollToLatest();
+  }
+
   /// Sends the draft: the user's bubble, a placeholder for the answer, and the
   /// request to the model on the PC.
   ///
@@ -4298,14 +4399,25 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// send owns the index of its own placeholder, so two answers in flight can
   /// never land in each other's bubble.
   void _send() {
-    final String text = _message.text.trim();
+    // A tag the user typed is a command to the vault rather than a message:
+    // `[remember: …]` is taken out of the bubble (and out of what the model is
+    // asked) and applied, exactly as the model's own tags are.
+    final MemoryTagSplit typed = splitMemoryTags(_message.text.trim());
+    final String text = typed.text.trim();
     final List<_PendingAttachment> pending = List<_PendingAttachment>.of(
       _pendingAttachments,
     );
     // A picture waiting in the composer is a reason to send even with an empty
     // field: the attachment is half the message, and the caption below is the
     // other half.
-    if (text.isEmpty && pending.isEmpty) return;
+    if (text.isEmpty && pending.isEmpty) {
+      // A message that was *only* a tag still has work to do.
+      if (typed.hasTags) {
+        _message.clear();
+        unawaited(_applyTypedMemoryTags(typed.tags));
+      }
+      return;
+    }
     // Read once, here: whether this turn is answered out loud is a fact about
     // how it was dictated, and the flag is cleared by the send that consumes
     // it so the next typed question is not spoken on the strength of the last
@@ -4314,8 +4426,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _voiceTurn = false;
     // Anything the user just told Nexus about themselves is remembered before
     // the answer is asked for, so the same turn can already be answered with it.
+    // The original text, tags included: [absorb] applies a typed tag as a
+    // command, and the sentence detector reads the words around it.
     // Fire-and-forget: a file write must never delay the bubble.
-    unawaited(MemoryService.instance.absorb(text));
+    unawaited(MemoryService.instance.absorb(_message.text));
     if (pending.isNotEmpty) {
       _sendPending(
         pending,
@@ -4669,7 +4783,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (BuildContext context) => const _AttachmentSheet(),
+      builder: (BuildContext context) =>
+          _AttachmentSheet(onOpenSettings: widget.onOpenSettings),
     );
     if (!mounted || choice == null) return;
     switch (choice) {
@@ -5074,7 +5189,11 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // model sees both what was asked and the current facts the user allowed it
     // to look up. A search that fails leaves the prompt exactly as it was.
     String asked = prompt;
-    if (ComposerSettings.instance.webSearchEnabled) {
+    // The switch says what the user wants; the capability says what this brain
+    // can use. A locked feature appends nothing at all — a page of snippets
+    // handed to a 0.5B model is a question it answers about the snippets.
+    if (ComposerSettings.instance.webSearchEnabled &&
+        ModelCapabilities.current.supportsWebSearch) {
       final List<WebResult> results = await nexusWebSearch(prompt);
       if (results.isNotEmpty) asked = '$prompt\n\n${webContextBlock(results)}';
       if (!mounted) return;
@@ -5109,7 +5228,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             buffer.toString(),
             finished: false,
           );
-          final String visible = nexusStreamingProse(split.answer);
+          // A memory tag is an instruction to the vault, not words for the
+          // bubble: it is cut while it streams, so the user never watches
+          // `[remember: 'name' =` arrive and then vanish.
+          final String visible = splitMemoryTags(
+            nexusStreamingProse(split.answer),
+            streaming: true,
+          ).text;
           final String reasoning = split.reasoning.trim();
           if (visible.trim().isEmpty && split.answer.contains('{')) {
             continue;
@@ -5173,6 +5298,21 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       reply = kNexusOllamaUnreachableText;
       failed = true;
     }
+    // The vault's tags come out before anything else reads the words: a tag is
+    // a balanced `[...]` region, and the JSON reader below reads every one of
+    // those into prose — the user would be shown `remember: 'name' = 'X'`,
+    // which is neither the tag nor a sentence. A failure carries no tags.
+    final MemoryTagSplit memory = failed
+        ? MemoryTagSplit(text: reply, tags: const <MemoryTag>[])
+        : splitMemoryTags(reply);
+    if (!failed) reply = memory.text.trim();
+    // Grounded in the question, not just in the model's confidence: a tag for
+    // a fact the user never wrote is the model describing itself, and the
+    // vault is the user's, not the model's (see [memoryGroundedIn]).
+    final List<String> memoryLines = await MemoryService.instance.applyTags(
+      memory.tags,
+      said: prompt,
+    );
     // An answer that contains an action request is not an answer: it is the
     // model asking this phone to do something. The request is stripped and run
     // here, before anything is shown, and the thread gets whatever prose was
@@ -5180,7 +5320,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // asked for it. A reply that is *nearly* an action — an unknown name, a
     // missing argument, an object that is not an action at all — has no calls
     // to run and becomes the bubble below, with its JSON read into words.
-    if (!failed) {
+    if (!failed && reply.isNotEmpty) {
       final NexusActionIntercept intercept = interceptSystemActions(reply);
       if (intercept.acted) {
         await _runActions(
@@ -5189,6 +5329,18 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
           spoken: spoken,
           reasoning: reasoning,
         );
+        // A reply can both ask for an action and remember a fact; the pills for
+        // the facts were already written, so they are shown after the action's
+        // own line rather than lost with the early return.
+        if (mounted && memoryLines.isNotEmpty) {
+          setState(() {
+            for (final String line in memoryLines) {
+              _thread.add(NexusMockMessage(line, system: true));
+            }
+          });
+          _persistThread();
+          _scrollToLatest();
+        }
         return;
       }
       // The interceptor is also where an answer written in JSON becomes words:
@@ -5199,6 +5351,27 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
           ? kNexusNoAnswerText
           : intercept.text;
     }
+    if (!mounted || index >= _thread.length) return;
+    if (reply.isEmpty && memoryLines.isNotEmpty) {
+      // The whole reply *was* the tag. There is nothing to say, so the pill is
+      // the answer and the placeholder it replaced goes away with it.
+      setState(() {
+        _thread.removeAt(index);
+        for (final (int at, String line) in memoryLines.indexed) {
+          _thread.insert(index + at, NexusMockMessage(line, system: true));
+        }
+      });
+      _persistThread();
+      _scrollToLatest();
+      return;
+    }
+    if (reply.isEmpty) {
+      // The whole reply was a tag the vault refused (a fact the user never
+      // said), so there is neither an answer nor a pill. An empty bubble with
+      // the message actions under it is a question that looks unanswered on
+      // purpose; say the one sentence instead.
+      reply = kNexusNoAnswerText;
+    }
     setState(
       () => _thread[index] = NexusMockMessage(
         reply,
@@ -5206,6 +5379,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         reasoning: reasoning,
       ),
     );
+    if (memoryLines.isNotEmpty) {
+      setState(() {
+        for (final (int at, String line) in memoryLines.indexed) {
+          _thread.insert(index + 1 + at, NexusMockMessage(line, system: true));
+        }
+      });
+    }
     // The answer is now half of what the next question will be read against.
     _persistThread();
     _scrollToLatest();
@@ -6045,7 +6225,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // same question, and a switch that only worked in text would be a switch
     // the user has to remember is missing here.
     String asked = prompt;
-    if (ComposerSettings.instance.webSearchEnabled) {
+    if (ComposerSettings.instance.webSearchEnabled &&
+        ModelCapabilities.current.supportsWebSearch) {
       final List<WebResult> results = await nexusWebSearch(prompt);
       if (results.isNotEmpty) asked = '$prompt\n\n${webContextBlock(results)}';
       if (!mounted || !_liveOpen || turn != _liveTurns) return;
@@ -6080,7 +6261,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             buffer.toString(),
             finished: false,
           );
-          final String visible = nexusStreamingProse(thought.answer);
+          final String visible = splitMemoryTags(
+            nexusStreamingProse(thought.answer),
+            streaming: true,
+          ).text;
           if (visible.trim().isEmpty &&
               (buffer.toString().contains('{') || thought.thinking)) {
             continue;
@@ -6853,6 +7037,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                                         onLike: () => _react(i, true),
                                         onDislike: () => _react(i, false),
                                         onRegenerate: () => _regenerate(i),
+                                        onOpenSettings: widget.onOpenSettings,
                                       ),
                               ),
                             ),
@@ -8400,6 +8585,7 @@ class _ThreadAnswer extends StatelessWidget {
     required this.onLike,
     required this.onDislike,
     required this.onRegenerate,
+    this.onOpenSettings,
   });
 
   final NexusMockMessage message;
@@ -8409,6 +8595,10 @@ class _ThreadAnswer extends StatelessWidget {
   final VoidCallback? onLike;
   final VoidCallback? onDislike;
   final VoidCallback? onRegenerate;
+
+  /// Where a locked file card's dialog sends the user: the Brain section, which
+  /// is the only place the model that would unlock it lives.
+  final VoidCallback? onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -8451,7 +8641,10 @@ class _ThreadAnswer extends StatelessWidget {
         for (final NexusArtifact artifact in split.artifacts)
           Padding(
             padding: const EdgeInsets.only(top: 8),
-            child: NexusArtifactCard(artifact: artifact),
+            child: NexusArtifactCard(
+              artifact: artifact,
+              onOpenSettings: onOpenSettings,
+            ),
           ),
       ],
     );
@@ -8466,13 +8659,27 @@ class _ThreadAnswer extends StatelessWidget {
 /// decoration: it is the band every code editor puts beside a file, and it says
 /// "this is code" before the eye reaches the filename.
 class NexusArtifactCard extends StatelessWidget {
-  const NexusArtifactCard({super.key, required this.artifact});
+  const NexusArtifactCard({
+    super.key,
+    required this.artifact,
+    this.onOpenSettings,
+  });
 
   final NexusArtifact artifact;
+
+  /// Where the lock dialog's one button goes. Null when the card is drawn on a
+  /// screen that cannot reach Settings, and the dialog then only explains.
+  final VoidCallback? onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
+    // A file only exists because a model wrote one, and only a brain that can
+    // hold the tag writes files. A card that still arrives on a smaller brain —
+    // a restored chat from before the model was switched — is shown locked
+    // rather than opening a page this model could not have produced.
+    final ModelCapabilities caps = ModelCapabilities.current;
+    final bool locked = !caps.supportsArtifacts;
     return Align(
       alignment: Alignment.centerLeft,
       child: Material(
@@ -8484,7 +8691,13 @@ class NexusArtifactCard extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           key: ValueKey<String>('artifact-${artifact.safeFilename}'),
-          onTap: () => NexusArtifactPage.open(context, artifact),
+          onTap: locked
+              ? () => showNexusFeatureLocked(
+                  context,
+                  feature: NexusFeature.artifacts,
+                  onOpenSettings: onOpenSettings,
+                )
+              : () => NexusArtifactPage.open(context, artifact),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 360, minHeight: 68),
             child: Row(
@@ -8493,8 +8706,12 @@ class NexusArtifactCard extends StatelessWidget {
                 Container(
                   width: 58,
                   alignment: Alignment.center,
-                  color: c.accent.withValues(alpha: 0.13),
-                  child: Icon(Icons.code_rounded, size: 24, color: c.accent),
+                  color: locked ? c.raised : c.accent.withValues(alpha: 0.13),
+                  child: Icon(
+                    locked ? Icons.lock_outline_rounded : Icons.code_rounded,
+                    size: 24,
+                    color: locked ? c.textMuted : c.accent,
+                  ),
                 ),
                 Flexible(
                   child: Padding(
@@ -8511,7 +8728,9 @@ class NexusArtifactCard extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          artifact.languageLabel,
+                          locked
+                              ? caps.lockSubtitle(NexusFeature.artifacts)
+                              : artifact.languageLabel,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: NexusType.rowMeta(c).copyWith(fontSize: 11.5),
@@ -8523,7 +8742,9 @@ class NexusArtifactCard extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(right: 10),
                   child: Icon(
-                    Icons.open_in_full_rounded,
+                    locked
+                        ? Icons.lock_outline_rounded
+                        : Icons.open_in_full_rounded,
                     size: 16,
                     color: c.textMuted,
                   ),
@@ -10461,7 +10682,11 @@ const Key kSheetProjects = ValueKey<String>('sheet-projects');
 /// settings, and a setting that looks like an attachment is a setting the user
 /// will tap expecting a picker.
 class _AttachmentSheet extends StatefulWidget {
-  const _AttachmentSheet();
+  const _AttachmentSheet({this.onOpenSettings});
+
+  /// Where the lock dialog's one button goes. Null in a widget test that draws
+  /// the sheet by itself, and the dialog then offers only the way out.
+  final VoidCallback? onOpenSettings;
 
   @override
   State<_AttachmentSheet> createState() => _AttachmentSheetState();
@@ -10495,8 +10720,26 @@ class _AttachmentSheetState extends State<_AttachmentSheet> {
     if (mounted) setState(() {});
   }
 
+  /// Tapping a feature this brain cannot use: say why, then take the user to
+  /// the only screen that changes it.
+  Future<void> _openLockedFeature(NexusFeature feature) async {
+    final bool go = await showNexusFeatureLocked(
+      context,
+      feature: feature,
+      onOpenSettings: widget.onOpenSettings,
+    );
+    if (!mounted || !go) return;
+    // The sheet was only the menu the lock was discovered from; leaving it up
+    // would put a menu over the Settings page it just switched to.
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Read on every build: a model downloaded while the sheet was open is a
+    // switch that becomes live without closing the chat.
+    final ModelCapabilities caps = ModelCapabilities.current;
+    final bool webLocked = !caps.supportsWebSearch;
     return SafeArea(
       top: false,
       child: Padding(
@@ -10568,12 +10811,20 @@ class _AttachmentSheetState extends State<_AttachmentSheet> {
                 // The one switch that leaves the device. It says what it sends
                 // rather than "search the web", because a user deciding this is
                 // deciding about their question, not about the feature.
-                value: _settings.webSearchEnabled,
-                subtitle: _settings.webSearchEnabled
+                //
+                // Locked on a small model: the switch is drawn as a lock until
+                // the brain can use what a search brings back.
+                value: !webLocked && _settings.webSearchEnabled,
+                locked: webLocked,
+                subtitle: webLocked
+                    ? caps.lockSubtitle(NexusFeature.webSearch)
+                    : _settings.webSearchEnabled
                     ? 'On — each question is sent to DuckDuckGo'
                     : 'Off — answers stay on this device',
                 onChanged: (bool value) =>
                     unawaited(_settings.setWebSearchEnabled(value)),
+                onLockedTap: () =>
+                    unawaited(_openLockedFeature(NexusFeature.webSearch)),
               ),
               _SheetSwitchRow(
                 key: kSheetMemory,
@@ -10660,6 +10911,8 @@ class _SheetSwitchRow extends StatelessWidget {
     required this.subtitle,
     required this.value,
     required this.onChanged,
+    this.locked = false,
+    this.onLockedTap,
   });
 
   final IconData icon;
@@ -10668,12 +10921,24 @@ class _SheetSwitchRow extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;
 
+  /// True when the brain behind the next answer cannot do this. The row stays
+  /// in place — the feature exists, it is the model that is too small — but it
+  /// is greyed, the switch becomes a lock, and a tap explains instead of
+  /// toggling a setting that would do nothing.
+  final bool locked;
+
+  /// What a tap on a locked row does: the lock dialog.
+  final VoidCallback? onLockedTap;
+
   @override
   Widget build(BuildContext context) {
+    final Color ink = locked
+        ? _AttachmentSheetState._muted
+        : _AttachmentSheetState._ink;
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => onChanged(!value),
+        onTap: locked ? onLockedTap : () => onChanged(!value),
         borderRadius: const BorderRadius.all(Radius.circular(14)),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(6, 8, 6, 8),
@@ -10688,7 +10953,7 @@ class _SheetSwitchRow extends StatelessWidget {
                     Text(
                       label,
                       style: GoogleFonts.inter(
-                        color: _AttachmentSheetState._ink,
+                        color: ink,
                         fontSize: 14.5,
                         fontWeight: FontWeight.w500,
                       ),
@@ -10706,7 +10971,14 @@ class _SheetSwitchRow extends StatelessWidget {
                   ],
                 ),
               ),
-              Switch(value: value, onChanged: onChanged),
+              if (locked)
+                const Icon(
+                  Icons.lock_outline_rounded,
+                  size: 18,
+                  color: _AttachmentSheetState._muted,
+                )
+              else
+                Switch(value: value, onChanged: onChanged),
             ],
           ),
         ),
@@ -14647,7 +14919,10 @@ class _SettingsTabState extends State<SettingsTab> {
           const NexusSectionLabel('Privacy'),
           NexusRow(
             title: 'Privacy',
-            subtitle: 'What voice input does with your audio',
+            // The page is no longer only about the microphone: it holds the
+            // vault, so the row has to promise that too, or the one screen that
+            // shows what Nexus remembers is found by accident.
+            subtitle: 'Voice, memory, and what stays on this device',
             leading: const NexusIconTile(Icons.privacy_tip_outlined),
             trailing: const NexusChevron(),
             onTap: () => Navigator.of(context).push(
@@ -15476,6 +15751,247 @@ const Key kNexusDeleteAllData = Key('nexus-delete-all-data');
 const String kNexusDeleteAllDataRow = 'Delete All Memory & Chats';
 const String kNexusDeleteAllDataTitle = 'Delete All Memory & Chats?';
 
+/// The Privacy row into the memory vault, and the vault's own controls.
+///
+/// Keyed because the point of the page is that a user can *prove* what is
+/// stored: the tests reach the same rows a thumb does.
+const Key kNexusMemoryVaultRow = Key('nexus-memory-vault');
+const String kNexusMemoryVaultRowLabel = 'What Nexus knows about you';
+const Key kNexusMemoryAdd = Key('nexus-memory-add');
+const Key kNexusMemoryDeleteAll = Key('nexus-memory-delete-all');
+const String kNexusMemoryDeleteAllLabel = 'Delete All Memory';
+const Key kNexusMemoryTopicField = Key('nexus-memory-topic');
+const Key kNexusMemoryFactField = Key('nexus-memory-fact');
+const Key kNexusMemorySave = Key('nexus-memory-save');
+
+/// \"What Nexus knows about you\": the whole vault, one row per fact.
+///
+/// A list rather than a paragraph because this is the page a user opens when
+/// they want to *check*, and a check is done row by row: what it is about, what
+/// it says, and a bin beside it. The two other controls are the only two edits a
+/// vault needs — add one, or delete them all — and the second one asks first.
+///
+/// Everything here is read from [MemoryService], the same file the prompt reads,
+/// so this page cannot show a comfortable version of the truth.
+class NexusMemoryVaultPage extends StatefulWidget {
+  const NexusMemoryVaultPage({super.key});
+
+  @override
+  State<NexusMemoryVaultPage> createState() => _NexusMemoryVaultPageState();
+}
+
+class _NexusMemoryVaultPageState extends State<NexusMemoryVaultPage> {
+  final MemoryService _memory = MemoryService.instance;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_memory.attach());
+    _memory.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    _memory.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Deletes one fact, and says which one went. No dialog: the bin is beside the
+  /// row it deletes, and a confirmation in front of every line would make the
+  /// vault feel dangerous to tidy.
+  Future<void> _forget(MemoryNote note) async {
+    final bool gone = await _memory.forgetNote(note);
+    if (!mounted || !gone) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Forgot ${note.topicLabel}.'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+  }
+
+  /// The `+`: one fact, typed by hand. Two fields because the file has two —
+  /// the topic is what makes a later correction replace this fact instead of
+  /// sitting beside it.
+  Future<void> _addFact() async {
+    final TextEditingController topic = TextEditingController();
+    final TextEditingController fact = TextEditingController();
+    final (String, String)? added = await showDialog<(String, String)>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        final NexusUiColors c = dialogContext.ui;
+        return AlertDialog(
+          backgroundColor: c.surface,
+          title: Text('Add a fact', style: NexusType.rowTitle(c)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              TextField(
+                key: kNexusMemoryTopicField,
+                controller: topic,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Topic',
+                  hintText: 'e.g. name',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: kNexusMemoryFactField,
+                controller: fact,
+                decoration: const InputDecoration(
+                  labelText: 'Fact',
+                  hintText: 'e.g. TVCraft',
+                ),
+                onSubmitted: (_) =>
+                    Navigator.of(dialogContext)
+                        .pop((topic.text.trim(), fact.text.trim())),
+              ),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text('Cancel', style: TextStyle(color: c.textMuted)),
+            ),
+            TextButton(
+              key: kNexusMemorySave,
+              onPressed: () =>
+                  Navigator.of(dialogContext)
+                      .pop((topic.text.trim(), fact.text.trim())),
+              child: Text('Remember', style: TextStyle(color: c.accent)),
+            ),
+          ],
+        );
+      },
+    );
+    topic.dispose();
+    fact.dispose();
+    if (added == null || !mounted) return;
+    if (added.$2.isEmpty) return;
+    await _memory.rememberFact(
+      added.$1.isEmpty ? kMemoryNoteTopic : added.$1,
+      added.$2,
+    );
+  }
+
+  Future<void> _confirmDeleteAll() async {
+    if (_busy) return;
+    final bool confirmed = await showNexusConfirm(
+      context,
+      title: 'Delete all memory?',
+      message:
+          'This deletes every fact Nexus has learned about you. It cannot be '
+          'undone, and the next answer will be from a blank slate.',
+      confirmLabel: 'Delete everything',
+    );
+    if (!confirmed || !mounted) return;
+    setState(() => _busy = true);
+    await _memory.clear();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('Memory deleted.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    final List<MemoryNote> notes = _memory.notes;
+    return Scaffold(
+      backgroundColor: c.background,
+      appBar: AppBar(
+        title: const Text(kNexusMemoryVaultRowLabel),
+        actions: <Widget>[
+          IconButton(
+            key: kNexusMemoryAdd,
+            tooltip: 'Add a fact',
+            icon: const Icon(Icons.add_rounded),
+            onPressed: _addFact,
+          ),
+        ],
+      ),
+      body: ListView(
+        // The bar at the side of a landscape phone is over the screen, not
+        // beside it: without its inset the bin on each row is under the nav
+        // buttons, which is the one control this page exists for.
+        padding: EdgeInsets.fromLTRB(
+          20 + MediaQuery.paddingOf(context).left,
+          12,
+          20 + MediaQuery.paddingOf(context).right,
+          28,
+        ),
+        children: <Widget>[
+          Text(
+            'Facts Nexus has learned, kept in one file on this phone. They are '
+            'given to the model on this device and never sent anywhere.',
+            style: NexusType.rowMeta(c).copyWith(height: 1.5),
+          ),
+          const SizedBox(height: 20),
+          if (notes.isEmpty)
+            Text(
+              'Nothing yet. Tell Nexus something about yourself in a chat, or '
+              'add a fact with the + button.',
+              key: const Key('nexus-memory-empty'),
+              style: NexusType.rowTitle(c).copyWith(color: c.textMuted),
+            )
+          else
+            for (final MemoryNote note in notes)
+              NexusRow(
+                key: ValueKey<String>('memory-${note.topic}-${note.fact}'),
+                title: note.topicLabel,
+                subtitle: note.fact,
+                leading: const NexusIconTile(Icons.label_outline_rounded),
+                trailing: IconButton(
+                  key: ValueKey<String>('memory-forget-${note.topic}'),
+                  tooltip: 'Forget this',
+                  icon: Icon(
+                    Icons.delete_outline_rounded,
+                    size: 20,
+                    color: c.danger,
+                  ),
+                  onPressed: () => unawaited(_forget(note)),
+                ),
+              ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              key: kNexusMemoryDeleteAll,
+              onPressed: notes.isEmpty || _busy ? null : _confirmDeleteAll,
+              style: FilledButton.styleFrom(
+                backgroundColor: c.danger.withValues(alpha: 0.16),
+                foregroundColor: c.danger,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.all(NexusLayout.tile),
+                ),
+              ),
+              child: Text(
+                _busy ? 'Deleting…' : kNexusMemoryDeleteAllLabel,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class PrivacyPage extends StatefulWidget {
   const PrivacyPage({super.key});
 
@@ -15496,7 +16012,11 @@ class PrivacyPolicyPage extends StatelessWidget {
   static const String policy =
       'Nexus is a local-first application. No data, audio, or images ever '
       'leave your device unless you explicitly send them to your PC. Your AI '
-      'models run locally on your device. No accounts, no cloud, no telemetry.';
+      'models run locally on your device. No accounts, no cloud, no telemetry.'
+      '\n\n'
+      'Nexus learns about you using a local memory vault. This data never '
+      'leaves your device, is never used to train models, and you can view, '
+      'edit, or delete it at any time.';
 
   @override
   Widget build(BuildContext context) {
@@ -15573,6 +16093,35 @@ class PrivacyPolicyPage extends StatelessWidget {
 class _PrivacyPageState extends State<PrivacyPage> {
   bool _busy = false;
 
+  /// The vault, so the row above the destructive one can say how much is in it
+  /// and stay right after a fact is added or deleted on the page below.
+  final MemoryService _memory = MemoryService.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_memory.attach());
+    _memory.addListener(_onMemoryChanged);
+  }
+
+  @override
+  void dispose() {
+    _memory.removeListener(_onMemoryChanged);
+    super.dispose();
+  }
+
+  void _onMemoryChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// What the vault row says under its title: the count, in the words a person
+  /// would use, or the truth that there is nothing yet.
+  String _factsSubtitle() {
+    final int facts = _memory.length;
+    if (facts == 0) return 'Nothing yet — view, add or delete what it learns';
+    return '$facts ${facts == 1 ? 'fact' : 'facts'} · view, edit or delete them';
+  }
+
   /// Asks, then deletes every copy this app kept on the device: the remembered
   /// facts file, every chat session, the attachments copied out of the camera
   /// and picker, and the old single-thread key. The dialog is the whole safety
@@ -15619,7 +16168,12 @@ class _PrivacyPageState extends State<PrivacyPage> {
       backgroundColor: c.background,
       appBar: AppBar(title: const Text('Privacy')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+        padding: EdgeInsets.fromLTRB(
+          20 + MediaQuery.paddingOf(context).left,
+          12,
+          20 + MediaQuery.paddingOf(context).right,
+          28,
+        ),
         children: <Widget>[
           Text(
             'Voice input is processed on this device. Audio is never sent '
@@ -15635,6 +16189,18 @@ class _PrivacyPageState extends State<PrivacyPage> {
           ),
           const SizedBox(height: 24),
           const NexusSectionLabel('Your data'),
+          NexusRow(
+            key: kNexusMemoryVaultRow,
+            title: kNexusMemoryVaultRowLabel,
+            subtitle: _factsSubtitle(),
+            leading: const NexusIconTile(Icons.psychology_outlined),
+            trailing: const NexusChevron(),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (routeContext) => const NexusMemoryVaultPage(),
+              ),
+            ),
+          ),
           NexusRow(
             key: kNexusDeleteAllData,
             title: kNexusDeleteAllDataRow,

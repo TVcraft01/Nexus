@@ -155,7 +155,22 @@ class MainActivity : FlutterActivity() {
     private val REQUEST_EMAIL_PERMISSIONS = 42605
     private var pendingEmailContact: String? = null
     private var pendingEmailBody: String? = null
+    private var pendingEmailSubject: String? = null
     private var pendingEmailResult: MethodChannel.Result? = null
+
+    /// Whether [value] is already a mail address, so the address book (and its
+    /// READ_CONTACTS dialog) is not needed to send to it.
+    private fun looksLikeEmail(value: String): Boolean =
+        Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$").matches(value.trim())
+
+    /// Whether [value] is already a phone number — three digits or more and
+    /// nothing but the punctuation numbers are written with. Like an address,
+    /// a number the user said themselves needs no address-book permission.
+    private fun looksLikePhone(value: String): Boolean {
+        val trimmed = value.trim()
+        return trimmed.count { it.isDigit() } >= 3 &&
+            Regex("^[+\\d()\\-.\\s]+").matches(trimmed)
+    }
 
     // "what is the weather": a one-time coarse location grant so the
     // forecast can be for where the phone is. The result is held across the
@@ -561,11 +576,14 @@ class MainActivity : FlutterActivity() {
                     )
                 } else if (call.method == "sendEmail") {
                     // Emailing resolves the recipient's address first, exactly
-                    // like texts — same READ_CONTACTS flow.
+                    // like texts — same READ_CONTACTS flow. A literal address
+                    // skips the address book, so no permission is asked for
+                    // something the user already said.
                     val args = call.arguments as? Map<*, *>
                     sendEmail(
                         args?.get("contact")?.toString() ?: "",
                         args?.get("body")?.toString(),
+                        args?.get("subject")?.toString(),
                         result,
                     )
                 } else if (call.method == "location") {
@@ -884,9 +902,11 @@ class MainActivity : FlutterActivity() {
         if (requestCode == REQUEST_EMAIL_PERMISSIONS) {
             val name = pendingEmailContact
             val body = pendingEmailBody
+            val subject = pendingEmailSubject
             val result = pendingEmailResult
             pendingEmailContact = null
             pendingEmailBody = null
+            pendingEmailSubject = null
             pendingEmailResult = null
             if (result == null) return
             if (!granted(Manifest.permission.READ_CONTACTS)) {
@@ -896,7 +916,7 @@ class MainActivity : FlutterActivity() {
                 ))
                 return
             }
-            finishEmail(name ?: "", body, result)
+            finishEmail(name ?: "", body, subject, result)
         }
         if (requestCode == REQUEST_LOCATION_PERMISSIONS) {
             val result = pendingLocationResult
@@ -1009,6 +1029,13 @@ class MainActivity : FlutterActivity() {
                     (args["minute"] as Number).toInt(),
                 )
                 "setTimer" -> setTimer((args?.get("seconds") as Number).toInt())
+                "dismissAlarm" -> dismissAlarm(
+                    args?.get("scope")?.toString() ?: "next",
+                )
+                "dismissTimer" -> dismissTimer()
+                "showAlarms" -> showClock(
+                    args?.get("what")?.toString() ?: "alarms",
+                )
                 "webSearch" -> startActionIntent(
                     Intent(Intent.ACTION_WEB_SEARCH).apply {
                         putExtra("query", args?.get("query")?.toString() ?: "")
@@ -1107,6 +1134,98 @@ class MainActivity : FlutterActivity() {
         }
         startActivity(intent)
         return mapOf("ok" to true, "message" to "Alarm set for %02d:%02d.".format(hour, minute))
+    }
+
+    /// "stop the alarm" / "cancel all my alarms".
+    ///
+    /// Android's own dismiss intent, with the extra that says which alarms it
+    /// means: `ALARM_SEARCH_MODE_NEXT` is the ringing (or next) alarm, and
+    /// `ALARM_SEARCH_MODE_ALL` is every alarm — the difference between "stop
+    /// the alarm" and "cancel all my alarms". A device with no clock app that
+    /// answers the intent is told so rather than shown a success.
+    private fun dismissAlarm(scope: String): Map<String, Any?> {
+        val all = scope == "all"
+        val intent = Intent(android.provider.AlarmClock.ACTION_DISMISS_ALARM).apply {
+            putExtra(
+                android.provider.AlarmClock.EXTRA_ALARM_SEARCH_MODE,
+                if (all) android.provider.AlarmClock.ALARM_SEARCH_MODE_ALL
+                else android.provider.AlarmClock.ALARM_SEARCH_MODE_NEXT,
+            )
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (packageManager.queryIntentActivities(intent, 0).isEmpty()) {
+            return mapOf(
+                "ok" to false,
+                "message" to "This phone's clock app doesn't take alarm dismissals from here.",
+            )
+        }
+        return try {
+            startActivity(intent)
+            mapOf(
+                "ok" to true,
+                "message" to if (all) "Dismissed every alarm." else "Dismissed the alarm.",
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "dismissAlarm failed", e)
+            mapOf("ok" to false, "message" to "Could not reach the clock app.")
+        }
+    }
+
+    /// "cancel the timer".
+    ///
+    /// Android lets an app dismiss *finished* timers (the intent with no data
+    /// URI), but not stop one that is still counting down: the clock app owns
+    /// the timer's id and no public API lists it. So this fires the dismiss
+    /// (which stops a timer that has just gone off) and says plainly that a
+    /// running one has to be tapped in the Clock app. Claiming a cancellation
+    /// here would be the one thing this channel must never do.
+    private fun dismissTimer(): Map<String, Any?> {
+        val intent = Intent(android.provider.AlarmClock.ACTION_DISMISS_TIMER).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (packageManager.queryIntentActivities(intent, 0).isEmpty()) {
+            return mapOf(
+                "ok" to false,
+                "message" to "This phone's clock app doesn't take timer dismissals from here.",
+            )
+        }
+        return try {
+            startActivity(intent)
+            mapOf(
+                "ok" to true,
+                "message" to "Dismissed finished timers. A timer that is still running " +
+                    "can only be stopped in the Clock app.",
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "dismissTimer failed", e)
+            mapOf("ok" to false, "message" to "Could not reach the clock app.")
+        }
+    }
+
+    /// "show my alarms" / "show my timers": the clock app's own pages, not the
+    /// app at whatever screen it last showed.
+    private fun showClock(what: String): Map<String, Any?> {
+        val timers = what == "timers"
+        val intent = Intent(
+            if (timers) android.provider.AlarmClock.ACTION_SHOW_TIMERS
+            else android.provider.AlarmClock.ACTION_SHOW_ALARMS,
+        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        if (packageManager.queryIntentActivities(intent, 0).isEmpty()) {
+            return mapOf(
+                "ok" to false,
+                "message" to "This phone's clock app doesn't offer that page from here.",
+            )
+        }
+        return try {
+            startActivity(intent)
+            mapOf(
+                "ok" to true,
+                "message" to if (timers) "Opened your timers." else "Opened your alarms.",
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "showClock failed", e)
+            mapOf("ok" to false, "message" to "Could not reach the clock app.")
+        }
     }
 
     private fun setTimer(seconds: Int): Map<String, Any?> {
@@ -1379,7 +1498,15 @@ class MainActivity : FlutterActivity() {
             result.success(mapOf("ok" to false, "message" to "Who should I text?"))
             return
         }
+        // A number the user said outright, or one Nexus was taught earlier,
+        // goes straight to the composer: no address book, no permission.
         val known = number?.trim().orEmpty()
+        if (known.isEmpty() && looksLikePhone(name)) {
+            result.success(
+                openSmsComposer(name, e164Number(name, simCountryIso()), body),
+            )
+            return
+        }
         if (known.isNotEmpty()) {
             // Nexus was taught this contact's number — use it directly,
             // skipping the address book (which also works when the name is
@@ -1681,6 +1808,7 @@ class MainActivity : FlutterActivity() {
     private fun sendEmail(
         contact: String,
         body: String?,
+        subject: String?,
         result: MethodChannel.Result,
     ) {
         val name = contact.trim()
@@ -1688,32 +1816,62 @@ class MainActivity : FlutterActivity() {
             result.success(mapOf("ok" to false, "message" to "Who should I email?"))
             return
         }
+        if (looksLikeEmail(name)) {
+            result.success(openMailComposer(name, name, body, subject))
+            return
+        }
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
             pendingEmailContact = name
             pendingEmailBody = body
+            pendingEmailSubject = subject
             pendingEmailResult = result
             requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), REQUEST_EMAIL_PERMISSIONS)
             return
         }
-        finishEmail(name, body, result)
+        finishEmail(name, body, subject, result)
     }
 
     /// Resolves [name]'s address and completes [result] with the outcome.
-    private fun finishEmail(name: String, body: String?, result: MethodChannel.Result) {
+    private fun finishEmail(
+        name: String,
+        body: String?,
+        subject: String?,
+        result: MethodChannel.Result,
+    ) {
         val (address, matched, ranked) = lookupContactEmail(name)
         result.success(
             when {
-                address != null -> openMailComposer(name, address, body)
+                address != null -> openMailComposer(name, address, body, subject)
                 else -> noContactResult(name, ranked, matched, verb = "email them")
             }
         )
     }
 
-    /// Opens the mail composer addressed to [address] with [body] drafted.
-    private fun openMailComposer(name: String, address: String, body: String?): Map<String, Any?> = try {
-        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$address")).apply {
+    /// Opens the mail composer addressed to [address] with [subject] and [body]
+    /// drafted.
+    ///
+    /// The mailto URI carries the subject rather than an intent extra: every
+    /// mail app reads the URI, while EXTRA_SUBJECT is honoured by some and
+    /// silently dropped by others.
+    private fun openMailComposer(
+        name: String,
+        address: String,
+        body: String?,
+        subject: String?,
+    ): Map<String, Any?> = try {
+        // Built as a string, not with buildUpon(): a mailto: URI is *opaque*,
+        // and appending to one on an opaque Uri drops the address — measured
+        // on the A25, where Gmail opened with an empty To and the draft in the
+        // subject line. The query is percent-encoded by hand instead.
+        val query = buildList {
+            if (!subject.isNullOrBlank()) add("subject=" + Uri.encode(subject))
+            if (!body.isNullOrBlank()) add("body=" + Uri.encode(body))
+        }.joinToString("&")
+        val uri = Uri.parse(
+            "mailto:$address" + if (query.isEmpty()) "" else "?$query",
+        )
+        val intent = Intent(Intent.ACTION_SENDTO, uri).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (!body.isNullOrBlank()) putExtra(Intent.EXTRA_TEXT, body)
         }
         startActivity(intent)
         mapOf("ok" to true, "message" to "Opened an email to $name — ready to send.")

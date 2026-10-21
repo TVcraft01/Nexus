@@ -80,6 +80,26 @@ void main() {
       expect(kSystemActionRules, contains('pasted in'));
     });
 
+    test('the fast path’s actions are not the model’s vocabulary', () {
+      // Two speakers, one closed set of things that may happen. Every name the
+      // fast path can produce is deliberately *not* in the prompt: a 0.5B model
+      // handed twenty-three literals picks worse than one handed thirteen, and
+      // none of these sentences needs it.
+      for (final String name in kFastPathActionNames) {
+        expect(
+          kSystemActionNames,
+          isNot(contains(name)),
+          reason: '$name should not be taught to the model',
+        );
+        expect(
+          kSystemActionRules,
+          isNot(contains('"action":"$name"')),
+          reason: '$name should not appear in the model’s rules',
+        );
+      }
+      expect(kFastPathActionNames, hasLength(10));
+    });
+
     test('the composed prompt asks for thoughts, then the action rules', () {
       const String persona = 'You are Nexus.';
       expect(
@@ -123,6 +143,102 @@ void main() {
       expect(actionFromPhrase('play'), isNull);
       // And a named song is not something this action can make appear.
       expect(actionFromPhrase('play yesterday by the beatles'), isNull);
+    });
+  });
+
+  group('the Core 15, reached without a model', () {
+    test('texting and emailing keep the words the user said', () {
+      expect(
+        actionFromPhrase('text mom saying on my way'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'send_sms')
+            .having((SystemActionCall c) => c.args['contact'], 'contact', 'mom')
+            .having(
+              (SystemActionCall c) => c.args['body'],
+              'body',
+              'on my way',
+            ),
+      );
+      expect(actionFromPhrase('text mom')?.args, <String, Object?>{
+        'contact': 'mom',
+      });
+      expect(
+        actionFromPhrase('email John saying the report is ready'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'send_email')
+            .having(
+              (SystemActionCall c) => c.args['contact'],
+              'contact',
+              'John',
+            )
+            .having(
+              (SystemActionCall c) => c.args['body'],
+              'body',
+              'the report is ready',
+            ),
+      );
+    });
+
+    test('the alarm and the clock’s lists are one family', () {
+      expect(actionFromPhrase('set an alarm for 7am')?.args, <String, Object?>{
+        'hour': 7,
+        'minute': 0,
+      });
+      expect(
+        actionFromPhrase('show my alarms'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'show_alarms')
+            .having((SystemActionCall c) => c.args['what'], 'what', 'alarms'),
+      );
+      expect(actionFromPhrase('show my timers')?.args['what'], 'timers');
+      expect(actionFromPhrase('stop my alarm')?.action, 'cancel_alarms');
+      expect(actionFromPhrase('stop my alarm')?.args['scope'], 'next');
+      // The plural is a different intent: every alarm, not the next one.
+      expect(actionFromPhrase('cancel all my alarms')?.args['scope'], 'all');
+      expect(actionFromPhrase('cancel the timer')?.action, 'cancel_timers');
+    });
+
+    test('skip and previous are keys, not a player launch', () {
+      expect(actionFromPhrase('skip this song')?.action, 'next_song');
+      expect(actionFromPhrase('previous track')?.action, 'previous_song');
+    });
+
+    test('a place becomes the map chooser, and a named map app does not', () {
+      expect(
+        actionFromPhrase('navigate to Paris'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'navigate_to')
+            .having(
+              (SystemActionCall c) => c.args['destination'],
+              'destination',
+              'Paris',
+            ),
+      );
+      // "navigate home with waze" carries a remembered-app route that this
+      // action does not, so it stays with the command service rather than
+      // being flattened into a plain geo: intent.
+      expect(actionFromPhrase('navigate home with waze'), isNull);
+    });
+
+    test('an app name the interpreter knows becomes open_app', () {
+      expect(
+        actionFromPhrase('open Spotify'),
+        isA<SystemActionCall>()
+            .having((SystemActionCall c) => c.action, 'action', 'open_app')
+            .having(
+              (SystemActionCall c) => c.args['app_name'],
+              'app_name',
+              'Spotify',
+            ),
+      );
+      // An app nobody knows is not a fast-path open — the model may still
+      // answer, and a fuzzy launch is the thing this rule exists to avoid.
+      expect(actionFromPhrase('open qqq'), isNull);
+    });
+
+    test('a screenshot and a joke are the shell’s, with no channel guess', () {
+      expect(actionFromPhrase('take a screenshot')?.action, 'screenshot');
+      expect(actionFromPhrase('tell me a joke')?.action, 'tell_joke');
     });
   });
 
@@ -315,6 +431,124 @@ void main() {
     });
   });
 
+  group('running the fast path’s actions', () {
+    test('each one names the native method that does it', () async {
+      final _Recorder phone = _Recorder();
+      final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
+
+      Future<void> run(SystemActionCall call) async {
+        final SystemActionOutcome outcome = await actions.execute(call);
+        expect(
+          outcome.ok,
+          isTrue,
+          reason: '${call.action}: ${outcome.message}',
+        );
+      }
+
+      await run(
+        SystemActionCall('send_sms', <String, Object?>{
+          'contact': 'mom',
+          'body': 'on my way',
+        }),
+      );
+      expect(phone.calls.last.$1, AgentActions.messageSend);
+      expect(phone.calls.last.$2, <String, dynamic>{
+        'contact': 'mom',
+        'body': 'on my way',
+      });
+
+      await run(
+        SystemActionCall('send_email', <String, Object?>{
+          'contact': 'john@example.com',
+          'subject': 'Report',
+          'body': 'Attached.',
+        }),
+      );
+      expect(phone.calls.last.$1, AgentActions.emailSend);
+      expect(phone.calls.last.$2, <String, dynamic>{
+        'contact': 'john@example.com',
+        'subject': 'Report',
+        'body': 'Attached.',
+      });
+
+      await run(const SystemActionCall('next_song'));
+      // `mediaControl` owns the NEXT dispatch; `mediaKey` is only the
+      // play/pause pair and answered "next" with a play key.
+      expect(phone.calls.last.$1, AgentActions.mediaNext);
+      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'next'});
+
+      await run(const SystemActionCall('previous_song'));
+      expect(phone.calls.last.$2, <String, dynamic>{'mode': 'previous'});
+
+      await run(
+        const SystemActionCall('navigate_to', <String, Object?>{
+          'destination': 'Paris',
+        }),
+      );
+      expect(phone.calls.last.$1, AgentActions.navOpen);
+      expect(phone.calls.last.$2, <String, dynamic>{'place': 'Paris'});
+
+      await run(const SystemActionCall('screenshot'));
+      expect(phone.calls.last.$1, AgentActions.screenshot);
+      expect(phone.calls.last.$2, isEmpty);
+
+      await run(
+        const SystemActionCall('cancel_alarms', <String, Object?>{
+          'scope': 'all',
+        }),
+      );
+      expect(phone.calls.last.$1, AgentActions.alarmDismiss);
+      expect(phone.calls.last.$2, <String, dynamic>{'scope': 'all'});
+
+      await run(const SystemActionCall('cancel_timers'));
+      expect(phone.calls.last.$1, AgentActions.timerCancel);
+
+      await run(
+        const SystemActionCall('show_alarms', <String, Object?>{
+          'what': 'timers',
+        }),
+      );
+      expect(phone.calls.last.$1, AgentActions.alarmShow);
+      expect(phone.calls.last.$2, <String, dynamic>{'what': 'timers'});
+    });
+
+    test('a joke is answered here, without troubling the phone', () async {
+      final _Recorder phone = _Recorder();
+      final DeviceSystemActions actions = DeviceSystemActions(
+        backend: phone,
+        pick: () => 2,
+      );
+
+      final SystemActionOutcome outcome = await actions.execute(
+        const SystemActionCall('tell_joke'),
+      );
+      expect(outcome.ok, isTrue);
+      expect(outcome.message, kNexusJokes[2]);
+      expect(phone.calls, isEmpty);
+    });
+
+    test(
+      'a permission refusal is the phone’s sentence, not a success',
+      () async {
+        final _Recorder phone = _Recorder();
+        final DeviceSystemActions actions = DeviceSystemActions(backend: phone);
+        phone.reply = const ActionResult(
+          false,
+          'Contacts permission was not granted — I can\'t look up "mom".',
+        );
+
+        final SystemActionOutcome outcome = await actions.execute(
+          SystemActionCall('send_sms', <String, Object?>{'contact': 'mom'}),
+        );
+        expect(outcome.ok, isFalse);
+        expect(
+          outcome.message,
+          contains('Contacts permission was not granted'),
+        );
+      },
+    );
+  });
+
   group('a model with no clock', () {
     test('a time object is read as a request for the clock, not as an answer', () {
       // Verbatim from the A25 at 14:24. Before this rule the thread showed
@@ -388,7 +622,12 @@ void main() {
         SystemActionCall.tryParse('{"action":"open_app","app_name":"Maps"}')!,
       );
       expect(phone.calls.last.$1, AgentActions.appOpen);
-      expect(phone.calls.last.$2, <String, dynamic>{'query': 'Maps'});
+      // The hint is what makes "open browser" mean Chrome rather than a
+      // fuzzy search for an app called browser.
+      expect(phone.calls.last.$2, <String, dynamic>{
+        'query': 'Maps',
+        'hint': 'com.google.android.apps.maps',
+      });
 
       // The media pair drives the phone's media key. It used to launch the
       // music app instead, which is not playback: "pause" opened a player over

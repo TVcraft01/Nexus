@@ -6053,9 +6053,159 @@ void main() {
     },
   );
 
+  testWidgets('a small model shows web search as a lock, not a switch', (
+    tester,
+  ) async {
+    // The 0.5B model cannot use what a search brings back, so the switch is a
+    // lock: greyed, and a tap explains instead of turning on something the
+    // answer would only get worse from.
+    await pumpShell(tester);
+    await tester.tap(find.byKey(kComposerAdd));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Locked — needs your PC'), findsOneWidget);
+    await tester.tap(find.byKey(kSheetWebSearch));
+    await tester.pumpAndSettle();
+
+    expect(find.text(kNexusFeatureLockedTitle), findsOneWidget);
+    // The web row's reason is its own: no download opens it, only the PC does.
+    expect(find.textContaining('too small to search the web'), findsOneWidget);
+    expect(find.textContaining('Connect to your PC'), findsOneWidget);
+
+    // The dialog's one button walks the user to the screen that changes it.
+    await tester.tap(find.byKey(kNexusFeatureLockedGo));
+    await tester.pumpAndSettle();
+    expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 3);
+  });
+
+  testWidgets('a locked web search never reaches the prompt', (tester) async {
+    // The switch says what the user wants; the capability says what this brain
+    // can use. A page of snippets handed to the 0.5B is a question it answers
+    // about the snippets, so a small model with the switch on sends exactly the
+    // question and nothing else — no placeholder block, no invented results.
+    final ComposerSettings settings = ComposerSettings(
+      store: MemoryComposerSettingsStore(),
+      webSearchEnabled: true,
+    );
+    ComposerSettings.override = () => settings;
+    addTearDown(() {
+      ComposerSettings.override = null;
+      ComposerSettings.debugReset();
+    });
+    await pumpShell(tester);
+
+    await tester.enterText(find.byType(TextField), 'what happened today');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(ollama.prompts.single, 'what happened today');
+    expect(ollama.prompts.single, isNot(contains('Search')));
+  });
+
+  testWidgets('a remembered fact is a pill, not a tag in the bubble', (
+    tester,
+  ) async {
+    final MemoryService memory = MemoryService(store: MemoryMemoryStore());
+    MemoryService.override = () => memory;
+    addTearDown(() {
+      MemoryService.override = null;
+      MemoryService.debugReset();
+    });
+    await pumpShell(tester);
+    // A fact the sentence detector does not know the shape of, so the model's
+    // tag is the thing that files it — and it is grounded in the user's words,
+    // which is what the vault now requires of a model's tag.
+    ollama.reply = "Noted. [remember: 'diet' = 'vegetarian']";
+
+    await tester.enterText(find.byType(TextField), "I'm vegetarian");
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    // The tag is the vault's instruction: it is written, not shown.
+    expect(find.textContaining('[remember'), findsNothing);
+    expect(find.text('Noted.'), findsOneWidget);
+    expect(find.text('🧠 Memory updated: diet is vegetarian'), findsOneWidget);
+    expect(memory.notes.single.topic, 'diet');
+    expect(memory.notes.single.fact, 'vegetarian');
+  });
+
+  testWidgets('a tag for a fact the user never said is refused', (
+    tester,
+  ) async {
+    // Seen on the phone: asked "what is my name?", the 1B model answered with
+    // `[remember: 'name' = 'Nexus']` — its own name — which overwrote the
+    // user's. A tag is a transcription of what the user said, so one that is
+    // not in their words is dropped, and the reply that was only that tag gets
+    // the shell's sentence instead of an empty bubble.
+    final MemoryService memory = MemoryService(store: MemoryMemoryStore());
+    MemoryService.override = () => memory;
+    addTearDown(() {
+      MemoryService.override = null;
+      MemoryService.debugReset();
+    });
+    await memory.rememberFact('name', 'TVCraft');
+    await pumpShell(tester);
+    ollama.reply = "[remember: 'name' = 'Nexus']";
+
+    await tester.enterText(find.byType(TextField), 'what is my name');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Memory updated'), findsNothing);
+    expect(find.text("I don't have an answer for that."), findsOneWidget);
+    expect(memory.notes.single.fact, 'TVCraft');
+  });
+
+  testWidgets('the vault lists what Nexus knows and deletes one fact', (
+    tester,
+  ) async {
+    final MemoryService memory = MemoryService(store: MemoryMemoryStore());
+    await memory.remember('My name is TVCraft');
+    await memory.remember('I live in Lyon');
+    MemoryService.override = () => memory;
+    addTearDown(() {
+      MemoryService.override = null;
+      MemoryService.debugReset();
+    });
+
+    await pumpShell(tester);
+    await openTab(tester, 'Settings', 3);
+    await tester.tap(find.text('Privacy'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(kNexusMemoryVaultRowLabel), findsOneWidget);
+    await tester.tap(find.text(kNexusMemoryVaultRowLabel));
+    await tester.pumpAndSettle();
+
+    // One row per fact, the topic above the value: a page a user can check.
+    expect(find.text('name'), findsOneWidget);
+    expect(find.text('TVCraft'), findsOneWidget);
+    expect(find.text('Lyon'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey<String>('memory-forget-name')));
+    await tester.pumpAndSettle();
+    expect(find.text('TVCraft'), findsNothing);
+    expect(memory.notes.single.fact, 'Lyon');
+
+    // And the one destructive control asks before it deletes.
+    await tester.tap(find.byKey(kNexusMemoryDeleteAll));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(kNexusConfirmAction));
+    await tester.pumpAndSettle();
+    expect(memory.notes, isEmpty);
+    expect(find.text('Memory deleted.'), findsOneWidget);
+  });
+
   testWidgets('an artifact reply is a card below the message, not raw tags', (
     tester,
   ) async {
+    // Files are a capability, not a given: the 0.5B model is not offered them
+    // (see the lock test below), so this one runs on the brain that can write
+    // one.
+    await modelChoice.select(OnDeviceModelChoice.llama);
     await pumpShell(tester);
     ollama.reply =
         'Here is the page.\n\n'

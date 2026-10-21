@@ -39,7 +39,13 @@ import 'package:http/http.dart' as http;
 
 import 'clock_context.dart' show nexusSystemWithClock;
 import 'local_ai_service.dart';
-import 'system_actions.dart' show kNexusReasoningRules, kSystemActionRules;
+import 'system_actions.dart'
+    show
+        kNexusArtifactRules,
+        kNexusCodeRules,
+        kNexusMemoryRules,
+        kNexusReasoningRules,
+        kSystemActionRules;
 
 /// What the PC's model is told it is, before the action rules below.
 ///
@@ -59,7 +65,8 @@ const String kNexusOllamaPersona =
 /// phone's model is — the two brains answering differently about what they can
 /// do is a bug the user would read as one of them lying.
 const String kNexusOllamaSystem =
-    '$kNexusOllamaPersona\n\n$kNexusReasoningRules\n\n$kSystemActionRules';
+    '$kNexusOllamaPersona\n\n$kNexusReasoningRules\n\n$kSystemActionRules\n\n'
+    '$kNexusCodeRules\n\n$kNexusMemoryRules\n\n$kNexusArtifactRules';
 
 /// Where Ollama is expected to be listening.
 ///

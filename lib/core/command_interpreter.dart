@@ -1450,6 +1450,62 @@ class CommandInterpreter {
       );
     }
 
+    // --- Show the clock's alarms or timers. The clock app owns both lists;
+    // this asks Android for the page the user named rather than opening the
+    // app at whatever screen it last showed.
+    if (_oneOf(norm, const [
+      'show alarms',
+      'show my alarms',
+      'show the alarms',
+      'show me my alarms',
+      'open the alarms',
+      'open my alarms',
+      'open the alarm list',
+      'view my alarms',
+      'liste des alarmes',
+      'montre mes alarmes',
+    ])) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.alarmShow,
+          target: 'local',
+          arguments: {'what': 'alarms'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'show timers',
+      'show my timers',
+      'show the timers',
+      'open my timers',
+      'open the timers',
+      'view my timers',
+      'liste des minuteurs',
+      'montre mes minuteurs',
+    ])) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.alarmShow,
+          target: 'local',
+          arguments: {'what': 'timers'},
+        ),
+      );
+    }
+    if (_oneOf(norm, const [
+      'show my clock',
+      'open my clock',
+      'open the clock app',
+      'show the clock app',
+    ])) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.appOpen,
+          target: 'local',
+          arguments: {'query': 'clock'},
+        ),
+      );
+    }
+
     // --- Open URL / website
     final open = RegExp(r'^(open|go to|launch|start|ouvre) (.+)$')
         .firstMatch(norm);
@@ -1500,6 +1556,29 @@ class CommandInterpreter {
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.mediaPause, target: 'local'),
+      );
+    }
+    // "cancel all my alarms" is the plural the single-alarm rule below must
+    // not read as "the next one": Android's dismiss intent distinguishes
+    // them by search mode, so the difference is carried as an argument.
+    if (_oneOf(norm, const [
+      'cancel all alarms',
+      'cancel all my alarms',
+      'turn off all alarms',
+      'turn off all my alarms',
+      'delete all alarms',
+      'delete all my alarms',
+      'dismiss all alarms',
+      'dismiss all my alarms',
+      'annule toutes les alarmes',
+      'eteins toutes les alarmes',
+    ])) {
+      return InterpretResult.matched(
+        ParsedCommand(
+          action: AgentActions.alarmDismiss,
+          target: 'local',
+          arguments: {'scope': 'all'},
+        ),
       );
     }
     if (_oneOf(norm, const [
@@ -2599,6 +2678,15 @@ class CommandInterpreter {
       'skip',
       'skip track',
       'skip song',
+      'skip this song',
+      'skip this track',
+      'skip the song',
+      'skip the track',
+      'skip this one',
+      'play the next song',
+      'play the next track',
+      'go to the next song',
+      'go to the next track',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.mediaNext, target: 'local'),
@@ -2612,6 +2700,12 @@ class CommandInterpreter {
       'last track',
       'last song',
       'back a track',
+      'play the previous song',
+      'play the previous track',
+      'go to the previous song',
+      'go to the previous track',
+      'go back a song',
+      'go back a track',
     ])) {
       return InterpretResult.matched(
         const ParsedCommand(action: AgentActions.mediaPrev, target: 'local'),

@@ -17,8 +17,12 @@
 // its own dialer rather than asking a 0.5B model to write JSON about it.
 library;
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
+
 import 'agent_contract.dart' show AgentActions;
-import 'command_interpreter.dart' show CommandInterpreter, InterpretOutcome, InterpretResult;
+import 'command_interpreter.dart'
+    show CommandInterpreter, InterpretOutcome, InterpretResult;
 import 'system_actions.dart';
 
 /// The interpreter the battery bridge reads with. Const and stateless, like the
@@ -56,7 +60,7 @@ const Set<String> _callNotActions = <String>{
 /// names the limit is the only honest answer, and it is a fast path because the
 /// user should not wait four seconds to be told so.
 const String kNoWeatherText =
-    "I don't have internet access to check the weather. I am a local AI.";
+    'I need internet access to check the weather. I am a local AI.';
 
 /// A weather question, anchored to the words that make one.
 ///
@@ -121,7 +125,10 @@ SystemActionCall? fastPathAction(String text) {
     final Object? resolved = parsed.args['number'];
     final String spokenTarget = target
         .replaceFirst(
-          RegExp(r'\s+on\s+(?:my|the)\s+(?:phone|mobile)$', caseSensitive: false),
+          RegExp(
+            r'\s+on\s+(?:my|the)\s+(?:phone|mobile)$',
+            caseSensitive: false,
+          ),
           '',
         )
         .trim();
@@ -145,5 +152,37 @@ SystemActionCall? fastPathAction(String text) {
       return const SystemActionCall('get_battery_level');
     }
   }
-  return actionFromPhrase(said);
+  return _here(actionFromPhrase(said));
+}
+
+/// The actions whose only implementation is the phone's own intents.
+///
+/// The shell runs on this PC too ([lib/main.dart] starts it everywhere), and
+/// there the same sentences are not commands this file can run: the desktop
+/// backend answers an `open_app` or a `screenshot` with a gap sentence, so
+/// claiming them here would turn "open Spotify" from something the model could
+/// answer into a refusal that names the wrong platform. On Android they are the
+/// point — a closed list of intents the phone already had.
+const Set<String> _phoneOnly = <String>{
+  'open_app',
+  'send_sms',
+  'send_email',
+  'navigate_to',
+  'screenshot',
+  'set_alarm',
+  'cancel_alarms',
+  'cancel_timers',
+  'show_alarms',
+  'next_song',
+  'previous_song',
+};
+
+/// [call] when this device can actually run it, or null when it is the phone's.
+SystemActionCall? _here(SystemActionCall? call) {
+  if (call == null) return null;
+  if (_phoneOnly.contains(call.action) &&
+      defaultTargetPlatform != TargetPlatform.android) {
+    return null;
+  }
+  return call;
 }

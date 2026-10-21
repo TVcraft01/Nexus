@@ -2,11 +2,19 @@
 // the phone's own executor instead. These tests pin the line between a command
 // and a conversation — the line that decides whether \"call me maybe\" dials
 // somebody.
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/fast_path.dart';
 import 'package:nexus/core/system_actions.dart';
 
 void main() {
+  // These are the sentences a user says to their *phone*. The Core-15 half of
+  // the fast path is deliberately Android-only (the desktop shell leaves those
+  // phrases to the model); the one test below that cares about the desktop
+  // overrides this back.
+  setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.android);
+  tearDown(() => debugDefaultTargetPlatformOverride = null);
   group('calling', () {
     test('a contact name is the target', () {
       final SystemActionCall? call = fastPathAction('Call mom');
@@ -118,6 +126,109 @@ void main() {
       // A remark is not a request: "it's raining" is a conversation.
       expect(fastPathReply("it's raining"), isNull);
       expect(fastPathReply('what is a mesh?'), isNull);
+    });
+
+    test('the alarm is set by the clock, at the time that was spoken', () {
+      final SystemActionCall? alarm = fastPathAction('set an alarm for 7am');
+
+      expect(alarm!.action, 'set_alarm');
+      expect(alarm.args, <String, Object?>{'hour': 7, 'minute': 0});
+      expect(fastPathAction('wake me up at 6:45')!.args, <String, Object?>{
+        'hour': 6,
+        'minute': 45,
+      });
+      // An alarm with no time is a question the model may ask; it is not a
+      // guessed 07:30.
+      expect(fastPathAction('set an alarm'), isNull);
+    });
+
+    test('the clock’s own lists open without a model', () {
+      expect(fastPathAction('show my alarms')!.action, 'show_alarms');
+      expect(fastPathAction('show my alarms')!.args['what'], 'alarms');
+      expect(fastPathAction('open my timers')!.args['what'], 'timers');
+      expect(fastPathAction('cancel the timer')!.action, 'cancel_timers');
+      expect(fastPathAction('stop my alarm')!.action, 'cancel_alarms');
+    });
+  });
+
+  group('the rest of the Core 15', () {
+    test('a text keeps the recipient and the draft', () {
+      final SystemActionCall sms = fastPathAction('text mom saying on my way')!;
+
+      expect(sms.action, 'send_sms');
+      expect(sms.args['contact'], 'mom');
+      expect(sms.args['body'], 'on my way');
+      // The device marker names where the text goes, not who it goes to.
+      expect(fastPathAction('text dad on my phone')!.args['contact'], 'dad');
+    });
+
+    test('an email is the same shape through the mail app', () {
+      final SystemActionCall mail = fastPathAction('email John')!;
+
+      expect(mail.action, 'send_email');
+      expect(mail.args['contact'], 'John');
+      expect(
+        fastPathAction('send an email to mom saying hi')!.action,
+        'send_email',
+      );
+    });
+
+    test('skip and previous reach the media key', () {
+      expect(fastPathAction('skip this song')!.action, 'next_song');
+      expect(fastPathAction('next track')!.action, 'next_song');
+      expect(fastPathAction('play the previous song')!.action, 'previous_song');
+    });
+
+    test('a place is a map search, not a conversation about one', () {
+      final SystemActionCall nav = fastPathAction('navigate to Paris')!;
+
+      expect(nav.action, 'navigate_to');
+      expect(nav.args['destination'], 'Paris');
+      expect(
+        fastPathAction('take me to the office')!.args['destination'],
+        'the office',
+      );
+    });
+
+    test('an app the interpreter knows is launched by name', () {
+      final SystemActionCall app = fastPathAction('open Spotify')!;
+
+      expect(app.action, 'open_app');
+      expect(app.args['app_name'], 'Spotify');
+      // A name nobody knows is not a fast-path open; the model may still help.
+      expect(fastPathAction('open qqq'), isNull);
+    });
+
+    test('a screenshot and a joke are instant', () {
+      expect(fastPathAction('take a screenshot')!.action, 'screenshot');
+      expect(fastPathAction('tell me a joke')!.action, 'tell_joke');
+    });
+
+    test('only the sentences that name the medium are texts or emails', () {
+      // The interpreter's rule is broad on purpose — `message <someone>` is
+      // how people ask for a draft. The fast path opens the composer, so it
+      // takes only the unambiguous half: a word that names SMS or mail.
+      expect(fastPathAction('message me later'), isNull);
+      expect(fastPathAction('message number 3'), isNull);
+      expect(fastPathAction('mail the package'), isNull);
+      expect(fastPathAction('text mom')!.action, 'send_sms');
+      expect(fastPathAction('send a text to dad')!.action, 'send_sms');
+      expect(fastPathAction('send an e mail to mom')!.action, 'send_email');
+    });
+
+    test('on a PC the phone’s intents are left to the model', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+
+      // The desktop backend has no `open_app` or `screenshot` behind it, and
+      // answering "I can't open apps by name on Linux — Nexus does that on
+      // Windows, Linux and your phone" would be both a regression and a
+      // contradiction. The shell keeps its old behaviour there.
+      expect(fastPathAction('open Spotify'), isNull);
+      expect(fastPathAction('take a screenshot'), isNull);
+      expect(fastPathAction('text mom'), isNull);
+      // …while the answers that need no phone still arrive.
+      expect(fastPathAction('tell me a joke')!.action, 'tell_joke');
+      expect(fastPathReply("what's the weather?"), kNoWeatherText);
     });
 
     test('a mood is not a command', () {

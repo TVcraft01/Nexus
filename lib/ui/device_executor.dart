@@ -355,64 +355,7 @@ class DeviceExecutor {
     }
   }
 
-  String _androidPackageName(String query) {
-    const aliases = {
-      'youtube': 'com.google.android.youtube',
-      'chrome': 'com.android.chrome',
-      'browser': 'com.android.chrome',
-      'gmail': 'com.google.android.gm',
-      'email': 'com.google.android.gm',
-      'maps': 'com.google.android.apps.maps',
-      'camera': 'com.android.camera',
-      'photos': 'com.google.android.apps.photos',
-      'gallery': 'com.google.android.apps.photos',
-      'calendar': 'com.google.android.calendar',
-      'clock': 'com.google.android.deskclock',
-      'calculator': 'com.google.android.calculator',
-      'settings': 'com.android.settings',
-      'messages': 'com.google.android.apps.messaging',
-      'sms': 'com.google.android.apps.messaging',
-      'phone': 'com.google.android.dialer',
-      'dialer': 'com.google.android.dialer',
-      'contacts': 'com.google.android.contacts',
-      'files': 'com.google.android.apps.nbu.files',
-      'spotify': 'com.spotify.music',
-      'music': 'com.google.android.apps.music',
-      'netflix': 'com.netflix.mediaclient',
-      'instagram': 'com.instagram.android',
-      'twitter': 'com.twitter.android',
-      'x': 'com.twitter.android',
-      'facebook': 'com.facebook.katana',
-      'whatsapp': 'com.whatsapp',
-      'telegram': 'org.telegram.messenger',
-      'discord': 'com.discord',
-      'slack': 'com.Slack',
-      'teams': 'com.microsoft.teams',
-      'zoom': 'us.zoom.videomeetings',
-      'tiktok': 'com.zhiliaoapp.musically',
-      'reddit': 'com.reddit.frontpage',
-      'pinterest': 'com.pinterest',
-      'snapchat': 'com.snapchat.android',
-      'linkedin': 'com.linkedin.android',
-      'deezer': 'deezer.android.app',
-      'podcast': 'com.google.android.apps.podcasts',
-      'news': 'com.google.android.apps.magazines',
-      'drive': 'com.google.android.apps.docs',
-      'docs': 'com.google.android.apps.docs',
-      'sheets': 'com.google.android.apps.docs.editors.sheets',
-      'slides': 'com.google.android.apps.docs.editors.slides',
-      'keep': 'com.google.android.apps.keep',
-      'wallet': 'com.google.android.apps.walletnfcrel',
-      'play store': 'com.android.vending',
-      'playstore': 'com.android.vending',
-      'store': 'com.android.vending',
-    };
-    final lower = query
-        .toLowerCase()
-        .trim()
-        .replaceFirst(RegExp(r'^the '), '');
-    return aliases[lower] ?? lower;
-  }
+  String _androidPackageName(String query) => androidPackageHint(query);
 
   /// Maps a bare app name to the website of a known web service. Desktop
   /// "open youtube" opens YouTube in the browser — no bogus bare-word launch.
@@ -726,12 +669,10 @@ class DeviceExecutor {
   Future<ActionResult> _takeScreenshot() async {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
-        // Screen capture needs the system MediaProjection consent flow; no
-        // shell tool an app may run. Answer honestly instead of failing.
-        return const ActionResult(
-          false,
-          'Screenshots need a permission Nexus does not ask for yet.',
-        );
+        // One frame through Android's own MediaProjection dialog, saved by the
+        // capture service — the same path the composer's button takes. The
+        // platform backend owns it because it owns the screen channel.
+        return await _deviceBackend.run(AgentActions.screenshot, const {});
       }
       if (defaultTargetPlatform == TargetPlatform.linux) {
         final dir = await getApplicationDocumentsDirectory();

@@ -73,13 +73,13 @@ enum OnDeviceModelChoice {
   qwen(
     id: 'qwen2.5-0.5b',
     label: 'Qwen 2.5 0.5B',
-    blurb: 'Fastest. Small enough to miss the action JSON now and then.',
+    blurb: 'Fastest. Basic chat & commands.',
     fileName: kOnDeviceModelFileName,
   ),
   llama(
     id: 'llama-3.2-1b',
     label: 'Llama 3.2 1B',
-    blurb: 'Bigger and smarter — better at following the action JSON.',
+    blurb: 'Smarter. Unlocks Artifacts & Reasoning.',
     fileName: 'llama-3.2-1b-instruct-q4_k_m.gguf',
   );
 
@@ -280,11 +280,8 @@ class OnDeviceModel {
   ///
   /// How the picker asks "is *that* one downloaded" without losing the test's
   /// temp directory or fake fetcher.
-  OnDeviceModel withChoice(OnDeviceModelChoice other) => OnDeviceModel(
-    choice: other,
-    directory: directory,
-    engine: engine,
-  );
+  OnDeviceModel withChoice(OnDeviceModelChoice other) =>
+      OnDeviceModel(choice: other, directory: directory, engine: engine);
 
   /// Where to look, or null for the app's own documents directory.
   final Future<Directory> Function()? directory;
@@ -305,7 +302,8 @@ class OnDeviceModel {
   String get label => _weights != null ? _weights.label : choice.label;
 
   /// The file these weights live in.
-  String get fileName => _weights != null ? '${_weights.name}.gguf' : choice.fileName;
+  String get fileName =>
+      _weights != null ? '${_weights.name}.gguf' : choice.fileName;
 
   /// A test seam: a widget or unit test points the model at a temp directory.
   /// Set by tests only, and always restored.
@@ -324,8 +322,7 @@ class OnDeviceModel {
   ///
   /// Named after the choice ([fileName]), which is `model.gguf` for the model
   /// the app shipped first — the name every installed phone already has.
-  Future<File> file() async =>
-      File('${(await directoryFor()).path}/$fileName');
+  Future<File> file() async => File('${(await directoryFor()).path}/$fileName');
 
   /// True when a model file is on disk.
   ///
@@ -360,8 +357,7 @@ class OnDeviceModel {
   /// disk. Never throws: a download that failed is a false and a sentence the
   /// caller chooses, not an exception on its way to a crash reporter.
   Future<bool> download({void Function(double progress)? onProgress}) async {
-    final llm = engine?.call() ??
-        Llm(model: model, modelsDir: directoryFor);
+    final llm = engine?.call() ?? Llm(model: model, modelsDir: directoryFor);
     try {
       return await llm.download(onProgress: onProgress);
     } finally {

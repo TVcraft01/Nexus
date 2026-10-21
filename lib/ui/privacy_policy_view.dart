@@ -19,7 +19,11 @@ class PrivacyPolicyView extends StatelessWidget {
   static const String policy =
       'Nexus is a local-first application. No data, audio, or images ever '
       'leave your device unless you explicitly send them to your PC. Your AI '
-      'models run locally on your device. No accounts, no cloud, no telemetry.';
+      'models run locally on your device. No accounts, no cloud, no telemetry.'
+      '\n\n'
+      'Nexus learns about you using a local memory vault. This data never '
+      'leaves your device, is never used to train models, and you can view, '
+      'edit, or delete it at any time.';
 
   @override
   Widget build(BuildContext context) {

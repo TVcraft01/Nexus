@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/services.dart' show MethodChannel;
 
 import 'agent_contract.dart';
+import 'screen_capture.dart';
 import 'system_command.dart';
 
 /// The outcome of one device-local action.
@@ -192,10 +193,32 @@ class RealDeviceActionBackend implements DeviceActionBackend {
 
   @override
   Future<ActionResult> run(String action, Map<String, dynamic> args) async {
+    // A screenshot is not a method on the device channel: it needs Android's
+    // MediaProjection dialog and a foreground service, which the screen
+    // channel already owns for the composer's button. Answering here means
+    // "take a screenshot" and the button are the same capture, with the same
+    // grant — never a second, subtly different implementation.
+    if (action == AgentActions.screenshot) {
+      if (!Platform.isAndroid) {
+        return ActionResult(false, notOnThisSystem(action));
+      }
+      final ScreenCaptureResult shot = await ScreenCapture.capture();
+      if (!shot.ok) {
+        return ActionResult(
+          false,
+          shot.message ?? 'Could not take screenshot.',
+        );
+      }
+      final String name = shot.path!.split(Platform.pathSeparator).last;
+      return ActionResult(true, 'Screenshot saved as $name.');
+    }
     try {
       final raw = await _channel.invokeMapMethod<String, dynamic>(
         switch (action) {
           AgentActions.timerSet => 'setTimer',
+          AgentActions.alarmDismiss => 'dismissAlarm',
+          AgentActions.timerCancel => 'dismissTimer',
+          AgentActions.alarmShow => 'showAlarms',
           AgentActions.webSearch => 'webSearch',
           AgentActions.volumeSet => 'volume',
           AgentActions.batteryGet => 'battery',

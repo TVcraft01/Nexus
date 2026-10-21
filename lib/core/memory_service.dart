@@ -1,4 +1,4 @@
-// The things Nexus remembers about its person, in one file they own.
+// The things Nexus remembers about its person, as a topic-keyed vault.
 //
 // This is deliberately not the chat transcript: a transcript is what was said,
 // and a memory is the small set of facts that should follow the user from one
@@ -7,12 +7,15 @@
 // user can inspect it, back it up, or delete it, and uninstalling the app takes
 // it with everything else.
 //
-// Three rules shape it:
+// Four rules shape it:
 //
 //   * nothing leaves the device. This is a file, not a service;
-//   * a fact is only stored when the user said it in a shape that clearly means
-//     "remember this" — the detector is deliberately narrow, because a wrong
-//     memory is worse than a missing one;
+//   * a fact is *about* something. "My name is TVCraft" is the topic `name` and
+//     the value `TVCraft`, and a second statement about the same topic replaces
+//     the first instead of arguing with it — a name change is a correction, not
+//     a second name;
+//   * the model may ask for a change explicitly (`[remember: 'name' = 'Sam']`,
+//     `[forget: 'name']`), and those tags are stripped from what the user reads;
 //   * the service never throws at a caller. A missing documents folder, a
 //     corrupt file, a refused write all leave the app working with whatever it
 //     has in memory.
@@ -25,43 +28,85 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart'
-    show ChangeNotifier, debugPrint, visibleForTesting;
+    show ChangeNotifier, debugPrint, immutable, visibleForTesting;
 import 'package:path_provider/path_provider.dart'
     show getApplicationDocumentsDirectory;
 
 /// The file's name inside the app's documents directory.
 const String kMemoryFileName = 'nexus_memory.json';
 
+/// The shape this build writes. Version 1 stored whole sentences under `text`;
+/// version 2 stores a `topic` and the value that belongs to it, which is what
+/// makes a correction an overwrite instead of a second line.
+const int kMemoryFileVersion = 2;
+
 /// The most facts the file keeps. A memory that grows without limit becomes a
 /// second transcript, and a small model handed all of it forgets the question.
 const int kMemoryFactLimit = 80;
 
-/// The longest sentence remembered. Anything longer is a message, not a fact.
+/// The longest value remembered. Anything longer is a message, not a fact.
 const int kMemoryTextLimit = 320;
 
-/// One remembered sentence and when it was learned.
-class MemoryNote {
-  const MemoryNote({required this.text, required this.learnedAt});
+/// The topic of a fact that has no topic of its own — "Remember that my bike is
+/// blue". These append rather than overwrite, because two notes with nothing in
+/// common are not two answers to one question.
+const String kMemoryNoteTopic = 'other';
 
-  final String text;
+/// One remembered fact: what it is about, what it says, and when it was learned.
+@immutable
+class MemoryNote {
+  const MemoryNote({
+    required this.topic,
+    required this.fact,
+    required this.learnedAt,
+  });
+
+  /// What the fact is about — `name`, `location`, `favourite:colour`,
+  /// `mine:home`, or [kMemoryNoteTopic] for a free-standing note.
+  final String topic;
+
+  /// The value itself — `TVCraft`, not "My name is TVCraft". A free-standing
+  /// note keeps its whole sentence here, because the sentence *is* the fact.
+  final String fact;
+
   final DateTime learnedAt;
 
+  /// The sentence this fact is, as the model and the vault read it.
+  String get text => memorySentence(topic, fact);
+
+  /// What the vault's row calls the topic: "name", "favourite colour", "note".
+  String get topicLabel => memoryTopicLabel(topic);
+
   Map<String, Object?> toJson() => <String, Object?>{
-    'text': text,
+    'topic': topic,
+    'fact': fact,
     'learnedAt': learnedAt.toIso8601String(),
   };
 
+  /// Reads one row of either version.
+  ///
+  /// A version 1 row is `{"text": "My name is TVCraft"}`: the topic is derived
+  /// from the sentence with the same narrow detector the rest of the vault uses,
+  /// and the value is taken out of it. That is what lets an installed phone
+  /// upgrade without re-teaching Nexus its own name.
   static MemoryNote? fromJson(Object? raw) {
     if (raw is! Map) return null;
-    final String text = (raw['text'] as String?)?.trim() ?? '';
-    if (text.isEmpty) return null;
+    final String? storedTopic = (raw['topic'] as String?)?.trim();
+    final String storedFact = (raw['fact'] as String?)?.trim() ?? '';
+    final String legacy = (raw['text'] as String?)?.trim() ?? '';
+    final String payload = storedFact.isEmpty ? legacy : storedFact;
+    if (payload.isEmpty) return null;
+    final bool hasTopic = storedTopic != null && storedTopic.isNotEmpty;
+    final String topic = hasTopic ? storedTopic : memorySlot(payload);
+    final String fact = hasTopic ? payload : memoryValueFor(topic, payload);
     final DateTime when =
         DateTime.tryParse((raw['learnedAt'] as String?) ?? '') ??
         DateTime.fromMillisecondsSinceEpoch(0);
     return MemoryNote(
-      text: text.length <= kMemoryTextLimit
-          ? text
-          : '${text.substring(0, kMemoryTextLimit - 1)}…',
+      topic: topic,
+      fact: fact.length <= kMemoryTextLimit
+          ? fact
+          : '${fact.substring(0, kMemoryTextLimit - 1)}…',
       learnedAt: when,
     );
   }
@@ -154,6 +199,122 @@ class MemoryMemoryStore implements MemoryStore {
   Future<void> delete() async => _json = null;
 }
 
+/// One change a reply (or the user) asked for in a memory tag.
+///
+/// Either a fact to keep under [topic], or — with [forget] — the topic to drop.
+/// Parsed by [splitMemoryTags]; nothing here talks to the file.
+@immutable
+class MemoryTag {
+  const MemoryTag({required this.topic, this.fact, this.forget = false});
+
+  /// The topic as written, lower-cased and unquoted. [memoryCanonicalTopic]
+  /// turns the friendly spellings ("favourite colour") into vault keys.
+  final String topic;
+
+  /// The value for a remember tag. Null for a forget tag.
+  final String? fact;
+
+  /// True when this tag deletes rather than stores.
+  final bool forget;
+
+  @override
+  String toString() =>
+      forget ? 'MemoryTag.forget($topic)' : 'MemoryTag($topic = $fact)';
+}
+
+/// What one piece of text carried: the words without the tags, and the tags.
+@immutable
+class MemoryTagSplit {
+  const MemoryTagSplit({required this.text, required this.tags});
+
+  /// The text with every complete tag removed — this is what the bubble shows
+  /// and what is spoken.
+  final String text;
+
+  /// The changes the tags asked for, in the order they appeared.
+  final List<MemoryTag> tags;
+
+  bool get hasTags => tags.isNotEmpty;
+}
+
+/// Matches a complete `[remember: …]` or `[forget: …]` tag.
+final RegExp _memoryTag = RegExp(
+  r'\[\s*(remember|forget)\s*:([^\]]*)\]',
+  caseSensitive: false,
+);
+
+/// Splits [raw] into the words to show and the memory changes to apply.
+///
+/// [streaming] is true while the model is still writing. It changes one thing:
+/// a tag that has opened but not closed is cut from the text, so the user never
+/// watches `[remember: 'name' = 'TV` arrive in the bubble and then disappear
+/// when the bracket lands. The same tag is returned only once it is complete.
+MemoryTagSplit splitMemoryTags(String raw, {bool streaming = false}) {
+  final List<MemoryTag> tags = <MemoryTag>[];
+  String text = raw.replaceAllMapped(_memoryTag, (Match match) {
+    final MemoryTag? tag = _tagFrom(match.group(1)!, match.group(2)!);
+    if (tag != null) tags.add(tag);
+    return '';
+  });
+  if (streaming) {
+    final int dangling = _danglingTagStart(text);
+    if (dangling >= 0) text = text.substring(0, dangling);
+  }
+  return MemoryTagSplit(text: text, tags: tags);
+}
+
+MemoryTag? _tagFrom(String kind, String body) {
+  final bool forget = kind.toLowerCase() == 'forget';
+  if (forget) {
+    final String topic = _unquote(body.split('=').first);
+    if (topic.isEmpty) return null;
+    return MemoryTag(topic: topic.toLowerCase(), forget: true);
+  }
+  final int at = body.indexOf('=');
+  if (at < 0) return null;
+  final String topic = _unquote(body.substring(0, at));
+  final String fact = _unquote(body.substring(at + 1));
+  if (fact.isEmpty) return null;
+  return MemoryTag(
+    topic: topic.isEmpty ? kMemoryNoteTopic : topic.toLowerCase(),
+    fact: fact,
+  );
+}
+
+String _unquote(String raw) {
+  String value = raw.trim();
+  const List<String> quotes = <String>['"', "'", '“', '”', '‘', '’'];
+  if (value.length >= 2) {
+    final String first = value[0];
+    final String last = value[value.length - 1];
+    if (quotes.contains(first) && quotes.contains(last)) {
+      value = value.substring(1, value.length - 1).trim();
+    }
+  }
+  return value
+      .replaceAll(RegExp(r'^[\s,]+'), '')
+      .replaceAll(RegExp(r'[\s,]+$'), '');
+}
+
+/// Where an unterminated tag starts, or -1 when every `[` is ordinary text.
+int _danglingTagStart(String text) {
+  final int open = text.lastIndexOf('[');
+  if (open < 0) return -1;
+  final String rest = text
+      .substring(open + 1)
+      .toLowerCase()
+      .replaceAll(RegExp(r'\s+'), ' ');
+  if (rest.isEmpty) return open;
+  for (final String word in const <String>['remember', 'forget']) {
+    if (word.startsWith(rest)) return open;
+    if (rest.startsWith(word)) {
+      final String after = rest.substring(word.length).trimLeft();
+      return after.isEmpty || after.startsWith(':') ? open : -1;
+    }
+  }
+  return -1;
+}
+
 /// The app's remembered facts, loaded once and written after every change.
 class MemoryService extends ChangeNotifier {
   MemoryService({MemoryStore? store}) : _store = store ?? FileMemoryStore();
@@ -204,8 +365,12 @@ class MemoryService extends ChangeNotifier {
       debugPrint('MEMORY: the file is not JSON ($error)');
       return;
     }
-    if (decoded is! Map) return;
-    final Object? rows = decoded['facts'];
+    // Version 2 wraps the rows in an object so the version can be stated; a
+    // bare list is accepted too, because that is the shape the vault writes in
+    // its simplest form and a hand-edited file should not be thrown away.
+    final Object? rows = decoded is List
+        ? decoded
+        : (decoded is Map ? decoded['facts'] : null);
     if (rows is! List) return;
     final List<MemoryNote> loaded = <MemoryNote>[];
     for (final Object? row in rows) {
@@ -218,21 +383,63 @@ class MemoryService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Remembers [text] if it is new. Answers whether anything changed.
+  /// Remembers [text] if it is new, deriving its topic from the sentence.
+  /// Answers whether anything changed.
   ///
   /// Deduplicated case-insensitively and without punctuation, because "My name
   /// is TVCraft" said twice is one fact, not two lines the model has to choose
-  /// between.
+  /// between. A *different* value under the same topic is not a duplicate: it is
+  /// a correction, and it replaces the old value.
   Future<bool> remember(String text) async {
     await attach();
     final String cleaned = _clean(text);
     if (cleaned.isEmpty) return false;
-    final String key = _key(cleaned);
-    if (_notes.any((MemoryNote note) => _key(note.text) == key)) return false;
-    _notes = <MemoryNote>[
-      ..._notes,
-      MemoryNote(text: cleaned, learnedAt: DateTime.now()),
-    ];
+    final String topic = memorySlot(cleaned);
+    return rememberFact(topic, memoryValueFor(topic, cleaned));
+  }
+
+  /// Stores [fact] under [topic], replacing whatever that topic held before.
+  Future<bool> rememberFact(String topic, String fact) async {
+    await attach();
+    final String key = memoryCanonicalTopic(topic);
+    final String value = _clean(fact);
+    if (key.isEmpty || value.isEmpty) return false;
+    final MemoryNote note = MemoryNote(
+      topic: key,
+      fact: value.length <= kMemoryTextLimit
+          ? value
+          : '${value.substring(0, kMemoryTextLimit - 1)}…',
+      learnedAt: DateTime.now(),
+    );
+    if (key == kMemoryNoteTopic) {
+      // A note with no topic is not an answer to a question: two of them are two
+      // notes, and only the identical sentence is dropped.
+      if (_notes.any(
+        (MemoryNote existing) =>
+            existing.topic == kMemoryNoteTopic &&
+            _key(existing.fact) == _key(value),
+      )) {
+        return false;
+      }
+      return _append(note);
+    }
+    final int index = _notes.lastIndexWhere(
+      (MemoryNote existing) => existing.topic == key,
+    );
+    if (index < 0) return _append(note);
+    if (_key(_notes[index].fact) == _key(value)) return false;
+    final List<MemoryNote> next = List<MemoryNote>.of(_notes);
+    next[index] = note;
+    _notes = next;
+    notifyListeners();
+    await _persist();
+    return true;
+  }
+
+  /// Adds [note] at the end and writes. Always true: the caller already
+  /// established that nothing identical was there.
+  Future<bool> _append(MemoryNote note) async {
+    _notes = <MemoryNote>[..._notes, note];
     if (_notes.length > kMemoryFactLimit) {
       _notes = _notes.sublist(_notes.length - kMemoryFactLimit);
     }
@@ -245,45 +452,99 @@ class MemoryService extends ChangeNotifier {
   /// facts added, so the caller can log or test the extraction without another
   /// read of the file.
   ///
-  /// A correction is handled before the ordinary detector: "no, it's Sam" does
-  /// not contain either of the shapes [extractMemoryFacts] knows, and adding it
-  /// as a new fact would leave the model with two names and no way to choose.
-  /// The corrected fact takes the place of the one it is about, so the file
-  /// keeps one answer per slot (name, home, favourite colour) rather than a
-  /// history of every attempt.
+  /// Anything in [said] that is a [MemoryTag] is applied exactly and taken out
+  /// of the text the sentence detector reads: `[remember: 'name' = 'TVCraft']` is
+  /// a command, not something to remember as a sentence.
   Future<List<String>> absorb(String said) async {
     await attach();
     final List<String> added = <String>[];
-    final String? correction = memoryCorrection(said, _notes);
-    if (correction != null) {
-      final String slot = memorySlot(correction);
-      if (await _replace(slot, correction)) added.add(correction);
+    final MemoryTagSplit split = splitMemoryTags(said);
+    for (final MemoryTag tag in split.tags) {
+      await applyTag(tag);
     }
-    for (final String fact in extractMemoryFacts(said)) {
+    final String words = split.text;
+    // A correction is handled before the ordinary detector: "no, it's Sam" does
+    // not contain either of the shapes [extractMemoryFacts] knows, and adding it
+    // as a new fact would leave the model with two names and no way to choose.
+    final String? correction = memoryCorrection(words, _notes);
+    if (correction != null) {
+      final String topic = memorySlot(correction);
+      if (await rememberFact(topic, memoryValueFor(topic, correction))) {
+        added.add(correction);
+      }
+    }
+    for (final String fact in extractMemoryFacts(words)) {
       if (await remember(fact)) added.add(fact);
     }
     return added;
   }
 
-  /// Puts [text] in the place of the last fact with the same [slot].
+  /// Applies one tag, answering the pill the thread shows — or null when the
+  /// tag changed nothing (the same value, or a topic with nothing to forget).
   ///
-  /// One fact per slot is the point: a model told both "My name is TVCraft" and
-  /// "My name is TVCraft01" has no reason to prefer the newer sentence, and the
-  /// user has already said which one is right.
-  Future<bool> _replace(String slot, String text) async {
-    final String cleaned = _clean(text);
-    if (cleaned.isEmpty) return false;
-    final int index = _notes.lastIndexWhere(
-      (MemoryNote note) => memorySlot(note.text) == slot,
-    );
-    if (index < 0) return remember(cleaned);
-    if (_key(_notes[index].text) == _key(cleaned)) return false;
-    final List<MemoryNote> next = List<MemoryNote>.of(_notes)
-      ..[index] = MemoryNote(text: cleaned, learnedAt: DateTime.now());
-    _notes = <MemoryNote>[
-      for (int i = 0; i < next.length; i++)
-        if (i == index || _key(next[i].text) != _key(cleaned)) next[i],
+  /// A tag whose fact is not in [said] is refused: the tag exists to record
+  /// what the user said in a shape the app can file, not to let the model
+  /// write anything it believes. Asked "what is my name?", the 1B model
+  /// answered with `[remember: 'name' = 'Nexus']` — its own name — which would
+  /// have quietly overwritten the user's in their own vault. [said] is null
+  /// for a typed tag, which needs no grounding because the user wrote it.
+  Future<String?> applyTag(MemoryTag tag, {String? said}) async {
+    if (tag.forget) {
+      if (!await forget(tag.topic)) return null;
+      return '🧠 Memory deleted: ${memoryTopicLabel(memoryCanonicalTopic(tag.topic))}';
+    }
+    final String fact = tag.fact ?? '';
+    if (fact.trim().isEmpty) return null;
+    if (said != null && !memoryGroundedIn(fact, said)) {
+      debugPrint('MEMORY: ignored a tag the user did not say ($fact)');
+      return null;
+    }
+    if (!await rememberFact(tag.topic, fact)) return null;
+    return '🧠 Memory updated: '
+        '${memoryTopicLabel(memoryCanonicalTopic(tag.topic))} is $fact';
+  }
+
+  /// Applies every tag, answering the pills to show in order.
+  ///
+  /// [said] is what the user wrote this turn. Supplying it makes the vault
+  /// refuse a tag for something they never said — see [memoryGroundedIn]. The
+  /// model's own tags pass it; a tag the user typed does not, because typing
+  /// `[remember: …]` *is* the instruction.
+  Future<List<String>> applyTags(
+    Iterable<MemoryTag> tags, {
+    String? said,
+  }) async {
+    final List<String> lines = <String>[];
+    for (final MemoryTag tag in tags) {
+      final String? line = await applyTag(tag, said: said);
+      if (line != null) lines.add(line);
+    }
+    return lines;
+  }
+
+  /// Deletes everything remembered about [topic]. Answers whether anything went.
+  Future<bool> forget(String topic) async {
+    await attach();
+    final List<MemoryNote> next = <MemoryNote>[
+      for (final MemoryNote note in _notes)
+        if (!_matchesTopic(note, topic)) note,
     ];
+    if (next.length == _notes.length) return false;
+    _notes = next;
+    notifyListeners();
+    await _persist();
+    return true;
+  }
+
+  /// Deletes exactly [note] — the trash can beside one row of the vault.
+  Future<bool> forgetNote(MemoryNote note) async {
+    await attach();
+    final int index = _notes.indexWhere(
+      (MemoryNote existing) =>
+          existing.topic == note.topic && existing.fact == note.fact,
+    );
+    if (index < 0) return false;
+    _notes = List<MemoryNote>.of(_notes)..removeAt(index);
     notifyListeners();
     await _persist();
     return true;
@@ -309,17 +570,25 @@ class MemoryService extends ChangeNotifier {
   String get systemContext {
     if (_notes.isEmpty) return '';
     final buffer = StringBuffer(
-      'What you remember about the user. Use it only when it is relevant:\n',
+      'What you remember about the user. These are facts about them, not about '
+      'you; use them only when they are relevant:\n',
     );
     for (final MemoryNote note in _notes) {
-      buffer.writeln('- ${note.text}');
+      // Topic and value, not the display sentence: "My name is TVCraft" in a
+      // system turn is a sentence the model can read as its own name, and the
+      // 1B did exactly that on the phone. "- name: TVCraft" cannot be misread.
+      buffer.writeln(
+        note.topic == kMemoryNoteTopic
+            ? '- ${note.fact}'
+            : '- ${note.topicLabel}: ${note.fact}',
+      );
     }
     return buffer.toString().trimRight();
   }
 
   Future<void> _persist() async {
     final String json = jsonEncode(<String, Object?>{
-      'version': 1,
+      'version': kMemoryFileVersion,
       'facts': <Map<String, Object?>>[
         for (final MemoryNote note in _notes) note.toJson(),
       ],
@@ -329,6 +598,12 @@ class MemoryService extends ChangeNotifier {
     } catch (error) {
       debugPrint('MEMORY: could not save ($error)');
     }
+  }
+
+  static bool _matchesTopic(MemoryNote note, String wanted) {
+    final String key = _topicKey(wanted);
+    if (key.isEmpty) return false;
+    return key == _topicKey(note.topic) || key == _topicKey(note.topicLabel);
   }
 
   static String _clean(String text) {
@@ -347,10 +622,112 @@ class MemoryService extends ChangeNotifier {
       .trim();
 }
 
-/// Which remembered fact a sentence is about: `name`, `location`, a favourite
-/// thing, or `other`.
+/// The vault's topic for a value written the friendly way.
 ///
-/// A slot is what makes a correction possible. Without it, "no, it's Sam" is
+/// "favourite colour" and "favourite:colour" are the same topic, and so are
+/// "name" and "my name". Without this, a tag the model wrote in a different
+/// spelling would create a second slot the user cannot see the point of.
+String memoryCanonicalTopic(String topic) {
+  final String key = topic
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp(r'^my\s+'), '')
+      .replaceAll(RegExp(r'\s+'), ' ');
+  if (key.isEmpty) return kMemoryNoteTopic;
+  if (key == 'name' || key == 'user name' || key == 'username') return 'name';
+  if (key == 'location' ||
+      key == 'city' ||
+      key == 'home city' ||
+      key == 'where i live') {
+    return 'location';
+  }
+  final RegExpMatch? favourite = RegExp(r'^(?:favourite|favorite)\s+(.+)$')
+      .firstMatch(key);
+  if (favourite != null) {
+    return 'favourite:${favourite.group(1)!.trim().replaceAll(' ', '-')}';
+  }
+  if (key == 'note' || key == 'other' || key == 'notes') {
+    return kMemoryNoteTopic;
+  }
+  if (RegExp(r'^(home|work|birthday|email|phone|address)$').hasMatch(key)) {
+    return 'mine:$key';
+  }
+  return key;
+}
+
+/// The sentence a topic and its value make — what the model is told and what the
+/// vault's rows read.
+String memorySentence(String topic, String fact) {
+  final String value = fact.trim();
+  if (value.isEmpty) return '';
+  switch (topic) {
+    case 'name':
+      return 'My name is $value';
+    case 'location':
+      return 'I live in $value';
+    case kMemoryNoteTopic:
+      return value;
+  }
+  if (topic.startsWith('favourite:')) {
+    final String thing = topic
+        .substring('favourite:'.length)
+        .replaceAll('-', ' ');
+    return 'My favourite $thing is $value';
+  }
+  if (topic.startsWith('mine:')) {
+    return 'My ${topic.substring('mine:'.length)} is $value';
+  }
+  return value;
+}
+
+/// The value inside a sentence about [topic]: "My name is TVCraft" is
+/// `TVCraft`, and a note with no topic is its own value.
+String memoryValueFor(String topic, String fact) {
+  final String text = fact.trim();
+  if (topic == 'name') {
+    final RegExpMatch? named = RegExp(
+      r'^(?:my name is|call me)\s+(.+)$',
+      caseSensitive: false,
+    ).firstMatch(text);
+    return named == null ? text : _correctionValue(named.group(1));
+  }
+  if (topic == 'location') {
+    final RegExpMatch? lived = RegExp(
+      r'^i live in\s+(.+)$',
+      caseSensitive: false,
+    ).firstMatch(text);
+    return lived == null ? text : _correctionValue(lived.group(1));
+  }
+  if (topic.startsWith('favourite:') || topic.startsWith('mine:')) {
+    final int at = text.lastIndexOf(' is ');
+    if (at >= 0) return _correctionValue(text.substring(at + 4));
+  }
+  return text;
+}
+
+/// What a topic is called in the vault: short, lower-case, and never a key.
+String memoryTopicLabel(String topic) {
+  if (topic == 'name') return 'name';
+  if (topic == 'location') return 'location';
+  if (topic.startsWith('favourite:')) {
+    return 'favourite ${topic.substring('favourite:'.length).replaceAll('-', ' ')}';
+  }
+  if (topic.startsWith('mine:')) return topic.substring('mine:'.length);
+  if (topic == kMemoryNoteTopic || topic.isEmpty) return 'note';
+  return topic;
+}
+
+String _topicKey(String topic) => topic
+    .trim()
+    .toLowerCase()
+    .replaceAll(RegExp(r'[^a-z0-9: -]'), '')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim();
+
+/// Which remembered fact a sentence is about: `name`, `location`, a favourite
+/// thing, or [kMemoryNoteTopic].
+///
+/// A topic is what makes a correction possible. Without it, "no, it's Sam" is
 /// only a sentence; with it, the service knows which of the facts it already
 /// holds has to make way for the new answer.
 String memorySlot(String fact) {
@@ -366,7 +743,7 @@ String memorySlot(String fact) {
     r'^my (home|work|birthday|email|phone|address) is ',
   ).firstMatch(text);
   if (possessions != null) return 'mine:${possessions.group(1)}';
-  return 'other';
+  return kMemoryNoteTopic;
 }
 
 /// A sentence that corrects a fact Nexus already holds, rewritten as the fact
@@ -392,7 +769,7 @@ String? memoryCorrection(String said, List<MemoryNote> notes) {
     final MemoryNote? previous = notes.isEmpty ? null : notes.last;
     if (previous != null) {
       return _factWithValue(previous.text, value) ??
-          _factForSlot(memorySlot(previous.text), value);
+          _factForSlot(previous.topic, value);
     }
     return _looksLikeName(value) ? 'My name is $value' : null;
   }
@@ -406,7 +783,7 @@ String? memoryCorrection(String said, List<MemoryNote> notes) {
   if (value.isEmpty || !_looksLikeName(value)) return null;
   MemoryNote? name;
   for (final MemoryNote note in notes.reversed) {
-    if (memorySlot(note.text) == 'name') {
+    if (note.topic == 'name') {
       name = note;
       break;
     }
@@ -435,13 +812,13 @@ String? _factWithValue(String fact, String value) {
   return null;
 }
 
-String _factForSlot(String slot, String value) {
-  if (slot == 'location') return 'I live in $value';
-  if (slot.startsWith('favourite:')) {
-    return 'My favourite ${slot.substring('favourite:'.length)} is $value';
+String _factForSlot(String topic, String value) {
+  if (topic == 'location') return 'I live in $value';
+  if (topic.startsWith('favourite:')) {
+    return 'My favourite ${topic.substring('favourite:'.length)} is $value';
   }
-  if (slot.startsWith('mine:')) {
-    return 'My ${slot.substring('mine:'.length)} is $value';
+  if (topic.startsWith('mine:')) {
+    return 'My ${topic.substring('mine:'.length)} is $value';
   }
   return 'My name is $value';
 }
@@ -512,6 +889,30 @@ bool _looksLikeName(String value) {
     return false;
   }
   return !_notNames.contains(value.toLowerCase());
+}
+
+/// The words [text] is made of, lowercased and stripped of punctuation.
+Set<String> memoryWords(String text) =>
+    RegExp(r'[a-z0-9]+')
+        .allMatches(text.toLowerCase())
+        .map((RegExpMatch m) => m.group(0)!)
+        .toSet();
+
+/// Whether [fact] is something [said] actually contains.
+///
+/// A tag is a transcription, not new information: the model's job is to file
+/// what the user said under a topic, and every word of three letters or more in
+/// the fact has to be a word the user used. Short words are skipped because "my
+/// name is TVCraft" against "my name's TVCraft" would otherwise be refused
+/// over an apostrophe. A fact that is nothing but short words (`name = 2`) is
+/// accepted, since there is nothing to check it against.
+bool memoryGroundedIn(String fact, String said) {
+  final Set<String> words = memoryWords(said);
+  for (final String word in memoryWords(fact)) {
+    if (word.length < 3) continue;
+    if (!words.contains(word)) return false;
+  }
+  return true;
 }
 
 /// The sentences in [said] that clearly ask Nexus to remember something.
