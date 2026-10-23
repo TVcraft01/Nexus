@@ -35,6 +35,7 @@ class PairedDevice {
     this.code = '',
     this.ramBytes,
     this.platform = '',
+    this.ollama = false,
   });
 
   /// The mesh id from the pairing code — the key the list is unique on, so the
@@ -93,6 +94,14 @@ class PairedDevice {
   /// inventing a machine.
   final String platform;
 
+  /// Whether this peer said it had Ollama answering when it was paired.
+  ///
+  /// It is the PC's half of the hive handshake: a desktop that can think is a
+  /// better answer than the phone's small model, and this is the fact the phone
+  /// stores so it does not have to infer it from a name. A peer paired by an
+  /// older build has no field, and false simply means "not learned".
+  final bool ollama;
+
   PairedDevice copyWith({
     String? name,
     bool? online,
@@ -103,6 +112,7 @@ class PairedDevice {
     String? code,
     int? ramBytes,
     String? platform,
+    bool? ollama,
   }) => PairedDevice(
     id: id,
     name: name ?? this.name,
@@ -115,6 +125,7 @@ class PairedDevice {
     code: code ?? this.code,
     ramBytes: ramBytes ?? this.ramBytes,
     platform: platform ?? this.platform,
+    ollama: ollama ?? this.ollama,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -129,6 +140,7 @@ class PairedDevice {
     if (code.isNotEmpty) 'code': code,
     if (ramBytes != null) 'ram_bytes': ramBytes,
     if (platform.isNotEmpty) 'platform': platform,
+    if (ollama) 'ollama': true,
   };
 
   /// Reads one address list back, dropping anything that is not a string.
@@ -166,6 +178,7 @@ class PairedDevice {
           ? raw['ram_bytes'] as int
           : null,
       platform: raw['platform'] is String ? raw['platform'] as String : '',
+      ollama: raw['ollama'] == true,
     );
   }
 
@@ -183,6 +196,7 @@ class PairedDevice {
     code: invite.code,
     ramBytes: invite.ramBytes,
     platform: invite.platform,
+    ollama: invite.ollama,
   );
 
   @override

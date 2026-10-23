@@ -19,6 +19,9 @@ const Key kNexusBrainProgress = Key('nexus-brain-progress');
 /// two bars on screen at once would need to be told apart by a test.
 const Key kNexusVisionProgress = Key('nexus-vision-progress');
 
+/// The desktop-only row that opens the phone pairing code.
+const Key kNexusPairPhoneRow = Key('nexus-pair-phone-row');
+
 /// The settings screen: appearance, voice, the brain, privacy, and what this
 /// build is.
 class SettingsTab extends StatefulWidget {
@@ -647,6 +650,23 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
             ),
           ),
+          // The desktop half of pairing. A phone scans this; nobody types an
+          // address, because the code already carries the one the PC found.
+          if (nexusIsDesktopApp) ...<Widget>[
+            const NexusSectionLabel('This PC'),
+            NexusRow(
+              key: kNexusPairPhoneRow,
+              title: 'Pair Phone',
+              subtitle: 'Show a code your phone scans — no address to type',
+              leading: const NexusIconTile(Icons.phone_iphone_rounded),
+              trailing: const NexusChevron(),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (routeContext) => const PairPhonePage(),
+                ),
+              ),
+            ),
+          ],
           // Where the words come from, and the one row that can change it. The
           // status is a value, not a switch: there is nothing to turn on — the
           // app asks the device and then the PC on its own — and the only

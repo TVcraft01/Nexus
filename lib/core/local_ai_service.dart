@@ -24,11 +24,19 @@
 // fake) can implement it in terms of the one method it already has.
 library;
 
-import 'package:flutter/foundation.dart' show debugPrint, immutable;
+import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show ValueNotifier, debugPrint, immutable, visibleForTesting;
+
+import 'ai_status.dart' show AiSource, AiStatus;
 import 'brain.dart' show ChatTurn;
+import 'model_capabilities.dart';
 import 'ollama_service.dart';
 import 'on_device_ai_service.dart';
+import 'on_device_model.dart' show ModelChoice, OnDeviceModelChoice;
+import 'paired_devices.dart' show PairedDevice, PairedDevices;
+import 'text_generation_backend.dart';
 
 /// One earlier exchange, as a brain that is being asked to remember it needs.
 ///
@@ -118,15 +126,16 @@ abstract class LocalAiService {
   /// recreate, so the chain is built once.
   static LocalAiService? _default;
 
-  /// The brain the shell uses: the fake in a test, the real chain in the app.
+  /// The brain the shell uses: the fake in a test, the real router in the app.
   ///
-  /// Device first, PC second ([FallbackAiService]), because the device is the
-  /// one that is always there. Every screen gets the fallback for free — none of
-  /// them has to know which brain answered, and none of them changed when the
-  /// on-device engine arrived.
+  /// [HiveRouter] asks the paired PC first when it is reachable and falls back
+  /// to the device's own model when it is not. [FallbackAiService] is still the
+  /// two-brain chain a test can build explicitly, but the app's default is the
+  /// router: the PC in the room is a bigger model, and using it without the
+  /// user changing a setting is the whole point of the hive.
   static LocalAiService get current =>
       override?.call() ??
-      (_default ??= FallbackAiService(
+      (_default ??= HiveRouter(
         onDevice: OnDeviceAiService(),
         pc: const OllamaService(),
       ));
@@ -218,8 +227,12 @@ abstract class LocalAiService {
 /// When both fail, the error is [OllamaException] carrying
 /// [kNexusOllamaUnreachableText] — the one sentence the shell already knows how
 /// to show as a red notice.
-class FallbackAiService implements LocalAiService {
+class FallbackAiService implements LocalAiService, TextGenerationBackend {
   const FallbackAiService({required this.onDevice, required this.pc});
+
+  @override
+  Stream<String> generateStream(String prompt, {List<AiTurn>? history}) =>
+      generateResponseStream(prompt, history: history ?? const <AiTurn>[]);
 
   /// The device's own model. Asked first, always.
   final LocalAiService onDevice;
@@ -312,5 +325,348 @@ class FallbackAiService implements LocalAiService {
       debugPrint('AI: PC failed ($error)');
       throw const OllamaException(kNexusOllamaUnreachableText);
     }
+  }
+}
+
+/// Which machine the next answer will come from.
+///
+/// The chip in the header and the router that makes the decision share this
+/// enum: a screen never guesses from a bool, and there are exactly two states a
+/// user can be in.
+enum HiveCompute {
+  /// The model on this phone.
+  onDevice,
+
+  /// Ollama on a paired PC, over the local network.
+  pc,
+}
+
+/// Something the router did that the screen should say out loud.
+///
+/// A notice rather than a sentence because two surfaces read it differently —
+/// the chat appends a system pill, the live page adds a turn — and because the
+/// router must not know which screen is listening.
+enum HiveNotice {
+  /// The PC came online while the selected on-device model is the small one.
+  /// Shows the one-time "your PC is connected" banner.
+  pcConnectedWeakModel,
+
+  /// The PC stopped answering mid-request. The device takes over.
+  pcDisconnected,
+}
+
+/// What the chat shows when the PC drops while it was answering.
+const String kNexusPcDisconnectedPill =
+    '🔌 PC disconnected. Switched to on-device AI.';
+
+/// The one-time banner for a PC that just made the small model unnecessary.
+const String kNexusPcConnectedBanner =
+    'Your PC is connected! Nexus is now using your PC\'s power for smarter '
+    'answers.';
+
+/// The hive's router: the PC when it is there, the phone when it is not.
+///
+/// This is [LocalAiService] with one preference: a paired desktop that answers
+/// Ollama's `/api/tags` is a bigger model than anything running on the phone, so
+/// it answers first. No setting is involved — the user paired the PC once, and
+/// the router notices it is back on the network.
+///
+/// The address is the pairing's, not a build flag: a phone cannot reach Ollama
+/// on `localhost` (that is the phone), so a paired desktop's first LAN address is
+/// dialled on Ollama's port. An explicit `NEXUS_OLLAMA_HOST` still wins, which
+/// keeps the desktop build and the tests pointed at one place.
+///
+/// A failure is never shown as a failure of the answer: the PC disappearing is a
+/// route change, and the device's model picks the question up where the PC left
+/// it. The screen is told through [notices] so it can say which machine answered
+/// — a pill for the switch, a banner for the upgrade.
+class HiveRouter implements LocalAiService, TextGenerationBackend {
+  HiveRouter({
+    required this.onDevice,
+    required this.pc,
+    List<PairedDevice> Function()? paired,
+    this.pcProbe,
+    this.cacheFor = const Duration(seconds: 10),
+  }) : _paired = paired ?? (() => PairedDevices.instance.devices);
+
+  @override
+  Stream<String> generateStream(String prompt, {List<AiTurn>? history}) =>
+      generateResponseStream(prompt, history: history ?? const <AiTurn>[]);
+
+  /// The device's own model. The route when no PC answers, and the route back
+  /// when one stops.
+  final LocalAiService onDevice;
+
+  /// The PC's Ollama. Asked first whenever [refresh] says it is reachable.
+  final LocalAiService pc;
+
+  /// Where the paired list comes from. A function so the router reads the list
+  /// as it is now, not as it was when the chain was built.
+  final List<PairedDevice> Function() _paired;
+
+  /// The reachability check, injectable for a test. Null means probe [pc] — or
+  /// the service built for the paired address — with its own two-second call.
+  final Future<bool> Function()? pcProbe;
+
+  /// How long one probe answers for. A status chip and a send in the same
+  /// minute must not mean two round trips; ten seconds is longer than a burst
+  /// of messages and shorter than the time it takes a user to walk out of
+  /// Wi-Fi range.
+  final Duration cacheFor;
+
+  /// Which machine the app is using, live. The header chip listens here, so a
+  /// question asked from any screen updates every screen's status.
+  static final ValueNotifier<HiveCompute> compute = ValueNotifier<HiveCompute>(
+    HiveCompute.onDevice,
+  );
+
+  static final StreamController<HiveNotice> _notices =
+      StreamController<HiveNotice>.broadcast();
+
+  /// What the router wants a screen to say. Broadcast: the chat and the live
+  /// page may both be listening, and neither owns the stream.
+  static Stream<HiveNotice> get notices => _notices.stream;
+
+  /// Shown once per app session. A PC that reconnects after lunch is the same
+  /// upgrade, and the second banner would be nagging.
+  static bool _weakPcBannerShown = false;
+
+  DateTime? _checkedAt;
+  bool _online = false;
+  OllamaService? _target;
+
+  /// The probe that is already on its way, if any.
+  ///
+  /// Two checks can arrive in the same second — the screen's first read and
+  /// the app-resume read — and the second must wait for the first rather than
+  /// read a cache entry that was written before the probe answered. That race
+  /// once left the chip on "PC Compute" while the composer still said the
+  /// device was answering: both were true of different moments.
+  Future<bool>? _inFlight;
+
+  /// Forgets the route and the one-time banner. Tests use this; the app never
+  /// does.
+  @visibleForTesting
+  static void debugReset() {
+    compute.value = HiveCompute.onDevice;
+    _weakPcBannerShown = false;
+  }
+
+  /// Probes the paired PC and updates [compute].
+  ///
+  /// Answers whether the PC answers. Called by the header when the screen opens
+  /// and by every generation; [force] is for a user action that should not wait
+  /// out the cache.
+  Future<bool> refresh({bool force = false}) {
+    final DateTime? checkedAt = _checkedAt;
+    if (!force &&
+        checkedAt != null &&
+        DateTime.now().difference(checkedAt) < cacheFor) {
+      return Future<bool>.value(_online);
+    }
+    final Future<bool>? running = _inFlight;
+    if (running != null) return running;
+    final Future<bool> check = _check();
+    _inFlight = check;
+    return check.whenComplete(() {
+      if (identical(_inFlight, check)) _inFlight = null;
+    });
+  }
+
+  Future<bool> _check() async {
+    _checkedAt = DateTime.now();
+    final PairedDevice? device = _pairedDesktop();
+    if (device == null) {
+      _target = null;
+      _setOnline(false);
+      return false;
+    }
+    final OllamaService? target = _serviceFor(device);
+    final bool online =
+        await (pcProbe?.call() ??
+            target?.isReachable() ??
+            Future<bool>.value(false));
+    _target = online ? target : null;
+    _setOnline(online);
+    return online;
+  }
+
+  void _setOnline(bool online) {
+    _online = online;
+    final HiveCompute next = online ? HiveCompute.pc : HiveCompute.onDevice;
+    if (compute.value == next) return;
+    compute.value = next;
+    ModelCapabilities.observe(
+      online ? const AiStatus(AiSource.pc) : const AiStatus(AiSource.onDevice),
+    );
+    if (online && !_weakPcBannerShown && _weakModelSelected) {
+      _weakPcBannerShown = true;
+      _notices.add(HiveNotice.pcConnectedWeakModel);
+    }
+  }
+
+  /// True when the selected on-device model is the one the PC makes redundant.
+  bool get _weakModelSelected =>
+      ModelChoice.instance.choice == OnDeviceModelChoice.qwen;
+
+  /// The first paired device that is a computer rather than a phone.
+  ///
+  /// The pairing record is the gate, exactly as the user set it up: a device
+  /// this one has never paired with is not offered its compute just because it
+  /// is on the Wi-Fi. "Online" is then the probe, not the row's stale flag.
+  PairedDevice? _pairedDesktop() {
+    final List<PairedDevice> desktops = _paired()
+        .where(
+          (PairedDevice device) =>
+              !device.isThisDevice && _looksLikeComputer(device),
+        )
+        .toList();
+    if (desktops.isNotEmpty) {
+      // A PC that said it runs Ollama is the one to ask first; a PC that never
+      // mentioned it is still probed, because the capability can be newer than
+      // the pairing record.
+      for (final PairedDevice device in desktops) {
+        if (device.ollama) return device;
+      }
+      return desktops.first;
+    }
+    // A build can also be pointed at one machine explicitly
+    // (`NEXUS_OLLAMA_HOST`). That address is the pairing it cannot lose: the
+    // stored device list is written by the Devices screen and may not have a
+    // desktop row yet, while the build itself already names one. A loopback
+    // address is this machine, not a PC, and is never promoted.
+    final LocalAiService base = pc;
+    if (base is! OllamaService) return null;
+    final String host = Uri.tryParse(base.baseUrl)?.host ?? '';
+    if (host.isEmpty ||
+        host == 'localhost' ||
+        host == '127.0.0.1' ||
+        host == '::1') {
+      return null;
+    }
+    return const PairedDevice(
+      id: 'configured-ollama',
+      name: 'PC',
+      publicKey: '',
+      platform: 'linux',
+    );
+  }
+
+  static bool _looksLikeComputer(PairedDevice device) {
+    if (device.ollama) return true;
+    final String platform = device.platform.toLowerCase();
+    if (platform == 'linux' ||
+        platform == 'macos' ||
+        platform == 'windows' ||
+        platform == 'desktop') {
+      return true;
+    }
+    final String where = '${device.name} ${device.detail}'.toLowerCase();
+    return where.contains('pc') ||
+        where.contains('desktop') ||
+        where.contains('mac') ||
+        where.contains('linux') ||
+        where.contains('windows');
+  }
+
+  /// The Ollama client for [device]: the build's own address when it was set
+  /// explicitly, otherwise the paired LAN address on Ollama's port.
+  OllamaService? _serviceFor(PairedDevice device) {
+    final LocalAiService base = pc;
+    if (base is! OllamaService) return null;
+    final Uri? configured = Uri.tryParse(base.baseUrl);
+    final String host = configured?.host ?? '';
+    final bool loopback =
+        host.isEmpty ||
+        host == 'localhost' ||
+        host == '127.0.0.1' ||
+        host == '::1';
+    if (!loopback) return base;
+    for (final String address in device.addresses) {
+      final String candidate = address.trim();
+      if (!_isLanIpv4(candidate)) continue;
+      return OllamaService(
+        baseUrl: 'http://$candidate:11434',
+        model: base.model,
+        timeout: base.timeout,
+        client: base.client,
+        system: base.system,
+        clock: base.clock,
+        includeClock: base.includeClock,
+        includeMemory: base.includeMemory,
+      );
+    }
+    return base;
+  }
+
+  static bool _isLanIpv4(String host) {
+    if (!RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(host)) return false;
+    return !host.startsWith('127.') && host != '0.0.0.0';
+  }
+
+  /// The PC client for this answer, or null when the device answers.
+  Future<LocalAiService?> _pcForThisAnswer() async {
+    if (!await refresh()) return null;
+    return _target ?? pc;
+  }
+
+  @override
+  Future<String> generateResponse(String prompt) async {
+    final LocalAiService? target = await _pcForThisAnswer();
+    if (target != null) {
+      try {
+        final String answer = await target.generateResponse(prompt);
+        if (answer.trim().isNotEmpty) return answer;
+        debugPrint('AI: PC answered with nothing; using the device');
+      } on Object catch (error) {
+        debugPrint('AI: PC failed ($error); switching to the device');
+        _lostPc();
+      }
+    }
+    return onDevice.generateResponse(prompt);
+  }
+
+  /// The PC's answer, whole, then the device's if the PC did not finish.
+  ///
+  /// The PC's pieces are collected before the first one is yielded. Ollama is
+  /// asked with `stream: false` today, so this loses no streaming; what it buys
+  /// is the promise in the failure path — a PC that dies mid-answer is replaced
+  /// by a whole device answer, never by half of one brain followed by half of
+  /// the other.
+  @override
+  Stream<String> generateResponseStream(
+    String prompt, {
+    List<AiTurn> history = const <AiTurn>[],
+  }) async* {
+    final LocalAiService? target = await _pcForThisAnswer();
+    if (target != null) {
+      try {
+        final StringBuffer buffer = StringBuffer();
+        await target
+            .generateResponseStream(prompt, history: history)
+            .forEach(buffer.write);
+        final String answer = buffer.toString();
+        if (answer.trim().isNotEmpty) {
+          yield answer;
+          return;
+        }
+        debugPrint('AI: PC answered with nothing; using the device');
+      } on Object catch (error) {
+        debugPrint('AI: PC failed ($error); switching to the device');
+        _lostPc();
+      }
+    }
+    yield* onDevice.generateResponseStream(prompt, history: history);
+  }
+
+  /// The PC stopped answering: the device is the route now, and the screen is
+  /// told once. The next prompt re-probes after the cache window rather than
+  /// hammering a PC that just refused a connection.
+  void _lostPc() {
+    _checkedAt = DateTime.now();
+    _online = false;
+    _target = null;
+    _setOnline(false);
+    _notices.add(HiveNotice.pcDisconnected);
   }
 }

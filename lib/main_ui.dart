@@ -58,7 +58,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert' show jsonDecode;
-import 'dart:io' show File, Process, ProcessResult;
+import 'dart:io' show File, Platform, Process, ProcessResult;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart'
@@ -102,6 +102,7 @@ import 'core/device_capabilities.dart';
 import 'core/device_memory.dart';
 import 'core/fast_path.dart';
 import 'core/file_link.dart';
+import 'core/llama_cpp_backend.dart';
 import 'core/local_ai_service.dart';
 import 'core/local_library.dart';
 import 'core/log_service.dart';
@@ -650,6 +651,25 @@ class NexusUiColors extends ThemeExtension<NexusUiColors> {
 }
 
 /// Fixed measurements the shell is built around.
+/// True when this process is the desktop app rather than the phone one.
+///
+/// The runner folders exist for Linux and Windows, and those two platforms get
+/// the two-pane frame whatever size their window is: a desktop window the user
+/// drags narrow is still a desktop window, and swapping it into the phone's
+/// tab bar would hide the history that has room beside the chat.
+///
+/// The `FLUTTER_TEST` guard is deliberate. `flutter test` runs on Linux, so a
+/// pure `Platform.isLinux` check would turn every existing phone-layout widget
+/// test into the desktop frame. The test runner sets that variable; the app
+/// does not.
+bool get nexusIsDesktopApp {
+  if (kIsWeb) return false;
+  if ((Platform.environment['FLUTTER_TEST'] ?? 'false') != 'false') {
+    return false;
+  }
+  return Platform.isLinux || Platform.isWindows;
+}
+
 abstract final class NexusLayout {
   /// Widest the content column ever gets. The phone layout is unaffected; a
   /// desktop window stops stretching the list rows into a ruler.
@@ -925,6 +945,7 @@ void main() async {
   // answers with ML Kit when it is not there — so the factory is one line that
   // covers both cases, and the download (or its absence) decides at runtime.
   VisionAiService.defaultFactory = VlmVisionService.new;
+  OnDeviceAiService.defaultBackendFactory = LlamaCppBackend.new;
   // Read once at launch so the first photo does not pay for the check, and so
   // Settings can say which pair of eyes this device has without a disk read of
   // its own. Two file checks, no weights touched.
@@ -1986,7 +2007,7 @@ class _NexusShellState extends State<NexusShell> {
     // taps; only the shape differs, and the shape is decided by the width the
     // app was given rather than by a device category.
     final double width = MediaQuery.sizeOf(context).width;
-    final bool wide = width >= kNexusWideBreakpoint;
+    final bool wide = nexusIsDesktopApp || width >= kNexusWideBreakpoint;
     final Widget pages = IndexedStack(
       index: _tab,
       children: <Widget>[
@@ -6900,6 +6921,209 @@ class PairQrPageState extends State<PairQrPage> {
 
 /// The line under the QR's own name: the address the code now carries.
 const Key kNexusQrAddressLine = Key('nexus-qr-address');
+
+/// The code a desktop shows to a phone.
+///
+/// It is the phone's own `nexus_pair` JSON with two desktop-shaped fields on
+/// top: `name` and `address` under the names this page documents, and `port`
+/// as a number. The older `device_name` / `device_id` / `public_key` fields stay
+/// in the object so the phone's existing parser accepts it unchanged.
+///
+/// The QR is withheld until the page knows both halves: an address a phone can
+/// dial, and the transfer token that proves it scanned this PC. A code drawn
+/// before either existed would pair a device that could never send a file.
+class PairPhonePage extends StatefulWidget {
+  const PairPhonePage({super.key});
+
+  @override
+  State<PairPhonePage> createState() => PairPhonePageState();
+}
+
+class PairPhonePageState extends State<PairPhonePage> {
+  List<String> _addresses = const <String>[];
+  String _token = '';
+
+  /// Whether Ollama answered on this machine. Null while the first probe runs.
+  bool? _ollama;
+
+  bool _linkRunning = false;
+  String? _linkProblem;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_readIdentity());
+    unawaited(_probeOllama());
+    unawaited(_ensureFileLink());
+  }
+
+  Future<void> _readIdentity() async {
+    final List<String> found = await localAddresses();
+    final String token = await PairToken.current();
+    if (!mounted) return;
+    setState(() {
+      _addresses = found;
+      _token = token;
+    });
+  }
+
+  /// The PC's own Ollama, as the phone will find it. Localhost is the PC here,
+  /// which is the one case the address is not a LAN address.
+  Future<void> _probeOllama() async {
+    final bool ready = await const OllamaService().isReachable();
+    if (!mounted) return;
+    setState(() => _ollama = ready);
+  }
+
+  /// The listener the phone will send files to. The app starts it at launch;
+  /// this makes opening the page enough on its own, and a port already taken is
+  /// shown rather than hidden.
+  Future<void> _ensureFileLink() async {
+    final FileTransferService link = FileTransferService.instance;
+    await link.start();
+    if (!mounted) return;
+    setState(() {
+      _linkRunning = link.running;
+      _linkProblem = link.problem;
+    });
+  }
+
+  PairIdentity get _who => PairIdentity.current;
+
+  PairInvite get invite => PairInvite(
+    deviceName: _who.name,
+    deviceId: _who.id,
+    publicKey: _who.publicKey,
+    addresses: _addresses,
+    port: kFileTransferPort,
+    code: _token,
+    platform: defaultPairPlatformToken(),
+    ollama: _ollama == true,
+  );
+
+  /// The exact bytes the QR carries. Empty until an address and a token exist.
+  String get currentPayload =>
+      _addresses.isEmpty || _token.isEmpty ? '' : invite.encodeForDesktop();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    final String payload = currentPayload;
+    return Scaffold(
+      backgroundColor: c.background,
+      appBar: AppBar(title: const Text('Pair Phone')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+        children: <Widget>[
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: NexusLayout.content),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    'Scan this with your phone',
+                    style: NexusType.rowTitle(c),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Open Nexus on the phone, choose Pair a device, and point '
+                    'it at this code. The address and the transfer key are '
+                    'inside it — there is nothing to type.',
+                    style: NexusType.rowMeta(c).copyWith(height: 1.5),
+                  ),
+                  const SizedBox(height: 22),
+                  Center(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: c.hairline),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: SizedBox(
+                          width: 260,
+                          height: 260,
+                          child: payload.isEmpty
+                              ? const Center(
+                                  child: SizedBox(
+                                    width: 26,
+                                    height: 26,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                )
+                              : QrImageView(
+                                  data: payload,
+                                  size: 260,
+                                  backgroundColor: Colors.white,
+                                  padding: EdgeInsets.zero,
+                                  semanticsLabel:
+                                      'Pairing code for ${_who.name}',
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  NexusRow(
+                    title: _who.name,
+                    subtitle: _addresses.isEmpty
+                        ? 'Looking for this PC’s address…'
+                        : 'Reachable at ${_addresses.first}',
+                    leading: const NexusIconTile(Icons.computer_rounded),
+                  ),
+                  const SizedBox(height: 8),
+                  NexusRow(
+                    title: 'Ollama on this PC',
+                    subtitle: switch (_ollama) {
+                      null => 'Checking whether this PC can answer…',
+                      true =>
+                        'Ready — the phone will use this PC’s model for heavy '
+                            'answers',
+                      false =>
+                        'Not running — start Ollama to lend the phone this PC’s '
+                            'model',
+                    },
+                    leading: NexusIconTile(
+                      _ollama == true
+                          ? Icons.memory_rounded
+                          : Icons.memory_outlined,
+                    ),
+                  ),
+                  NexusRow(
+                    title: 'File transfer',
+                    subtitle:
+                        _linkProblem ??
+                        (_linkRunning
+                            ? 'Listening on port '
+                                  '${FileTransferService.instance.boundPort} '
+                                  'for files from this phone'
+                            : 'Starting the listener…'),
+                    leading: NexusIconTile(
+                      _linkRunning
+                          ? Icons.swap_horiz_rounded
+                          : Icons.hourglass_empty_rounded,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Paired phones can send files straight to this PC. Cancel '
+                    'the pairing on the phone and the code stops mattering; no '
+                    'account or cloud is involved.',
+                    style: NexusType.rowMeta(c).copyWith(height: 1.5),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// The camera page: full screen, one frame in the middle, and a pill that says
 /// what the last code was if it was not ours.

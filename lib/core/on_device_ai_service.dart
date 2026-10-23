@@ -23,8 +23,7 @@ import 'dart:io' show File, Platform;
 
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
-import 'brain.dart' show ChatTurn;
-import 'clock_context.dart' show nexusSystemWithClock;
+import 'llama_cpp_backend.dart';
 import 'llm.dart';
 import 'local_ai_service.dart';
 import 'on_device_model.dart';
@@ -35,6 +34,7 @@ import 'system_actions.dart'
         kNexusReasoningRules,
         kSystemActionRules,
         nexusSystemWithCapabilities;
+import 'text_generation_backend.dart';
 
 /// What the on-device model is told it is.
 ///
@@ -151,7 +151,7 @@ class ModelNotFoundException extends OnDeviceAiException {
 /// restart would be a picker that did nothing. Switching is the one place the
 /// old engine is thrown away — leaving two sets of weights in a phone's memory
 /// is how an app gets closed by Android.
-class OnDeviceAiService implements LocalAiService {
+class OnDeviceAiService implements LocalAiService, TextGenerationBackend {
   OnDeviceAiService({
     OnDeviceModel model = const OnDeviceModel(),
     Llm? llm,
@@ -160,8 +160,28 @@ class OnDeviceAiService implements LocalAiService {
     this.clock,
     this.includeClock = true,
     this.includeMemory = true,
+    TextGenerationBackend? backend,
   }) : _deviceModel = model,
-       _fixedEngine = llm;
+       _fixedEngine = llm,
+       _backend = backend ??
+           (defaultBackendFactory?.call(
+                 model: model,
+                 llm: llm,
+                 system: system,
+                 maxTokens: maxTokens,
+                 clock: clock,
+                 includeClock: includeClock,
+                 includeMemory: includeMemory,
+               ) ??
+               LlamaCppBackend(
+                 model: model,
+                 llm: llm,
+                 system: system,
+                 maxTokens: maxTokens,
+                 clock: clock,
+                 includeClock: includeClock,
+                 includeMemory: includeMemory,
+               ));
 
   final OnDeviceModel _deviceModel;
 
@@ -169,10 +189,21 @@ class OnDeviceAiService implements LocalAiService {
   /// for every model. Null in the app, where the engine is built per selection.
   final Llm? _fixedEngine;
 
-  /// The engine for the model that was selected when it was built. Rebuilt
-  /// (and the old one disposed) the first time the selection changes.
-  Llm? _engine;
-  OnDeviceModelChoice? _engineChoice;
+  final TextGenerationBackend _backend;
+
+  /// Optional factory for creating the default text generation backend.
+  static TextGenerationBackend Function({
+    OnDeviceModel model,
+    Llm? llm,
+    String system,
+    int maxTokens,
+    DateTime Function()? clock,
+    bool includeClock,
+    bool includeMemory,
+  })? defaultBackendFactory;
+
+  /// The underlying text generation engine.
+  TextGenerationBackend get backend => _backend;
 
   /// The persona and the rules, as the model's system turn.
   final String system;
@@ -210,69 +241,15 @@ class OnDeviceAiService implements LocalAiService {
   static Future<int?> Function()? availableMemoryOverride;
 
   /// The file this brain answers from — the Settings row reports the same one.
-  OnDeviceModel get model => _deviceModel;
+  OnDeviceModel get model {
+    final TextGenerationBackend backend = _backend;
+    if (backend is LlamaCppBackend) return backend.model;
+    return _deviceModel;
+  }
 
   /// Starts reading the stored selection, without waiting for it.
-  ///
-  /// The read is a preference, which on a phone is a platform channel, and the
-  /// first question of a session must not block on one: before the read lands
-  /// this answers from the default model, which is the file the check is about
-  /// to look for anyway. `main()` starts the same read before the first frame,
-  /// so a restart answers with the picked model and not with the default — the
-  /// wait is paid at launch, where nothing is being typed.
   void _warmChoice() {
     unawaited(ModelChoice.instance.ensureLoaded());
-  }
-
-  /// The engine for the selected model, built on first use.
-  Future<Llm> _current() async {
-    final Llm? fixed = _fixedEngine;
-    if (fixed != null) return fixed;
-    _warmChoice();
-    final OnDeviceModelChoice choice = _deviceModel.choice;
-    final Llm? engine = _engine;
-    if (engine != null && _engineChoice == choice) return engine;
-    // A different model: free the old weights *before* loading the new ones.
-    // Both at once is 1.2 GB, which a phone answers by killing the app.
-    _engine = null;
-    _engineChoice = null;
-    if (engine != null) await engine.dispose();
-    // Before any weights are touched: a model that does not fit is the one
-    // failure that takes the whole app with it, so it is refused here rather
-    // than attempted and mourned.
-    await _ensureMemoryForLoad();
-    final Llm built = Llm(
-      model: _deviceModel.model,
-      modelsDir: _deviceModel.directoryFor,
-    );
-    _engine = built;
-    _engineChoice = choice;
-    return built;
-  }
-
-  /// Refuses a load the device does not have room for.
-  ///
-  /// The file's real size is what counts, not the published download size: a
-  /// user may have a trimmed or a custom file, and it is the bytes on this phone
-  /// that are about to become weights. The reading is [availableMemory]; when a
-  /// platform cannot answer, the load is allowed — guessing "out of memory" from
-  /// a missing `/proc` would refuse to run on the one device that could.
-  Future<void> _ensureMemoryForLoad() async {
-    final int? free = await availableMemory();
-    if (free == null) return;
-    final int onDisk = await _deviceModel.sizeBytes();
-    final int bytes = onDisk > 0 ? onDisk : _deviceModel.model.bytes;
-    final int needed = (bytes * kModelMemoryHeadroom).round();
-    if (free >= needed) return;
-    debugPrint(
-      'AI: ${_deviceModel.label} needs $needed bytes, $free available — '
-      'refusing to load it',
-    );
-    throw InsufficientMemoryException(
-      label: _deviceModel.label,
-      neededBytes: needed,
-      freeBytes: free,
-    );
   }
 
   /// How many bytes this device could hand to a new process right now.
@@ -302,6 +279,8 @@ class OnDeviceAiService implements LocalAiService {
 
   /// True when a model file is on disk. Cheap, and never a load.
   Future<bool> isModelPresent() async {
+    final TextGenerationBackend backend = _backend;
+    if (backend is LlamaCppBackend) return backend.isModelPresent();
     _warmChoice();
     return _deviceModel.isPresent();
   }
@@ -309,6 +288,10 @@ class OnDeviceAiService implements LocalAiService {
   /// Fetches the model, reporting progress from 0 to 1. See
   /// [OnDeviceModel.download]: the bytes and their hash are [Llm]'s business.
   Future<bool> download({void Function(double progress)? onProgress}) async {
+    final TextGenerationBackend backend = _backend;
+    if (backend is LlamaCppBackend) {
+      return backend.download(onProgress: onProgress);
+    }
     _warmChoice();
     return _deviceModel.download(onProgress: onProgress);
   }
@@ -318,140 +301,54 @@ class OnDeviceAiService implements LocalAiService {
   /// Only ever the selected model's file: the picker may point this service at
   /// either one, and "Delete model" must not take the other one with it.
   Future<int> delete() async {
+    final TextGenerationBackend backend = _backend;
+    if (backend is LlamaCppBackend) return backend.delete();
     _warmChoice();
-    await _engine?.unload();
     return _deviceModel.delete();
   }
 
   /// Releases the engine for good. The file stays.
   Future<void> dispose() async {
-    final Llm? engine = _engine;
-    _engine = null;
-    _engineChoice = null;
-    if (engine != null) await engine.dispose();
+    final TextGenerationBackend backend = _backend;
+    if (backend is LlamaCppBackend) {
+      await backend.dispose();
+      return;
+    }
     await _fixedEngine?.dispose();
   }
 
   /// Answers [prompt] from this device, or throws.
-  ///
-  /// The file check comes first and is the only thing between a missing model
-  /// and a 470 MB surprise download: [Llm] starts a fetch on its own when it is
-  /// asked to answer without a file, and that is the right behaviour for a
-  /// first-run warm-up, not for a question the user is waiting on. Ask the
-  /// user's permission with the download button, not with a message.
   @override
   Future<String> generateResponse(String prompt) async {
-    _warmChoice();
-    if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
-    // Before any weights are touched: a model that does not fit is the one
-    // failure that takes the whole app down with it, and there is no sentence
-    // after it. Checked only when nothing is loaded — an engine already in
-    // memory is not asking for more room to exist.
-    if (_engine == null) await _ensureMemoryForLoad();
-    final Llm llm = await _current();
-    // The clock goes in per question, not into [system]: "what time is it"
-    // has to be answered with the time it is asked at. A vision turn opts out.
-    // The artifact format is added here too, and only when the model that is
-    // about to load can actually follow it.
-    final String capable = nexusSystemWithCapabilities(system);
-    final String clocked = includeClock
-        ? nexusSystemWithClock(capable, now: clock?.call())
-        : capable;
-    final String systemTurn = includeMemory
-        ? LocalAiService.systemWithMemory(clocked)
-        : clocked;
-    String answer;
-    try {
-      answer = await llm.complete(
-        prompt,
-        system: systemTurn,
-        maxTokens: maxTokens,
+    final TextGenerationBackend backend = _backend;
+    if (backend is LlamaCppBackend) {
+      return backend.complete(prompt);
+    }
+    final StringBuffer buffer = StringBuffer();
+    await backend.generateStream(prompt).forEach(buffer.write);
+    final String answer = buffer.toString().trim();
+    if (answer.isEmpty) {
+      throw const OnDeviceAiException(
+        'The on-device model did not answer. Try again.',
       );
-    } on Object catch (e) {
-      // A native library that is not there, a model llama.cpp refuses: the
-      // runtime has already been honest in its log, and the user gets one
-      // sentence instead.
-      debugPrint('AI: on-device generation failed ($e)');
-      throw const OnDeviceAiException('The on-device model stopped answering.');
     }
-    final String trimmed = answer.trim();
-    if (trimmed.isEmpty) {
-      // Two different silences: a model that could not come up at all, and one
-      // that came up and said nothing. Only the first is worth telling the user
-      // their device cannot run this.
-      throw llm.status == LlmStatus.unavailable
-          ? const OnDeviceAiException(
-              'The on-device model could not be loaded on this device.',
-            )
-          : const OnDeviceAiException(
-              'The on-device model did not answer. Try again.',
-            );
-    }
-    return trimmed;
+    return answer;
   }
 
   /// Answers [prompt] from this device, a word at a time.
   ///
-  /// The same two guards as [generateResponse] — the file must be there, and a
-  /// model that says nothing is a failure — plus one the one-shot shape cannot
-  /// have: a stream that dies *after* some words reached the screen throws
-  /// [kOnDeviceStreamFailureText] rather than the generic sentence, because the
-  /// caller has already shown those words and "it stopped" is the true story.
-  /// A failure before the first word is the same failure the one-shot path
-  /// reports, so the fallback chain can still cover it with the PC.
+  /// Delegates directly to the underlying [TextGenerationBackend].
   @override
   Stream<String> generateResponseStream(
     String prompt, {
     List<AiTurn> history = const <AiTurn>[],
-  }) async* {
-    _warmChoice();
-    if (!await _deviceModel.isPresent()) throw const ModelNotFoundException();
-    if (_engine == null) await _ensureMemoryForLoad();
-    final Llm llm = await _current();
-    final String capable = nexusSystemWithCapabilities(system);
-    final String clocked = includeClock
-        ? nexusSystemWithClock(capable, now: clock?.call())
-        : capable;
-    final String systemTurn = includeMemory
-        ? LocalAiService.systemWithMemory(clocked)
-        : clocked;
-    bool answered = false;
-    try {
-      // With history this is a chat, not a question: the model is handed the
-      // turns it was told to remember and then this one, in the same message
-      // list the runtime's own template expects. Without history it is the one
-      // prompt it has always been — the same call, so a brain asked a single
-      // question behaves exactly as it did before this parameter existed.
-      final Stream<String> pieces = history.isEmpty
-          ? llm.completeStream(prompt, system: systemTurn, maxTokens: maxTokens)
-          : llm.completeChatStream(
-              system: systemTurn,
-              history: <ChatTurn>[
-                for (final AiTurn turn in history) turn.chatTurn,
-                (role: 'user', content: prompt),
-              ],
-              maxTokens: maxTokens,
-            );
-      await for (final String piece in pieces) {
-        if (piece.isEmpty) continue;
-        answered = true;
-        yield piece;
-      }
-    } on Object catch (e) {
-      debugPrint('AI: on-device streaming failed ($e)');
-      throw answered
-          ? const OnDeviceAiException(kOnDeviceStreamFailureText)
-          : const OnDeviceAiException('The on-device model stopped answering.');
-    }
-    if (answered) return;
-    // Nothing arrived and nothing threw: the model could not come up, or it came
-    // up and said nothing. Same two silences as [generateResponse].
-    throw llm.status == LlmStatus.unavailable
-        ? const OnDeviceAiException(
-            'The on-device model could not be loaded on this device.',
-          )
-        : const OnDeviceAiException(
-            'The on-device model did not answer. Try again.',
-          );
-  }
+  }) =>
+      _backend.generateStream(prompt, history: history);
+
+  @override
+  Stream<String> generateStream(
+    String prompt, {
+    List<AiTurn>? history,
+  }) =>
+      _backend.generateStream(prompt, history: history);
 }

@@ -123,6 +123,24 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// declined twice in one week is nagging. This is the first no.
   bool _pcBannerDismissed = false;
 
+  /// The one-time "your PC is connected" banner. The router raises the notice
+  /// once per session, when the PC comes online while Qwen 0.5B is selected;
+  /// this state is just whether the banner is on screen right now.
+  bool _hiveBanner = false;
+
+  /// The router's notices while this screen is alive. The chat is where a route
+  /// change is said out loud — a pill when the PC drops, a banner when it
+  /// arrives with more compute than the phone.
+  StreamSubscription<HiveNotice>? _hiveNotices;
+
+  /// The slow check behind the chip.
+  ///
+  /// A PC that wakes up while the user is sitting on the welcome screen should
+  /// light the chip and raise its banner without waiting for a question. Fifteen
+  /// seconds is slow enough to be one `GET /api/tags` on the LAN, fast enough
+  /// that the upgrade arrives while the user is still looking at the phone.
+  Timer? _hiveWatch;
+
   /// The paired PC that could run a bigger model right now, or null.
   ///
   /// "Right now" is the honest part: a paired row that is offline is a record,
@@ -446,12 +464,60 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   };
 
   Future<void> _readBrain() async {
-    final AiStatus status = await AiStatus.detect();
+    final LocalAiService brain = LocalAiService.current;
+    // The router is the one place that knows whether the PC is answering. Ask
+    // it first: when a paired PC is online, the route is PC even though a model
+    // file is on the phone, and a device-first probe would report the wrong
+    // source on the chip and in the line above the composer.
+    final bool onPc = brain is HiveRouter && await brain.refresh();
+    final AiStatus status = onPc
+        ? const AiStatus(AiSource.pc)
+        : await AiStatus.detect();
     // The same probe answers the gate: which brain is behind the next answer is
     // exactly which features may be offered. Recorded before the frame so the
     // `+` sheet opened in the same second already reads the truth.
     ModelCapabilities.observe(status);
     if (mounted) setState(() => _brain = status);
+  }
+
+  /// The route changed outside a question — the slow probe found the PC or
+  /// watched it leave. The chip already follows the notifier; this re-reads the
+  /// source so the line above the composer cannot keep saying the old machine.
+  void _onHiveCompute() {
+    if (!mounted) return;
+    unawaited(_readBrain());
+  }
+
+  /// A route change from the router: a pill in the conversation when the PC
+  /// drops, the one-time upgrade banner when it arrives on a small model.
+  void _onHiveNotice(HiveNotice notice) {
+    if (!mounted) return;
+    switch (notice) {
+      case HiveNotice.pcConnectedWeakModel:
+        setState(() => _hiveBanner = true);
+      case HiveNotice.pcDisconnected:
+        _showHivePill(kNexusPcDisconnectedPill);
+    }
+  }
+
+  /// Puts the router's sentence in the conversation.
+  ///
+  /// The thread while the chat is up, a live turn while the room is live: the
+  /// notice is about the answer in flight, and the page the user is looking at
+  /// is the one that should say it.
+  void _showHivePill(String text) {
+    if (_liveOpen) {
+      setState(() {
+        _addLiveTurn(NexusMockMessage(text, system: true));
+      });
+      _syncLive();
+      return;
+    }
+    setState(() {
+      _thread.add(NexusMockMessage(text, system: true));
+    });
+    _persistThread();
+    _scrollToLatest();
   }
 
   @override
@@ -485,6 +551,14 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _receivedFiles = FileTransferService.instance.incoming.listen(
       _onFileReceived,
     );
+    _hiveNotices = HiveRouter.notices.listen(_onHiveNotice);
+    HiveRouter.compute.addListener(_onHiveCompute);
+    final LocalAiService brain = LocalAiService.current;
+    if (brain is HiveRouter) {
+      _hiveWatch = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (mounted) unawaited(brain.refresh());
+      });
+    }
     // The microphone is only ever open while this app is on screen, and this is
     // what makes that true rather than hoped for: Android and Apple both treat a
     // recognizer running behind a backgrounded app as a violation, and this app
@@ -502,6 +576,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // Coming back to the app is the moment a PC that was asleep, or a phone
+      // that was on another Wi-Fi, has changed. Re-reading the route here is
+      // what lets the chip and the one-time banner be true without a poll.
+      unawaited(_readBrain());
       if (!_liveOpen) return;
       // Back from an action's own app (the clock, the music player): the page
       // that was live is still the page, and the conversation continues.
@@ -640,6 +718,11 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     ChatLog.instance.removeListener(_onChatLog);
     unawaited(_receivedFiles?.cancel());
     _receivedFiles = null;
+    unawaited(_hiveNotices?.cancel());
+    _hiveNotices = null;
+    HiveRouter.compute.removeListener(_onHiveCompute);
+    _hiveWatch?.cancel();
+    _hiveWatch = null;
     _message
       ..removeListener(_onChanged)
       ..dispose();
@@ -3325,6 +3408,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                     ? null
                     : () => _homeScaffold.currentState?.openDrawer(),
               ),
+              if (_hiveBanner)
+                _PcConnectedBanner(
+                  onDismiss: () => setState(() => _hiveBanner = false),
+                ),
               if (!_pcBannerDismissed && _pcPeer != null)
                 _PcUpgradeBanner(
                   peer: _pcPeer!,
@@ -3744,6 +3831,70 @@ class _UpdateBanner extends StatelessWidget {
   }
 }
 
+/// The one-time notice that the hive just got bigger.
+///
+/// Shown by [HiveRouter] when a paired PC comes online while Qwen 0.5B is the
+/// selected model. One line, one X, and never again this session — the router
+/// owns the "once" so a rebuilt screen cannot replay it.
+class _PcConnectedBanner extends StatelessWidget {
+  const _PcConnectedBanner({required this.onDismiss});
+
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 0),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: NexusLayout.content),
+          child: Material(
+            key: const ValueKey<String>('hive-pc-banner'),
+            color: c.accent.withValues(alpha: 0.10),
+            shape: RoundedRectangleBorder(
+              borderRadius: const BorderRadius.all(NexusLayout.tile),
+              side: BorderSide(color: c.accent.withValues(alpha: 0.3)),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 2, 8),
+              child: Row(
+                children: <Widget>[
+                  Icon(
+                    Icons.computer_rounded,
+                    size: NexusLayout.icon,
+                    color: c.accent,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      kNexusPcConnectedBanner,
+                      style: NexusType.rowTitle(c)
+                          .copyWith(fontSize: 13, height: 1.35),
+                    ),
+                  ),
+                  IconButton(
+                    key: const ValueKey<String>('hive-pc-banner-dismiss'),
+                    tooltip: 'Dismiss',
+                    onPressed: onDismiss,
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                      Icons.close_rounded,
+                      size: NexusLayout.icon,
+                      color: c.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The one piece of advice the mesh earns: the PC in the room is big enough to
 /// run a better model than the phone.
 ///
@@ -3905,44 +4056,76 @@ class _HomeHeader extends StatelessWidget {
           else
             const SizedBox(width: 8),
           Text('Nexus', style: NexusType.wordmark(c)),
-          // The chip is right-aligned and shrinks before anything else does:
-          // at 366 points of usable width — a 390-point phone — the wordmark,
-          // the chip and the speaker together were 18 points too wide. The
-          // promise still gets its line; the speaker and the menu never move.
-          Expanded(
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 5,
-                ),
-                decoration: BoxDecoration(
-                  color: c.raised,
-                  borderRadius: const BorderRadius.all(Radius.circular(20)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Icon(Icons.lock_outline, size: 13, color: c.textMuted),
-                    const SizedBox(width: 5),
-                    Flexible(
-                      child: Text(
-                        'On this device',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: NexusType.rowMeta(c),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 8),
+          // The chip sits against the wordmark because it is what Nexus *is*
+          // right now, not a control on the other side of the header. It keeps
+          // its own intrinsic width and the speaker stays pinned right.
+          const _HiveChip(),
+          const Spacer(),
           const _SpeakRepliesButton(),
         ],
       ),
+    );
+  }
+}
+
+/// Which machine is answering, as a tiny chip beside the wordmark.
+///
+/// The phone glyph is the default and the quiet one: it is what the app does on
+/// its own, and it should not compete with the conversation. The PC glyph is the
+/// accent colour because it is the upgrade — the answer just got bigger without
+/// the user changing a setting — and the router's [HiveRouter.compute] is the
+/// one source for both the chip and the route itself.
+class _HiveChip extends StatelessWidget {
+  const _HiveChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return ValueListenableBuilder<HiveCompute>(
+      valueListenable: HiveRouter.compute,
+      builder: (BuildContext context, HiveCompute compute, Widget? _) {
+        final bool pc = compute == HiveCompute.pc;
+        final Color ink = pc ? c.accent : c.textMuted;
+        return Tooltip(
+          message: pc
+              ? 'Answers come from your PC'
+              : 'Answers come from this device',
+          child: Container(
+            key: const ValueKey<String>('hive-chip'),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: pc ? c.accent.withValues(alpha: 0.12) : c.raised,
+              borderRadius: const BorderRadius.all(Radius.circular(20)),
+              border: pc
+                  ? Border.all(color: c.accent.withValues(alpha: 0.3))
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(
+                  pc ? Icons.computer_rounded : Icons.smartphone_rounded,
+                  size: 13,
+                  color: ink,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  pc ? 'PC Compute' : 'On-Device',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: NexusType.rowMeta(c).copyWith(
+                    fontSize: 11.5,
+                    height: 1.1,
+                    color: ink,
+                    fontWeight: pc ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

@@ -42,6 +42,34 @@ void main() {
       expect(parsed!.deviceName, invite.deviceName);
       expect(parsed.deviceId, invite.deviceId);
       expect(parsed.publicKey, invite.publicKey);
+
+      // The desktop code is the same object under the names a PC can document:
+      // `name` and `address`, with `port` as a number, and the Ollama
+      // capability the phone stores for the hive route.
+      const PairInvite desktop = PairInvite(
+        deviceName: 'Studio PC',
+        deviceId: 'pc-0123456789abcdef',
+        publicKey: 'pc-public-key',
+        addresses: <String>['192.168.1.100'],
+        port: 51820,
+        code: 'pc-transfer-token',
+        platform: 'linux',
+        ollama: true,
+      );
+      final Map<String, dynamic> pcJson =
+          jsonDecode(desktop.encodeForDesktop()) as Map<String, dynamic>;
+      expect(pcJson['name'], 'Studio PC');
+      expect(pcJson['address'], '192.168.1.100');
+      expect(pcJson['port'], 51820);
+      expect(pcJson['code'], 'pc-transfer-token');
+      expect(pcJson['ollama'], isTrue);
+      final PairInvite? pc = PairInvite.parse(desktop.encodeForDesktop());
+      expect(pc?.deviceName, 'Studio PC');
+      expect(pc?.addresses.single, '192.168.1.100');
+      expect(pc?.port, 51820);
+      expect(pc?.code, 'pc-transfer-token');
+      expect(pc?.platform, 'linux');
+      expect(pc?.ollama, isTrue);
     });
 
     test('tolerates the whitespace a paste arrives with', () {
@@ -63,10 +91,7 @@ void main() {
         PairInvite.parse('{"type":"vcard","device_name":"x","device_id":"y"}'),
         isNull,
       );
-      expect(
-        PairInvite.parse('{"name":"My phone","id":"abc"}'),
-        isNull,
-      );
+      expect(PairInvite.parse('{"name":"My phone","id":"abc"}'), isNull);
       // The type has to be the exact string: a near-miss is another app's code,
       // and pairing with it would be pairing with a stranger.
       expect(

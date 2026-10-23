@@ -36,20 +36,19 @@ void main() {
     );
   });
 
-  test('the shell gets this device first, then a PC', () {
-    // The default is a chain, not a client: the on-device model is asked first
-    // and the PC's Ollama covers the case where there is no model file. The
-    // order is the privacy promise — a PC must never be asked while the phone
-    // itself can answer — so it is pinned here.
+  test('the shell routes through the hive, with this device and a PC behind it', () {
+    // The default is the router, not a client: a paired PC that answers Ollama
+    // is asked first, and the phone's own model covers the case where it does
+    // not. Both brains are wired here, once, and the router chooses per answer.
     final LocalAiService current = LocalAiService.current;
-    expect(current, isA<FallbackAiService>());
-    final FallbackAiService chain = current as FallbackAiService;
-    expect(chain.onDevice, isA<OnDeviceAiService>());
-    expect(chain.pc, isA<OllamaService>());
+    expect(current, isA<HiveRouter>());
+    final HiveRouter router = current as HiveRouter;
+    expect(router.onDevice, isA<OnDeviceAiService>());
+    expect(router.pc, isA<OllamaService>());
 
-    // One chain for the life of the app: rebuilding it per message would throw
+    // One router for the life of the app: rebuilding it per message would throw
     // away a loaded 470 MB model every time somebody spoke.
-    expect(LocalAiService.current, same(chain));
+    expect(LocalAiService.current, same(router));
   });
 
   test('a custom instruction joins memory in the system turn', () {

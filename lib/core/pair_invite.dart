@@ -105,6 +105,7 @@ class PairInvite {
     this.code = '',
     this.ramBytes,
     this.platform = '',
+    this.ollama = false,
   });
 
   /// What the other user sees on their screen — "Paired with My phone".
@@ -152,6 +153,15 @@ class PairInvite {
   /// never learned.
   final String platform;
 
+  /// Whether the PC said Ollama was answering when it showed this code.
+  ///
+  /// The phone can route a heavy answer to a desktop it already paired with by
+  /// probing `/api/tags` on every answer anyway; this field is the pairing-time
+  /// fact that lets the route be chosen without guessing, and it is what makes
+  /// a PC that never had Ollama skip the probe until it says otherwise. Older
+  /// codes carry no field, and false is the honest default.
+  final bool ollama;
+
   /// The first address, or null. What a row shows when it shows one address.
   String? get address => addresses.isEmpty ? null : addresses.first;
 
@@ -174,6 +184,26 @@ class PairInvite {
     if (code.isNotEmpty) 'code': code,
     if (ramBytes != null && ramBytes! > 0) 'ram_bytes': '$ramBytes',
     if (platform.isNotEmpty) 'platform': platform,
+    if (ollama) 'ollama': true,
+  });
+
+  /// The PC's code: the same identity, plus the two fields a phone needs to
+  /// route to it without a build flag — `name` and `address` under the names
+  /// the desktop pair page documents, and `port` as a number rather than the
+  /// string the older payloads carry. The older names stay in the object too,
+  /// so a phone running an older build still parses it.
+  String encodeForDesktop() => jsonEncode(<String, Object>{
+    'type': kNexusPairType,
+    'name': deviceName,
+    'address': address ?? '',
+    'port': port,
+    'code': code,
+    'device_name': deviceName,
+    'device_id': deviceId,
+    'public_key': publicKey,
+    if (addresses.length > 1) 'ips': addresses.join(','),
+    if (platform.isNotEmpty) 'platform': platform,
+    if (ollama) 'ollama': true,
   });
 
   /// Reads a scanned string, or null when it is not a Nexus pairing code.
@@ -198,15 +228,16 @@ class PairInvite {
     final type = decoded['type'];
     if (type is! String || type != kNexusPairType) return null;
 
-    final String? name = _field(decoded, 'device_name');
+    final String? name =
+        _field(decoded, 'device_name') ?? _field(decoded, 'name');
     final String? id = _field(decoded, 'device_id');
     final String? key = _field(decoded, 'public_key');
     if (name == null || id == null || key == null) return null;
     final List<String> addresses = _addressesOf(decoded);
-    final String? port = _field(decoded, 'port');
+    final int port = _intOf(decoded, 'port');
     final String? code = _field(decoded, 'code');
     final String? platform = _field(decoded, 'platform');
-    final int? ramBytes = int.tryParse(_field(decoded, 'ram_bytes') ?? '');
+    final int ramBytes = _intOf(decoded, 'ram_bytes');
     // A device id too short to be an id is a payload somebody typed by hand or
     // a field that lost half its value in a paste. The real id is 32
     // characters (see `generateDeviceId`), and refusing a 3-character one here
@@ -217,10 +248,11 @@ class PairInvite {
       deviceId: id,
       publicKey: key,
       addresses: addresses,
-      port: port == null ? 0 : int.tryParse(port) ?? 0,
+      port: port,
       code: code ?? '',
-      ramBytes: ramBytes != null && ramBytes > 0 ? ramBytes : null,
+      ramBytes: ramBytes > 0 ? ramBytes : null,
       platform: platform ?? '',
+      ollama: decoded['ollama'] == true,
     );
   }
 
@@ -277,6 +309,16 @@ class PairInvite {
   @override
   String toString() =>
       'PairInvite($deviceName, $deviceId, ${addresses.isEmpty ? 'no address' : addresses.first})';
+
+  /// One integer field, accepting the string older payloads wrote and the
+  /// number the desktop code writes. Missing or malformed is 0.
+  static int _intOf(Map<dynamic, dynamic> json, String key) {
+    final Object? value = json[key];
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value.trim()) ?? 0;
+    return 0;
+  }
 
   /// One required string field, trimmed, or null when it is missing, empty, or
   /// the wrong kind.
