@@ -44,17 +44,22 @@ const String kNexusPairType = 'nexus_pair';
 /// translation — so the QR says "My phone" on Android rather than inventing a
 /// model name nobody can check. When a device-name channel lands, this is the
 /// one line that changes: [PairIdentity] is the seam.
-String defaultPairDeviceName() {
+String defaultPairDeviceName() => defaultDeviceName(defaultPairPlatformToken());
+
+/// This device's platform as the pairing code spells it.
+///
+/// The same tokens the mesh uses (`android`, `linux`, `macos`), so a device
+/// that pairs through either path is described the same way. The name above and
+/// the paired card's "is this a PC?" both read this one mapping.
+String defaultPairPlatformToken() {
   final TargetPlatform platform = defaultTargetPlatform;
   // `TargetPlatform.name` spells two of these differently from the tokens
-  // `defaultDeviceName` matches on, and a name that falls through the switch is
-  // a device that calls itself "My device" for no reason a reader can see.
-  final String token = switch (platform) {
+  // `defaultDeviceName` matches on.
+  return switch (platform) {
     TargetPlatform.iOS => 'ios',
     TargetPlatform.macOS => 'macos',
     _ => platform.name,
   };
-  return defaultDeviceName(token);
 }
 
 /// A stand-in for the mesh public key on a build with no mesh attached.
@@ -99,6 +104,7 @@ class PairInvite {
     this.port = 0,
     this.code = '',
     this.ramBytes,
+    this.platform = '',
   });
 
   /// What the other user sees on their screen — "Paired with My phone".
@@ -138,6 +144,14 @@ class PairInvite {
   /// add up the mesh's RAM from the list it already has.
   final int? ramBytes;
 
+  /// The platform token the other device named — `linux`, `android`, `macos`.
+  ///
+  /// It is what lets the paired card offer a trackpad only when the peer is a
+  /// desktop, rather than guessing from a name that could be anything. Older
+  /// codes do not carry it, and an empty value is truthful: the platform was
+  /// never learned.
+  final String platform;
+
   /// The first address, or null. What a row shows when it shows one address.
   String? get address => addresses.isEmpty ? null : addresses.first;
 
@@ -159,6 +173,7 @@ class PairInvite {
     if (port > 0) 'port': '$port',
     if (code.isNotEmpty) 'code': code,
     if (ramBytes != null && ramBytes! > 0) 'ram_bytes': '$ramBytes',
+    if (platform.isNotEmpty) 'platform': platform,
   });
 
   /// Reads a scanned string, or null when it is not a Nexus pairing code.
@@ -190,6 +205,7 @@ class PairInvite {
     final List<String> addresses = _addressesOf(decoded);
     final String? port = _field(decoded, 'port');
     final String? code = _field(decoded, 'code');
+    final String? platform = _field(decoded, 'platform');
     final int? ramBytes = int.tryParse(_field(decoded, 'ram_bytes') ?? '');
     // A device id too short to be an id is a payload somebody typed by hand or
     // a field that lost half its value in a paste. The real id is 32
@@ -204,6 +220,7 @@ class PairInvite {
       port: port == null ? 0 : int.tryParse(port) ?? 0,
       code: code ?? '',
       ramBytes: ramBytes != null && ramBytes > 0 ? ramBytes : null,
+      platform: platform ?? '',
     );
   }
 
@@ -269,7 +286,6 @@ class PairInvite {
     final String trimmed = value.trim();
     return trimmed.isEmpty ? null : trimmed;
   }
-
 }
 
 /// Who this device is on the mesh, as the pairing QR says it.
@@ -287,6 +303,8 @@ class PairIdentity {
     this.addresses = const <String>[],
     this.port = 0,
     this.ramBytes,
+    this.token = '',
+    this.platform = '',
   });
 
   /// Test seam, in the same shape as [SpeechInput.override]: a test states who
@@ -301,12 +319,12 @@ class PairIdentity {
   /// Memoised, so the QR a user shows twice in one session is the same code —
   /// an id that changed between the sheet and the page would make the other
   /// device's scan fail for a reason nobody could see.
-  static PairIdentity _default() =>
-      _memo ??= PairIdentity(
-        name: defaultPairDeviceName(),
-        id: generateDeviceId(),
-        publicKey: placeholderPublicKey(),
-      );
+  static PairIdentity _default() => _memo ??= PairIdentity(
+    name: defaultPairDeviceName(),
+    id: generateDeviceId(),
+    publicKey: placeholderPublicKey(),
+    platform: defaultPairPlatformToken(),
+  );
 
   /// Forgets the memoised identity. Tests use it; the app never does.
   @visibleForTesting
@@ -330,13 +348,36 @@ class PairIdentity {
   /// not, which is why it is a field rather than a getter that lies.
   final int? ramBytes;
 
+  /// The file-transfer secret this device shows in its QR ([PairToken]). Empty
+  /// until a caller loads it with [withToken]: the identity is built before the
+  /// first frame, and the token is a preference read.
+  final String token;
+
+  /// The platform token this device names in its QR. Empty for an identity a
+  /// test stated without one.
+  final String platform;
+
   PairInvite get invite => PairInvite(
     deviceName: name,
     deviceId: id,
     publicKey: publicKey,
     addresses: addresses,
     port: port,
+    code: token,
     ramBytes: ramBytes,
+    platform: platform,
+  );
+
+  /// The same identity, with the token that authenticates its transfers.
+  PairIdentity withToken(String token) => PairIdentity(
+    name: name,
+    id: id,
+    publicKey: publicKey,
+    addresses: addresses,
+    port: port,
+    ramBytes: ramBytes,
+    token: token,
+    platform: platform,
   );
 
   /// The same identity, with the addresses the device actually has.
@@ -348,6 +389,8 @@ class PairIdentity {
         addresses: addresses,
         port: port ?? this.port,
         ramBytes: ramBytes,
+        token: token,
+        platform: platform,
       );
 
   /// The same identity, with the hardware facts the code can carry.
@@ -358,6 +401,8 @@ class PairIdentity {
     addresses: addresses,
     port: port,
     ramBytes: ramBytes ?? this.ramBytes,
+    token: token,
+    platform: platform,
   );
 }
 

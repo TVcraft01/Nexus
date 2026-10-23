@@ -34,6 +34,7 @@ class PairedDevice {
     this.port = 0,
     this.code = '',
     this.ramBytes,
+    this.platform = '',
   });
 
   /// The mesh id from the pairing code — the key the list is unique on, so the
@@ -86,6 +87,12 @@ class PairedDevice {
   /// and what decides whether the PC is strong enough for the 3B model.
   final int? ramBytes;
 
+  /// The platform token the device named in its pairing code — `linux`,
+  /// `android`, `macos`. Empty for an older code or a nearby row that only
+  /// carried a discovery announcement; the card then says "Device" rather than
+  /// inventing a machine.
+  final String platform;
+
   PairedDevice copyWith({
     String? name,
     bool? online,
@@ -95,6 +102,7 @@ class PairedDevice {
     int? port,
     String? code,
     int? ramBytes,
+    String? platform,
   }) => PairedDevice(
     id: id,
     name: name ?? this.name,
@@ -106,6 +114,7 @@ class PairedDevice {
     port: port ?? this.port,
     code: code ?? this.code,
     ramBytes: ramBytes ?? this.ramBytes,
+    platform: platform ?? this.platform,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -119,6 +128,7 @@ class PairedDevice {
     if (port > 0) 'port': port,
     if (code.isNotEmpty) 'code': code,
     if (ramBytes != null) 'ram_bytes': ramBytes,
+    if (platform.isNotEmpty) 'platform': platform,
   };
 
   /// Reads one address list back, dropping anything that is not a string.
@@ -155,6 +165,7 @@ class PairedDevice {
       ramBytes: raw['ram_bytes'] is int && (raw['ram_bytes'] as int) > 0
           ? raw['ram_bytes'] as int
           : null,
+      platform: raw['platform'] is String ? raw['platform'] as String : '',
     );
   }
 
@@ -171,6 +182,7 @@ class PairedDevice {
     port: invite.port,
     code: invite.code,
     ramBytes: invite.ramBytes,
+    platform: invite.platform,
   );
 
   @override
@@ -380,6 +392,7 @@ const List<PairedDevice> kSeedPairedDevices = <PairedDevice>[
     detail: 'This device · Android',
     online: true,
     isThisDevice: true,
+    platform: 'android',
   ),
   // The example PC carries a RAM figure because the shell's whole device list
   // is an example: a paired Windows desktop is the case the mesh's RAM total
@@ -393,11 +406,13 @@ const List<PairedDevice> kSeedPairedDevices = <PairedDevice>[
     detail: 'Desktop · this room · 16 GB',
     online: true,
     ramBytes: 16 * 1024 * 1024 * 1024,
+    platform: 'linux',
   ),
   PairedDevice(
     id: 'example-mac',
     name: 'Studio Mac',
     publicKey: '',
     detail: 'Laptop · last seen Oct 9',
+    platform: 'macos',
   ),
 ];

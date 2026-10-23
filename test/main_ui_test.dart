@@ -21,6 +21,7 @@ import 'package:nexus/core/composer_settings.dart';
 import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/device_capabilities.dart';
 import 'package:nexus/core/fast_path.dart' show kNoWeatherText;
+import 'package:nexus/core/file_link.dart';
 import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
 import 'package:nexus/core/local_library.dart';
@@ -39,6 +40,7 @@ import 'package:nexus/core/system_actions.dart';
 import 'package:nexus/core/system_prompt.dart';
 import 'package:nexus/core/version.dart';
 import 'package:nexus/core/vision_ai.dart';
+import 'package:nexus/core/vision_ai_service.dart';
 import 'package:nexus/core/voice_settings.dart';
 import 'package:nexus/main_ui.dart';
 import 'package:nexus/ui/artifact_page.dart';
@@ -447,6 +449,54 @@ class _LateAnswerSpeechInput extends SpeechInput {
 /// a temp directory, and an empty Downloads. The tab is allowed to read a disk;
 /// the suite is not allowed to read the *developer's* disk, which is what made
 /// opening Files a ten-minute `pumpAndSettle` before this existed.
+/// A transport that holds the send open, so a test can look at the progress
+/// banner while bytes are still moving.
+class _HoldingTransport implements FileTransport {
+  final Completer<FileSendResult> done = Completer<FileSendResult>();
+  PairedDevice? target;
+  String? path;
+
+  @override
+  Future<FileSendResult> send({
+    required String path,
+    required PairedDevice device,
+    void Function(double progress)? onProgress,
+  }) {
+    this.path = path;
+    target = device;
+    onProgress?.call(0.5);
+    return done.future;
+  }
+}
+
+/// Three files of three kinds, for the sorter to group.
+class _SortLibrary implements LocalLibrary {
+  @override
+  Future<List<LocalFolder>> read() async => <LocalFolder>[
+    LocalFolder(
+      label: 'Documents',
+      path: '/sortable',
+      entries: <LocalFileEntry>[
+        LocalFileEntry(
+          name: 'photo.png',
+          path: '/sortable/photo.png',
+          bytes: 10,
+        ),
+        LocalFileEntry(
+          name: 'notes.txt',
+          path: '/sortable/notes.txt',
+          bytes: 20,
+        ),
+        LocalFileEntry(
+          name: 'main.dart',
+          path: '/sortable/main.dart',
+          bytes: 30,
+        ),
+      ],
+    ),
+  ];
+}
+
 class _TempLibrary implements LocalLibrary {
   _TempLibrary(this.root, this.notes);
 
@@ -961,8 +1011,9 @@ void main() {
   /// the user sees and what the delete button does to the file.
   Future<void> pumpBrainSettings(
     WidgetTester tester,
-    OnDeviceAiService onDevice,
-  ) async {
+    OnDeviceAiService onDevice, {
+    VlmVisionService? vision,
+  }) async {
     tester.view.physicalSize = const Size(1170, 2532);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
@@ -974,6 +1025,7 @@ void main() {
             darkMode: false,
             onDarkModeChanged: (_) {},
             onDevice: onDevice,
+            vision: vision,
           ),
         ),
       ),
@@ -1137,6 +1189,80 @@ void main() {
       );
     },
   );
+
+  testWidgets('the Vision row downloads SmolVLM, then frees it again', (
+    tester,
+  ) async {
+    final Directory dir = Directory.systemTemp.createTempSync('nexus_vision');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final OnDeviceAiService onDevice = OnDeviceAiService(
+      model: OnDeviceModel(directory: () async => dir),
+    );
+    int fetched = 0;
+    final VlmVisionService vision = VlmVisionService.test(
+      filesFor: (VisionModelPair pair) => VisionModelFiles(
+        pair,
+        directory: () async => dir,
+        fetch: (LlmModel model, {void Function(double)? onProgress}) async {
+          fetched++;
+          onProgress?.call(0.5);
+          File('${dir.path}/${model.name}.gguf')
+              .writeAsBytesSync(<int>[1, 2, 3]);
+          return true;
+        },
+      ),
+    );
+
+    await pumpBrainSettings(tester, onDevice, vision: vision);
+    await tester.scrollUntilVisible(
+      find.text(kVisionSmallLabel),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    // Nothing downloaded: the row itself is the download, and it says so.
+    expect(find.text(kVisionSmallLabel), findsOneWidget);
+    expect(find.text(kVisionLargeLabel), findsOneWidget);
+    expect(find.text('Delete SmolVLM 500M'), findsNothing);
+
+    await tester.tap(find.text(kVisionSmallLabel));
+    await tester.pumpAndSettle();
+
+    // Both halves, in order: the weights then the projector.
+    expect(fetched, 2);
+    expect(
+      File('${dir.path}/${kVisionSmall.weightsFileName}').existsSync(),
+      isTrue,
+    );
+    expect(
+      File('${dir.path}/${kVisionSmall.projectorFileName}').existsSync(),
+      isTrue,
+    );
+    expect(find.text('Delete SmolVLM 500M'), findsOneWidget);
+    expect(
+      find.text('Delete Moondream2 1.8B'),
+      findsNothing,
+      reason: 'only the downloaded model has something to delete',
+    );
+
+    await tester.tap(find.text('Delete SmolVLM 500M'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(kNexusConfirmAction));
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      File('${dir.path}/${kVisionSmall.weightsFileName}').existsSync(),
+      isFalse,
+    );
+    expect(
+      File('${dir.path}/${kVisionSmall.projectorFileName}').existsSync(),
+      isFalse,
+    );
+    expect(find.text('Delete SmolVLM 500M'), findsNothing);
+  });
 
   testWidgets('the download fetches the selected model under its own name', (
     tester,
@@ -1315,7 +1441,10 @@ void main() {
 
     // The reply, which is usually the half worth keeping, keeps its copy
     // control: the fine case is a selection, and the whole sentence is still
-    // one tap for the case that is not fine.
+    // one tap for the case that is not fine. The row is hidden until the
+    // message is held, so the hold comes first.
+    await tester.longPress(find.text(ollama.reply));
+    await tester.pumpAndSettle();
     final Finder replyCopy = find.descendant(
       of: find.ancestor(
         of: find.text(ollama.reply),
@@ -1346,36 +1475,75 @@ void main() {
     // speaker under it is there for whoever wants it.
     expect(speech.said, isEmpty);
 
-    // The bubble's own controls are the manual half, and they are on the answer
-    // that was just generated.
     final Finder reply = find.ancestor(
       of: find.text(ollama.reply),
       matching: find.byType(NexusChatBubble),
     );
-    for (final Finder bubble in <Finder>[reply]) {
-      expect(bubble, findsOneWidget);
-      expect(
-        find.descendant(
-          of: bubble,
-          matching: find.byTooltip(kNexusCopyTooltip),
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(
-          of: bubble,
-          matching: find.byTooltip(kNexusSpeakTooltip),
-        ),
-        findsOneWidget,
-      );
-    }
-
-    // The user's own words get neither: they are already theirs to copy, and the
-    // thread is not a player for their own voice.
     final Finder mine = find.ancestor(
       of: find.text('what is a mesh?'),
       matching: find.byType(NexusChatBubble),
     );
+    expect(reply, findsOneWidget);
+    expect(mine, findsOneWidget);
+
+    // The two sides are not the same shape. Nexus has a mark and no fill; the
+    // user has a fill and no mark. Both facts are geometry the eye reads before
+    // it reads the words, so they are asserted rather than assumed.
+    final NexusUiColors colors = tester.element(reply).ui;
+    expect(
+      find.descendant(of: reply, matching: find.byKey(kNexusAssistantMark)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: mine, matching: find.byKey(kNexusAssistantMark)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: reply,
+        matching: find.byWidgetPredicate(
+          (Widget widget) =>
+              widget is Container &&
+              widget.decoration is BoxDecoration &&
+              (widget.decoration! as BoxDecoration).color ==
+                  colors.bubbleTheirs,
+        ),
+      ),
+      findsNothing,
+      reason: 'an assistant reply sits on the page, not in a bubble',
+    );
+    expect(
+      find.descendant(
+        of: mine,
+        matching: find.byWidgetPredicate(
+          (Widget widget) =>
+              widget is Container &&
+              widget.decoration is BoxDecoration &&
+              (widget.decoration! as BoxDecoration).color == colors.bubbleMine,
+        ),
+      ),
+      findsOneWidget,
+    );
+
+    // The controls are hidden until the answer is held: a clean page is the
+    // point of the gesture.
+    expect(
+      find.descendant(of: reply, matching: find.byTooltip(kNexusCopyTooltip)),
+      findsNothing,
+    );
+    await tester.longPress(find.text(ollama.reply));
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(of: reply, matching: find.byTooltip(kNexusCopyTooltip)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: reply, matching: find.byTooltip(kNexusSpeakTooltip)),
+      findsOneWidget,
+    );
+
+    // The user's own words get neither: they are already theirs to copy, and the
+    // thread is not a player for their own voice.
     expect(
       find.descendant(of: mine, matching: find.byTooltip(kNexusSpeakTooltip)),
       findsNothing,
@@ -1458,7 +1626,9 @@ void main() {
 
     // Each piece is appended to what is already there rather than replacing it.
     brain.write('two, ');
-    await tester.pump();
+    // Streaming rebuilds are throttled to one paint per 50ms; advancing past
+    // the window is what lets the queued text onto the screen.
+    await tester.pump(const Duration(milliseconds: 60));
     expect(find.text('One, two, '), findsOneWidget);
 
     // A half-written answer is a placeholder, not a reply: the copy and speaker
@@ -1479,6 +1649,9 @@ void main() {
     brain.end();
     await tester.pumpAndSettle();
     expect(find.text('One, two, three.'), findsOneWidget);
+    // The controls are one hold away rather than always under the sentence.
+    await tester.longPress(find.text('One, two, three.'));
+    await tester.pumpAndSettle();
     expect(
       find.descendant(
         of: find.ancestor(
@@ -1634,6 +1807,135 @@ void main() {
     expect(find.byType(TextFilePage), findsNothing);
   });
 
+  testWidgets('a file row menu is the door to every action', (tester) async {
+    await pumpShell(tester);
+    await openTab(tester, 'Files', 1);
+
+    await tester.tap(find.byKey(ValueKey<String>('file-menu-${notes.path}')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open'), findsOneWidget);
+    expect(find.text('Send to...'), findsOneWidget);
+    expect(find.text('Share'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
+  });
+
+  testWidgets('Send to... is offered only while a peer is online', (
+    tester,
+  ) async {
+    // A phone that has paired nobody: there is no device a file could go to,
+    // so the row must not offer the destination picker at all.
+    final PairedDevices alone = PairedDevices(
+      store: MemoryPairedDevicesStore(),
+      seed: const <PairedDevice>[
+        PairedDevice(
+          id: 'this-device',
+          name: 'This Phone',
+          publicKey: '',
+          online: true,
+          isThisDevice: true,
+        ),
+      ],
+    );
+    PairedDevices.override = () => alone;
+    addTearDown(() {
+      PairedDevices.override = null;
+      PairedDevices.debugReset();
+    });
+
+    await pumpShell(tester);
+    await openTab(tester, 'Files', 1);
+    await tester.tap(find.byKey(ValueKey<String>('file-menu-${notes.path}')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open'), findsOneWidget);
+    expect(find.text('Send to...'), findsNothing);
+  });
+
+  testWidgets('Send to... picks a device and shows real bytes moving', (
+    tester,
+  ) async {
+    final _HoldingTransport transport = _HoldingTransport();
+    FileLink.transport = transport;
+    addTearDown(() => FileLink.transport = null);
+
+    await pumpShell(tester);
+    await openTab(tester, 'Files', 1);
+
+    await tester.tap(find.byKey(ValueKey<String>('file-menu-${notes.path}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Send to...'));
+    await tester.pumpAndSettle();
+
+    // The sheet lists the online peer, and tapping it is the whole choice.
+    expect(
+      find.byKey(const ValueKey<String>('send-to-example-pc')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey<String>('send-to-example-pc')));
+    await tester.pumpAndSettle();
+
+    expect(transport.target?.name, 'My PC');
+    expect(transport.path, notes.path);
+    // The bar is the service's own progress, not a spinner: 0.5 has to read as
+    // half, or the screen is guessing rather than reporting.
+    expect(find.text('Sending notes.txt'), findsOneWidget);
+    expect(find.text('50%'), findsOneWidget);
+
+    transport.done.complete(
+      const FileSendResult(ok: true, message: 'Sent to My PC over the mesh.'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Sent to My PC over the mesh.'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('files-send-progress')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('Sort with AI groups the names and keeps every file', (
+    tester,
+  ) async {
+    LocalLibrary.override = _SortLibrary.new;
+    ollama.reply =
+        '{"groups":[{"label":"Pictures","files":["photo.png"]},'
+        '{"label":"Writing","files":["notes.txt"]}]}';
+
+    await pumpShell(tester);
+    await openTab(tester, 'Files', 1);
+    await tester.tap(find.byKey(const ValueKey<String>('files-sort-ai')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pictures'), findsOneWidget);
+    expect(find.text('Writing'), findsOneWidget);
+    // The model did not mention this one; a file manager must not lose it.
+    expect(find.text('Other'), findsOneWidget);
+    expect(find.text('main.dart'), findsOneWidget);
+
+    // The button becomes the way back to the folders' own newest-first order.
+    expect(find.text('Newest first'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey<String>('files-sort-ai')));
+    await tester.pumpAndSettle();
+    expect(find.text('Pictures'), findsNothing);
+    expect(find.text('Other'), findsNothing);
+  });
+
+  testWidgets('a model that will not group falls back to file types', (
+    tester,
+  ) async {
+    LocalLibrary.override = _SortLibrary.new;
+    ollama.reply = 'I am not sure how to sort these.';
+
+    await pumpShell(tester);
+    await openTab(tester, 'Files', 1);
+    await tester.tap(find.byKey(const ValueKey<String>('files-sort-ai')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Code'), findsOneWidget);
+    expect(find.textContaining('sorted by file type'), findsOneWidget);
+  });
+
   testWidgets('each bubble is its own selection, not the whole thread', (
     tester,
   ) async {
@@ -1687,14 +1989,22 @@ void main() {
     await pumpShell(tester);
     await openTab(tester, 'Devices', 2);
 
-    expect(find.text('PAIRED'), findsOneWidget);
+    expect(find.text('CONNECTED DEVICES'), findsOneWidget);
     expect(find.text('Online'), findsNWidgets(2));
     expect(find.text('Offline'), findsOneWidget);
     expect(find.byType(NexusStatusDot), findsNWidgets(3));
-    expect(find.text('Pair a device'), findsOneWidget);
 
+    // Read the dots while the cards are still on screen: the list is lazy, so
+    // scrolling to the pairing action releases the cards at the top.
     final dots = tester.widgetList<NexusStatusDot>(find.byType(NexusStatusDot));
     expect(dots.where((dot) => dot.online).length, 2);
+
+    await tester.scrollUntilVisible(
+      find.text('Pair a device'),
+      140,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Pair a device'), findsOneWidget);
   });
 
   /// The switch on a named Settings row.
@@ -3975,7 +4285,8 @@ void main() {
     expect(liveText(tester), 'Twenty degrees');
 
     brain.write(' and clear.');
-    await tester.pump();
+    // Same 50ms streaming window as the thread.
+    await tester.pump(const Duration(milliseconds: 60));
     expect(liveText(tester), 'Twenty degrees and clear.');
 
     // The end of the stream settles the page into the grey "tap to continue"
@@ -6224,6 +6535,23 @@ void main() {
     expect(find.textContaining('<artifact'), findsNothing);
     expect(find.text('hello.html'), findsOneWidget);
     expect(find.text('html'), findsOneWidget);
+
+    // The card comes after the sentence, not before it: the prose is the
+    // answer and the file is what the answer produced.
+    expect(
+      tester
+          .getTopLeft(find.byKey(const ValueKey<String>('artifact-hello.html')))
+          .dy,
+      greaterThan(
+        tester.getBottomLeft(find.textContaining('Here is the page.')).dy,
+      ),
+    );
+    // Its left edge is the language's colour, which is how an HTML file is
+    // known at a glance.
+    final Container band = tester.widget<Container>(
+      find.byKey(const ValueKey<String>('artifact-edge-hello.html')),
+    );
+    expect(band.color, const Color(0xFFE8743B));
 
     // Tapping the card opens the code full screen, with a way to keep it.
     await tester.tap(find.text('hello.html'));

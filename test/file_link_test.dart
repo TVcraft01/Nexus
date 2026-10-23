@@ -28,6 +28,22 @@ File _source(Directory dir, int bytes) {
   return file;
 }
 
+/// A transport that answers without touching a socket.
+class _Transport implements FileTransport {
+  final List<String> sent = <String>[];
+
+  @override
+  Future<FileSendResult> send({
+    required String path,
+    required PairedDevice device,
+    void Function(double progress)? onProgress,
+  }) async {
+    sent.add(device.id);
+    onProgress?.call(0.5);
+    return const FileSendResult(ok: true, message: 'Sent by the transport.');
+  }
+}
+
 void main() {
   late Directory root;
   late Directory outbox;
@@ -80,6 +96,23 @@ void main() {
     expect(result.ok, isTrue);
     expect(result.message, contains('Study laptop'));
     expect(result.message, contains('has not left this phone'));
+  });
+
+  test('an installed transport is the one that sends', () async {
+    final File source = _source(root, 1024);
+    final _Transport transport = _Transport();
+    FileLink.transport = transport;
+    addTearDown(() => FileLink.transport = null);
+
+    final FileSendResult result = await FileLink().send(
+      path: source.path,
+      device: _laptop,
+    );
+
+    expect(result.message, 'Sent by the transport.');
+    expect(transport.sent, <String>[_laptop.id]);
+    // Nothing was staged: the outbox is untouched when a real link is set.
+    expect(outbox.listSync(), isEmpty);
   });
 
   test('a file that is already gone is a sentence, not an empty send',

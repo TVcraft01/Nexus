@@ -170,6 +170,9 @@ void main() {
       // somebody who cannot see the dot.
       expect(find.text('Online'), findsNWidgets(2));
       expect(find.text('Offline'), findsOneWidget);
+      // The cards are taller than the old rows, so the pairing action sits
+      // below the fold on the test surface — the thumb scrolls to it.
+      await _revealDevices(tester, find.text(kNexusPairTitle));
       expect(find.text(kNexusPairTitle), findsOneWidget);
     });
 
@@ -237,6 +240,7 @@ void main() {
 
       // Nothing heard yet: the screen says what discovery is actually doing
       // rather than showing a cheerful spinner that never ends.
+      await _revealDevices(tester, find.text(nearby.status));
       expect(find.text(nearby.status), findsOneWidget);
 
       await tester.tap(find.byKey(kNexusDiscoverNearby));
@@ -338,6 +342,7 @@ void main() {
 
       // The stored row said "Desktop · this room" when it was written. What is
       // on screen now is what the network is saying now.
+      await _revealDevices(tester, find.text('Seen just now at 192.168.1.44'));
       expect(find.text('Seen just now at 192.168.1.44'), findsOneWidget);
     });
   });
@@ -345,6 +350,7 @@ void main() {
   group('the pairing sheet', () {
     testWidgets('opens with both answers', (tester) async {
       await _pumpDevices(tester, paired: paired);
+      await _revealDevices(tester, find.text(kNexusPairTitle));
 
       await tester.tap(find.text(kNexusPairTitle));
       await tester.pumpAndSettle();
@@ -357,6 +363,7 @@ void main() {
       'Show my QR code opens a code that parses back as this device',
       (tester) async {
         await _pumpDevices(tester, paired: paired);
+        await _revealDevices(tester, find.text(kNexusPairTitle));
 
         await tester.tap(find.text(kNexusPairTitle));
         await tester.pumpAndSettle();
@@ -434,6 +441,7 @@ void main() {
     ) async {
       await _pumpDevices(tester, paired: paired);
       debugPairScannerOverride = (BuildContext context) async => _ocean;
+      await _revealDevices(tester, find.text(kNexusPairTitle));
 
       await tester.tap(find.text(kNexusPairTitle));
       await tester.pumpAndSettle();
@@ -455,6 +463,7 @@ void main() {
       debugPairScannerOverride = (BuildContext context) async => _ocean;
 
       for (int i = 0; i < 2; i++) {
+        await _revealDevices(tester, find.text(kNexusPairTitle));
         await tester.tap(find.text(kNexusPairTitle));
         await tester.pumpAndSettle();
         await tester.tap(find.text(kNexusScanQrLabel));
@@ -472,6 +481,7 @@ void main() {
     testWidgets('backing out of the camera changes nothing', (tester) async {
       await _pumpDevices(tester, paired: paired);
       debugPairScannerOverride = (BuildContext context) async => null;
+      await _revealDevices(tester, find.text(kNexusPairTitle));
 
       await tester.tap(find.text(kNexusPairTitle));
       await tester.pumpAndSettle();

@@ -16,8 +16,10 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.session.MediaSessionManager
 import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
 import android.net.Network
@@ -226,6 +228,21 @@ class MainActivity : FlutterActivity() {
     // it: every interim result is forwarded to Dart as `partial`, so the
     // composer can show the sentence while it is still being spoken.
     private var speechChannel: MethodChannel? = null
+
+    // Audio focus while Nexus is listening. A transient, duck-only claim: the
+    // music keeps playing, quieter, for as long as the microphone is open, and
+    // the system puts it back when the focus is abandoned. Held as the request
+    // object (API 26+) and as a boolean, because `abandonAudioFocusRequest`
+    // wants the same request that was granted, and a refused request must not
+    // be abandoned as though it had been.
+    private var listeningFocusRequest: AudioFocusRequest? = null
+    private var listeningDucked = false
+    private val listeningFocusChange = AudioManager.OnAudioFocusChangeListener { change ->
+        // DUCK and UNDUCK are the system doing what was asked; a LOSS is a
+        // player with a better claim (a call) and is not ours to fight. Logged
+        // so a device run can see the duck actually happened.
+        Log.i(TAG, "audio: focus change while listening ($change)")
+    }
 
     // The language the recognizer and the voice use. The Settings dropdown
     // sets both through the same channel; the device's own locale is the
@@ -2144,6 +2161,84 @@ class MainActivity : FlutterActivity() {
         result.success(dial.plus("ok" to (dial["launched"] == true)))
     }
 
+    /// Asks the system to duck whatever is playing while Nexus listens.
+    ///
+    /// `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` is the claim that means "I need the
+    /// microphone for a moment, and the music may keep going quietly": Android
+    /// lowers the stream itself and restores it when the focus is abandoned, so
+    /// nothing here writes a volume level and nothing can leave the user's
+    /// music permanently quiet. `setWillPauseWhenDucked(false)` is the same
+    /// promise to players that prefer pausing to ducking — a podcast that stops
+    /// when the user says "set a timer" is not what this is for.
+    ///
+    /// Never throws: a phone that refuses the focus (another app holds it, or
+    /// an OEM has no duck policy) is a quieter session, not a failed one.
+    private fun duckForListening() {
+        if (listeningDucked) return
+        try {
+            val am = getSystemService(AudioManager::class.java)
+            val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val request = AudioFocusRequest.Builder(
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK,
+                )
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build(),
+                    )
+                    .setWillPauseWhenDucked(false)
+                    .setOnAudioFocusChangeListener(listeningFocusChange)
+                    .build()
+                listeningFocusRequest = request
+                am.requestAudioFocus(request)
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(
+                    listeningFocusChange,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK,
+                )
+            }
+            listeningDucked = granted == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            // A refused claim was never held: keeping the request object would
+            // make the release path abandon something the system never gave.
+            if (!listeningDucked) listeningFocusRequest = null
+            Log.i(
+                TAG,
+                "audio: duck ${if (listeningDucked) "granted" else "refused"} for listening",
+            )
+        } catch (e: Exception) {
+            listeningDucked = false
+            listeningFocusRequest = null
+            Log.w(TAG, "audio: could not duck for listening", e)
+        }
+    }
+
+    /// Gives the focus back, which is what restores the music's volume.
+    ///
+    /// Idempotent and safe to call from every ending path — a result, an error,
+    /// a cancel, a destroyed activity — because a session that was never
+    /// granted anything has nothing to give back and says nothing.
+    private fun unduckAfterListening() {
+        if (!listeningDucked && listeningFocusRequest == null) return
+        try {
+            val am = getSystemService(AudioManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                listeningFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(listeningFocusChange)
+            }
+            Log.i(TAG, "audio: duck released, music restored")
+        } catch (e: Exception) {
+            // The engine going away is not a reason to fail a listen call.
+            Log.w(TAG, "audio: could not release the duck", e)
+        }
+        listeningFocusRequest = null
+        listeningDucked = false
+    }
+
     /// One utterance, decoded on the phone.
     ///
     /// The on-device recognizer is tried first whenever the ROM reports one:
@@ -2326,6 +2421,9 @@ class MainActivity : FlutterActivity() {
         }
         return try {
             recognizer.startListening(intent)
+            // Only once the microphone is really open: a recognizer that would
+            // not start has no business quietening the user's music.
+            duckForListening()
             true
         } catch (e: Exception) {
             // A recognizer that exists but will not start (busy service, no
@@ -2368,6 +2466,7 @@ class MainActivity : FlutterActivity() {
             runCatching { it.cancel() }
             runCatching { it.destroy() }
         }
+        unduckAfterListening()
         result.success(null)
     }
 
@@ -2380,6 +2479,7 @@ class MainActivity : FlutterActivity() {
             runCatching { it.cancel() }
             runCatching { it.destroy() }
         }
+        unduckAfterListening()
     }
 
     /// Releases the session unless it was already replaced (a stop, or a
@@ -2392,6 +2492,10 @@ class MainActivity : FlutterActivity() {
         }
         activeRecognizer = null
         runCatching { recognizer.destroy() }
+        // The session that owned the microphone is over, so its duck goes with
+        // it. A replaced session (the branch above) leaves the focus alone: the
+        // newer recognizer is listening with it.
+        unduckAfterListening()
         return true
     }
 
@@ -2580,6 +2684,7 @@ class MainActivity : FlutterActivity() {
     /// if music is already playing it just says so, and a paused in-app
     /// preview resumes.
     private fun mediaControl(mode: String): Map<String, Any?> {
+        if (mode == "restart") return restartTrack()
         if (mode == "play") {
             val p = previewPlayer
             if (p != null) {
@@ -2617,6 +2722,60 @@ class MainActivity : FlutterActivity() {
             else -> "Playing."
         }
         return mapOf("ok" to true, "message" to verb)
+    }
+
+    /// "restart this song": back to the top of the track that is playing.
+    ///
+    /// There is no restart keycode, and `KEYCODE_MEDIA_PREVIOUS` only restarts
+    /// in players that decide to — Spotify and YouTube Music jump to the
+    /// previous *track* if the current one has barely started. So the honest
+    /// first attempt is the transport control the player publishes: an active
+    /// `MediaSession`'s `seekTo(0)`, which is exactly "the top of this song".
+    ///
+    /// Reading other apps' sessions needs the notification-listener grant, so
+    /// that attempt is best-effort inside a try/catch: when the system refuses
+    /// (the usual case), the PREVIOUS key is dispatched instead and the
+    /// sentence says it asked the player rather than that it happened. What it
+    /// must never do is claim a restart it did not perform.
+    private fun restartTrack(): Map<String, Any?> {
+        val am = getSystemService(AudioManager::class.java)
+        if (!am.isMusicActive) {
+            // Nothing playing is not a restart, and the same rule as pause
+            // applies: a green check over silence is a lie.
+            return mapOf("ok" to false, "message" to "Nothing is playing.")
+        }
+        if (seekActiveSessionToStart()) {
+            return mapOf("ok" to true, "message" to "Restarted the song.")
+        }
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+        return mapOf("ok" to true, "message" to "Asked your player to restart the track.")
+    }
+
+    /// Seeks the playing session back to zero, or answers false when this app
+    /// is not allowed to see the sessions at all.
+    ///
+    /// Wrapped whole: `getActiveSessions` throws `SecurityException` without the
+    /// notification-listener component, a player may publish no controller, and
+    /// a controller may refuse the seek. All three mean the same thing to the
+    /// caller — no seek happened — so all three answer false.
+    private fun seekActiveSessionToStart(): Boolean = try {
+        val manager = getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
+        // `getActiveSessions` answers controllers, not sessions. The first one
+        // that publishes transport controls is the player making sound.
+        val controls = manager
+            ?.getActiveSessions(null)
+            ?.firstOrNull { it.transportControls != null }
+            ?.transportControls
+        if (controls == null) {
+            false
+        } else {
+            controls.seekTo(0L)
+            true
+        }
+    } catch (e: Exception) {
+        Log.i(TAG, "restart: no seekable session (${e.javaClass.simpleName})")
+        false
     }
 
     /// "play music" with nothing playing: launches the music-player intent

@@ -49,9 +49,31 @@ class FileSendResult {
   String toString() => 'FileSendResult($ok, $message)';
 }
 
+/// A real transport behind [FileLink.send].
+///
+/// The sheet talks to [FileLink]; this is the seam the mesh-side file service
+/// plugs into. It is a static rather than a constructor argument because the
+/// app installs it once at launch, and every caller of `FileLink.instance` —
+/// the bubble, the viewer, any screen added later — gets it without being
+/// handed one.
+///
+/// Null is the staged build: the file is prepared in the outbox and the result
+/// says it has not left the phone. That is what tests without a network assert
+/// on, and what a platform with no file service honestly does.
+abstract class FileTransport {
+  Future<FileSendResult> send({
+    required String path,
+    required PairedDevice device,
+    void Function(double progress)? onProgress,
+  });
+}
+
 /// Sends a local file to a paired device.
 class FileLink {
   FileLink({this.outbox});
+
+  /// The real transport, when one is installed. See [FileTransport].
+  static FileTransport? transport;
 
   /// Test seam, in the same shape as [PairedDevices.override]: a test states
   /// where a file goes instead of writing into the real documents folder.
@@ -81,6 +103,14 @@ class FileLink {
     required PairedDevice device,
     void Function(double progress)? onProgress,
   }) async {
+    final FileTransport? real = transport;
+    if (real != null) {
+      return real.send(
+        path: path,
+        device: device,
+        onProgress: onProgress,
+      );
+    }
     final File source = File(path);
     if (!await source.exists()) {
       return const FileSendResult(

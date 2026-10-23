@@ -65,7 +65,8 @@
     <application
         android:label="Nexus"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher_light">
+        android:icon="@mipmap/ic_launcher_light"
+        android:usesCleartextTraffic="true">
         <!-- The activity the app actually runs in. It deliberately carries no
              MAIN/LAUNCHER filter any more: the two launcher entries below are
              aliases of it, one per icon, and a filter here as well would put a

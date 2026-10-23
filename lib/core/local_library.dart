@@ -119,8 +119,13 @@ abstract class LocalLibrary {
 
   static LocalLibrary get current => override?.call() ?? DeviceLocalLibrary();
 
-  /// Documents and Downloads, in that order. Never throws: a folder that cannot
-  /// be read answers an empty [LocalFolder] with its [LocalFolder.error] set.
+  /// Documents, Received and Downloads, in that order. Never throws: a folder
+  /// that cannot be read answers an empty [LocalFolder] with its
+  /// [LocalFolder.error] set.
+  ///
+  /// Received is only listed once it exists. It is the folder the LAN file
+  /// listener writes into, and an app that has never received a file should
+  /// not show an empty section for a folder it never made.
   Future<List<LocalFolder>> read();
 }
 
@@ -149,7 +154,18 @@ class DeviceLocalLibrary implements LocalLibrary {
         ),
       );
     }
-    if (documents != null) folders.add(await readFolder('Documents', documents));
+    if (documents != null) {
+      folders.add(await readFolder('Documents', documents));
+      // The listener's own inbox, one level below Documents. Only a folder that
+      // already exists is shown; the first received file creates it, and the tab
+      // reads it on the same refresh that notices the file.
+      final Directory received = Directory(
+        '$documents${Platform.pathSeparator}received',
+      );
+      if (await received.exists()) {
+        folders.add(await readFolder('Received', received.path));
+      }
+    }
 
     String? downloads;
     try {
@@ -163,7 +179,9 @@ class DeviceLocalLibrary implements LocalLibrary {
         ),
       );
     }
-    if (downloads != null) folders.add(await readFolder('Downloads', downloads));
+    if (downloads != null) {
+      folders.add(await readFolder('Downloads', downloads));
+    }
     return folders;
   }
 
@@ -216,7 +234,8 @@ class DeviceLocalLibrary implements LocalLibrary {
       return LocalFolder(
         label: label,
         path: path,
-        error: 'Nexus cannot read this folder (${error.osError?.message ?? error.message}).',
+        error:
+            'Nexus cannot read this folder (${error.osError?.message ?? error.message}).',
       );
     } catch (error) {
       return LocalFolder(

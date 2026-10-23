@@ -28,10 +28,13 @@ library;
 import 'dart:convert';
 import 'dart:math' show Random;
 
-import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show debugPrint, immutable, visibleForTesting;
 
+import 'action_audit.dart';
 import 'agent_contract.dart';
 import 'clock_context.dart' show nexusClockAnswer;
+import 'connections.dart';
 import 'command_interpreter.dart'
     show CommandInterpreter, InterpretOutcome, InterpretResult;
 import 'device_actions.dart';
@@ -59,9 +62,32 @@ const CommandInterpreter _phrases = CommandInterpreter();
 SystemActionCall? actionFromPhrase(String text) {
   final String phrase = text.trim();
   if (phrase.isEmpty) return null;
+  // "restart this song" is not in the interpreter's vocabulary — it names a
+  // transport the phone does not have a keycode for, and its phrases are all
+  // shapes of one request. Read here, before the interpreter, so "replay this
+  // track" is a command rather than a sentence a model has to translate.
+  if (_restartSong.hasMatch(phrase)) {
+    return const SystemActionCall('restart_song');
+  }
   final SystemActionCall? call = _translate(phrase);
   return call == null ? null : _spokenCase(call, phrase);
 }
+
+/// The sentences that mean "start the current song again".
+///
+/// Anchored, and every one of them names the track: "start over" on its own is
+/// as likely to be about a story or a task, and a player jumping back to zero
+/// because the user said that is the fast path acting on a guess.
+final RegExp _restartSong = RegExp(
+  r'^(?:'
+  r'(?:re)?start\s+(?:this|the|that|current)?\s*(?:song|track|music)'
+  r'\s*(?:over|again|from\s+the\s+(?:start|beginning))?'
+  r'|replay\s+(?:this|the|that|current)?\s*(?:song|track)'
+  r'|play\s+(?:this|the|that|current|it)\s*(?:song|track)?\s+'
+  r'from\s+the\s+(?:start|beginning)'
+  r')[.!?]*$',
+  caseSensitive: false,
+);
 
 /// The arguments that are *names* rather than settings: a contact, an app, a
 /// place, a draft. The interpreter lower-cases to match; these are the words
@@ -341,6 +367,7 @@ const Set<String> kFastPathActionNames = <String>{
   'send_email',
   'next_song',
   'previous_song',
+  'restart_song',
   'navigate_to',
   'screenshot',
   'cancel_alarms',
@@ -687,6 +714,7 @@ class SystemActionCall {
         return SystemActionCall(action.trim(), args);
       case 'next_song':
       case 'previous_song':
+      case 'restart_song':
       case 'cancel_timers':
       case 'screenshot':
       case 'tell_joke':
@@ -817,6 +845,16 @@ class DeviceSystemActions implements SystemActions {
 
   @override
   Future<SystemActionOutcome> execute(SystemActionCall call) async {
+    // The user's own switch, checked before anything runs. It is asked here —
+    // once, at the single door every action comes through — so a revoked
+    // connector is refused whether the request came from a fast-path phrase, a
+    // model's JSON, or a route that has yet to be written. The sentence names
+    // the connector and the way back; nothing in the app may talk around it.
+    final String? blocked = Connections.instance.blockedReason(call.action);
+    if (blocked != null) {
+      debugPrint('ACTION: ${call.action} refused — $blocked');
+      return SystemActionOutcome(ok: false, message: blocked, call: call);
+    }
     // The clock is the shell's own: no permission, no platform channel, and the
     // one thing it must be is *now*. Answered before [backend] is consulted so
     // a device with no channel can still tell the time.
@@ -845,6 +883,15 @@ class DeviceSystemActions implements SystemActions {
         action,
         args,
       );
+      // What the bubble is about to say is also what the Connections screen
+      // lists: one wording for one action, recorded here rather than by each
+      // caller. A refusal is not recorded — nothing happened to the phone.
+      if (result.ok) {
+        ActionAudit.instance.record(
+          action: call.action,
+          label: _done(call) ?? result.message,
+        );
+      }
       return SystemActionOutcome(
         ok: result.ok,
         // A success gets the shell's wording, because it is a fact the shell
@@ -938,6 +985,14 @@ class DeviceSystemActions implements SystemActions {
         return (AgentActions.mediaNext, <String, dynamic>{'mode': 'next'});
       case 'previous_song':
         return (AgentActions.mediaPrev, <String, dynamic>{'mode': 'previous'});
+      // Restart is the media control channel with a mode of its own. The
+      // carrier is [AgentActions.mediaNext] because the backend translates
+      // *action names* to native methods, and `media.next` is the one that
+      // reaches `mediaControl`; only the mode says which key it becomes. The
+      // phone dispatches it, since it is the only side that can reach the
+      // player holding the session.
+      case 'restart_song':
+        return (AgentActions.mediaNext, <String, dynamic>{'mode': 'restart'});
       case 'navigate_to':
         return (
           AgentActions.navOpen,

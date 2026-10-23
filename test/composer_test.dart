@@ -231,6 +231,21 @@ void main() {
     expect(find.byKey(kNexusRemoveAttachment), findsOneWidget);
     expect(find.byType(NexusAttachmentBubble), findsNothing);
     expect(chat.entries, isEmpty);
+    // The 64dp thumbnail sits above the pill, not in it: the whole preview is
+    // clear of the field's top edge.
+    expect(
+      tester.getBottomLeft(find.byKey(kNexusPendingAttachment)).dy,
+      lessThanOrEqualTo(tester.getTopLeft(find.byType(TextField)).dy),
+    );
+    expect(
+      tester.getSize(
+        find.descendant(
+          of: find.byKey(kNexusPendingAttachment),
+          matching: find.byType(ClipRRect),
+        ),
+      ),
+      const Size(64, 64),
+    );
     // The attachment alone is enough to send: the picture is half the message.
     expect(find.byKey(const ValueKey<String>('send')), findsOneWidget);
   });
@@ -290,8 +305,14 @@ void main() {
     await tester.tap(find.byKey(kSheetPhotos));
     await tester.pumpAndSettle();
 
-    expect(find.text('second.png'), findsOneWidget);
-    expect(find.text('shot.png'), findsOneWidget);
+    // Two squares, side by side. The picture is the label; no filenames.
+    expect(
+      find.descendant(
+        of: find.byKey(kNexusPendingAttachment),
+        matching: find.byType(Image),
+      ),
+      findsNWidgets(2),
+    );
     expect(chat.entries, isEmpty);
   });
 
@@ -308,10 +329,15 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    expect(find.text('picture-0.png'), findsOneWidget);
-    expect(find.text('picture-1.png'), findsOneWidget);
-    expect(find.text('picture-2.png'), findsOneWidget);
-    expect(find.text('picture-3.png'), findsNothing);
+    // Three squares are queued; the fourth pick was refused before it could
+    // add a fourth.
+    expect(
+      find.descendant(
+        of: find.byKey(kNexusPendingAttachment),
+        matching: find.byType(Image),
+      ),
+      findsNWidgets(3),
+    );
     final String limit = 'You can only attach up to 3 images at a time.';
     expect(find.text(limit), findsOneWidget);
     // Red, not the neutral grey the shell uses for ordinary notices: this is a

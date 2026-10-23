@@ -19,6 +19,7 @@ import 'package:nexus/core/attachment_pickers.dart';
 import 'package:nexus/core/attachments.dart';
 import 'package:nexus/core/chat_log.dart';
 import 'package:nexus/core/local_ai_service.dart';
+import 'package:nexus/core/local_library.dart';
 import 'package:nexus/core/ml_vision_service.dart';
 import 'package:nexus/core/onboarding.dart';
 import 'package:nexus/core/system_actions.dart';
@@ -373,6 +374,21 @@ void main() {
       expect(find.text('Photo attached'), findsOneWidget);
       expect(find.byType(NexusAttachmentBubble), findsOneWidget);
       expect(find.byKey(kNexusPendingAttachment), findsNothing);
+
+      // The image itself carries the 18-point radius, and the caption is a
+      // separate capsule underneath rather than a strip inside a bubble.
+      final Finder picture = find.descendant(
+        of: find.byType(NexusAttachmentBubble),
+        matching: find.byType(ClipRRect),
+      );
+      expect(
+        tester.widget<ClipRRect>(picture).borderRadius,
+        const BorderRadius.all(Radius.circular(18)),
+      );
+      expect(
+        tester.getTopLeft(find.text('Photo attached')).dy,
+        greaterThan(tester.getBottomLeft(picture).dy),
+      );
     });
 
     testWidgets('backing out of the camera leaves the thread untouched', (
@@ -502,9 +518,13 @@ void main() {
       await tester.tap(find.byKey(const ValueKey<String>('send')));
       await tester.pumpAndSettle();
       expect(find.byType(NexusFileBubble), findsOneWidget);
-      expect(find.text('File attached: notes.pdf'), findsOneWidget);
+      // The chip names the document and says how big it is; the automatic
+      // "File attached: …" line is not repeated under it.
+      expect(find.text('notes.pdf'), findsOneWidget);
+      expect(find.text(localFileSize(file.lengthSync())), findsOneWidget);
       final ChatEntry stored = chat.entries.single;
       expect(stored.filePath, isNotNull);
+      expect(stored.attachmentName, 'notes.pdf');
       expect(stored.text, 'File attached: notes.pdf');
     });
 

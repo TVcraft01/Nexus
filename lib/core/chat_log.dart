@@ -103,6 +103,7 @@ class ChatEntry {
     this.imagePath,
     this.imagePaths = const <String>[],
     this.filePath,
+    this.attachmentName,
     this.visionText,
     this.visionLabels = const <String>[],
     this.reasoning,
@@ -148,6 +149,11 @@ class ChatEntry {
   /// chip, not the line.
   final String? filePath;
 
+  /// The document's original name, when it is not recoverable from the caption
+  /// (the stored copy is renamed with a timestamp). Optional so every file
+  /// written before this field still reads.
+  final String? attachmentName;
+
   /// What ML Kit read in the attached picture, if anything. Kept beside the
   /// picture rather than inside its caption so the bubble can show the evidence
   /// under the image and still keep "Photo attached" as the line the brain and
@@ -174,6 +180,8 @@ class ChatEntry {
     if (imagePath != null) 'image': imagePath,
     if (imagePaths.length > 1) 'images': imagePaths,
     if (filePath != null) 'file': filePath,
+    if (attachmentName != null && attachmentName!.trim().isNotEmpty)
+      'attachmentName': attachmentName,
     if (visionText != null && visionText!.trim().isNotEmpty)
       'visionText': visionText,
     if (visionLabels.isNotEmpty) 'visionLabels': visionLabels,
@@ -195,6 +203,7 @@ class ChatEntry {
     final Object? image = raw['image'];
     final Object? images = raw['images'];
     final Object? file = raw['file'];
+    final Object? attachmentName = raw['attachmentName'];
     final List<String> imagePaths = <String>[];
     if (images is List) {
       for (final Object? path in images) {
@@ -247,6 +256,10 @@ class ChatEntry {
       imagePath: imagePaths.isEmpty ? null : imagePaths.first,
       imagePaths: imagePaths,
       filePath: file is String && file.isNotEmpty ? file : null,
+      attachmentName:
+          attachmentName is String && attachmentName.trim().isNotEmpty
+          ? attachmentName.trim()
+          : null,
       visionText: vision is String && vision.trim().isNotEmpty ? vision : null,
       visionLabels: visionLabels,
       reasoning: reasoning,
@@ -756,7 +769,9 @@ ChatEntry _rewritten(ChatEntry entry, String text) => ChatEntry(
   system: entry.system,
   ok: entry.ok,
   imagePath: entry.imagePath,
+  imagePaths: entry.imagePaths,
   filePath: entry.filePath,
+  attachmentName: entry.attachmentName,
   visionText: entry.visionText,
   visionLabels: entry.visionLabels,
 );

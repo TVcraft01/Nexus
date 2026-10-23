@@ -97,7 +97,9 @@ void main() {
           reason: '$name should not appear in the model’s rules',
         );
       }
-      expect(kFastPathActionNames, hasLength(10));
+      // Ten originals plus `restart_song`, which is the one transport the
+      // phone has no keycode for and so cannot be left to the model either.
+      expect(kFastPathActionNames, hasLength(11));
     });
 
     test('the composed prompt asks for thoughts, then the action rules', () {

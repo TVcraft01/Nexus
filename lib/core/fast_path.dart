@@ -175,6 +175,7 @@ const Set<String> _phoneOnly = <String>{
   'show_alarms',
   'next_song',
   'previous_song',
+  'restart_song',
 };
 
 /// [call] when this device can actually run it, or null when it is the phone's.

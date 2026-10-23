@@ -19,6 +19,7 @@ import 'package:nexus/main_ui.dart'
     show
         NexusAttachmentBubble,
         NexusTheme,
+        kNexusSendPercent,
         kNexusSendProgress,
         kNexusSendResult,
         kNexusSendTo;
@@ -158,6 +159,10 @@ void main() {
       find.byKey(kNexusSendProgress),
     );
     expect(bar.value, closeTo(0.4, 0.001));
+    // The number beside the bar, because a bar is a shape and a transfer can
+    // sit at the same shape for a while.
+    expect(find.byKey(kNexusSendPercent), findsOneWidget);
+    expect(find.text('40%'), findsOneWidget);
 
     gate.complete();
     await tester.pumpAndSettle();
