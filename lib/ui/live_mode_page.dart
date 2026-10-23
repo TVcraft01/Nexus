@@ -294,7 +294,7 @@ class _LivePage extends StatelessWidget {
                           icon: Icon(
                             Icons.menu_rounded,
                             color: palette.ink,
-                            size: 24,
+                            size: NexusLayout.iconLarge,
                           ),
                         ),
                         Expanded(
@@ -321,7 +321,7 @@ class _LivePage extends StatelessWidget {
                           icon: Icon(
                             Icons.keyboard_arrow_down_rounded,
                             color: palette.ink,
-                            size: 28,
+                            size: NexusLayout.iconLarge,
                           ),
                         ),
                       ],
@@ -442,7 +442,10 @@ class _LivePage extends StatelessWidget {
                             FilledButton.icon(
                               key: kNexusLiveResume,
                               onPressed: onResume,
-                              icon: const Icon(Icons.mic_rounded, size: 18),
+                              icon: const Icon(
+                                Icons.mic_rounded,
+                                size: NexusLayout.icon,
+                              ),
                               label: const Text('Tap to continue'),
                               style: FilledButton.styleFrom(
                                 backgroundColor: palette.accent,
@@ -603,7 +606,11 @@ class _LivePage extends StatelessWidget {
                   Navigator.of(sheetContext).pop();
                   onClose();
                 },
-                icon: Icon(Icons.close_rounded, size: 18, color: palette.ink),
+                icon: Icon(
+                  Icons.close_rounded,
+                  size: NexusLayout.icon,
+                  color: palette.ink,
+                ),
                 label: Text(
                   'End live conversation',
                   style: GoogleFonts.inter(color: palette.ink, fontSize: 15),
@@ -821,7 +828,7 @@ class _LiveTalkPill extends StatelessWidget {
                             : (speaking
                                   ? Icons.volume_up_rounded
                                   : Icons.mic_none_rounded),
-                        size: 19,
+                        size: NexusLayout.icon,
                         color: _thinking ? Colors.white : palette.ink,
                       ),
                       const SizedBox(width: 7),

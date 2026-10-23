@@ -530,7 +530,7 @@ class _PendingAttachmentTile extends StatelessWidget {
                         image
                             ? Icons.image_outlined
                             : Icons.insert_drive_file_outlined,
-                        size: 22,
+                        size: NexusLayout.iconLarge,
                         color: c.textMuted,
                       ),
                     ),
@@ -900,7 +900,11 @@ class _AttachCard extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
-              Icon(icon, size: 26, color: _AttachmentSheetState._ink),
+              Icon(
+                icon,
+                size: NexusLayout.iconLarge,
+                color: _AttachmentSheetState._ink,
+              ),
               const SizedBox(height: 8),
               Text(
                 label,
@@ -993,7 +997,7 @@ class _SheetSwitchRow extends StatelessWidget {
               if (locked)
                 const Icon(
                   Icons.lock_outline_rounded,
-                  size: 18,
+                  size: NexusLayout.icon,
                   color: _AttachmentSheetState._muted,
                 )
               else

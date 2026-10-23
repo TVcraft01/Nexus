@@ -102,7 +102,7 @@ class ImageViewerPage extends StatelessWidget {
                   child: FilledButton.icon(
                     key: kImageViewerSend,
                     onPressed: onSend,
-                    icon: const Icon(Icons.send_rounded, size: 16),
+                    icon: const Icon(Icons.send_rounded, size: 20),
                     label: const Text('Send to…'),
                   ),
                 ),

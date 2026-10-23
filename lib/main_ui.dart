@@ -1590,7 +1590,7 @@ class _ModeCard extends StatelessWidget {
               const SizedBox(width: 8),
               Icon(
                 selected ? Icons.check_circle_rounded : Icons.circle_outlined,
-                size: 22,
+                size: NexusLayout.iconLarge,
                 color: selected ? c.accent : c.hairline,
               ),
             ],
@@ -2286,7 +2286,7 @@ class _WideNavRow extends StatelessWidget {
               children: <Widget>[
                 Icon(
                   selected ? spec.activeIcon : spec.icon,
-                  size: 19,
+                  size: NexusLayout.icon,
                   color: selected ? c.accent : c.textMuted,
                 ),
                 const SizedBox(width: 11),
@@ -2418,7 +2418,7 @@ class _TabButton extends StatelessWidget {
               curve: Curves.easeOut,
               child: Icon(
                 selected ? spec.activeIcon : spec.icon,
-                size: 23,
+                size: NexusLayout.iconLarge,
                 color: color,
               ),
             ),
@@ -2523,7 +2523,10 @@ class DeveloperLogsTab extends StatelessWidget {
                           foregroundColor: c.onAccent,
                           minimumSize: const Size.fromHeight(46),
                         ),
-                        icon: const Icon(Icons.copy_rounded, size: 18),
+                        icon: const Icon(
+                          Icons.copy_rounded,
+                          size: NexusLayout.icon,
+                        ),
                         label: const Text('Copy to Clipboard'),
                       ),
                     ),
@@ -4170,7 +4173,10 @@ class _ChatDrawerState extends State<_ChatDrawer> {
                       borderRadius: BorderRadius.all(NexusLayout.tile),
                     ),
                   ),
-                  icon: const Icon(Icons.add_comment_outlined, size: 19),
+                  icon: const Icon(
+                    Icons.add_comment_outlined,
+                    size: NexusLayout.icon,
+                  ),
                   label: const Text('New Chat'),
                 ),
               ),
@@ -4491,7 +4497,7 @@ class _ChatMenuLine extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        Icon(icon, size: 18, color: color),
+        Icon(icon, size: NexusLayout.icon, color: color),
         const SizedBox(width: 12),
         Text(
           label,
@@ -5254,7 +5260,7 @@ class _LocalFileRow extends StatelessWidget {
                         children: <Widget>[
                           Icon(
                             Icons.delete_outline_rounded,
-                            size: 19,
+                            size: NexusLayout.icon,
                             color: c.danger,
                           ),
                           const SizedBox(width: 12),
@@ -5286,7 +5292,7 @@ class _LocalFileRow extends StatelessWidget {
       height: 44,
       child: Row(
         children: <Widget>[
-          Icon(icon, size: 19, color: c.textMuted),
+          Icon(icon, size: NexusLayout.icon, color: c.textMuted),
           const SizedBox(width: 12),
           Text(label, style: NexusType.rowTitle(c)),
         ],
@@ -5310,7 +5316,7 @@ class _FilesNotice extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Icon(icon, size: 17, color: c.textMuted),
+          Icon(icon, size: NexusLayout.icon, color: c.textMuted),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -5354,7 +5360,11 @@ class _FileTransferBanner extends StatelessWidget {
         children: <Widget>[
           Row(
             children: <Widget>[
-              Icon(Icons.upload_rounded, size: 18, color: c.accent),
+              Icon(
+                Icons.upload_rounded,
+                size: NexusLayout.icon,
+                color: c.accent,
+              ),
               const SizedBox(width: 9),
               Expanded(
                 child: Text(
@@ -5688,13 +5698,17 @@ class NexusDeviceSwitcher extends StatelessWidget {
               value: device,
               child: Row(
                 children: <Widget>[
-                  Icon(device.icon, size: 18, color: c.textMuted),
+                  Icon(device.icon, size: NexusLayout.icon, color: c.textMuted),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(device.name, style: NexusType.rowTitle(c)),
                   ),
                   if (device.name == selected.name)
-                    Icon(Icons.check_rounded, size: 16, color: c.accent),
+                    Icon(
+                      Icons.check_rounded,
+                      size: NexusLayout.icon,
+                      color: c.accent,
+                    ),
                 ],
               ),
             ),
@@ -5711,11 +5725,15 @@ class NexusDeviceSwitcher extends StatelessWidget {
             children: <Widget>[
               NexusStatusDot(online: selected.online),
               const SizedBox(width: 9),
-              Icon(selected.icon, size: 17, color: c.textMuted),
+              Icon(selected.icon, size: NexusLayout.icon, color: c.textMuted),
               const SizedBox(width: 7),
               Text(selected.name, style: NexusType.rowTitle(c)),
               const SizedBox(width: 4),
-              Icon(Icons.expand_more_rounded, size: 18, color: c.textMuted),
+              Icon(
+                Icons.expand_more_rounded,
+                size: NexusLayout.icon,
+                color: c.textMuted,
+              ),
             ],
           ),
         ),
@@ -5769,7 +5787,11 @@ class NexusFileRow extends StatelessWidget {
             if (file.folder)
               const NexusChevron()
             else
-              Icon(Icons.more_horiz_rounded, size: 18, color: c.textMuted),
+              Icon(
+                Icons.more_horiz_rounded,
+                size: NexusLayout.icon,
+                color: c.textMuted,
+              ),
           ],
         ),
       ),
@@ -6002,7 +6024,7 @@ class _DevicesTabState extends State<DevicesTab> {
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.radar_rounded, size: 18),
+                : const Icon(Icons.radar_rounded, size: NexusLayout.icon),
             label: Text(
               _discovering ? 'Looking for devices…' : 'Discover Nearby Devices',
             ),
@@ -6305,7 +6327,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                     ),
                     child: Icon(
                       _iconFor(_device),
-                      size: 23,
+                      size: NexusLayout.iconLarge,
                       color: widget.online ? c.online : c.textMuted,
                     ),
                   ),
@@ -6379,7 +6401,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                           ),
                           icon: const Icon(
                             Icons.delete_outline_rounded,
-                            size: 18,
+                            size: NexusLayout.icon,
                           ),
                           color: c.danger,
                         ),
@@ -6443,7 +6465,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                     children: <Widget>[
                       Icon(
                         Icons.notifications_none_rounded,
-                        size: 17,
+                        size: NexusLayout.icon,
                         color: c.textMuted,
                       ),
                       const SizedBox(width: 8),
@@ -6529,7 +6551,7 @@ class _DeviceCardAction extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
-              Icon(icon, size: 17, color: ink),
+              Icon(icon, size: NexusLayout.icon, color: ink),
               const SizedBox(width: 6),
               Flexible(
                 child: Text(

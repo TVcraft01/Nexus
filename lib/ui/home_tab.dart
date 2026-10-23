@@ -3729,7 +3729,7 @@ class _UpdateBanner extends StatelessWidget {
                       visualDensity: VisualDensity.compact,
                       icon: Icon(
                         Icons.close_rounded,
-                        size: 18,
+                        size: NexusLayout.icon,
                         color: c.textMuted,
                       ),
                     ),
@@ -3842,7 +3842,7 @@ class _PcUpgradeBanner extends StatelessWidget {
                               },
                               icon: Icon(
                                 Icons.copy_rounded,
-                                size: 16,
+                                size: NexusLayout.icon,
                                 color: c.textMuted,
                               ),
                             ),
@@ -3858,7 +3858,7 @@ class _PcUpgradeBanner extends StatelessWidget {
                     visualDensity: VisualDensity.compact,
                     icon: Icon(
                       Icons.close_rounded,
-                      size: 17,
+                      size: NexusLayout.icon,
                       color: c.textMuted,
                     ),
                   ),

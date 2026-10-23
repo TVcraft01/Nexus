@@ -499,7 +499,7 @@ class NexusArtifactCard extends StatelessWidget {
                             locked
                                 ? Icons.lock_outline_rounded
                                 : Icons.code_rounded,
-                            size: 19,
+                            size: NexusLayout.icon,
                             color: locked ? c.textMuted : band,
                           ),
                         ),
@@ -687,7 +687,7 @@ class _ReasoningBubbleState extends State<_ReasoningBubble> {
                     _open
                         ? Icons.expand_less_rounded
                         : Icons.expand_more_rounded,
-                    size: 18,
+                    size: NexusLayout.icon,
                     color: c.textMuted,
                   ),
                 ],
@@ -925,7 +925,7 @@ class _SendToSheetState extends State<_SendToSheet> {
                         result.ok
                             ? Icons.check_circle_outline
                             : Icons.info_outline,
-                        size: 18,
+                        size: NexusLayout.icon,
                         color: result.ok ? c.accent : c.textMuted,
                       ),
                       const SizedBox(width: 8),
@@ -1371,7 +1371,7 @@ class _AttachmentFooterState extends State<_AttachmentFooter> {
                   onPressed: () => setState(() => _open = !_open),
                   icon: Icon(
                     _open ? Icons.info_rounded : Icons.info_outline_rounded,
-                    size: 18,
+                    size: NexusLayout.icon,
                     color: _open ? c.accent : c.textMuted,
                   ),
                 ),
@@ -1518,7 +1518,7 @@ class _MissingThumbnail extends StatelessWidget {
         child: Center(
           child: Icon(
             Icons.broken_image_outlined,
-            size: 26,
+            size: NexusLayout.iconLarge,
             color: c.textMuted,
           ),
         ),
@@ -1817,7 +1817,11 @@ class NexusErrorBubble extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
-                  Icon(Icons.warning_amber_rounded, size: 18, color: ink),
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: NexusLayout.icon,
+                    color: ink,
+                  ),
                   const SizedBox(width: 9),
                   Flexible(
                     child: Text(
@@ -1943,7 +1947,11 @@ class _BubbleAction extends StatelessWidget {
     return IconButton(
       tooltip: tooltip,
       onPressed: onTap,
-      icon: Icon(icon, size: 16, color: active ? c.accent : c.textMuted),
+      icon: Icon(
+        icon,
+        size: NexusLayout.icon,
+        color: active ? c.accent : c.textMuted,
+      ),
       visualDensity: VisualDensity.compact,
       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
       padding: EdgeInsets.zero,

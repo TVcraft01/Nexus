@@ -141,7 +141,7 @@ class _TrackpadPageState extends State<TrackpadPage> {
                     icon: const Icon(
                       Icons.arrow_back_rounded,
                       color: _ink,
-                      size: 22,
+                      size: 24,
                     ),
                   ),
                   const SizedBox(width: 4),

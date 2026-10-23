@@ -186,7 +186,7 @@ class _NexusArtifactPageState extends State<NexusArtifactPage> {
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.download_rounded, size: 18),
+                    : const Icon(Icons.download_rounded, size: 20),
                 label: Text(_saving ? 'Saving…' : 'Save File'),
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(50),
