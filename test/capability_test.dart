@@ -430,11 +430,16 @@ void main() {
       }
     });
 
-    test('an unknown platform falls back to the desktop set', () {
-      expect(
-        defaultCapabilitiesFor('other').map((c) => c.id).toSet(),
-        _desktopActions,
-      );
+    test('only recognized platforms get their default capabilities', () {
+      expect(defaultCapabilitiesFor('android'), isNotEmpty);
+      expect(defaultCapabilitiesFor('linux'), isNotEmpty);
+      for (final platform in ['satellite', '', 'plan9']) {
+        expect(
+          defaultCapabilitiesFor(platform),
+          isEmpty,
+          reason: '$platform must not inherit the Linux capability set',
+        );
+      }
     });
 
     test('a phone-only action is never offered by a desktop', () {

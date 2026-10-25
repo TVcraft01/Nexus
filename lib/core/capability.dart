@@ -416,14 +416,19 @@ List<String> suggestionExamples() => [
 /// something and the mesh that advertises it cannot disagree. A capability
 /// with no platform set is answered by the app itself — the time, arithmetic,
 /// memory — so it is reachable everywhere; one with a set is reachable exactly
-/// where its executor is. Any non-Android system stands in for the desktop
-/// set, the same way [defaultCapabilitiesFor] reads it.
+/// where its executor is. Android and the desktop platforms use their own
+/// executor sets; unknown platform names are not assumed to be Linux.
 bool capabilityAvailableOn(String id, String platform) {
   final capability = capabilityFor(id);
   if (capability == null) return false;
   if (!capability.isDeviceExecutable) return true;
-  final here = platform == 'android' ? 'android' : 'linux';
-  return capability.platforms.contains(here);
+  final String? executorPlatform = switch (platform) {
+    'android' => 'android',
+    'linux' || 'windows' || 'macos' => 'linux',
+    _ => null,
+  };
+  return executorPlatform != null &&
+      capability.platforms.contains(executorPlatform);
 }
 
 /// The phrase to *show* for [id] on [platform], or null when that platform
@@ -634,14 +639,17 @@ const Set<String> _topicWordsToIgnore = {
 /// announce richer capabilities later simply replace this default; the ids
 /// are the same [AgentActions] strings so one check serves both.
 ///
-/// Any platform that is not Android is treated as a desktop, which is how
-/// this behaved when the two lists were hand-written.
+/// Unknown platform names are deliberately empty: a node must not advertise
+/// desktop actions merely because its platform is not Android.
 List<DeviceCapability> defaultCapabilitiesFor(String platform) {
-  // 'linux' stands in for every desktop: each desktop capability above
-  // declares the whole desktop set, so any member of it answers for all.
-  final here = platform == 'android' ? 'android' : 'linux';
+  final Set<String> recognizedPlatforms = switch (platform) {
+    'android' => const {'android'},
+    'linux' || 'windows' || 'macos' => const {'linux'},
+    _ => const <String>{},
+  };
   return [
     for (final capability in kCapabilities)
-      if (capability.platforms.contains(here)) DeviceCapability(capability.id),
+      if (capability.platforms.any(recognizedPlatforms.contains))
+        DeviceCapability(capability.id),
   ];
 }
