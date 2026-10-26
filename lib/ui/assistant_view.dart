@@ -308,7 +308,9 @@ class AssistantViewState extends State<AssistantView> {
     if (message == null || args == null) {
       // Nothing runnable — no paired device, no reachable one, or a question
       // about which device. The service's own sentence is the observation.
-      return plan.message.isEmpty ? "I couldn't fetch that file." : plan.message;
+      return plan.message.isEmpty
+          ? "I couldn't fetch that file."
+          : plan.message;
     }
     try {
       final outcome = await _executor.run(
@@ -638,7 +640,13 @@ class AssistantViewState extends State<AssistantView> {
           id: d.id,
           name: d.name,
           online: mesh.isOnline(d.id),
-          capabilities: defaultCapabilitiesFor(d.platform),
+          capabilities: d.capabilitiesAnnounced
+              ? [for (final id in d.announcedCaps) DeviceCapability(id)]
+              : defaultCapabilitiesFor(d.platform),
+          capabilitiesVerified: d.capabilitiesAnnounced
+              ? d.announcedCapsVerified
+              : null,
+          capabilitiesAnnounced: d.capabilitiesAnnounced,
           // The platform the peer reported at pairing, so a question about
           // "my phone" can resolve against the real registry instead of
           // hoping the device's name contains the word.
@@ -728,12 +736,12 @@ class AssistantViewState extends State<AssistantView> {
     facts: _service.factsSnapshot,
     learned: _service.learnedSnapshot,
     defaults: _service.defaultsSnapshot,
-    habits: [
-      for (final habit in _habits ?? const <Habit>[]) habit.phrase,
-    ].take(5).toList(),
-    skills: [
-      for (final skill in _skills ?? const <SkillUse>[]) skill.label,
-    ].take(5).toList(),
+    habits: [for (final habit in _habits ?? const <Habit>[]) habit.phrase]
+        .take(5)
+        .toList(),
+    skills: [for (final skill in _skills ?? const <SkillUse>[]) skill.label]
+        .take(5)
+        .toList(),
   );
 
   /// Hands a phrase the interpreter doesn't know to the conversation engine
@@ -755,9 +763,7 @@ class AssistantViewState extends State<AssistantView> {
           input: input,
           original: original,
           tools: _tools,
-          pairedDevices: [
-            for (final d in widget.mesh.pairedDevices) d.name,
-          ],
+          pairedDevices: [for (final d in widget.mesh.pairedDevices) d.name],
           context: _memoryContext,
           onBrainAnswered: (stale) {
             // The brain owns this phrase now — drop the service's stale teach
@@ -1119,7 +1125,10 @@ class AssistantViewState extends State<AssistantView> {
         _voiceConfirm = null;
         // The user's own no. A choice, not a failure — the core must not
         // colour itself red for something they decided.
-        _showSelfOutcome(AgentResultStatus.denied, 'Cancelled — nothing was sent.');
+        _showSelfOutcome(
+          AgentResultStatus.denied,
+          'Cancelled — nothing was sent.',
+        );
       } else {
         _voiceConfirm = null; // moved on: run the new request
         _execute(text, spoken: voice);
@@ -1168,9 +1177,7 @@ class AssistantViewState extends State<AssistantView> {
         (yes || no)) {
       _execute(
         _lastInput,
-        approval: yes
-            ? AgentApproval.approved
-            : AgentApproval.denied,
+        approval: yes ? AgentApproval.approved : AgentApproval.denied,
         replaceLast: true,
         spoken: voice,
       );
@@ -1190,14 +1197,14 @@ class AssistantViewState extends State<AssistantView> {
   }
 
   bool _isYes(String text) => RegExp(
-        r'^(yes|yep|yeah|yah|y|ok|okay|sure|oui|correct|affirmative|go ahead)$',
-        caseSensitive: false,
-      ).hasMatch(text.trim().toLowerCase());
+    r'^(yes|yep|yeah|yah|y|ok|okay|sure|oui|correct|affirmative|go ahead)$',
+    caseSensitive: false,
+  ).hasMatch(text.trim().toLowerCase());
 
   bool _isNo(String text) => RegExp(
-        r"^(no|nope|n|non|negative|cancel|stop|dont|don't)$",
-        caseSensitive: false,
-      ).hasMatch(text.trim().toLowerCase());
+    r"^(no|nope|n|non|negative|cancel|stop|dont|don't)$",
+    caseSensitive: false,
+  ).hasMatch(text.trim().toLowerCase());
 
   void _approve() {
     HapticFeedback.lightImpact();
@@ -1379,8 +1386,10 @@ class AssistantViewState extends State<AssistantView> {
       }
       skillExamples.add(example);
     }
-    final totalSkillUses = (_skills ?? const <SkillUse>[])
-        .fold<int>(0, (sum, skill) => sum + skill.uses);
+    final totalSkillUses = (_skills ?? const <SkillUse>[]).fold<int>(
+      0,
+      (sum, skill) => sum + skill.uses,
+    );
     final List<String> suggestions;
     // Phone-only mode: with zero peers paired and no personal routine yet,
     // the chips are four things this phone runs on its own — no mesh, no
@@ -1391,11 +1400,7 @@ class AssistantViewState extends State<AssistantView> {
       // "What's in my Downloads" was cut before v0.2.0: it parsed to a
       // memory question the phone could not answer, and a pill that does
       // nothing is worse than a missing pill.
-      suggestions = const [
-        'Set a timer',
-        '12 times 5',
-        'Remember something',
-      ];
+      suggestions = const ['Set a timer', '12 times 5', 'Remember something'];
     } else if (personal.isNotEmpty) {
       suggestions = [
         ...personal.map((h) => h.phrase),
@@ -1970,10 +1975,7 @@ class AssistantViewState extends State<AssistantView> {
       await _profile.save(p);
     }
     if (!mounted) return;
-    _service.setIdentity(
-      userName: p.userName,
-      assistantName: p.assistantName,
-    );
+    _service.setIdentity(userName: p.userName, assistantName: p.assistantName);
     setState(() {
       _profileState = p;
       _profileLoaded = true;
@@ -1994,10 +1996,7 @@ class AssistantViewState extends State<AssistantView> {
     final changed =
         p.userName != _profileState?.userName ||
         p.assistantName != _profileState?.assistantName;
-    _service.setIdentity(
-      userName: p.userName,
-      assistantName: p.assistantName,
-    );
+    _service.setIdentity(userName: p.userName, assistantName: p.assistantName);
     setState(() => _profileState = p);
     if (changed) {
       unawaited(
@@ -2013,7 +2012,10 @@ class AssistantViewState extends State<AssistantView> {
   /// into the local profile (keeping local onboarding state), so every
   /// device answers as one person. Never re-broadcasts: the name came FROM
   /// the mesh, sending it back would loop forever.
-  Future<void> _adoptRemoteProfile(String? userName, String? assistantName) async {
+  Future<void> _adoptRemoteProfile(
+    String? userName,
+    String? assistantName,
+  ) async {
     final current = await _profile.read();
     if (!mounted) return;
     final updated = current.copyWith(
@@ -2049,7 +2051,8 @@ class AssistantViewState extends State<AssistantView> {
         skills.length != oldSkills.length ||
         skills.indexed.any(
           (e) =>
-              e.$2.id != oldSkills[e.$1].id || e.$2.uses != oldSkills[e.$1].uses,
+              e.$2.id != oldSkills[e.$1].id ||
+              e.$2.uses != oldSkills[e.$1].uses,
         ) ||
         habits.any(
           (h) => !(_habits ?? const []).any((o) => o.phrase == h.phrase),
@@ -2092,9 +2095,8 @@ class AssistantViewState extends State<AssistantView> {
             Expanded(
               child: Text(
                 'Reminder: ${reminder.text}',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
+                style: Theme.of(context).textTheme.bodyLarge
+                    ?.copyWith(fontWeight: FontWeight.w600),
               ),
             ),
             IconButton(
@@ -2160,9 +2162,8 @@ class AssistantViewState extends State<AssistantView> {
                     Expanded(
                       child: Text(
                         'Clipboard from ${pending.fromName ?? 'another device'} — tap to paste.',
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: Theme.of(context).textTheme.bodyLarge
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                     ),
                   ],
@@ -2199,10 +2200,7 @@ class AssistantViewState extends State<AssistantView> {
             onTap: () => unawaited(_showConversationMenu()),
             onLongPress: () => unawaited(_showConversationMenu()),
             borderRadius: NexusRadius.row,
-            child: NexusPresence(
-              state: _coreState,
-              contextLine: _presenceLine,
-            ),
+            child: NexusPresence(state: _coreState, contextLine: _presenceLine),
           ),
         ),
         // A reminder that fired, waiting for a "Done".
@@ -2515,8 +2513,7 @@ class AssistantViewState extends State<AssistantView> {
     // (not a mesh:… model). The line says where the answer runs, not the
     // model filename: loaded → "On this device", otherwise "No model
     // loaded". One or more peers restores the mesh wording below.
-    final phoneOnly =
-        widget.mesh.pairedDevices.isEmpty && !viaMesh;
+    final phoneOnly = widget.mesh.pairedDevices.isEmpty && !viaMesh;
     if (phoneOnly && _conversation.brainHealth == BrainHealth.online) {
       return _phoneOnlyStatusLine(Icons.auto_awesome_rounded, 'On this device');
     }
@@ -2901,9 +2898,9 @@ class AssistantViewState extends State<AssistantView> {
       if (gone.existsSync()) gone.deleteSync();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not delete ${file.name}.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not delete ${file.name}.')));
       return;
     }
     widget.mesh.store.removeFetchedFile(file.path);
@@ -3492,9 +3489,8 @@ class AssistantViewState extends State<AssistantView> {
           CustomSemanticsAction(label: action.label): action.run,
       },
       child: NexusPressable(
-        onLongPress: () => unawaited(
-          _showAnswerActions(actions, title: message.text),
-        ),
+        onLongPress: () =>
+            unawaited(_showAnswerActions(actions, title: message.text)),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: NexusSpace.xs),
           child: SizedBox(
@@ -3532,9 +3528,8 @@ class AssistantViewState extends State<AssistantView> {
   Future<void> _copyAnswer(String text) async {
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Copied.')));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Copied.')));
   }
 
   /// Asks the last question again, exactly as typing it once more would —
@@ -3717,7 +3712,9 @@ class _ThinkingDotsPainter extends CustomPainter {
       // A third of the cycle apart, lifted 0.45 -> 1.0 and back so the pulse
       // travels rather than flashing.
       final t = (phase + i / 3) % 1.0;
-      paint.color = color.withValues(alpha: 0.45 + 0.55 * (1 - (t * 2 - 1).abs()));
+      paint.color = color.withValues(
+        alpha: 0.45 + 0.55 * (1 - (t * 2 - 1).abs()),
+      );
       canvas.drawCircle(
         Offset(radius + i * (size.width - size.height) / 2, radius),
         radius,
@@ -3903,10 +3900,7 @@ class _TeachPhraseDialogState extends State<_TeachPhraseDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
-        FilledButton(
-          onPressed: _teach,
-          child: const Text('Teach'),
-        ),
+        FilledButton(onPressed: _teach, child: const Text('Teach')),
       ],
     );
   }
@@ -4117,9 +4111,8 @@ class _DreamRowState extends State<_DreamRow> {
               padding: const EdgeInsets.only(top: NexusSpace.xs),
               child: Text(
                 _error!,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: palette.danger),
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: palette.danger),
               ),
             ),
         ],

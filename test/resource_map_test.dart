@@ -105,14 +105,61 @@ void main() {
       expect(here.can('nothing.at.all'), isFalse);
     });
 
-    test('a peer is only ever assumed, because nothing announces yet', () {
-      final map = _map(local: _desk(), paired: [_device()]);
-      final peer = map.peers.single;
-      expect(peer.can(AgentActions.callPlace), isTrue);
+    test(
+      'a legacy peer with no announcement gets platform defaults assumed',
+      () {
+        final map = _map(local: _desk(), paired: [_device()]);
+        final peer = map.peers.single;
+        expect(peer.can(AgentActions.callPlace), isTrue);
+        expect(
+          peer.evidenceFor(AgentActions.callPlace),
+          CapabilityEvidence.assumed,
+          reason: 'legacy records without presence announcements use defaults',
+        );
+      },
+    );
+
+    test('an announced empty capability list suppresses platform fallback', () {
+      final emptyPeer = AgentDeviceSnapshot(
+        id: 'p1',
+        name: 'Satellite',
+        online: true,
+        platform: 'android',
+        capabilitiesVerified: true,
+        capabilitiesAnnounced: true,
+      );
+      final map = _map(local: _desk(), paired: [emptyPeer]);
+      expect(map.peers.single.capabilityIds, isEmpty);
+      expect(map.peers.single.can(AgentActions.callPlace), isFalse);
+    });
+
+    test('announced capabilities retain their authenticated evidence', () {
+      final verified = AgentDeviceSnapshot(
+        id: 'p1',
+        name: 'Phone',
+        online: true,
+        platform: 'android',
+        capabilities: const [DeviceCapability(AgentActions.callPlace)],
+        capabilitiesVerified: true,
+        capabilitiesAnnounced: true,
+      );
+      final assumed = AgentDeviceSnapshot(
+        id: 'p2',
+        name: 'Unproven Phone',
+        online: true,
+        platform: 'android',
+        capabilities: const [DeviceCapability(AgentActions.callPlace)],
+        capabilitiesVerified: false,
+        capabilitiesAnnounced: true,
+      );
+      final map = _map(paired: [verified, assumed]);
       expect(
-        peer.evidenceFor(AgentActions.callPlace),
+        map.peers[0].evidenceFor(AgentActions.callPlace),
+        CapabilityEvidence.verified,
+      );
+      expect(
+        map.peers[1].evidenceFor(AgentActions.callPlace),
         CapabilityEvidence.assumed,
-        reason: 'no peer sends a capability advertisement in this release',
       );
     });
 

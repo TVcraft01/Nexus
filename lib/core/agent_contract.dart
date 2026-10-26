@@ -343,6 +343,14 @@ class AgentDeviceSnapshot {
   final bool online;
   final List<DeviceCapability> capabilities;
 
+  /// Whether the supplied peer capabilities arrived in a proven frame. False
+  /// is unproven; null means legacy snapshot semantics.
+  final bool? capabilitiesVerified;
+
+  /// Explicit peer advertisement state; empty announced lists must not trigger
+  /// a platform fallback.
+  final bool capabilitiesAnnounced;
+
   /// The platform the device reported, or '' when it never said. It is a plain
   /// string rather than an enum because peers report whatever they are, and an
   /// unrecognised platform must read as "unknown", not as a wrong kind.
@@ -353,6 +361,8 @@ class AgentDeviceSnapshot {
     required this.name,
     required this.online,
     this.capabilities = const [],
+    this.capabilitiesVerified,
+    this.capabilitiesAnnounced = false,
     this.platform = '',
   });
 
@@ -363,6 +373,8 @@ class AgentDeviceSnapshot {
       other.name == name &&
       other.online == online &&
       other.platform == platform &&
+      other.capabilitiesVerified == capabilitiesVerified &&
+      other.capabilitiesAnnounced == capabilitiesAnnounced &&
       _sameCapabilities(other.capabilities, capabilities);
 
   @override

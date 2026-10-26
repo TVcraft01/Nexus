@@ -11,11 +11,12 @@ import 'package:flutter/foundation.dart'
         debugPrint,
         defaultTargetPlatform,
         visibleForTesting;
-import 'package:flutter/services.dart'
-    show Clipboard, ClipboardData;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../core/agent_contract.dart';
 import '../core/brain.dart';
+import '../core/capability.dart' show defaultCapabilitiesFor;
+import '../core/capability_probe.dart';
 import '../core/command_interpreter.dart';
 import '../core/relay_client.dart';
 import '../core/crypto.dart';
@@ -60,6 +61,13 @@ class PairedDevice {
   final String pairingSecret;
   DateTime? lastVerified;
 
+  /// Hardware and service claims received through mesh presence. Empty plus
+  /// [capabilitiesAnnounced] distinguishes "the peer said none" from a legacy
+  /// peer that has never sent a capability list.
+  Set<String> announcedCaps;
+  bool capabilitiesAnnounced;
+  bool announcedCapsVerified;
+
   PairedDevice({
     required this.id,
     required this.name,
@@ -70,7 +78,11 @@ class PairedDevice {
     required this.pairingSecret,
     List<String>? addresses,
     this.lastVerified,
-  }) : addresses = addresses ?? [address];
+    Set<String>? announcedCaps,
+    this.capabilitiesAnnounced = false,
+    this.announcedCapsVerified = false,
+  }) : addresses = addresses ?? [address],
+       announcedCaps = announcedCaps ?? <String>{};
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -82,6 +94,9 @@ class PairedDevice {
     'port': port,
     'pairingSecret': pairingSecret,
     'lastVerified': lastVerified?.toIso8601String(),
+    'announcedCaps': announcedCaps.toList()..sort(),
+    'capabilitiesAnnounced': capabilitiesAnnounced,
+    'announcedCapsVerified': announcedCapsVerified,
   };
 
   factory PairedDevice.fromJson(Map<String, dynamic> json) => PairedDevice(
@@ -99,6 +114,14 @@ class PairedDevice {
     lastVerified: json['lastVerified'] != null
         ? DateTime.tryParse(json['lastVerified'] as String)
         : null,
+    announcedCaps:
+        (json['announcedCaps'] as List?)
+            ?.whereType<String>()
+            .where((value) => value.isNotEmpty)
+            .toSet() ??
+        <String>{},
+    capabilitiesAnnounced: json['capabilitiesAnnounced'] == true,
+    announcedCapsVerified: json['announcedCapsVerified'] == true,
   );
 }
 
@@ -115,8 +138,8 @@ class PairResult {
 
   const PairResult.ok(this.peerName) : ok = true, error = null, reached = true;
   const PairResult.failure(this.error, {this.reached = false})
-      : ok = false,
-        peerName = null;
+    : ok = false,
+      peerName = null;
 }
 
 /// A pairing session started by "Show my code".
@@ -257,10 +280,13 @@ class _RealClipboard implements ClipboardBackend {
 /// direct, verified message from it over TCP within the last 25 seconds.
 /// Discovery announcements are never enough — they only make a device
 /// *visible*, and the UI says so.
-class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport {
+class MeshService extends ChangeNotifier
+    implements FileFetchMesh, MeshTransport {
   final DeviceInfo identity;
   final NexusStore store;
   final ClipboardBackend clipboard;
+  final CapabilityProbe _capabilityProbe;
+  Future<Set<String>>? _localCapsFuture;
 
   MeshService({
     required this.identity,
@@ -273,7 +299,9 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     this.connectTimeout = const Duration(seconds: 5),
     this.latchWatchdog = const Duration(seconds: 90),
     this.fileRoot,
-  }) : clipboard = clipboard ?? _RealClipboard();
+    CapabilityProbe? capabilityProbe,
+  }) : clipboard = clipboard ?? _RealClipboard(),
+       _capabilityProbe = capabilityProbe ?? RealCapabilityProbe();
 
   /// How long to wait per address before falling back to the next one.
   /// Configurable so tests can exercise address fallback quickly.
@@ -370,6 +398,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     _qrInbound.removeWhere((_, r) => now >= r.expiryMs);
     return _qrInbound.values.toList();
   }
+
   String? lastNotice; // honest operational notices ("port was busy, using X")
 
   ServerSocket? _server;
@@ -433,7 +462,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   /// [from] names the peer that sent it, so the memory keeps a real source
   /// ("this came from TVcraft's phone") instead of a vague "a device".
   void Function(String phrase, String meaning, [String from])?
-      onLearnedPhraseReceived;
+  onLearnedPhraseReceived;
 
   /// Fired when a paired device tells the assistant a fact and syncs it here.
   /// The view wires this into the live [CommandService] so the fact is usable
@@ -620,7 +649,33 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   /// deviceId → whether it advertises a local brain of its own.
   final Map<String, bool> _peerHasBrain = {};
 
+  /// Probed hardware/service facilities plus static action ids from the
+  /// platform capability registry. Unknown platforms contribute no defaults.
+  Future<Set<String>> _localCapabilities() => _localCapsFuture ??= () async {
+    final probed = await _capabilityProbe.probe();
+    try {
+      final platformCapabilities = defaultCapabilitiesFor(identity.platform);
+      return <String>{
+        ...probed,
+        for (final capability in platformCapabilities) capability.id,
+      };
+    } catch (_) {
+      return Set<String>.of(probed);
+    }
+  }();
+
+  /// The canonical string ids a peer is told about in every presence frame.
+  Future<List<String>> _capabilityAnnouncement() async {
+    final capabilities = await _localCapabilities();
+    return capabilities.toList()..sort();
+  }
+
   bool peerHasBrain(String id) => _peerHasBrain[id] ?? false;
+
+  /// Whether a peer's capability list arrived authenticated by its pair key.
+  @visibleForTesting
+  bool peerCapsVerified(String id) =>
+      _paired[id]?.announcedCapsVerified ?? false;
 
   /// Paired devices that advertise a local brain, in pairing order — the
   /// escalation targets for [DistributedBrain].
@@ -634,6 +689,41 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     final previous = _peerHasBrain[peerId];
     if (previous == hasBrain) return;
     _peerHasBrain[peerId] = hasBrain;
+    notifyListeners();
+  }
+
+  /// Stores a capability list with its authentication provenance. A missing
+  /// field leaves a peer legacy; an explicit empty list suppresses defaults.
+  void _notePeerCapabilities(
+    String peerId,
+    Object? raw, {
+    required bool proven,
+  }) {
+    final peer = _paired[peerId];
+    if (peer == null) return;
+    // A missing field is a legacy peer that has never announced capabilities;
+    // leave it unannounced so ResourceMap can apply its assumed platform
+    // fallback. An explicit empty list is different: it suppresses fallback.
+    if (raw == null) return;
+    final caps = raw is List
+        ? raw.whereType<String>().where((value) => value.isNotEmpty).toSet()
+        : <String>{};
+    // A later unproven claim, including an empty one, cannot erase or downgrade
+    // a claim already authenticated by the pair key.
+    if (peer.capabilitiesAnnounced && peer.announcedCapsVerified && !proven) {
+      return;
+    }
+    final unchanged =
+        peer.capabilitiesAnnounced &&
+        peer.announcedCapsVerified == proven &&
+        peer.announcedCaps.length == caps.length &&
+        peer.announcedCaps.containsAll(caps);
+    if (unchanged) return;
+    peer.announcedCaps = caps;
+    peer.capabilitiesAnnounced = true;
+    peer.announcedCapsVerified = proven;
+    store.upsertPaired(peer.toJson());
+    _queueSave();
     notifyListeners();
   }
 
@@ -699,8 +789,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         to: deviceId,
         payload: {
           'requestId': requestId,
-          if (reply.text != null && reply.text!.isNotEmpty)
-            'text': reply.text,
+          if (reply.text != null && reply.text!.isNotEmpty) 'text': reply.text,
           'reachable': reply.reachable,
         },
         id: _newId(),
@@ -971,6 +1060,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
 
   List<PairedDevice> get pairedDevices => _paired.values.toList();
 
+  /// Probed local and static platform capabilities for a device snapshot.
+  @visibleForTesting
+  Future<Set<String>> debugLocalCapabilities() => _localCapabilities();
+
   /// Devices heard from recently. Anything older than [nearbyWindow] is
   /// dropped — a device that stopped announcing is gone, not a ghost.
   List<DiscoveredDevice> get nearbyDevices {
@@ -1079,8 +1172,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     // A no-op off Android (and harmless if the platform refuses).
     await SyncService.start();
     _startDiscovery();
-    _heartbeatTimer =
-        Timer.periodic(heartbeatInterval, (_) => _presenceSweep());
+    _heartbeatTimer = Timer.periodic(
+      heartbeatInterval,
+      (_) => _presenceSweep(),
+    );
     _clipboardTimer = Timer.periodic(
       const Duration(milliseconds: 1500),
       (_) => _checkClipboard(),
@@ -1219,12 +1314,17 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     // Discovery is best-effort, but a failure here is exactly what an empty
     // Nearby list looks like — say so out loud instead of leaving the user to
     // guess, and re-check once the socket has settled.
-    unawaited(discovery.start().then((_) {
-      final notice = discoveryNotice;
-      if (notice != null) debugPrint('NEXUS mesh: $notice');
-    }).catchError((Object e) {
-      debugPrint('NEXUS mesh: discovery could not start ($e)');
-    }));
+    unawaited(
+      discovery
+          .start()
+          .then((_) {
+            final notice = discoveryNotice;
+            if (notice != null) debugPrint('NEXUS mesh: $notice');
+          })
+          .catchError((Object e) {
+            debugPrint('NEXUS mesh: discovery could not start ($e)');
+          }),
+    );
   }
 
   /// A human-readable warning when discovery cannot do its job, or null when
@@ -1288,7 +1388,16 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   // TCP connections
   // ---------------------------------------------------------------------
 
+  String? _sourceAddress(Socket socket) {
+    try {
+      return socket.remoteAddress.address;
+    } on SocketException {
+      return null;
+    }
+  }
+
   void _onClientSocket(Socket socket) {
+    final sourceAddress = _sourceAddress(socket);
     final decoder = FrameDecoder();
     socket.listen(
       (chunk) {
@@ -1296,7 +1405,9 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         final frames = decoder.takeFrames();
         if (frames == null) return;
         for (final frame in frames) {
-          unawaited(_dispatchFrame(socket, frame));
+          unawaited(
+            _dispatchFrame(socket, frame, sourceAddress: sourceAddress),
+          );
         }
       },
       onError: (_) => _dropSocket(socket),
@@ -1304,7 +1415,11 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     );
   }
 
-  Future<void> _dispatchFrame(Socket socket, Uint8List frameBytes) async {
+  Future<void> _dispatchFrame(
+    Socket socket,
+    Uint8List frameBytes, {
+    String? sourceAddress,
+  }) async {
     Map<String, dynamic> json;
     try {
       final decoded = jsonDecode(utf8.decode(frameBytes));
@@ -1316,7 +1431,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
 
     final enc = json['enc'];
     if (enc is String) {
-      await _handleEncFrame(socket, enc);
+      await _handleEncFrame(socket, enc, sourceAddress: sourceAddress);
     } else {
       NexusMessage msg;
       try {
@@ -1326,7 +1441,12 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
       }
       // A plaintext frame has no authenticated identity yet: the only ones we
       // act on (ping/pong) carry their own proof, checked where they are read.
-      await _handleMessage(msg, socket, encrypted: false);
+      await _handleMessage(
+        msg,
+        socket,
+        encrypted: false,
+        sourceAddress: sourceAddress,
+      );
     }
   }
 
@@ -1335,7 +1455,11 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
   /// device that connects to us and speaks encrypted is attributed correctly
   /// even on its very first message. If no paired device matches, the frame
   /// might be a pairing handshake encrypted with our pending code.
-  Future<void> _handleEncFrame(Socket socket, String enc) async {
+  Future<void> _handleEncFrame(
+    Socket socket,
+    String enc, {
+    String? sourceAddress,
+  }) async {
     var peerId = _peerIdForSocket(socket);
     if (peerId == null || !_paired.containsKey(peerId)) {
       peerId = await _identifySender(socket, enc);
@@ -1363,7 +1487,13 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     // The identity is the one the channel proved: the key this frame actually
     // decrypted against, or the peer this socket already belongs to. It is
     // passed down so no later code has to believe what the payload says.
-    await _handleMessage(msg, socket, encrypted: true, provenId: peerId);
+    await _handleMessage(
+      msg,
+      socket,
+      encrypted: true,
+      provenId: peerId,
+      sourceAddress: sourceAddress,
+    );
   }
 
   /// A frame we could not decrypt with any paired device's key might be a
@@ -1377,7 +1507,9 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     // v2 QR handshake first: the shown token's pid|nonce key. A scan only
     // ever stages a request for explicit accept — never pairs on receipt.
     final shown = qrShown;
-    if (shown != null && !shown.expired && !_usedQrPids.contains(shown.pairingId)) {
+    if (shown != null &&
+        !shown.expired &&
+        !_usedQrPids.contains(shown.pairingId)) {
       try {
         final qrKey = await derivePairingKey(qrSecretFor(shown));
         final qrClear = await decryptFromB64(enc, qrKey);
@@ -1557,10 +1689,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     final ports = <int>[];
     if (!loopback) ports.add(defaultPort);
     ports.add(storedPort);
-    return ports
-        .where((port) => port > 0 && port <= 65535)
-        .toSet()
-        .toList();
+    return ports.where((port) => port > 0 && port <= 65535).toSet().toList();
   }
 
   /// Forgets the session key cached for [peerId], so the next frame derives
@@ -1604,6 +1733,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     Socket socket, {
     required bool encrypted,
     String? provenId,
+    String? sourceAddress,
   }) async {
     // The identity a frame may speak as is the one the channel proved, never
     // the one it claims. Decrypting with a peer's key proves which peer sent
@@ -1651,20 +1781,25 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         if (_paired.containsKey(msg.from)) {
           _notePeerVersion(msg.from, payload['appVersion']);
           _noteSerialHosts(msg.from, payload['serial']);
-          _notePeerBrain(msg.from, payload['brain'] == true);
+          _notePeerCapabilities(
+            msg.from,
+            payload[NexusMessage.caps],
+            proven: proven,
+          );
+          if (proven) _notePeerBrain(msg.from, payload['brain'] == true);
         }
         final name = payload['name'] as String? ?? 'Unknown device';
         final port = (payload['port'] as num?)?.toInt();
         final ips = (payload['ips'] as List?)?.whereType<String>().toList();
         _noteSeen(msg.from, verified: proven);
         debugPrint(
-          'NEXUS mesh: ping <- ${msg.from} from ${socket.remoteAddress.address}'
+          'NEXUS mesh: ping <- ${msg.from} from ${sourceAddress ?? 'unknown'}'
           '${proven ? '' : ' (unproven)'}',
         );
         if (port != null) {
           await _learnAddress(
             msg.from,
-            socket.remoteAddress.address,
+            sourceAddress ?? '',
             port,
             name,
             payload['platform'] as String? ?? 'other',
@@ -1684,6 +1819,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
               'port': store.port,
               'ips': await _myIps(),
               'serial': _serialAnnouncement(),
+              NexusMessage.caps: await _capabilityAnnouncement(),
               'brain': brain != null,
               if (_tailscale != null)
                 'tailscale': {
@@ -1695,7 +1831,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
             ts: DateTime.now().millisecondsSinceEpoch,
           ),
         );
-        _sendPlain(socket, pong);
+        await _sendPlain(socket, pong);
 
       case NexusMessage.pong:
         // Same rule as the ping: a proven pong is what makes a peer online,
@@ -1709,7 +1845,12 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         if (_paired.containsKey(msg.from)) {
           _notePeerVersion(msg.from, payload['appVersion']);
           _noteSerialHosts(msg.from, payload['serial']);
-          _notePeerBrain(msg.from, payload['brain'] == true);
+          _notePeerCapabilities(
+            msg.from,
+            payload[NexusMessage.caps],
+            proven: proven,
+          );
+          if (proven) _notePeerBrain(msg.from, payload['brain'] == true);
         }
         final name = payload['name'] as String?;
         final port = (payload['port'] as num?)?.toInt();
@@ -1717,7 +1858,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         if (port != null && name != null) {
           await _learnAddress(
             msg.from,
-            socket.remoteAddress.address,
+            sourceAddress ?? '',
             port,
             name,
             payload['platform'] as String? ?? 'other',
@@ -1876,11 +2017,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         if (brainRequestId == null || system == null) break;
         final responder = brain;
         if (responder == null) {
-          await sendBrainAnswer(
-            msg.from,
-            brainRequestId,
-            (text: null, reachable: false),
-          );
+          await sendBrainAnswer(msg.from, brainRequestId, (
+            text: null,
+            reachable: false,
+          ));
           break;
         }
         final history = <ChatTurn>[
@@ -2035,7 +2175,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
           if (hasAssistant) store.profileAssistantName = assistantName;
           _queueSave();
         }
-        onProfileReceived?.call(hasUser ? userName : null, hasAssistant ? assistantName : null);
+        onProfileReceived?.call(
+          hasUser ? userName : null,
+          hasAssistant ? assistantName : null,
+        );
         notifyListeners();
     }
   }
@@ -3076,11 +3219,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     if (entries == null) return null;
     return [
       for (final entry in entries)
-        RemoteFile(
-          name: entry.name,
-          path: entry.path,
-          isDir: entry.isDir,
-        ),
+        RemoteFile(name: entry.name, path: entry.path, isDir: entry.isDir),
     ];
   }
 
@@ -3310,6 +3449,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     int port,
     String name,
     String platform, {
+
     List<String>? ips,
     required bool trusted,
   }) async {
@@ -3385,10 +3525,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     return true;
   }
 
-  void _sendPlain(Socket socket, NexusMessage msg) {
+  Future<void> _sendPlain(Socket socket, NexusMessage msg) async {
     try {
       socket.add(FrameDecoder.encodeFrame(encodeJson(msg.toJson())));
-      unawaited(socket.flush());
+      await socket.flush();
     } catch (_) {
       _dropSocket(socket);
     }
@@ -3489,6 +3629,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
             'port': store.port,
             'ips': await _myIps(),
             'serial': _serialAnnouncement(),
+            NexusMessage.caps: await _capabilityAnnouncement(),
             'brain': brain != null,
             if (_tailscale != null)
               'tailscale': {
@@ -3501,7 +3642,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         );
         final socket = await _outboundSocket(peer);
         if (socket != null) {
-          _sendPlain(socket, await _signedPresence(msg));
+          await _sendPlain(socket, await _signedPresence(msg));
           _noteSeen(peer.id, verified: false);
         }
       }
@@ -3828,9 +3969,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     qrShown = null;
     _noteSeen(peer.id, verified: true);
     _audit('paired', 'pid=${shown.pairingId} peer=${peer.id}');
-    debugPrint(
-      'NEXUS mesh: qr-accept -> ${peer.id} pid=${shown.pairingId}',
-    );
+    debugPrint('NEXUS mesh: qr-accept -> ${peer.id} pid=${shown.pairingId}');
     final reply = NexusMessage(
       type: NexusMessage.pairAccept,
       from: identity.id,
@@ -4034,7 +4173,11 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     final key = await derivePairingKey(qrSecretFor(token));
     Socket socket;
     try {
-      socket = await Socket.connect(address, token.port, timeout: connectTimeout);
+      socket = await Socket.connect(
+        address,
+        token.port,
+        timeout: connectTimeout,
+      );
     } catch (_) {
       debugPrint('NEXUS mesh: qr-request no-route $address:${token.port}');
       return PairResult.failure(
@@ -4062,8 +4205,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
       pendingEnc = await encryptToB64(encodeJson(request.toJson()), key);
     } catch (_) {
       socket.destroy();
-      return PairResult.failure('Could not prepare the pairing request.',
-          reached: true);
+      return PairResult.failure(
+        'Could not prepare the pairing request.',
+        reached: true,
+      );
     }
     final decoder = FrameDecoder();
     final timeout = Timer(const Duration(seconds: 12), () {
@@ -4128,12 +4273,16 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
         } catch (_) {}
       }
     }
+
     socket.listen(
       handleChunk,
       onError: (_) {
         if (!completer.isCompleted) {
           completer.complete(
-            PairResult.failure('Connection lost before confirm.', reached: true),
+            PairResult.failure(
+              'Connection lost before confirm.',
+              reached: true,
+            ),
           );
         }
       },
@@ -4154,8 +4303,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     } catch (_) {
       timeout.cancel();
       socket.destroy();
-      return PairResult.failure('Could not send the pairing request.',
-          reached: true);
+      return PairResult.failure(
+        'Could not send the pairing request.',
+        reached: true,
+      );
     }
     final result = await completer.future;
     timeout.cancel();
@@ -4319,8 +4470,10 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     } catch (_) {
       timeout.cancel();
       socket.destroy();
-      return PairResult.failure('Could not send the pairing request.',
-          reached: true);
+      return PairResult.failure(
+        'Could not send the pairing request.',
+        reached: true,
+      );
     }
 
     final result = await completer.future;
@@ -4522,8 +4675,7 @@ class MeshService extends ChangeNotifier implements FileFetchMesh, MeshTransport
     // Never silently overwrite the local clipboard: a push lands in the
     // pending slot and waits for the user's tap. Only an OTP or URL
     // applies itself — and even then only with sync enabled.
-    final fromName =
-        (msg.payload['fromName'] as String?) ?? 'Another device';
+    final fromName = (msg.payload['fromName'] as String?) ?? 'Another device';
     if (store.clipboardSync && isClipboardAutoAccept(text)) {
       _lastClipboard = text;
       _pendingClipboard = null;

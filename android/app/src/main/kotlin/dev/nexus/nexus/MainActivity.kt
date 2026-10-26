@@ -84,6 +84,76 @@ class MainActivity : FlutterActivity() {
     private val SCREEN_CHANNEL = "dev.nexus.nexus/screen"
     private val PHONE_CHANNEL = "dev.nexus.nexus/phone"
     private val DEVICE_CHANNEL = "dev.nexus.nexus/device"
+
+    /// A permission-free hardware/service check used when mesh capabilities
+    /// are announced. Each check fails closed independently.
+    private fun probeCapabilities(): List<String> {
+        val capabilities = mutableListOf<String>()
+        val packageManager = packageManager
+        try {
+            if (packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
+                capabilities.add("camera")
+            }
+        } catch (_: Exception) { }
+        try {
+            if (packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)) {
+                capabilities.add("mic")
+            }
+        } catch (_: Exception) { }
+        try {
+            if (filesDir.isDirectory && filesDir.canRead() && filesDir.canWrite()) {
+                capabilities.add("filesystem")
+            }
+        } catch (_: Exception) { }
+        try {
+            if (resources.displayMetrics.widthPixels > 0 &&
+                resources.displayMetrics.heightPixels > 0) {
+                capabilities.add("display")
+            }
+        } catch (_: Exception) { }
+        try {
+            if (getSystemService(Context.BATTERY_SERVICE) is BatteryManager) {
+                capabilities.add("battery")
+            }
+        } catch (_: Exception) { }
+        try {
+            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            if (cameraManager.cameraIdList.any { id ->
+                    cameraManager.getCameraCharacteristics(id)
+                        .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                }) {
+                capabilities.add("torch")
+            }
+        } catch (_: Exception) { }
+        try {
+            if (packageManager.resolveContentProvider(ContactsContract.AUTHORITY, 0) != null) {
+                capabilities.add("contacts")
+            }
+        } catch (_: Exception) { }
+        try {
+            if (packageManager.hasSystemFeature(PackageManager.FEATURE_USB_HOST)) {
+                capabilities.add("serial-usb")
+            }
+        } catch (_: Exception) { }
+        try {
+            if (SpeechRecognizer.isRecognitionAvailable(this)) {
+                capabilities.add("speech-in")
+            }
+        } catch (_: Exception) { }
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).isNotEmpty()) {
+                capabilities.add("speech-out")
+            }
+        } catch (_: Exception) { }
+        try {
+            val ttsService = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
+            if (packageManager.queryIntentServices(ttsService, 0).isNotEmpty()) {
+                capabilities.add("tts")
+            }
+        } catch (_: Exception) { }
+        return capabilities
+    }
     private val PROVISION_CHANNEL = "dev.nexus.nexus/provisioning"
     private val NETWORK_CHANNEL = "dev.nexus.nexus/network"
     private val NETWORK_EVENTS_CHANNEL = "dev.nexus.nexus/network_events"
@@ -603,6 +673,8 @@ class MainActivity : FlutterActivity() {
                         args?.get("subject")?.toString(),
                         result,
                     )
+                } else if (call.method == "probeCapabilities") {
+                    result.success(probeCapabilities())
                 } else if (call.method == "location") {
                     requestLocation(result)
                 } else if (call.method == "openAppSettings") {

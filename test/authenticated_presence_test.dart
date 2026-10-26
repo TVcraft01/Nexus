@@ -11,7 +11,6 @@
 // These tests are the attacks, asserted as refused. Before the fix every one
 // of them succeeds; the point of keeping them is that they can never quietly
 // succeed again.
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -48,7 +47,7 @@ Map<String, dynamic> _pingFrame({
 }) => {
   'type': 'ping',
   'from': from,
-  'payload': {'name': name, 'port': port, 'platform': 'linux'},
+  'payload': {'name': name, 'port': port, 'platform': 'linux', 'brain': false},
   'id': id,
   'ts': DateTime.now().millisecondsSinceEpoch,
 };
@@ -94,10 +93,12 @@ Future<_Pair> _pair({
   Duration heartbeat = const Duration(seconds: 30),
 }) async {
   final tmp = await Directory.systemTemp.createTemp('nexus_presence');
-  final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = portA
-      ..pairingEnabled = true;
-  final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = portB
-      ..pairingEnabled = true;
+  final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
+    ..port = portA
+    ..pairingEnabled = true;
+  final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
+    ..port = portB
+    ..pairingEnabled = true;
   await storeA.save();
   await storeB.save();
 
@@ -174,6 +175,8 @@ Future<_PeerConnection> _openHonestly({
     timeout: const Duration(seconds: 3),
   );
   final connection = _PeerConnection(socket, key);
+  final ts = DateTime.now().millisecondsSinceEpoch;
+  final id = 'open-${from.identity.id}';
   await connection.send({
     'type': NexusMessage.ping,
     'from': from.identity.id,
@@ -181,9 +184,18 @@ Future<_PeerConnection> _openHonestly({
       'name': from.identity.name,
       'port': from.store.port,
       'platform': from.identity.platform,
+      'brain': from.brain != null,
+      'caps': await from.debugLocalCapabilities().then((caps) => caps.toList()),
+      'auth': await presenceTag(
+        key: key,
+        kind: NexusMessage.ping,
+        from: from.identity.id,
+        id: id,
+        ts: ts,
+      ),
     },
-    'id': 'open-${from.identity.id}',
-    'ts': DateTime.now().millisecondsSinceEpoch,
+    'id': id,
+    'ts': ts,
   });
   await _waitFor(() => target.isOnline(from.identity.id));
   return connection;
@@ -249,6 +261,33 @@ void main() {
       await h.a.stop();
     });
 
+    test('a stranger cannot set brain:true in a plaintext ping', () async {
+      final h = await _pair(portA: 53415, portB: 53416);
+      expect(h.a.isPaired('device-b'), isTrue);
+      expect(h.a.peerHasBrain('device-b'), isFalse);
+
+      await _strangerSends(h.a.port, {
+        ..._pingFrame(from: 'device-b', id: 'stranger-brain'),
+        'payload': {
+          'name': 'Phone',
+          'port': 59999,
+          'platform': 'android',
+          'brain': true,
+          'caps': ['brain.ask'],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(
+        h.a.peerHasBrain('device-b'),
+        isFalse,
+        reason: 'an unproven plaintext claim cannot make a peer delegable',
+      );
+      expect(h.a.brainPeerIds, isEmpty);
+      await h.a.stop();
+      await h.b.stop();
+    });
+
     test('a stranger cannot move where a paired device is reached', () async {
       final lan = await _reachableIpv4();
       final h = await _pair(portA: 53420, portB: 53421, via: lan);
@@ -270,7 +309,11 @@ void main() {
 
       peer = h.a.pairedDevices.singleWhere((d) => d.id == 'device-b');
       expect(peer.port, storedPort, reason: 'the route port must not move');
-      expect(peer.address, storedAddress, reason: 'the route address must not move');
+      expect(
+        peer.address,
+        storedAddress,
+        reason: 'the route address must not move',
+      );
 
       // A stranger connecting from a different source address, same claim.
       await _strangerSends(
@@ -283,7 +326,8 @@ void main() {
       expect(
         peer.address,
         storedAddress,
-        reason: 'the address we reach a paired device at must not be moved by '
+        reason:
+            'the address we reach a paired device at must not be moved by '
             'an unauthenticated claim',
       );
       expect(peer.port, storedPort);
@@ -296,10 +340,12 @@ void main() {
   group('pairing cannot be hijacked', () {
     test('a stranger cannot pair by claiming, nor burn the code', () async {
       final tmp = await Directory.systemTemp.createTemp('nexus_pairdoor');
-      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53430
-          ..pairingEnabled = true;
-      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = 53431
-          ..pairingEnabled = true;
+      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
+        ..port = 53430
+        ..pairingEnabled = true;
+      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
+        ..port = 53431
+        ..pairingEnabled = true;
       await storeA.save();
       await storeB.save();
 
@@ -310,7 +356,11 @@ void main() {
         connectTimeout: const Duration(milliseconds: 300),
       );
       final b = MeshService(
-        identity: DeviceInfo(id: 'device-b', name: 'Phone', platform: 'android'),
+        identity: DeviceInfo(
+          id: 'device-b',
+          name: 'Phone',
+          platform: 'android',
+        ),
         store: storeB,
         heartbeatInterval: const Duration(seconds: 30),
         connectTimeout: const Duration(milliseconds: 300),
@@ -356,8 +406,9 @@ void main() {
   group('discovery keeps working while distrusting', () {
     test('an unpaired device is still heard, just not trusted', () async {
       final tmp = await Directory.systemTemp.createTemp('nexus_discover');
-      final store = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53440
-          ..pairingEnabled = true;
+      final store = NexusStore(explicitPath: '${tmp.path}/a.json')
+        ..port = 53440
+        ..pairingEnabled = true;
       await store.save();
       final a = MeshService(
         identity: DeviceInfo(id: 'device-a', name: 'PC', platform: 'linux'),
@@ -394,8 +445,9 @@ void main() {
   group('frames are processed once', () {
     test('a replayed plaintext frame is dropped', () async {
       final tmp = await Directory.systemTemp.createTemp('nexus_replay');
-      final store = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 53450
-          ..pairingEnabled = true;
+      final store = NexusStore(explicitPath: '${tmp.path}/a.json')
+        ..port = 53450
+        ..pairingEnabled = true;
       await store.save();
       final a = MeshService(
         identity: DeviceInfo(id: 'device-a', name: 'PC', platform: 'linux'),
@@ -484,27 +536,38 @@ void main() {
     /// A: paired with B, and separately with C. C then goes away, so anything
     /// C is later seen to do can only have come from somewhere else.
     Future<({MeshService a, MeshService b, MeshService c, Directory tmp})>
-    pairedWithTwo({required int portA, required int portB, required int portC}) async {
+    pairedWithTwo({
+      required int portA,
+      required int portB,
+      required int portC,
+    }) async {
       final tmp = await Directory.systemTemp.createTemp('nexus_impostor');
-      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')..port = portA
-          ..pairingEnabled = true;
-      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')..port = portB
-          ..pairingEnabled = true;
-      final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = portC
-          ..pairingEnabled = true;
+      final storeA = NexusStore(explicitPath: '${tmp.path}/a.json')
+        ..port = portA
+        ..pairingEnabled = true;
+      final storeB = NexusStore(explicitPath: '${tmp.path}/b.json')
+        ..port = portB
+        ..pairingEnabled = true;
+      final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')
+        ..port = portC
+        ..pairingEnabled = true;
       await storeA.save();
       await storeB.save();
       await storeC.save();
 
-      MeshService mk(NexusStore store, String id, String name, String platform) =>
-          MeshService(
-            identity: DeviceInfo(id: id, name: name, platform: platform),
-            store: store,
-            onlineWindow: const Duration(seconds: 2),
-            visibleWindow: const Duration(seconds: 2),
-            heartbeatInterval: const Duration(seconds: 60),
-            connectTimeout: const Duration(milliseconds: 300),
-          );
+      MeshService mk(
+        NexusStore store,
+        String id,
+        String name,
+        String platform,
+      ) => MeshService(
+        identity: DeviceInfo(id: id, name: name, platform: platform),
+        store: store,
+        onlineWindow: const Duration(seconds: 2),
+        visibleWindow: const Duration(seconds: 2),
+        heartbeatInterval: const Duration(seconds: 60),
+        connectTimeout: const Duration(milliseconds: 300),
+      );
 
       final a = mk(storeA, 'device-a', 'PC', 'linux');
       final b = mk(storeB, 'device-b', 'Phone', 'android');
@@ -538,11 +601,7 @@ void main() {
     }
 
     test('it cannot make another paired device look online', () async {
-      final h = await pairedWithTwo(
-        portA: 53480,
-        portB: 53481,
-        portC: 53482,
-      );
+      final h = await pairedWithTwo(portA: 53480, portB: 53481, portC: 53482);
       expect(h.a.isOnline('device-c'), isFalse, reason: 'C is away');
 
       final impostor = await _openHonestly(
@@ -574,11 +633,7 @@ void main() {
 
     test('it cannot move where another paired device is reached', () async {
       final lan = await _reachableIpv4();
-      final h = await pairedWithTwo(
-        portA: 53490,
-        portB: 53491,
-        portC: 53492,
-      );
+      final h = await pairedWithTwo(portA: 53490, portB: 53491, portC: 53492);
       final before = h.a.pairedDevices.singleWhere((d) => d.id == 'device-c');
       final addressBefore = before.address;
       final portBefore = before.port;
@@ -615,11 +670,7 @@ void main() {
     });
 
     test('it cannot land a fact or a phrase as another device', () async {
-      final h = await pairedWithTwo(
-        portA: 53500,
-        portB: 53501,
-        portC: 53502,
-      );
+      final h = await pairedWithTwo(portA: 53500, portB: 53501, portC: 53502);
       final impostor = await _openHonestly(
         from: h.b,
         target: h.a,
@@ -653,7 +704,8 @@ void main() {
       expect(
         h.a.store.agentLearned,
         isEmpty,
-        reason: 'a phrase that changes behaviour must not be adoptable as '
+        reason:
+            'a phrase that changes behaviour must not be adoptable as '
             'another device',
       );
 
@@ -666,11 +718,7 @@ void main() {
       // The counterweight: the guard keys on identity, not on "this connection
       // is now suspicious". B's own frames must still land, with B's name on
       // them, on the very connection it used for the refused claim.
-      final h = await pairedWithTwo(
-        portA: 53510,
-        portB: 53511,
-        portC: 53512,
-      );
+      final h = await pairedWithTwo(portA: 53510, portB: 53511, portC: 53512);
       final impostor = await _openHonestly(
         from: h.b,
         target: h.a,
@@ -764,7 +812,8 @@ void main() {
       expect(
         peer.address,
         lan,
-        reason: 'a proven claim from the real device must still update the route',
+        reason:
+            'a proven claim from the real device must still update the route',
       );
       expect(h.a.isOnline('device-b'), isTrue);
 
@@ -804,6 +853,8 @@ Future<Map<String, dynamic>> _signedPing({
       'name': 'Phone',
       'port': port,
       'platform': 'android',
+      'brain': mesh.brain != null,
+      'caps': await mesh.debugLocalCapabilities().then((caps) => caps.toList()),
       'auth': tag,
     },
     'id': id,

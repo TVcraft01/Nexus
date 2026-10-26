@@ -32,13 +32,11 @@ import 'capability.dart';
 
 /// How Nexus came to believe a device can run a capability.
 enum CapabilityEvidence {
-  /// This device proved it: the action is one Nexus actually runs here end to
-  /// end. Only ever true for the device the assistant is running on.
+  /// The peer's claim arrived over a session-key-proven presence frame.
   verified,
 
-  /// Nexus assumed it from the platform the device reported at pairing. True
-  /// today for every paired device, because no peer announces what it can do —
-  /// a phone that has never told Nexus anything still looks like a phone.
+  /// The peer claimed it in presence we heard but could not authenticate, or
+  /// a legacy peer has never announced and only has a platform fallback.
   assumed,
 }
 
@@ -56,11 +54,12 @@ enum DeviceKind {
 /// The kind [platform] names, or [DeviceKind.other] when Nexus has no word for
 /// it. Kept here so the registry, the answers and the seam agree on one
 /// mapping.
-DeviceKind deviceKindOf(String platform) => switch (platform.trim().toLowerCase()) {
-  'android' => DeviceKind.phone,
-  'linux' || 'windows' || 'macos' => DeviceKind.computer,
-  _ => DeviceKind.other,
-};
+DeviceKind deviceKindOf(String platform) =>
+    switch (platform.trim().toLowerCase()) {
+      'android' => DeviceKind.phone,
+      'linux' || 'windows' || 'macos' => DeviceKind.computer,
+      _ => DeviceKind.other,
+    };
 
 /// The words a user might say for [kind]. Used only to match a noun the user
 /// actually said — never to describe a device back to them.
@@ -151,8 +150,10 @@ class CapabilityReach {
   });
 
   /// The able devices the mesh can actually reach right now.
-  List<DeviceResource> get reachable =>
-      [for (final d in able) if (d.online) d];
+  List<DeviceResource> get reachable => [
+    for (final d in able)
+      if (d.online) d,
+  ];
 
   /// Whether any known device is believed able — reachable or not.
   bool get hasAnyDevice => able.isNotEmpty;
@@ -162,8 +163,9 @@ class CapabilityReach {
 
   /// True when at least one able device really runs this (not a platform
   /// guess). False means every claim here is an assumption.
-  bool get verifiedSomewhere =>
-      able.any((d) => d.evidenceFor(capabilityId) == CapabilityEvidence.verified);
+  bool get verifiedSomewhere => able.any(
+    (d) => d.evidenceFor(capabilityId) == CapabilityEvidence.verified,
+  );
 
   /// Where this capability is *declared* to work, in the user's terms, from
   /// the registry's own platform sets — "a phone", "a phone or computer". Null
@@ -202,30 +204,38 @@ class ResourceMap {
   /// Reads a device snapshot list into the seam's vocabulary.
   ///
   /// [verifiedLocally] is the set of actions this device genuinely runs end to
-  /// end; anything else it lists as a capability is an assumption from its own
-  /// platform, exactly as a peer's is. Empty means "assume everything", which
-  /// is what a caller that has not been told otherwise should get — the
-  /// alternative is claiming a device does things it may not.
+  /// end; anything else it lists as a capability is an assumption. A peer with
+  /// an explicit announcement uses that list (including empty); only a legacy
+  /// peer with no announcement uses platform defaults as assumptions.
   factory ResourceMap.of({
     AgentDeviceSnapshot? local,
     List<AgentDeviceSnapshot> paired = const [],
     Set<String> verifiedLocally = const {},
   }) {
-    DeviceResource read(AgentDeviceSnapshot d, {required bool isThisDevice}) =>
-        DeviceResource(
-          id: d.id,
-          name: d.name,
-          platform: d.platform,
-          isThisDevice: isThisDevice,
-          online: d.online,
-          abilities: {
-            for (final capability in d.capabilities)
-              capability.id:
-                  isThisDevice && verifiedLocally.contains(capability.id)
+    DeviceResource read(AgentDeviceSnapshot d, {required bool isThisDevice}) {
+      final capabilities =
+          isThisDevice || d.capabilitiesAnnounced || d.capabilities.isNotEmpty
+          ? d.capabilities
+          : defaultCapabilitiesFor(d.platform);
+      return DeviceResource(
+        id: d.id,
+        name: d.name,
+        platform: d.platform,
+        isThisDevice: isThisDevice,
+        online: d.online,
+        abilities: {
+          for (final capability in capabilities)
+            capability.id: isThisDevice
+                ? verifiedLocally.contains(capability.id)
                       ? CapabilityEvidence.verified
-                      : CapabilityEvidence.assumed,
-          },
-        );
+                      : CapabilityEvidence.assumed
+                : d.capabilitiesAnnounced && d.capabilitiesVerified == true
+                ? CapabilityEvidence.verified
+                : CapabilityEvidence.assumed,
+        },
+      );
+    }
+
     return ResourceMap(
       here: local == null ? null : read(local, isThisDevice: true),
       paired: [for (final d in paired) read(d, isThisDevice: false)],
@@ -250,7 +260,10 @@ class ResourceMap {
   CapabilityReach reach(String capabilityId) => CapabilityReach(
     capabilityId: capabilityId,
     declared: capabilityFor(capabilityId) != null,
-    able: [for (final d in devices) if (d.can(capabilityId)) d],
+    able: [
+      for (final d in devices)
+        if (d.can(capabilityId)) d,
+    ],
   );
 
   /// The device Nexus *would* ask to run [capabilityId], or null when none can.
@@ -392,6 +405,5 @@ class LastAction {
   /// status failure, and a request the catalogue *answered* while no device
   /// here can run it carries a reason on a success. A clarification carries
   /// neither, because asking is not failing — the status vocabulary's own rule.
-  bool get failed =>
-      reason != null || status == AgentResultStatus.unavailable;
+  bool get failed => reason != null || status == AgentResultStatus.unavailable;
 }

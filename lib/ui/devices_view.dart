@@ -193,8 +193,7 @@ class DevicesView extends StatelessWidget {
         // one node (this phone, centered) and one primary button. The app
         // is complete on a single phone; pairing is an invitation, not a
         // missing step. One or more peers restores the mesh picture below.
-        if (paired.isEmpty)
-          _PhoneOnlyDevice(mesh: mesh),
+        if (paired.isEmpty) _PhoneOnlyDevice(mesh: mesh),
         if (nearby.isNotEmpty) ...[
           NexusSectionHeader(
             'Nearby',
@@ -513,7 +512,14 @@ class _DeviceDetailSheetState extends State<_DeviceDetailSheet> {
             'Offline · last seen ${_timeAgo(lastSeen)}',
           );
 
-    final capabilities = _runnableCapabilityLabels(device.platform);
+    final capabilities = device.capabilitiesAnnounced
+        ? [
+            for (final id in device.announcedCaps)
+              if (capabilityFor(id) case final capability?
+                  when capability.isDeviceExecutable)
+                capability.label.toLowerCase(),
+          ]
+        : _runnableCapabilityLabels(device.platform);
 
     return SafeArea(
       top: false,

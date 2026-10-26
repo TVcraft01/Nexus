@@ -26,6 +26,9 @@ class NexusMessage {
 
   static const ping = 'ping';
   static const pong = 'pong';
+
+  /// Well-known presence payload key: canonical capability-id list.
+  static const caps = 'caps';
   static const pairRequest = 'pair-request';
   static const pairAccept = 'pair-accept';
   static const pairReject = 'pair-reject';
@@ -56,8 +59,7 @@ class NexusMessage {
       'agent.learned'; // device → peers: a phrase the user just taught
   static const agentFact =
       'agent.fact'; // device → peers: a fact the user just told the assistant
-  static const agentReminder =
-      'agent.reminder'; // device → peers: a reminder just set (fires everywhere)
+  static const agentReminder = 'agent.reminder'; // device → peers: a reminder just set (fires everywhere)
   static const agentDefault =
       'agent.default'; // device → peers: a "which …?" answer just remembered
   static const agentProfile =

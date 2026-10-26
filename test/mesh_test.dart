@@ -1,12 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/command_service.dart';
+import 'package:nexus/core/capability_probe.dart';
+import 'package:nexus/core/resource_map.dart';
 import 'package:nexus/core/identity.dart';
 import 'package:nexus/core/memory.dart';
+import 'package:nexus/core/protocol.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/core/serial_transport.dart';
 import 'package:nexus/core/version.dart';
@@ -122,9 +126,73 @@ void main() {
     expect(meshA.pairedDevices.single.name, 'Test Phone');
     expect(meshB.pairedDevices.single.name, 'Test Linux PC');
 
+    // The authenticated pairing/presence exchange carries concrete probe and
+    // static action ids in both directions, and saves their evidence.
+    await _waitFor(
+      () =>
+          meshA.pairedDevices.single.announcedCapsVerified &&
+          meshB.pairedDevices.single.announcedCapsVerified,
+    );
+    expect(
+      meshA.pairedDevices.single.announcedCaps,
+      contains(AgentActions.appOpen),
+    );
+    expect(meshA.pairedDevices.single.announcedCapsVerified, isTrue);
+    expect(
+      meshB.pairedDevices.single.announcedCaps,
+      contains(AgentActions.appOpen),
+    );
+    expect(meshB.pairedDevices.single.announcedCapsVerified, isTrue);
+
     // Honest presence: both sides verified each other by direct connection.
     expect(meshA.isOnline('device-b'), isTrue);
     expect(meshB.isOnline('device-a'), isTrue);
+  });
+
+  test('every ping and pong carries the local capability list', () async {
+    final probeA = FakeCapabilityProbe({'camera', 'mic'});
+    final probeB = FakeCapabilityProbe({'ssh-client'});
+    meshA = MeshService(
+      identity: meshA.identity,
+      store: storeA,
+      clipboard: clipA,
+      capabilityProbe: probeA,
+      heartbeatInterval: const Duration(seconds: 30),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    meshB = MeshService(
+      identity: meshB.identity,
+      store: storeB,
+      clipboard: clipB,
+      capabilityProbe: probeB,
+      heartbeatInterval: const Duration(seconds: 30),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
+
+    final pairing = meshA.beginPairing();
+    final paired = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: pairing.code,
+    );
+    expect(paired.ok, isTrue, reason: paired.error);
+    await _waitFor(
+      () =>
+          meshA.pairedDevices.single.announcedCapsVerified &&
+          meshB.pairedDevices.single.announcedCapsVerified,
+    );
+
+    expect(
+      await meshA.debugLocalCapabilities(),
+      containsAll({'camera', 'mic'}),
+    );
+    expect(await meshB.debugLocalCapabilities(), contains('ssh-client'));
+    expect(meshA.pairedDevices.single.announcedCaps, contains('ssh-client'));
+    expect(meshB.pairedDevices.single.announcedCaps, contains('camera'));
+    expect(meshA.pairedDevices.single.capabilitiesAnnounced, isTrue);
+    expect(meshA.pairedDevices.single.announcedCapsVerified, isTrue);
   });
 
   test('wrong code is rejected and nothing is paired', () async {
@@ -143,73 +211,91 @@ void main() {
     expect(meshB.isPaired('device-a'), isFalse);
   });
 
-  test('a second device reusing a spent code is refused, not ignored', () async {
-    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212
+  test(
+    'a second device reusing a spent code is refused, not ignored',
+    () async {
+      final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')
+        ..port = 53212
         ..pairingEnabled = true
         ..fileShare = true;
-    await storeC.save();
-    final meshC = MeshService(
-      identity: DeviceInfo(id: 'device-c', name: 'Phone C', platform: 'android'),
-      store: storeC,
-      clipboard: FakeClipboard(),
-      connectTimeout: const Duration(milliseconds: 300),
-    );
-    await meshA.start();
-    await meshB.start();
-    await meshC.start();
-    try {
-      // One code, shown once. The first device spends it.
-      final session = meshA.beginPairing();
-      final first = await meshB.pairWith(
-        address: '127.0.0.1',
-        port: meshA.port,
-        code: session.code,
+      await storeC.save();
+      final meshC = MeshService(
+        identity: DeviceInfo(
+          id: 'device-c',
+          name: 'Phone C',
+          platform: 'android',
+        ),
+        store: storeC,
+        clipboard: FakeClipboard(),
+        connectTimeout: const Duration(milliseconds: 300),
       );
-      expect(first.ok, isTrue, reason: first.error);
+      await meshA.start();
+      await meshB.start();
+      await meshC.start();
+      try {
+        // One code, shown once. The first device spends it.
+        final session = meshA.beginPairing();
+        final first = await meshB.pairWith(
+          address: '127.0.0.1',
+          port: meshA.port,
+          code: session.code,
+        );
+        expect(first.ok, isTrue, reason: first.error);
 
-      // The second device scans the same still-visible code. It must be told
-      // the code is spent — silence here reads to a user as "Nexus can only
-      // pair one device", after a 12-second stall.
-      final second = await meshC.pairWith(
-        address: '127.0.0.1',
-        port: meshA.port,
-        code: session.code,
-      );
-      expect(second.ok, isFalse);
-      expect(second.reached, isTrue);
-      expect(second.error, contains('already been used'), reason: second.error);
+        // The second device scans the same still-visible code. It must be told
+        // the code is spent — silence here reads to a user as "Nexus can only
+        // pair one device", after a 12-second stall.
+        final second = await meshC.pairWith(
+          address: '127.0.0.1',
+          port: meshA.port,
+          code: session.code,
+        );
+        expect(second.ok, isFalse);
+        expect(second.reached, isTrue);
+        expect(
+          second.error,
+          contains('already been used'),
+          reason: second.error,
+        );
 
-      // Nothing was paired by the refused attempt, and the first device is
-      // still paired.
-      expect(meshA.isPaired('device-c'), isFalse);
-      expect(meshA.isPaired('device-b'), isTrue);
-      expect(meshA.pairedDevices, hasLength(1));
+        // Nothing was paired by the refused attempt, and the first device is
+        // still paired.
+        expect(meshA.isPaired('device-c'), isFalse);
+        expect(meshA.isPaired('device-b'), isTrue);
+        expect(meshA.pairedDevices, hasLength(1));
 
-      // And a fresh code pairs the second device normally.
-      final fresh = meshA.beginPairing();
-      final third = await meshC.pairWith(
-        address: '127.0.0.1',
-        port: meshA.port,
-        code: fresh.code,
-      );
-      expect(third.ok, isTrue, reason: third.error);
-      expect(meshA.pairedDevices, hasLength(2));
-    } finally {
-      await meshC.stop();
-    }
-  });
+        // And a fresh code pairs the second device normally.
+        final fresh = meshA.beginPairing();
+        final third = await meshC.pairWith(
+          address: '127.0.0.1',
+          port: meshA.port,
+          code: fresh.code,
+        );
+        expect(third.ok, isTrue, reason: third.error);
+        expect(meshA.pairedDevices, hasLength(2));
+      } finally {
+        await meshC.stop();
+      }
+    },
+  );
 
   test('a third device joins without displacing the first two', () async {
-    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')..port = 53212
-        ..pairingEnabled = true
-        ..fileShare = true;
-    final storeD = NexusStore(explicitPath: '${tmp.path}/d.json')..port = 53213
-        ..pairingEnabled = true
-        ..fileShare = true;
+    final storeC = NexusStore(explicitPath: '${tmp.path}/c.json')
+      ..port = 53212
+      ..pairingEnabled = true
+      ..fileShare = true;
+    final storeD = NexusStore(explicitPath: '${tmp.path}/d.json')
+      ..port = 53213
+      ..pairingEnabled = true
+      ..fileShare = true;
     await storeC.save();
     await storeD.save();
     final meshC = MeshService(
-      identity: DeviceInfo(id: 'device-c', name: 'Phone C', platform: 'android'),
+      identity: DeviceInfo(
+        id: 'device-c',
+        name: 'Phone C',
+        platform: 'android',
+      ),
       store: storeC,
       clipboard: FakeClipboard(),
       connectTimeout: const Duration(milliseconds: 300),
@@ -242,10 +328,11 @@ void main() {
 
       // All three survive on the host, each with its own secret and identity.
       expect(meshA.pairedDevices, hasLength(3));
-      expect(
-        meshA.pairedDevices.map((d) => d.id).toSet(),
-        {'device-b', 'device-c', 'device-d'},
-      );
+      expect(meshA.pairedDevices.map((d) => d.id).toSet(), {
+        'device-b',
+        'device-c',
+        'device-d',
+      });
       final secrets = meshA.pairedDevices
           .map((d) => d.pairingSecret)
           .where((s) => s.isNotEmpty)
@@ -265,21 +352,261 @@ void main() {
     }
   });
 
-  test('a QR carries every address, and a stale first one is skipped', () async {
-    await meshA.start();
-    await meshB.start();
+  test(
+    'a QR carries every address, and a stale first one is skipped',
+    () async {
+      await meshA.start();
+      await meshB.start();
 
+      final session = meshA.beginPairing();
+      // A stale address first — exactly why a QR advertises several.
+      final result = await meshB.pairWithCandidates(
+        addresses: const ['192.0.2.1', '127.0.0.1'],
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(result.ok, isTrue, reason: result.error);
+      expect(meshA.isPaired('device-b'), isTrue);
+      expect(meshB.isPaired('device-a'), isTrue);
+    },
+  );
+
+  test('an unproven capability claim is assumed, not verified', () async {
+    await meshA.start();
     final session = meshA.beginPairing();
-    // A stale address first — exactly why a QR advertises several.
-    final result = await meshB.pairWithCandidates(
-      addresses: const ['192.0.2.1', '127.0.0.1'],
+    final paired = await meshB.pairWith(
+      address: '127.0.0.1',
       port: meshA.port,
       code: session.code,
     );
-    expect(result.ok, isTrue, reason: result.error);
-    expect(meshA.isPaired('device-b'), isTrue);
-    expect(meshB.isPaired('device-a'), isTrue);
+    expect(paired.ok, isTrue, reason: paired.error);
+
+    // The pairing code proves the pairing itself, not any future capability
+    // frame. Send a plaintext claim over a new, unattributed socket.
+    final stranger = await Socket.connect('127.0.0.1', meshA.port);
+    final frame = NexusMessage(
+      type: NexusMessage.ping,
+      from: 'device-b',
+      payload: {
+        'name': 'Test Phone',
+        'platform': 'android',
+        'port': storeB.port,
+        'caps': [AgentActions.callPlace],
+        'brain': true,
+      },
+      id: 'unproven-capability-claim',
+      ts: DateTime.now().millisecondsSinceEpoch,
+    );
+    stranger.add(FrameDecoder.encodeFrame(encodeJson(frame.toJson())));
+    await stranger.flush();
+    await stranger.close();
+
+    await _waitFor(() => meshA.pairedDevices.single.capabilitiesAnnounced);
+    final peer = meshA.pairedDevices.single;
+    expect(peer.announcedCaps, {AgentActions.callPlace});
+    expect(peer.announcedCapsVerified, isFalse);
+    expect(meshA.peerHasBrain('device-b'), isFalse);
+    expect(
+      ResourceMap.of(
+        paired: [
+          AgentDeviceSnapshot(
+            id: peer.id,
+            name: peer.name,
+            online: false,
+            platform: peer.platform,
+            capabilities: [
+              for (final id in peer.announcedCaps) DeviceCapability(id),
+            ],
+            capabilitiesVerified: peer.announcedCapsVerified,
+            capabilitiesAnnounced: peer.capabilitiesAnnounced,
+          ),
+        ],
+      ).peers.single.evidenceFor(AgentActions.callPlace),
+      CapabilityEvidence.assumed,
+    );
+
+    await meshA.stop();
+    meshA = MeshService(
+      identity: DeviceInfo(
+        id: 'device-a',
+        name: 'Test Linux PC',
+        platform: 'linux',
+      ),
+      store: storeA,
+      clipboard: clipA,
+      heartbeatInterval: const Duration(seconds: 30),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    final restored = meshA.pairedDevices.single;
+    expect(restored.announcedCaps, {AgentActions.callPlace});
+    expect(restored.capabilitiesAnnounced, isTrue);
+    expect(restored.announcedCapsVerified, isFalse);
+    expect(
+      ResourceMap.of(
+        paired: [
+          AgentDeviceSnapshot(
+            id: restored.id,
+            name: restored.name,
+            online: false,
+            platform: restored.platform,
+            capabilities: [
+              for (final id in restored.announcedCaps) DeviceCapability(id),
+            ],
+            capabilitiesVerified: restored.announcedCapsVerified,
+            capabilitiesAnnounced: restored.capabilitiesAnnounced,
+          ),
+        ],
+      ).peers.single.evidenceFor(AgentActions.callPlace),
+      CapabilityEvidence.assumed,
+    );
   });
+
+  test(
+    'unproven fewer caps cannot downgrade a verified announcement',
+    () async {
+      await meshA.start();
+      await meshB.start();
+      final pairing = meshA.beginPairing();
+      expect(
+        (await meshB.pairWith(
+          address: '127.0.0.1',
+          port: meshA.port,
+          code: pairing.code,
+        )).ok,
+        isTrue,
+      );
+      await _waitFor(() => meshA.pairedDevices.single.announcedCapsVerified);
+
+      final before = Set<String>.of(meshA.pairedDevices.single.announcedCaps);
+      expect(before.length, greaterThan(1));
+
+      final stranger = await Socket.connect('127.0.0.1', meshA.port);
+      final received = Completer<NexusMessage>();
+      final decoder = FrameDecoder();
+      stranger.listen((chunk) {
+        decoder.add(chunk);
+        for (final bytes in decoder.takeFrames() ?? const <Uint8List>[]) {
+          final json = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+          if (json['type'] == NexusMessage.pong && !received.isCompleted) {
+            received.complete(NexusMessage.fromJson(json));
+          }
+        }
+      });
+      final unproven = NexusMessage(
+        type: NexusMessage.ping,
+        from: 'device-b',
+        payload: {
+          'name': 'Test Phone',
+          'platform': 'android',
+          'port': storeB.port,
+          'caps': <String>[before.first],
+        },
+        id: 'unproven-fewer-caps-after-proven',
+        ts: DateTime.now().millisecondsSinceEpoch,
+      );
+      stranger.add(FrameDecoder.encodeFrame(encodeJson(unproven.toJson())));
+      await stranger.flush();
+      // A pong confirms the receiver processed this unauthenticated ping.
+      await received.future.timeout(const Duration(seconds: 2));
+      final peer = meshA.pairedDevices.single;
+      expect(peer.announcedCaps, before);
+      expect(peer.capabilitiesAnnounced, isTrue);
+      expect(peer.announcedCapsVerified, isTrue);
+      expect(
+        ResourceMap.of(
+          paired: [
+            AgentDeviceSnapshot(
+              id: peer.id,
+              name: peer.name,
+              online: false,
+              platform: peer.platform,
+              capabilities: [
+                for (final id in peer.announcedCaps) DeviceCapability(id),
+              ],
+              capabilitiesVerified: peer.announcedCapsVerified,
+              capabilitiesAnnounced: peer.capabilitiesAnnounced,
+            ),
+          ],
+        ).peers.single.capabilityIds,
+        before,
+      );
+    },
+  );
+
+  test(
+    'an announced capability list persists with verified evidence on restart',
+    () async {
+      await meshA.start();
+      await meshB.start();
+      final pairing = meshA.beginPairing();
+      expect(
+        (await meshB.pairWith(
+          address: '127.0.0.1',
+          port: meshA.port,
+          code: pairing.code,
+        )).ok,
+        isTrue,
+      );
+      await _waitFor(() => meshA.pairedDevices.single.announcedCapsVerified);
+
+      final original = meshA.pairedDevices.single;
+      final restored = PairedDevice.fromJson(original.toJson());
+      expect(restored.announcedCaps, original.announcedCaps);
+      expect(restored.capabilitiesAnnounced, isTrue);
+      expect(restored.announcedCapsVerified, isTrue);
+
+      await meshA.stop();
+      meshA = MeshService(
+        identity: DeviceInfo(
+          id: 'device-a',
+          name: 'Test Linux PC',
+          platform: 'linux',
+        ),
+        store: storeA,
+        clipboard: clipA,
+        heartbeatInterval: const Duration(seconds: 30),
+        connectTimeout: const Duration(milliseconds: 300),
+      );
+      await meshA.start();
+      expect(meshA.pairedDevices.single.announcedCaps, original.announcedCaps);
+      expect(meshA.pairedDevices.single.announcedCapsVerified, isTrue);
+    },
+  );
+
+  test('an explicit empty capability list suppresses platform fallback', () {
+    const peer = AgentDeviceSnapshot(
+      id: 'satellite',
+      name: 'Satellite',
+      online: true,
+      platform: 'android',
+      capabilities: [],
+      capabilitiesVerified: true,
+      capabilitiesAnnounced: true,
+    );
+    final resources = ResourceMap.of(paired: [peer]);
+    expect(resources.peers.single.capabilityIds, isEmpty);
+    expect(resources.peers.single.can(AgentActions.callPlace), isFalse);
+  });
+
+  test(
+    'a QR carries every address, and a stale first one is skipped',
+    () async {
+      await meshA.start();
+      await meshB.start();
+
+      final session = meshA.beginPairing();
+      // A stale address first — exactly why a QR advertises several.
+      final result = await meshB.pairWithCandidates(
+        addresses: const ['192.0.2.1', '127.0.0.1'],
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(result.ok, isTrue, reason: result.error);
+      expect(meshA.isPaired('device-b'), isTrue);
+      expect(meshB.isPaired('device-a'), isTrue);
+    },
+  );
 
   test('a rejected code stops after the device was reached', () async {
     await meshA.start();
@@ -323,15 +650,18 @@ void main() {
     );
   });
 
-  test('a QR with no address at all says so instead of dialling nothing', () async {
-    final result = await meshB.pairWithCandidates(
-      addresses: const [],
-      port: 53219,
-      code: 'ABCD-EFGH',
-    );
-    expect(result.ok, isFalse);
-    expect(result.error, contains('no address'));
-  });
+  test(
+    'a QR with no address at all says so instead of dialling nothing',
+    () async {
+      final result = await meshB.pairWithCandidates(
+        addresses: const [],
+        port: 53219,
+        code: 'ABCD-EFGH',
+      );
+      expect(result.ok, isFalse);
+      expect(result.error, contains('no address'));
+    },
+  );
 
   test('encrypted clipboard travels from phone to PC after pairing', () async {
     await meshA.start();
@@ -1615,10 +1945,7 @@ void main() {
     // And the sender is named, not guessed at: a fact from a paired device
     // says so in its provenance.
     expect(factFrom, isNotEmpty);
-    expect(
-      meshB.store.agentFacts.single.stamp.origin,
-      MemoryOrigin.device,
-    );
+    expect(meshB.store.agentFacts.single.stamp.origin, MemoryOrigin.device);
   });
 
   test(
@@ -1668,7 +1995,8 @@ void main() {
     );
     expect(result.ok, isTrue);
 
-    const line = '{"id":"r-1","text":"take out the trash",'
+    const line =
+        '{"id":"r-1","text":"take out the trash",'
         '"dueAt":"2026-09-05T20:00:00.000"}';
 
     String? seenLine;
@@ -1716,37 +2044,39 @@ void main() {
     expect(meshB.store.agentDefaults['timer.set.seconds'], '5 minutes');
   });
 
-  test('a rename on one device syncs the profile to its paired peers',
-      () async {
-    await meshA.start();
-    await meshB.start();
+  test(
+    'a rename on one device syncs the profile to its paired peers',
+    () async {
+      await meshA.start();
+      await meshB.start();
 
-    final session = meshA.beginPairing();
-    final result = await meshB.pairWith(
-      address: '127.0.0.1',
-      port: meshA.port,
-      code: session.code,
-    );
-    expect(result.ok, isTrue);
+      final session = meshA.beginPairing();
+      final result = await meshB.pairWith(
+        address: '127.0.0.1',
+        port: meshA.port,
+        code: session.code,
+      );
+      expect(result.ok, isTrue);
 
-    String? seenUser;
-    String? seenAssistant;
-    // The live assistant claims the rename: it adopts it and its funnel
-    // writes the store (the mesh only delivers when a listener is attached).
-    meshB.onProfileReceived = (userName, assistantName) {
-      seenUser = userName;
-      seenAssistant = assistantName;
-      meshB.store.profileUserName = userName;
-      meshB.store.profileAssistantName = assistantName;
-    };
+      String? seenUser;
+      String? seenAssistant;
+      // The live assistant claims the rename: it adopts it and its funnel
+      // writes the store (the mesh only delivers when a listener is attached).
+      meshB.onProfileReceived = (userName, assistantName) {
+        seenUser = userName;
+        seenAssistant = assistantName;
+        meshB.store.profileUserName = userName;
+        meshB.store.profileAssistantName = assistantName;
+      };
 
-    await meshA.broadcastProfile(userName: 'Sam', assistantName: 'Nexus');
+      await meshA.broadcastProfile(userName: 'Sam', assistantName: 'Nexus');
 
-    await _waitFor(() => seenAssistant != null);
-    expect(seenUser, 'Sam');
-    expect(seenAssistant, 'Nexus');
-    expect(meshB.store.profileAssistantName, 'Nexus');
-  });
+      await _waitFor(() => seenAssistant != null);
+      expect(seenUser, 'Sam');
+      expect(seenAssistant, 'Nexus');
+      expect(meshB.store.profileAssistantName, 'Nexus');
+    },
+  );
 
   test('an assistant rename syncs even when the user has no name', () async {
     await meshA.start();
@@ -1783,177 +2113,166 @@ void main() {
     expect(meshB.store.profileUserName, isNull);
   });
 
-  test(
-    'file.fetch end to end: a real peer serves report.pdf and the phone saves it',
-    () async {
-      // The whole vertical over two real mesh endpoints on loopback: A (the
-      // "PC") serves report.pdf; B (the "phone") parses "get report.pdf from
-      // my pc", resolves A, and runs the fetch through its real MeshService —
-      // the very adapter the app injects. This is the claim the fake-mesh
-      // tests could not make: that the core seam really speaks to a peer.
-      final rootA = Directory('${tmp.path}/servedA')..createSync();
-      final downloads = Directory('${tmp.path}/downloads')..createSync();
-      final sourceBytes = List<int>.generate(2048, (i) => (i * 7) % 256);
-      File('${rootA.path}/report.pdf').writeAsBytesSync(sourceBytes);
+  test('file.fetch end to end: a real peer serves report.pdf and the phone saves it', () async {
+    // The whole vertical over two real mesh endpoints on loopback: A (the
+    // "PC") serves report.pdf; B (the "phone") parses "get report.pdf from
+    // my pc", resolves A, and runs the fetch through its real MeshService —
+    // the very adapter the app injects. This is the claim the fake-mesh
+    // tests could not make: that the core seam really speaks to a peer.
+    final rootA = Directory('${tmp.path}/servedA')..createSync();
+    final downloads = Directory('${tmp.path}/downloads')..createSync();
+    final sourceBytes = List<int>.generate(2048, (i) => (i * 7) % 256);
+    File('${rootA.path}/report.pdf').writeAsBytesSync(sourceBytes);
 
-      await meshA.stop();
-      meshA = MeshService(
-        identity: DeviceInfo(
-          id: 'device-a',
-          name: 'Test Linux PC',
-          platform: 'linux',
-        ),
-        store: storeA,
-        clipboard: clipA,
-        fileRoot: rootA.path,
-        onlineWindow: const Duration(seconds: 3),
-        visibleWindow: const Duration(seconds: 3),
-        heartbeatInterval: const Duration(seconds: 2),
-        connectTimeout: const Duration(milliseconds: 300),
-      );
-      await meshA.start();
-      await meshB.start();
-
-      final session = meshA.beginPairing();
-      final paired = await meshB.pairWith(
-        address: '127.0.0.1',
-        port: meshA.port,
-        code: session.code,
-      );
-      expect(paired.ok, isTrue, reason: paired.error);
-
-      // What the app's service sees: A as a paired computer, B as this phone.
-      const pc = AgentDeviceSnapshot(
+    await meshA.stop();
+    meshA = MeshService(
+      identity: DeviceInfo(
         id: 'device-a',
         name: 'Test Linux PC',
-        online: true,
         platform: 'linux',
-      );
-      const phone = AgentDeviceSnapshot(
-        id: 'device-b',
-        name: 'Test Phone',
-        online: true,
-        platform: 'android',
-      );
-      final service = CommandService(devices: () => const [pc], local: phone);
+      ),
+      store: storeA,
+      clipboard: clipA,
+      fileRoot: rootA.path,
+      onlineWindow: const Duration(seconds: 3),
+      visibleWindow: const Duration(seconds: 3),
+      heartbeatInterval: const Duration(seconds: 2),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
 
-      // 1. Parse + resolve: the sentence becomes a fetch aimed at A.
-      final result = service.execute('get report.pdf from my pc');
-      expect(
-        result.status,
-        AgentResultStatus.succeeded,
-        reason: result.message,
-      );
-      final message = result.dispatch! as AgentMessage;
-      expect(message.action, AgentActions.fileFetch);
-      expect(message.arguments!['peerId'], 'device-a');
-      expect(message.arguments!['filename'], 'report.pdf');
+    final session = meshA.beginPairing();
+    final paired = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(paired.ok, isTrue, reason: paired.error);
 
-      // 2. Run: B's real MeshService is the transport the executor uses.
-      final executor = DeviceExecutor(
-        fileMesh: meshB,
-        fileDownloadsDir: downloads.path,
-      );
-      final outcome = await executor.run(
-        AgentRequest(
-          requestId: 'e2e',
-          target: meshB.identity.id,
-          action: AgentActions.fileFetch,
-          arguments: message.arguments!,
-        ),
-      );
+    // What the app's service sees: A as a paired computer, B as this phone.
+    const pc = AgentDeviceSnapshot(
+      id: 'device-a',
+      name: 'Test Linux PC',
+      online: true,
+      platform: 'linux',
+    );
+    const phone = AgentDeviceSnapshot(
+      id: 'device-b',
+      name: 'Test Phone',
+      online: true,
+      platform: 'android',
+    );
+    final service = CommandService(devices: () => const [pc], local: phone);
 
-      expect(outcome.ok, isTrue, reason: outcome.message);
-      final savedPath = '${downloads.path}${Platform.pathSeparator}report.pdf';
-      expect(outcome.message, contains(savedPath));
-      final saved = File(savedPath);
-      expect(saved.existsSync(), isTrue, reason: meshB.lastFileError);
-      // The proof: the bytes that left A are the bytes on B's disk.
-      expect(saved.readAsBytesSync(), sourceBytes);
-    },
-  );
+    // 1. Parse + resolve: the sentence becomes a fetch aimed at A.
+    final result = service.execute('get report.pdf from my pc');
+    expect(result.status, AgentResultStatus.succeeded, reason: result.message);
+    final message = result.dispatch! as AgentMessage;
+    expect(message.action, AgentActions.fileFetch);
+    expect(message.arguments!['peerId'], 'device-a');
+    expect(message.arguments!['filename'], 'report.pdf');
 
-  test(
-    'file.fetch: a failed local save is named as storage, not blamed on the '
-    'network (real pull, unwritable destination)',
-    () async {
-      // The failure-path twin of the end-to-end test above. A real MeshService
-      // pull finds the file on A, streams it, and then B's disk write fails:
-      // the save path's parent folder does not exist, so `File.open` throws
-      // exactly as it would on a full, read-only, or permission-denied disk.
-      // The requester must name the disk, not the download. This is the case
-      // core/file_fetch.dart's local-save classification exists for, and
-      // until now only a fake mesh had ever produced it.
-      final rootA = Directory('${tmp.path}/servedA')..createSync();
-      File(
-        '${rootA.path}/report.pdf',
-      ).writeAsBytesSync(List<int>.generate(64, (i) => (i * 3) % 256));
+    // 2. Run: B's real MeshService is the transport the executor uses.
+    final executor = DeviceExecutor(
+      fileMesh: meshB,
+      fileDownloadsDir: downloads.path,
+    );
+    final outcome = await executor.run(
+      AgentRequest(
+        requestId: 'e2e',
+        target: meshB.identity.id,
+        action: AgentActions.fileFetch,
+        arguments: message.arguments!,
+      ),
+    );
 
-      await meshA.stop();
-      meshA = MeshService(
-        identity: DeviceInfo(
-          id: 'device-a',
-          name: 'Test Linux PC',
-          platform: 'linux',
-        ),
-        store: storeA,
-        clipboard: clipA,
-        fileRoot: rootA.path,
-        onlineWindow: const Duration(seconds: 3),
-        visibleWindow: const Duration(seconds: 3),
-        heartbeatInterval: const Duration(seconds: 2),
-        connectTimeout: const Duration(milliseconds: 300),
-      );
-      await meshA.start();
-      await meshB.start();
+    expect(outcome.ok, isTrue, reason: outcome.message);
+    final savedPath = '${downloads.path}${Platform.pathSeparator}report.pdf';
+    expect(outcome.message, contains(savedPath));
+    final saved = File(savedPath);
+    expect(saved.existsSync(), isTrue, reason: meshB.lastFileError);
+    // The proof: the bytes that left A are the bytes on B's disk.
+    expect(saved.readAsBytesSync(), sourceBytes);
+  });
 
-      final session = meshA.beginPairing();
-      final paired = await meshB.pairWith(
-        address: '127.0.0.1',
-        port: meshA.port,
-        code: session.code,
-      );
-      expect(paired.ok, isTrue, reason: paired.error);
+  test('file.fetch: a failed local save is named as storage, not blamed on the '
+      'network (real pull, unwritable destination)', () async {
+    // The failure-path twin of the end-to-end test above. A real MeshService
+    // pull finds the file on A, streams it, and then B's disk write fails:
+    // the save path's parent folder does not exist, so `File.open` throws
+    // exactly as it would on a full, read-only, or permission-denied disk.
+    // The requester must name the disk, not the download. This is the case
+    // core/file_fetch.dart's local-save classification exists for, and
+    // until now only a fake mesh had ever produced it.
+    final rootA = Directory('${tmp.path}/servedA')..createSync();
+    File('${rootA.path}/report.pdf')
+        .writeAsBytesSync(List<int>.generate(64, (i) => (i * 3) % 256));
 
-      // A destination whose parent folder is missing: the write cannot be
-      // created, so the failure is local to this device, not the transfer.
-      final unwritableDir =
-          '${tmp.path}/missing-parent${Platform.pathSeparator}downloads';
+    await meshA.stop();
+    meshA = MeshService(
+      identity: DeviceInfo(
+        id: 'device-a',
+        name: 'Test Linux PC',
+        platform: 'linux',
+      ),
+      store: storeA,
+      clipboard: clipA,
+      fileRoot: rootA.path,
+      onlineWindow: const Duration(seconds: 3),
+      visibleWindow: const Duration(seconds: 3),
+      heartbeatInterval: const Duration(seconds: 2),
+      connectTimeout: const Duration(milliseconds: 300),
+    );
+    await meshA.start();
+    await meshB.start();
 
-      final executor = DeviceExecutor(
-        fileMesh: meshB,
-        fileDownloadsDir: unwritableDir,
-      );
-      final outcome = await executor.run(
-        AgentRequest(
-          requestId: 'fetch-fail',
-          target: meshB.identity.id,
-          action: AgentActions.fileFetch,
-          arguments: const {
-            'peerId': 'device-a',
-            'peerName': 'Test Linux PC',
-            'filename': 'report.pdf',
-          },
-        ),
-      );
+    final session = meshA.beginPairing();
+    final paired = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(paired.ok, isTrue, reason: paired.error);
 
-      expect(outcome.ok, isFalse, reason: outcome.message);
-      // The real mesh reported the write failure in its own words...
-      expect(
-        meshB.lastFileError,
-        contains('Could not save the file'),
-        reason: 'the disk write, not the transfer, is what failed',
-      );
-      // ...and the requester repeats that: storage, not the network.
-      expect(outcome.message, contains("couldn't save it here"));
-      expect(outcome.message, isNot(contains("couldn't download it")));
-      // Nothing was written where the user would look.
-      expect(
-        File('$unwritableDir${Platform.pathSeparator}report.pdf').existsSync(),
-        isFalse,
-      );
-    },
-  );
+    // A destination whose parent folder is missing: the write cannot be
+    // created, so the failure is local to this device, not the transfer.
+    final unwritableDir =
+        '${tmp.path}/missing-parent${Platform.pathSeparator}downloads';
+
+    final executor = DeviceExecutor(
+      fileMesh: meshB,
+      fileDownloadsDir: unwritableDir,
+    );
+    final outcome = await executor.run(
+      AgentRequest(
+        requestId: 'fetch-fail',
+        target: meshB.identity.id,
+        action: AgentActions.fileFetch,
+        arguments: const {
+          'peerId': 'device-a',
+          'peerName': 'Test Linux PC',
+          'filename': 'report.pdf',
+        },
+      ),
+    );
+
+    expect(outcome.ok, isFalse, reason: outcome.message);
+    // The real mesh reported the write failure in its own words...
+    expect(
+      meshB.lastFileError,
+      contains('Could not save the file'),
+      reason: 'the disk write, not the transfer, is what failed',
+    );
+    // ...and the requester repeats that: storage, not the network.
+    expect(outcome.message, contains("couldn't save it here"));
+    expect(outcome.message, isNot(contains("couldn't download it")));
+    // Nothing was written where the user would look.
+    expect(
+      File('$unwritableDir${Platform.pathSeparator}report.pdf').existsSync(),
+      isFalse,
+    );
+  });
 }
 
 /// Polls until [cond] is true (with a timeout), so tests don't depend on
