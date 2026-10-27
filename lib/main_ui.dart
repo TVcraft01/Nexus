@@ -118,6 +118,8 @@ import 'core/on_device_model.dart';
 import 'core/notification_sync.dart';
 import 'core/onboarding.dart';
 import 'core/app_services.dart';
+import 'core/device_actions.dart' show DeviceActionBackend;
+import 'core/phone_actions.dart' show PhoneActionBackend;
 import 'core/store.dart' show ControlPath;
 import 'core/pair_bridge.dart';
 import 'core/pair_invite.dart';
@@ -149,6 +151,7 @@ export 'core/thought.dart' show NexusThoughtSplit, splitNexusThought;
 import 'mesh/nearby.dart' show NearbyDevices;
 import 'core/version.dart';
 import 'ui/artifact_page.dart';
+import 'ui/device_executor.dart' show DeviceExecutor;
 import 'ui/image_viewer_page.dart';
 import 'ui/local_files.dart' show openLocalFile;
 import 'ui/privacy_policy_view.dart' show PrivacyPolicyView;
@@ -1067,6 +1070,34 @@ NexusAccent accentFromSeed(int? seed) {
       : NexusAccent.custom(colour);
 }
 
+/// The action runner the launched shell owns and hands down.
+///
+/// `DeviceExecutor` is what actually does something on this device — opens an
+/// app, sets a timer, dials, plays — and until this existed it was constructed
+/// nowhere on the launched path: the shipped assistant reaches its actions
+/// through the model's JSON and [SystemActionCall], while every `AgentRequest`
+/// that arrives from a peer had no runner at all. One instance, built with the
+/// mesh it fetches files through, so a peer's request and a typed one land in
+/// the same place rather than in two classes that could disagree about what
+/// this device can do.
+///
+/// Null when the shell was built without services — every widget test — which
+/// is also the honest answer for a shell that has nothing to run requests for.
+/// The backends are injectable for the same reason the executor's own tests
+/// inject them: a test states which platform it is.
+@visibleForTesting
+DeviceExecutor? launchedExecutor(
+  AppServices? services, {
+  DeviceActionBackend? deviceBackend,
+  PhoneActionBackend? phoneBackend,
+}) => services == null
+    ? null
+    : DeviceExecutor(
+        fileMesh: services.mesh,
+        deviceBackend: deviceBackend,
+        phoneBackend: phoneBackend,
+      );
+
 /// The shell app. Holds what outlives a tab — appearance and accent — because
 /// the Settings tab changes them and the whole frame has to follow.
 ///
@@ -1123,6 +1154,11 @@ class _NexusUiAppState extends State<NexusUiApp> {
   /// was built without services, which is every widget test.
   MeshLifecycleObserver? _meshLifecycle;
 
+  /// The action runner this shell owns, handed to the tab that runs a peer's
+  /// request. Built with the services and never rebuilt, because it holds
+  /// backends rather than state. Null in a widget test, which has no services.
+  DeviceExecutor? _executor;
+
   /// Whether this device has already seen the welcome screen.
   ///
   /// Null is the one frame before the preference has been read, and it is not
@@ -1164,6 +1200,10 @@ class _NexusUiAppState extends State<NexusUiApp> {
       _meshLifecycle = MeshLifecycleObserver(services.mesh);
       WidgetsBinding.instance.addObserver(_meshLifecycle!);
       NearbyDevices.instance.bindTo(services.mesh);
+      // Built here rather than in the tab that will use it: the executor is a
+      // property of the app (what *this* device can do), not of a screen, and
+      // a second one built on a tab rebuild would be a second answer.
+      _executor = launchedExecutor(services);
     }
     _pings = FileTransferService.instance.pings.listen(_onPing);
     _voice.addListener(_onVoiceChanged);
@@ -1337,6 +1377,7 @@ class _NexusUiAppState extends State<NexusUiApp> {
             darkMode: _dark,
             accent: _accent,
             mesh: widget.services?.mesh,
+            executor: _executor,
             onFollowSystemChanged: (value) =>
                 setState(() => _followSystem = value),
             onDarkModeChanged: (value) => setState(() => _dark = value),
@@ -1982,6 +2023,7 @@ class NexusShell extends StatefulWidget {
     this.onFollowSystemChanged,
     this.onAccentChanged,
     this.mesh,
+    this.executor,
   });
 
   /// The running mesh, when the app started one.
@@ -1993,6 +2035,10 @@ class NexusShell extends StatefulWidget {
   /// — a shell list with no presence and no capability line — rather than
   /// pretending a mesh is there.
   final MeshService? mesh;
+
+  /// Runs an action on this device ([launchedExecutor]), handed to the Devices
+  /// tab because that is the tab that owns peers. Null in a widget test.
+  final DeviceExecutor? executor;
 
   /// Whether the shell is currently in dark mode, as the user chose it. What is
   /// *on screen* is `Theme.of(context).brightness`, which differs from this
@@ -2159,7 +2205,7 @@ class _NexusShellState extends State<NexusShell> {
         // only the page whose index matches the selected tab does work on
         // launch.
         FilesTab(active: _tab == 1),
-        DevicesTab(mesh: widget.mesh),
+        DevicesTab(mesh: widget.mesh, executor: widget.executor),
         SettingsTab(
           darkMode: dark,
           onDarkModeChanged: widget.onDarkModeChanged,
@@ -6004,12 +6050,21 @@ class NexusFileRow extends StatelessWidget {
 /// with — see the note at the top of `paired_devices.dart` — because live
 /// reachability is the mesh's answer and this front end has no mesh.
 class DevicesTab extends StatefulWidget {
-  const DevicesTab({super.key, this.mesh});
+  const DevicesTab({super.key, this.mesh, this.executor});
 
   /// The running mesh, when the app started one. Null in a widget test, which
   /// is why every read of it below is nullable: a shell with no mesh has no
   /// presence to show and no pairing to offer, and says so by showing neither.
   final MeshService? mesh;
+
+  /// Runs an action on this device, for a request a peer sent here.
+  ///
+  /// Held rather than reached for: the executor is built once by the app
+  /// ([launchedExecutor]) and is deliberately not a singleton, so this widget
+  /// says which one it was given. Null in a widget test, and on a shell with no
+  /// services — a shell that cannot run a peer's request says so instead of
+  /// pretending.
+  final DeviceExecutor? executor;
 
   @override
   State<DevicesTab> createState() => _DevicesTabState();
