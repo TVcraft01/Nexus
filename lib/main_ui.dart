@@ -1024,6 +1024,20 @@ void main() async {
     }
     return null;
   };
+  // The key a mesh-paired peer signs its control requests with. Both sides
+  // derive it from the pairing secret they already share, so nothing is sent
+  // to arrange it and the transfer token never leaves this device. Null for a
+  // peer the mesh has never paired — those rows keep the token rule.
+  FileTransferService.instance.peerControlKeyLookup = services.mesh
+      .controlKeyFor;
+  // What an unsigned ping is labelled with, and the count that says whether
+  // the unsigned path is still doing real work on a shipped build.
+  FileTransferService.instance.peerVersionLookup = services.mesh.peerAppVersion;
+  FileTransferService.instance.onUnsignedControl =
+      (String id, String name, String version) {
+        services.store.noteUnsignedControl(id, name, version);
+        unawaited(services.store.save());
+      };
   // The file listener opens with the app, not with the Send sheet: a phone
   // that has to be looked at before it can receive is a phone that misses the
   // file somebody just sent it. The same object is the send transport, so the

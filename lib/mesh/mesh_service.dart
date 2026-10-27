@@ -339,6 +339,7 @@ class MeshService extends ChangeNotifier
   final Map<String, Socket> _outbound = {}; // peerId -> send socket
   final Map<Socket, String> _inboundPeer = {}; // socket -> peerId
   final Map<String, Uint8List> _sessionKeys = {}; // peerId -> cached key
+  final Map<String, String> _controlKeys = {}; // peerId -> cached control key
   final Set<String> _recentMessageIds = {}; // dedupe across multi-hop relays
 
   /// The one pending clipboard slot: a peer's push waiting for the user's
@@ -424,6 +425,15 @@ class MeshService extends ChangeNotifier
   Timer? _clipboardDelayTimer;
 
   String? _latestPeerUpdateVersion;
+
+  /// The version each peer claimed in its last presence frame, by id.
+  ///
+  /// Separate from [_latestPeerUpdateVersion], which is one value for the
+  /// whole mesh because the update banner only cares about the newest. The
+  /// metering line for an unsigned control request needs to name *this* peer's
+  /// version, and a single shared value would credit every peer with whichever
+  /// one happened to speak last.
+  final Map<String, String> _peerVersions = {};
   bool _started = false;
 
   /// Devices plugged into this machine over a USB cable (ESP32, …). Created
@@ -1057,6 +1067,43 @@ class MeshService extends ChangeNotifier
   TailscaleInfo? get tailscaleInfo => _tailscale;
 
   String? get latestPeerUpdateVersion => _latestPeerUpdateVersion;
+
+  /// Fills the per-peer version map without a socket.
+  ///
+  /// Presence is what normally writes it, and a test that had to stand up two
+  /// meshes to check a label would be testing the transport instead.
+  @visibleForTesting
+  void debugNotePeerVersion(String peerId, String version) =>
+      _notePeerVersion(peerId, version);
+
+  /// The version [peerId] said it was running, or null when it has never said.
+  ///
+  /// Claimed, not proven: presence frames carry it outside the proof check.
+  /// That is enough for a metering label and would not be enough for a
+  /// decision.
+  String? peerAppVersion(String peerId) => _peerVersions[peerId];
+
+  /// The key that signs control requests between this device and [peerId], or
+  /// null when the mesh has no pairing to derive one from.
+  ///
+  /// Null is the legacy case, and it is not an error: a peer that paired only
+  /// through the shell (a row written by a scan before mesh pairing, or a code
+  /// that carried no mesh half) shares nothing but a transfer token, and the
+  /// file link keeps verifying those against its own token exactly as it did
+  /// before this existed.
+  Future<String?> controlKeyFor(String peerId) async {
+    final peer = _paired[peerId];
+    if (peer == null || peer.pairingSecret.isEmpty) return null;
+    final cached = _controlKeys[peerId];
+    if (cached != null) return cached;
+    final key = await deriveControlKeyString(
+      pairingSecret: peer.pairingSecret,
+      myId: identity.id,
+      peerId: peerId,
+    );
+    _controlKeys[peerId] = key;
+    return key;
+  }
 
   List<PairedDevice> get pairedDevices => _paired.values.toList();
 
@@ -1711,6 +1758,11 @@ class MeshService extends ChangeNotifier
   /// Guards: test/mesh_repair_session_test.dart.
   void _forgetSessionKey(String peerId) {
     _sessionKeys.remove(peerId);
+    // The control key is derived from the same secret, so a re-pair that
+    // replaces the secret must not leave the old control key cached — that
+    // would be the "old QR still signs after a re-pair" hole the derivation is
+    // meant to close.
+    _controlKeys.remove(peerId);
   }
 
   Future<Uint8List> _sessionKeyFor(PairedDevice peer) async {
@@ -3377,6 +3429,7 @@ class MeshService extends ChangeNotifier
       return;
     }
     final version = rawVersion.trim();
+    _peerVersions[peerId] = version;
     final previous = _latestPeerUpdateVersion;
     if (version == previous) return;
     _latestPeerUpdateVersion = version;
@@ -4488,6 +4541,12 @@ class MeshService extends ChangeNotifier
   Future<void> forgetDevice(String id) async {
     _paired.remove(id);
     _sessionKeys.remove(id);
+    // A forgotten device must not keep a control key or a version in this
+    // process: `controlKeyFor` already answers null without the pair, but a
+    // cached secret outliving the pairing is exactly the kind of leftover the
+    // next pass would trust by accident.
+    _controlKeys.remove(id);
+    _peerVersions.remove(id);
     _clipboardDeliveredTo.remove(id);
     _nearby.remove(id); // a forgotten device must not linger as a ghost
     _lastSeen.remove(id);

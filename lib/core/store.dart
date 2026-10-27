@@ -261,6 +261,30 @@ class NexusStore {
     }
   }
 
+  /// How many unsigned control requests this device has accepted, ever.
+  ///
+  /// The deletion criterion for the unsigned ping path is "none from a build
+  /// that signs", and a released install has no console to read `debugPrint`
+  /// from, so the count lives here where a later pass can read it off the
+  /// device. Written only by the file link's `onUnsignedControl`.
+  int get unsignedControlSeen =>
+      ((_data['settings'] as Map<String, dynamic>?)?['unsignedControlSeen']
+          as num?)?.toInt() ??
+      0;
+
+  /// Who the last one came from, as `name version (id)` — the same three facts
+  /// the log line carries, kept because a count alone cannot tell a retired
+  /// build from a forgotten pairing.
+  String get unsignedControlLast =>
+      ((_data['settings'] as Map<String, dynamic>?)?['unsignedControlLast']
+          as String?) ??
+      '';
+
+  void noteUnsignedControl(String peerId, String name, String version) {
+    _settings()['unsignedControlSeen'] = unsignedControlSeen + 1;
+    _settings()['unsignedControlLast'] = '$name $version ($peerId)';
+  }
+
   Map<String, dynamic> _settings() =>
       _data.putIfAbsent('settings', () => <String, dynamic>{});
 

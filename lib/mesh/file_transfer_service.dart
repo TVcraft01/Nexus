@@ -396,6 +396,28 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
   /// unsigned request from one is refused.
   String? Function(String id)? peerNameLookup;
 
+  /// The per-pair key the mesh derives for [id], or null when the mesh has no
+  /// pairing to derive one from. Set once by `main()`.
+  ///
+  /// This is what closes the 3a residual gap: after a mesh pairing, each side
+  /// can compute the other's control key from the pairing secret, so both
+  /// directions sign and neither has to be told a secret. Null (a service built
+  /// on its own, or a peer paired only through the shell) keeps the older
+  /// rule: the transfer token verifies, and an unsigned request is metered.
+  Future<String?> Function(String id)? peerControlKeyLookup;
+
+  /// The version [id] claimed in its presence frames, for the metering line.
+  /// Claimed, not proven — enough to label a log, not to decide anything.
+  String? Function(String id)? peerVersionLookup;
+
+  /// Called once for every unsigned control request this device accepts.
+  ///
+  /// The deletion criterion for the unsigned path is "zero of these from a
+  /// current build", and `debugPrint` is not readable on a released install,
+  /// so `main()` counts them in the store. The log line above it is the same
+  /// fact, for whoever has the console attached.
+  void Function(String peerId, String name, String version)? onUnsignedControl;
+
   final StreamController<ReceivedFile> _incoming =
       StreamController<ReceivedFile>.broadcast();
 
@@ -617,7 +639,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
           )
           .timeout(kTransferProbeTimeout);
       final Map<String, String> headers = await _controlHeaders(
-        key: device.code.trim(),
+        key: await _controlKeyFor(device),
         senderId: me.id,
         senderName: me.name,
         canonical: (String nonce, int ts) => pingSignaturePayload(
@@ -693,7 +715,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
           )
           .timeout(kTransferProbeTimeout);
       final Map<String, String> headers = await _controlHeaders(
-        key: device.code.trim(),
+        key: await _controlKeyFor(device),
         senderId: me.id,
         senderName: me.name,
         canonical: (String nonce, int ts) => mouseSignaturePayload(
@@ -948,6 +970,10 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
       'NEXUS ping: ${ping.deviceName} <- $senderId'
       '${ping.verified ? '' : ' (unverified)'}',
     );
+    // Only an *accepted* unsigned ping is counted: the metered quantity is
+    // how often the legacy path is still doing real work, not how often a
+    // stranger was turned away.
+    if (!ping.verified) _noteUnsignedControl(senderId, ping.deviceName);
     await _json(request, HttpStatus.ok, <String, Object?>{'ok': true});
   }
 
@@ -1044,13 +1070,18 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
   ///
   /// Three outcomes, in the order the security value runs:
   ///
-  /// - **verified** — the signature verifies against this device's own token,
-  ///   the timestamp is inside [kControlClockWindow], and the nonce is fresh.
+  /// - **verified** — the signature verifies against one of the keys this pair
+  ///   may share — the per-pair control key (both directions of a mesh
+  ///   pairing), this device's own transfer token (the one-way case, where the
+  ///   peer scanned this device), or both when the mesh knows a pairing and the
+  ///   token is older than it — the timestamp is inside [kControlClockWindow],
+  ///   and the nonce is fresh.
   /// - **unverified** — no signature, but the sender is a device this shell has
-  ///   paired. That is the one-way-pairing case: the peer holds its own token,
-  ///   not ours, so it has nothing to sign with. The name shown is the one this
-  ///   shell stores for it, never the claimed one, so a forged `x-nexus-name`
-  ///   has nowhere to surface.
+  ///   paired. That is the legacy case: a build that predates signing, or a
+  ///   peer whose only secret travelled one way. It is metered, because the day
+  ///   this stops happening is the day the path can be deleted. The name shown
+  ///   is the one this shell stores for it, never the claimed one, so a forged
+  ///   `x-nexus-name` has nowhere to surface.
   /// - **refused** — everything else. A deliberately signed request that does
   ///   not verify is never downgraded to the unverified path: a device that has
   ///   signed once is locked to signing for the life of the process.
@@ -1070,6 +1101,21 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
         request.headers.value(kHeaderSignature)?.trim() ?? '';
     final String rawTs = request.headers.value(kHeaderTimestamp)?.trim() ?? '';
     final String ownToken = token;
+    // A mesh pairing gives both sides a per-pair key derived from a secret
+    // neither side had to send. When there is one it is the *only* key this
+    // peer may sign with: falling back to the device token would let a pairing
+    // that has moved on keep accepting an old proof.
+    final String? derivedKey = await _controlKeyForId(senderId);
+    // Derived first, then the token: two proofs are both acceptable while
+    // builds from before this pass are in the field, because the token is the
+    // only thing such a receiver can check and the derived key is the only
+    // thing the tokenless direction can produce. The token half is metered —
+    // see [onUnsignedControl]'s sibling note in `docs/notes/known-surfaces.md`
+    // — and it is what the next pass deletes.
+    final List<String> accepted = <String>[
+      ?derivedKey,
+      if (ownToken.isNotEmpty) ownToken,
+    ];
     final bool presentedSignature =
         nonce.isNotEmpty || signature.isNotEmpty || rawTs.isNotEmpty;
 
@@ -1084,13 +1130,22 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
       if (DateTime.now().difference(at).abs() > kControlClockWindow) {
         return const _ControlGate.refused();
       }
-      if (ownToken.isEmpty) {
+      if (accepted.isEmpty) {
         // Nothing to verify against: a signed request on a device that has no
         // token is a claim this build cannot check, so it is not accepted.
         return const _ControlGate.refused();
       }
-      final String wanted = await _signRaw(ownToken, canonical(nonce, ts));
-      if (!constantTimeEquals(wanted, signature)) {
+      bool proved = false;
+      for (final String key in accepted) {
+        if (constantTimeEquals(
+          await _signRaw(key, canonical(nonce, ts)),
+          signature,
+        )) {
+          proved = true;
+          break;
+        }
+      }
+      if (!proved) {
         return const _ControlGate.refused();
       }
       // Only a verified request is allowed to spend a nonce, so garbage cannot
@@ -1115,6 +1170,46 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     final String? stored = _storedNameOf(senderId);
     if (stored == null) return const _ControlGate.refused();
     return _ControlGate(verified: false, name: stored);
+  }
+
+  /// The per-pair control key [id] may sign with, or null when the mesh has no
+  /// pairing for it.
+  Future<String?> _controlKeyForId(String id) async {
+    final Future<String?> Function(String id)? lookup = peerControlKeyLookup;
+    if (lookup == null) return null;
+    try {
+      final String? key = await lookup(id);
+      return (key == null || key.isEmpty) ? null : key;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The key [device] is signed with: the transfer token its row carries when
+  /// there is one, else the per-pair control key.
+  ///
+  /// Token first, and that order is the compatibility rule rather than the
+  /// security rule. A receiver older than this pass can only verify its own
+  /// token; a receiver this pass or later verifies either key. So signing with
+  /// the token is the one choice both understand, and it is the choice every
+  /// existing verified pairing already relies on. The derived key covers what
+  /// the token cannot: the direction of a pairing that never got a token, which
+  /// is exactly the ping that used to arrive unverified.
+  Future<String> _controlKeyFor(PairedDevice device) async {
+    final String token = device.code.trim();
+    if (token.isNotEmpty) return token;
+    return await _controlKeyForId(device.id) ?? '';
+  }
+
+  /// One line per unsigned acceptance, plus the store counter `main()` wires.
+  ///
+  /// The name is the one this shell stores, never the claimed one; the version
+  /// is the peer's last presence claim, or `unknown` when it has never said.
+  void _noteUnsignedControl(String senderId, String name) {
+    final String version = peerVersionLookup?.call(senderId)?.trim() ?? '';
+    final String shown = version.isEmpty ? 'unknown' : version;
+    debugPrint('control: unsigned from $name $shown');
+    onUnsignedControl?.call(senderId, name, shown);
   }
 
   /// The name this shell stores for [id], or null when it is not a device this

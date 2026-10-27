@@ -63,6 +63,52 @@ Future<Uint8List> deriveSessionKey({
   return Uint8List.fromList(await key.extractBytes());
 }
 
+/// The per-pair key that signs control requests — a ping, a trackpad
+/// movement.
+///
+/// Deliberately a *different* derivation from [deriveSessionKey], over the same
+/// pairing secret and the same sorted ids: same pair, different purpose, and
+/// the domain string is what keeps the two from being interchangeable. A
+/// signature made for a control request can never be replayed as a channel
+/// frame, and a captured channel frame is not a control signature.
+///
+/// This is why the transfer token never has to travel: both sides of a mesh
+/// pairing already hold the pairing secret, so each can compute the other's
+/// half of the key without being told. The device-wide transfer token stays
+/// where it is — a secret that authenticates files, not a secret that is
+/// passed around during pairing.
+Future<Uint8List> deriveControlKey({
+  required String pairingSecret,
+  required String myId,
+  required String peerId,
+}) async {
+  final ids = [myId, peerId]..sort();
+  final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
+  final key = await hkdf.deriveKey(
+    secretKey: SecretKey(_bytes(pairingSecret)),
+    nonce: _bytes(ids.join('|')),
+    info: _bytes('nexus/control/v1'),
+  );
+  return Uint8List.fromList(await key.extractBytes());
+}
+
+/// [deriveControlKey] as the string the HMAC signer takes.
+///
+/// The signer and verifier in the file link both work on Strings; keeping the
+/// key in that shape means the control path did not need a second HMAC
+/// implementation for a key that happens to be bytes.
+Future<String> deriveControlKeyString({
+  required String pairingSecret,
+  required String myId,
+  required String peerId,
+}) async => base64UrlEncode(
+  await deriveControlKey(
+    pairingSecret: pairingSecret,
+    myId: myId,
+    peerId: peerId,
+  ),
+).replaceAll('=', '');
+
 /// Proof that a presence frame really came from the device that holds the
 /// session key.
 ///
