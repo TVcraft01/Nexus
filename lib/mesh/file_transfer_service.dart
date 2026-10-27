@@ -43,7 +43,7 @@ import '../core/crypto.dart' show constantTimeEquals;
 import '../core/file_link.dart' show FileSendResult, FileTransport;
 import '../core/pair_invite.dart' show PairIdentity;
 import '../core/pair_token.dart' show PairToken;
-import '../core/paired_devices.dart' show PairedDevice;
+import '../core/paired_devices.dart' show PairedDevice, PairedDevices;
 
 /// The port the listener answers on, and the one a pairing code advertises.
 ///
@@ -87,6 +87,24 @@ const String kHeaderSignature = 'x-nexus-signature';
 const String kHeaderFilename = 'x-nexus-filename';
 const String kHeaderSize = 'x-nexus-size';
 
+/// When the sender minted the control request, in milliseconds since the
+/// epoch — the same unit the mesh's own frames use. A request outside
+/// [kControlClockWindow] of now is refused, so a captured one cannot be
+/// replayed tomorrow.
+const String kHeaderTimestamp = 'x-nexus-ts';
+
+/// How far a control request's timestamp may be from this device's clock.
+///
+/// Two minutes is wide enough for two phones whose clocks disagree by a
+/// minute and narrow enough that a captured ping is worthless by the time
+/// anybody reads the log. The nonce cache closes the window inside it.
+const Duration kControlClockWindow = Duration(seconds: 120);
+
+/// How many spent control nonces are remembered before the oldest is dropped.
+/// Expiry already bounds this; the cap keeps a token-holding peer from growing
+/// it without limit.
+const int kMaxControlNonces = 4096;
+
 /// How long an offered nonce is worth. Long enough for a photo's body to start
 /// on a slow phone, short enough that a captured request cannot be replayed
 /// tomorrow.
@@ -104,6 +122,43 @@ String transferSignaturePayload({
   required String filename,
   required int size,
 }) => 'nexus/transfer/v1|$senderId|$nonce|$filename|$size';
+
+/// The canonical string a ping signs.
+///
+/// A ping has no body, so the kind is the whole payload — but it is still in
+/// the string: a signature over `…|mouse|…` must never verify for a ping, or
+/// a captured movement could be replayed as a nudge (or the reverse).
+String pingSignaturePayload({
+  required String senderId,
+  required String nonce,
+  required int ts,
+}) => 'nexus/control/v1|$senderId|$nonce|$ts|ping';
+
+/// The canonical string a trackpad movement signs, body included.
+///
+/// The coordinates are in the string because otherwise the body would be the
+/// one part of a signed request an attacker could change: the nonce still
+/// blocks an outright replay, but signing the movement costs one line and
+/// removes the question.
+String mouseSignaturePayload({
+  required String senderId,
+  required String nonce,
+  required int ts,
+  required double dx,
+  required double dy,
+  required bool click,
+}) =>
+    'nexus/control/v1|$senderId|$nonce|$ts|mouse|'
+    '${wireNumber(dx)}|${wireNumber(dy)}|${click ? 1 : 0}';
+
+/// The one spelling of a coordinate on the wire, for both the signer and the
+/// verifier.
+///
+/// `double.toString()` is stable for the same double, but a JSON round trip
+/// and a fixed format cannot disagree about rounding, and four decimals is far
+/// finer than a gesture. One function so the two sides can never sign
+/// different strings from the same movement.
+String wireNumber(double value) => value.toStringAsFixed(4);
 
 /// One file that arrived here.
 class ReceivedFile {
@@ -154,6 +209,7 @@ class NexusPing {
     required this.deviceId,
     required this.deviceName,
     required this.at,
+    this.verified = false,
   });
 
   final String deviceId;
@@ -164,8 +220,17 @@ class NexusPing {
   final String deviceName;
   final DateTime at;
 
+  /// Whether the sender proved it holds this device's transfer token.
+  ///
+  /// False is the one-way-pairing case: a device that this shell scanned holds
+  /// only its *own* token, so it has nothing to sign with, and the request is
+  /// accepted because the sender is a device this shell knows — with the name
+  /// taken from that record rather than from the request. The badge the shell
+  /// adds says so; there is no state here that needs trusting beyond a label.
+  final bool verified;
+
   @override
-  String toString() => 'NexusPing($deviceName)';
+  String toString() => 'NexusPing($deviceName${verified ? '' : ', unverified'})';
 }
 
 /// One movement from the phone's trackpad.
@@ -212,6 +277,27 @@ bool isImageName(String name) {
     if (lower.endsWith(extension)) return true;
   }
   return false;
+}
+
+/// What one control request earned: a proof, a known sender, or nothing.
+class _ControlGate {
+  const _ControlGate({required this.verified, required this.name})
+    : rejected = false;
+
+  const _ControlGate.refused()
+    : verified = false,
+      name = '',
+      rejected = true;
+
+  /// True when the signature verified against this device's token.
+  final bool verified;
+
+  /// The name to show: this shell's own name for a known device, or the
+  /// claimed one for a proved sender it has no record of.
+  final String name;
+
+  /// True when the request must be answered with 401.
+  final bool rejected;
 }
 
 /// The listener, the sender, and the list of what arrived.
@@ -286,6 +372,29 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
 
   /// Nonces offered by [start]-time, with the moment they stop being valid.
   final Map<String, DateTime> _nonces = <String, DateTime>{};
+
+  /// Control-request nonces already spent, keyed `sender|nonce` with the
+  /// moment the clock window closes. See [_rememberControlNonce].
+  final Map<String, DateTime> _controlNonces = <String, DateTime>{};
+
+  /// Senders that have proved the transfer token at least once this process.
+  ///
+  /// Once a device has shown it can sign, it never gets the unsigned path
+  /// again: otherwise an attacker who can strip a header would get the weaker
+  /// branch for a peer that had already demonstrated the stronger one. The set
+  /// is per process on purpose — a restart forgets, and the badge is what the
+  /// user sees either way.
+  final Set<String> _signingPeers = <String>{};
+
+  /// How the control endpoints find the name this shell stores for a paired
+  /// device — and therefore whether the sender is paired at all.
+  ///
+  /// Set once by `main()`, which is the only place that holds both the shell's
+  /// list and the mesh. Null is a service built on its own (every test, and any
+  /// caller before the bootstrap runs), which falls back to the shell list
+  /// alone. Returning null means "not a device this shell knows", and an
+  /// unsigned request from one is refused.
+  String? Function(String id)? peerNameLookup;
 
   final StreamController<ReceivedFile> _incoming =
       StreamController<ReceivedFile>.broadcast();
@@ -476,15 +585,14 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     }
   }
 
-  /// Sends a ping to [device] — a POST to `/nexus/ping` carrying only this
-  /// device's id and name.
+  /// Sends a ping to [device] — a POST to `/nexus/ping` carrying this device's
+  /// id and name, signed when the pairing gave it something to sign with.
   ///
-  /// Deliberately not authenticated with the transfer token. Pairing in this
-  /// shell is one-way (only the scanner learns the shower's token), so a signed
-  /// ping would work in one direction and silently fail in the other. A ping
-  /// reads nothing and changes nothing; the receiver rate-limits by the fact
-  /// that showing a notification is cheap, and the LAN is already the trust
-  /// boundary for this feature.
+  /// [PairedDevice.code] is the receiver's transfer token as its QR carried it,
+  /// so a device that scanned this one can prove the ping came from a holder of
+  /// that token. A device this shell scanned holds only its *own* token and has
+  /// nothing to sign with — the request goes unsigned, and the receiver accepts
+  /// it only because it knows this device, with a badge that says so.
   Future<NexusRequestResult> ping(PairedDevice device) async {
     final String? address = _addressOf(device);
     if (address == null) {
@@ -508,10 +616,25 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
             ),
           )
           .timeout(kTransferProbeTimeout);
+      final Map<String, String> headers = await _controlHeaders(
+        key: device.code.trim(),
+        senderId: me.id,
+        senderName: me.name,
+        canonical: (String nonce, int ts) => pingSignaturePayload(
+          senderId: me.id,
+          nonce: nonce,
+          ts: ts,
+        ),
+      );
       request.headers
-        ..set(kHeaderDevice, me.id)
-        ..set(kHeaderName, me.name);
+        ..set(kHeaderDevice, headers[kHeaderDevice]!)
+        ..set(kHeaderName, headers[kHeaderName]!);
       request.contentLength = 0;
+      for (final MapEntry<String, String> header in headers.entries) {
+        if (header.key != kHeaderDevice && header.key != kHeaderName) {
+          request.headers.set(header.key, header.value);
+        }
+      }
       final HttpClientResponse response = await request.close().timeout(
         kTransferProbeTimeout,
       );
@@ -569,10 +692,28 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
             ),
           )
           .timeout(kTransferProbeTimeout);
+      final Map<String, String> headers = await _controlHeaders(
+        key: device.code.trim(),
+        senderId: me.id,
+        senderName: me.name,
+        canonical: (String nonce, int ts) => mouseSignaturePayload(
+          senderId: me.id,
+          nonce: nonce,
+          ts: ts,
+          dx: dx,
+          dy: dy,
+          click: click,
+        ),
+      );
       request.headers
         ..contentType = ContentType.json
-        ..set(kHeaderDevice, me.id)
-        ..set(kHeaderName, me.name);
+        ..set(kHeaderDevice, headers[kHeaderDevice]!)
+        ..set(kHeaderName, headers[kHeaderName]!);
+      for (final MapEntry<String, String> header in headers.entries) {
+        if (header.key != kHeaderDevice && header.key != kHeaderName) {
+          request.headers.set(header.key, header.value);
+        }
+      }
       request.write(
         jsonEncode(<String, Object>{
           'x': dx,
@@ -763,18 +904,13 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     }
   }
 
-  /// A ping is a nudge, not a transfer: read the two headers and publish it.
+  /// A ping is a nudge, not a transfer: gate it, then publish it.
   ///
-  /// No token check, because this shell's pairing is one-way and the side that
-  /// did not scan has no token to sign with. The request carries no file, no
-  /// command and no persisted state; its whole effect is a notification.
-  ///
-  /// TODO(pass-2): this is an unauthenticated surface, not a missing check —
-  /// anyone on the local network can post here with any name and the shell
-  /// shows "Ping from …". See `docs/notes/known-surfaces.md`
-  /// ("Unauthenticated /nexus/ping and /nexus/mouse"). Adding the token is a
-  /// deliberate behaviour change, not a tidying; it lands when pairing carries
-  /// a secret to both sides, which is what the mesh pairing bridge brings.
+  /// The gate is [_controlGate]: a signature that verifies against this
+  /// device's token is proof; a request with no signature is accepted only from
+  /// a device this shell has paired, and is marked unverified. A stranger on
+  /// the network is refused with 401, which is what closes the surface
+  /// `docs/notes/known-surfaces.md` recorded.
   Future<void> _acceptPing(HttpRequest request) async {
     final String senderId = request.headers.value(kHeaderDevice)?.trim() ?? '';
     final String senderName = request.headers.value(kHeaderName)?.trim() ?? '';
@@ -787,20 +923,51 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     }
     // Drain an empty body so a keep-alive connection is reusable.
     await request.drain<void>();
+    final _ControlGate gate = await _controlGate(
+      request,
+      senderId: senderId,
+      claimedName: senderName,
+      canonical: (String nonce, int ts) =>
+          pingSignaturePayload(senderId: senderId, nonce: nonce, ts: ts),
+    );
+    if (gate.rejected) {
+      await _json(request, HttpStatus.unauthorized, <String, Object?>{
+        'ok': false,
+        'error': 'control request not verified',
+      });
+      return;
+    }
     final NexusPing ping = NexusPing(
       deviceId: senderId,
-      deviceName: senderName.isEmpty ? 'a paired device' : senderName,
+      deviceName: gate.name,
       at: DateTime.now(),
+      verified: gate.verified,
     );
     _pings.add(ping);
-    debugPrint('NEXUS ping: ${ping.deviceName} <- $senderId');
+    debugPrint(
+      'NEXUS ping: ${ping.deviceName} <- $senderId'
+      '${ping.verified ? '' : ' (unverified)'}',
+    );
     await _json(request, HttpStatus.ok, <String, Object?>{'ok': true});
   }
 
   /// One trackpad movement. The endpoint is real; the pointer bridge that will
   /// consume [mouse] is not built yet, so this publishes the event and logs it
   /// rather than pretending to move a cursor.
+  ///
+  /// Refused unless the sender proved the token. A name is a label; a cursor is
+  /// an effect on the machine, and the unsigned path exists only for a build
+  /// that predates signing.
   Future<void> _acceptMouse(HttpRequest request) async {
+    final String senderId = request.headers.value(kHeaderDevice)?.trim() ?? '';
+    final String senderName = request.headers.value(kHeaderName)?.trim() ?? '';
+    if (senderId.isEmpty) {
+      await _json(request, HttpStatus.badRequest, <String, Object?>{
+        'ok': false,
+        'error': 'missing device',
+      });
+      return;
+    }
     final List<int> body = <int>[];
     await for (final List<int> chunk in request) {
       if (body.length + chunk.length > kMaxMouseBody) {
@@ -841,14 +1008,155 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
       });
       return;
     }
+    final bool click = decoded['click'] == true;
+    final _ControlGate gate = await _controlGate(
+      request,
+      senderId: senderId,
+      claimedName: senderName,
+      canonical: (String nonce, int ts) => mouseSignaturePayload(
+        senderId: senderId,
+        nonce: nonce,
+        ts: ts,
+        dx: dx,
+        dy: dy,
+        click: click,
+      ),
+    );
+    if (!gate.verified) {
+      await _json(request, HttpStatus.unauthorized, <String, Object?>{
+        'ok': false,
+        'error': 'mouse needs a verified peer',
+      });
+      return;
+    }
     final NexusMouseEvent event = NexusMouseEvent(
       dx: dx,
       dy: dy,
-      click: decoded['click'] == true,
+      click: click,
     );
     _mouse.add(event);
     debugPrint('NEXUS mouse: $event');
     await _json(request, HttpStatus.ok, <String, Object?>{'ok': true});
+  }
+
+  /// The one decision both control endpoints make: may this request be shown,
+  /// and was it proved?
+  ///
+  /// Three outcomes, in the order the security value runs:
+  ///
+  /// - **verified** — the signature verifies against this device's own token,
+  ///   the timestamp is inside [kControlClockWindow], and the nonce is fresh.
+  /// - **unverified** — no signature, but the sender is a device this shell has
+  ///   paired. That is the one-way-pairing case: the peer holds its own token,
+  ///   not ours, so it has nothing to sign with. The name shown is the one this
+  ///   shell stores for it, never the claimed one, so a forged `x-nexus-name`
+  ///   has nowhere to surface.
+  /// - **refused** — everything else. A deliberately signed request that does
+  ///   not verify is never downgraded to the unverified path: a device that has
+  ///   signed once is locked to signing for the life of the process.
+  ///
+  /// On a fresh install with no token of its own there is nothing to verify
+  /// against, so every signed request is refused — and an unsigned one from a
+  /// known device is accepted with the badge. That keeps a device usable before
+  /// it has ever shown a QR.
+  Future<_ControlGate> _controlGate(
+    HttpRequest request, {
+    required String senderId,
+    required String claimedName,
+    required String Function(String nonce, int ts) canonical,
+  }) async {
+    final String nonce = request.headers.value(kHeaderNonce)?.trim() ?? '';
+    final String signature =
+        request.headers.value(kHeaderSignature)?.trim() ?? '';
+    final String rawTs = request.headers.value(kHeaderTimestamp)?.trim() ?? '';
+    final String ownToken = token;
+    final bool presentedSignature =
+        nonce.isNotEmpty || signature.isNotEmpty || rawTs.isNotEmpty;
+
+    if (presentedSignature) {
+      final int? ts = int.tryParse(rawTs);
+      // The clock check first: it is cheap, and it is the one refusal that does
+      // not need the secret.
+      if (nonce.isEmpty || signature.isEmpty || ts == null) {
+        return const _ControlGate.refused();
+      }
+      final DateTime at = DateTime.fromMillisecondsSinceEpoch(ts);
+      if (DateTime.now().difference(at).abs() > kControlClockWindow) {
+        return const _ControlGate.refused();
+      }
+      if (ownToken.isEmpty) {
+        // Nothing to verify against: a signed request on a device that has no
+        // token is a claim this build cannot check, so it is not accepted.
+        return const _ControlGate.refused();
+      }
+      final String wanted = await _signRaw(ownToken, canonical(nonce, ts));
+      if (!constantTimeEquals(wanted, signature)) {
+        return const _ControlGate.refused();
+      }
+      // Only a verified request is allowed to spend a nonce, so garbage cannot
+      // fill the cache.
+      if (!_rememberControlNonce(senderId, nonce)) {
+        return const _ControlGate.refused();
+      }
+      _signingPeers.add(senderId);
+      final String? stored = _storedNameOf(senderId);
+      return _ControlGate(
+        verified: true,
+        name: stored ??
+            (claimedName.isEmpty ? 'a paired device' : claimedName),
+      );
+    }
+
+    // No signature at all. A peer that has proved the token before is not
+    // allowed back onto this path — that is the downgrade.
+    if (_signingPeers.contains(senderId)) {
+      return const _ControlGate.refused();
+    }
+    final String? stored = _storedNameOf(senderId);
+    if (stored == null) return const _ControlGate.refused();
+    return _ControlGate(verified: false, name: stored);
+  }
+
+  /// The name this shell stores for [id], or null when it is not a device this
+  /// shell has paired.
+  ///
+  /// The lookup is the pairing check as well as the name: on this path the name
+  /// is the only thing the answer decides, so one function keeps them from
+  /// disagreeing.
+  String? _storedNameOf(String id) {
+    final String? Function(String id)? lookup = peerNameLookup;
+    if (lookup != null) return lookup(id);
+    for (final PairedDevice device in PairedDevices.instance.devices) {
+      if (device.id == id) return device.name;
+    }
+    return null;
+  }
+
+  /// Records [nonce] as spent for [senderId], or answers false when it was
+  /// already seen inside the window.
+  bool _rememberControlNonce(String senderId, String nonce) {
+    final DateTime now = DateTime.now();
+    _controlNonces.removeWhere(
+      (String _, DateTime expiry) => !expiry.isAfter(now),
+    );
+    final String key = '$senderId|$nonce';
+    if (_controlNonces.containsKey(key)) return false;
+    if (_controlNonces.length >= kMaxControlNonces) {
+      // Evict the entry closest to expiring: dropping it only widens the window
+      // for a request older than everything we remember, which the clock check
+      // already bounds.
+      String oldest = '';
+      DateTime? oldestAt;
+      for (final MapEntry<String, DateTime> entry in _controlNonces.entries) {
+        if (oldestAt == null || entry.value.isBefore(oldestAt)) {
+          oldestAt = entry.value;
+          oldest = entry.key;
+        }
+      }
+      _controlNonces.remove(oldest);
+    }
+    _controlNonces[key] = now.add(kControlClockWindow);
+    return true;
   }
 
   Future<void> _answerHello(HttpRequest request) async {
@@ -993,19 +1301,49 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     required String nonce,
     required String filename,
     required int size,
-  }) async {
+  }) => _signRaw(
+    key,
+    transferSignaturePayload(
+      senderId: senderId,
+      nonce: nonce,
+      filename: filename,
+      size: size,
+    ),
+  );
+
+  /// HMAC-SHA256 of [canonical] under [key], base64 — the one primitive every
+  /// signature in this service is made and checked with.
+  Future<String> _signRaw(String key, String canonical) async {
     final Mac mac = await Hmac.sha256().calculateMac(
-      utf8.encode(
-        transferSignaturePayload(
-          senderId: senderId,
-          nonce: nonce,
-          filename: filename,
-          size: size,
-        ),
-      ),
+      utf8.encode(canonical),
       secretKey: SecretKey(utf8.encode(key)),
     );
     return base64Encode(mac.bytes);
+  }
+
+  /// The headers a control request carries.
+  ///
+  /// Signed when [key] is a token this device holds for the receiver — which is
+  /// what a pairing code carries, and only in the scanning direction. An empty
+  /// key means the peer never gave us one, so the request goes unsigned and the
+  /// receiver decides whether it knows us well enough to show it.
+  Future<Map<String, String>> _controlHeaders({
+    required String key,
+    required String senderId,
+    required String senderName,
+    required String Function(String nonce, int ts) canonical,
+  }) async {
+    final Map<String, String> headers = <String, String>{
+      kHeaderDevice: senderId,
+      kHeaderName: senderName,
+    };
+    if (key.isEmpty) return headers;
+    final String nonce = _nonce();
+    final int ts = DateTime.now().millisecondsSinceEpoch;
+    headers[kHeaderNonce] = nonce;
+    headers[kHeaderTimestamp] = '$ts';
+    headers[kHeaderSignature] = await _signRaw(key, canonical(nonce, ts));
+    return headers;
   }
 
   String _nonce() {

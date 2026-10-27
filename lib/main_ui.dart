@@ -1005,6 +1005,25 @@ void main() async {
   // id into `PairIdentity`, so the QR and the announcements agree from the
   // first frame.
   final AppServices services = await startAppServices();
+  // The paired list is read before anything can ask about it: the file link's
+  // control endpoints consult it to decide whether an unsigned ping comes from
+  // a device this shell knows, and a list that is still only the seed rows
+  // would refuse a real peer until somebody opened the Devices tab.
+  await PairedDevices.instance.attach();
+  // How the file listener names — and therefore whether it trusts — a control
+  // request that carries no signature. Both lists, because a device can be
+  // paired into either: the shell's row from a scan, or the mesh's record from
+  // a pairing made on the other side. The name returned here is the one the
+  // notification shows, never the name the request claimed.
+  FileTransferService.instance.peerNameLookup = (String id) {
+    for (final PairedDevice device in PairedDevices.instance.devices) {
+      if (device.id == id) return device.name;
+    }
+    for (final peer in services.mesh.pairedDevices) {
+      if (peer.id == id) return peer.name;
+    }
+    return null;
+  };
   // The file listener opens with the app, not with the Send sheet: a phone
   // that has to be looked at before it can receive is a phone that misses the
   // file somebody just sent it. The same object is the send transport, so the
@@ -1178,7 +1197,13 @@ class _NexusUiAppState extends State<NexusUiApp> {
   /// One device nudged another. A phone feels it and shows it in the app; a
   /// desktop hands it to the platform's own notification centre.
   void _onPing(NexusPing ping) {
-    final String text = 'Ping from ${ping.deviceName}';
+    // One string for both surfaces: the badge is part of the sentence, so the
+    // snackbar and the desktop notification cannot say different things about
+    // the same ping. `verified` is the file link's answer about the signature;
+    // false means the sender holds no token of ours and this shell knows it by
+    // its own record rather than by anything the request claimed.
+    final String text =
+        'Ping from ${ping.deviceName}${ping.verified ? '' : ' (unverified)'}';
     if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
       unawaited(HapticFeedback.heavyImpact());

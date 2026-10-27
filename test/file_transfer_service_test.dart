@@ -4,12 +4,14 @@
 // a file in a temp folder, and the request actually crossing a socket. That is
 // the point — the interesting failures (a token that does not match, a nonce
 // used twice, a body that stops early) only exist once HTTP is involved.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/file_link.dart' show FileSendResult;
+import 'package:nexus/core/pair_invite.dart' show PairIdentity;
 import 'package:nexus/core/paired_devices.dart';
 import 'package:nexus/mesh/file_transfer_service.dart';
 
@@ -75,6 +77,44 @@ Future<String> _sign({
     secretKey: SecretKey(utf8.encode(key)),
   );
   return base64Encode(mac.bytes);
+}
+
+/// HMAC of one canonical control string, so a test can forge every part of a
+/// signed request rather than only the parts the service happens to build.
+Future<String> _signRaw(String key, String canonical) async {
+  final Mac mac = await Hmac.sha256().calculateMac(
+    utf8.encode(canonical),
+    secretKey: SecretKey(utf8.encode(key)),
+  );
+  return base64Encode(mac.bytes);
+}
+
+/// One hand-built POST, for the requests the client would never send: a bad
+/// signature, a stale timestamp, a name nobody proved.
+Future<int> _post(
+  int port,
+  String path, {
+  Map<String, String> headers = const <String, String>{},
+  Object? body,
+}) async {
+  final HttpClient client = HttpClient();
+  try {
+    final HttpClientRequest request = await client.postUrl(
+      Uri(scheme: 'http', host: '127.0.0.1', port: port, path: path),
+    );
+    headers.forEach(request.headers.set);
+    if (body == null) {
+      request.contentLength = 0;
+    } else {
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode(body));
+    }
+    final HttpClientResponse response = await request.close();
+    await response.drain<void>();
+    return response.statusCode;
+  } finally {
+    client.close(force: true);
+  }
 }
 
 void main() {
@@ -249,40 +289,267 @@ void main() {
     expect(receiver.service.received, hasLength(1));
   });
 
-  test('a ping needs no token — a known surface', () async {
-    // This is not desirable behaviour being pinned; it is the behaviour that
-    // ships, recorded so that closing it is a deliberate change rather than a
-    // surprise. `/nexus/ping` was built for a one-way pairing where the side
-    // that did not scan has no token to sign with, and the effect is a
-    // notification with a name the sender chose. See
-    // docs/notes/known-surfaces.md.
-    final _Peer receiver = await _peer('token-only-the-scanner-has');
-    addTearDown(receiver.dispose);
+  group('control requests are signed when the pairing gave a token', () {
+    const String senderId = 'study-laptop-0000000000000000000001';
 
-    final Future<NexusPing> arriving = receiver.service.pings.first;
-    final HttpClient client = HttpClient();
-    try {
-      final HttpClientRequest request = await client.postUrl(
-        Uri(
-          scheme: 'http',
-          host: '127.0.0.1',
-          port: receiver.port,
-          path: kNexusPingPath,
-        ),
-      );
-      // No nonce, no signature — just two headers anyone can write.
-      request.headers
-        ..set(kHeaderDevice, 'stranger-on-the-wifi')
-        ..set(kHeaderName, 'Your bank');
-      request.contentLength = 0;
-      final HttpClientResponse response = await request.close();
-      await response.drain<void>();
-      expect(response.statusCode, HttpStatus.ok);
-    } finally {
-      client.close(force: true);
+    /// The receiver knows one device by name — the sender — and nobody else.
+    Future<_Peer> receiverKnowing(String name, {bool emptyToken = false}) async {
+      final _Peer peer = await _peer(emptyToken ? '' : 'receiver-token-0123456789');
+      peer.service.peerNameLookup = (String id) => id == senderId ? name : null;
+      addTearDown(peer.dispose);
+      return peer;
     }
 
-    final NexusPing ping = await arriving.timeout(const Duration(seconds: 2));
-    expect(ping.deviceName, 'Your bank');
+    test('a ping from a token holder verifies, and is not badged', () async {
+      final Future<NexusPing> arriving = receiver.service.pings.first;
+
+      final NexusRequestResult result = await sender.service.ping(
+        // The row carries the receiver's token — what a scan of its QR writes.
+        receiver.device(token: receiver.service.token),
+      );
+
+      expect(result.ok, isTrue, reason: result.message);
+      final NexusPing ping = await arriving.timeout(const Duration(seconds: 2));
+      expect(ping.verified, isTrue);
+      expect(ping.deviceId, PairIdentity.current.id);
+    });
+
+    test('a signature that does not verify is refused, never downgraded', () async {
+      final List<NexusPing> seen = <NexusPing>[];
+      final StreamSubscription<NexusPing> sub = receiver.service.pings.listen(
+        seen.add,
+      );
+      addTearDown(sub.cancel);
+      final int ts = DateTime.now().millisecondsSinceEpoch;
+      final int status = await _post(
+        receiver.port,
+        kNexusPingPath,
+        headers: <String, String>{
+          kHeaderDevice: senderId,
+          kHeaderName: 'Your bank',
+          kHeaderNonce: 'nonce-1',
+          kHeaderTimestamp: '$ts',
+          kHeaderSignature: 'bm90LWEtc2lnbmF0dXJl',
+        },
+      );
+
+      expect(status, HttpStatus.unauthorized);
+      // A forged signature is a forged signature: it does not fall back to the
+      // unsigned path, even though this id is one the receiver knows.
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(seen, isEmpty);
+    });
+
+    test('an unsigned ping from an unknown device is refused', () async {
+      // The attack `docs/notes/known-surfaces.md` recorded: anything on the LAN
+      // posting two headers, one of them a bank's name.
+      final int status = await _post(
+        receiver.port,
+        kNexusPingPath,
+        headers: <String, String>{
+          kHeaderDevice: 'stranger-on-the-wifi',
+          kHeaderName: 'Your bank',
+        },
+      );
+
+      expect(status, HttpStatus.unauthorized);
+    });
+
+    test('an unsigned ping from a paired device shows our name, badged', () async {
+      final _Peer known = await receiverKnowing('Kitchen tablet');
+      final Future<NexusPing> arriving = known.service.pings.first;
+
+      final int status = await _post(
+        known.port,
+        kNexusPingPath,
+        headers: <String, String>{
+          kHeaderDevice: senderId,
+          // The claimed name is the attack the badge does not have to stop:
+          // it never reaches the screen.
+          kHeaderName: 'Your bank',
+        },
+      );
+
+      expect(status, HttpStatus.ok);
+      final NexusPing ping = await arriving.timeout(const Duration(seconds: 2));
+      expect(ping.verified, isFalse);
+      expect(ping.deviceName, 'Kitchen tablet');
+    });
+
+    test('a device that signed once cannot fall back to unsigned', () async {
+      final _Peer known = await receiverKnowing('Kitchen tablet');
+      final Future<NexusPing> first = known.service.pings.first;
+      final int ts = DateTime.now().millisecondsSinceEpoch;
+      final String signature = await _signRaw(
+        known.service.token,
+        pingSignaturePayload(senderId: senderId, nonce: 'n-1', ts: ts),
+      );
+
+      expect(
+        await _post(
+          known.port,
+          kNexusPingPath,
+          headers: <String, String>{
+            kHeaderDevice: senderId,
+            kHeaderName: 'Kitchen tablet',
+            kHeaderNonce: 'n-1',
+            kHeaderTimestamp: '$ts',
+            kHeaderSignature: signature,
+          },
+        ),
+        HttpStatus.ok,
+      );
+      await first.timeout(const Duration(seconds: 2));
+
+      // Same device, same pairing, signature stripped: refused, because it has
+      // already proved it can sign.
+      expect(
+        await _post(
+          known.port,
+          kNexusPingPath,
+          headers: <String, String>{
+            kHeaderDevice: senderId,
+            kHeaderName: 'Kitchen tablet',
+          },
+        ),
+        HttpStatus.unauthorized,
+      );
+    });
+
+    test('a ping minted outside the clock window is refused', () async {
+      final _Peer known = await receiverKnowing('Kitchen tablet');
+      final int stale =
+          DateTime.now()
+              .subtract(kControlClockWindow + const Duration(seconds: 10))
+              .millisecondsSinceEpoch;
+      final String signature = await _signRaw(
+        known.service.token,
+        pingSignaturePayload(senderId: senderId, nonce: 'old-nonce', ts: stale),
+      );
+
+      expect(
+        await _post(
+          known.port,
+          kNexusPingPath,
+          headers: <String, String>{
+            kHeaderDevice: senderId,
+            kHeaderName: 'Kitchen tablet',
+            kHeaderNonce: 'old-nonce',
+            kHeaderTimestamp: '$stale',
+            kHeaderSignature: signature,
+          },
+        ),
+        HttpStatus.unauthorized,
+      );
+    });
+
+    test('the same nonce twice is refused, however valid the signature', () async {
+      final _Peer known = await receiverKnowing('Kitchen tablet');
+      final Future<NexusPing> first = known.service.pings.first;
+      final int ts = DateTime.now().millisecondsSinceEpoch;
+      final String signature = await _signRaw(
+        known.service.token,
+        pingSignaturePayload(senderId: senderId, nonce: 'reused', ts: ts),
+      );
+      final Map<String, String> headers = <String, String>{
+        kHeaderDevice: senderId,
+        kHeaderName: 'Kitchen tablet',
+        kHeaderNonce: 'reused',
+        kHeaderTimestamp: '$ts',
+        kHeaderSignature: signature,
+      };
+
+      expect(
+        await _post(known.port, kNexusPingPath, headers: headers),
+        HttpStatus.ok,
+      );
+      await first.timeout(const Duration(seconds: 2));
+      expect(
+        await _post(known.port, kNexusPingPath, headers: headers),
+        HttpStatus.unauthorized,
+      );
+    });
+
+    test('a fresh install with no token accepts unsigned, refuses signed', () async {
+      // Nothing to verify against yet: a signed request is a claim this build
+      // cannot check, so it is refused — while an unsigned one from a device
+      // the shell knows is shown, badged.
+      final _Peer fresh = await receiverKnowing('Kitchen tablet', emptyToken: true);
+      expect(fresh.service.token, isEmpty);
+      final Future<NexusPing> arriving = fresh.service.pings.first;
+
+      expect(
+        await _post(
+          fresh.port,
+          kNexusPingPath,
+          headers: <String, String>{
+            kHeaderDevice: senderId,
+            kHeaderName: 'Kitchen tablet',
+          },
+        ),
+        HttpStatus.ok,
+      );
+      final NexusPing ping = await arriving.timeout(const Duration(seconds: 2));
+      expect(ping.verified, isFalse);
+
+      final int ts = DateTime.now().millisecondsSinceEpoch;
+      expect(
+        await _post(
+          fresh.port,
+          kNexusPingPath,
+          headers: <String, String>{
+            kHeaderDevice: senderId,
+            kHeaderName: 'Kitchen tablet',
+            kHeaderNonce: 'n-fresh',
+            kHeaderTimestamp: '$ts',
+            kHeaderSignature: await _signRaw(
+              'whatever-it-claims',
+              pingSignaturePayload(
+                senderId: senderId,
+                nonce: 'n-fresh',
+                ts: ts,
+              ),
+            ),
+          },
+        ),
+        HttpStatus.unauthorized,
+      );
+    });
+  });
+
+  group('the cursor needs a proved sender', () {
+    test('a signed movement arrives, coordinates and all', () async {
+      final Future<NexusMouseEvent> arriving = receiver.service.mouse.first;
+
+      final bool sent = await sender.service.sendMouse(
+        receiver.device(token: receiver.service.token),
+        dx: 3.5,
+        dy: -2.25,
+        click: true,
+      );
+
+      expect(sent, isTrue);
+      final NexusMouseEvent event = await arriving.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(event.dx, 3.5);
+      expect(event.dy, -2.25);
+      expect(event.click, isTrue);
+    });
+
+    test('an unsigned movement is refused outright', () async {
+      final int status = await _post(
+        receiver.port,
+        kNexusMousePath,
+        headers: <String, String>{
+          kHeaderDevice: 'study-laptop-0000000000000000000001',
+          kHeaderName: 'Study laptop',
+        },
+        body: <String, Object>{'x': 1.0, 'y': 2.0},
+      );
+
+      // Paired or not, a name is a label and a cursor is an effect.
+      expect(status, HttpStatus.unauthorized);
+    });
   });
 }

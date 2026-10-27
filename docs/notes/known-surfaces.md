@@ -9,59 +9,61 @@ the behaviour below, update the entry in the same commit.
 
 ---
 
-## Unauthenticated `/nexus/ping` and `/nexus/mouse`
+## `/nexus/ping` and `/nexus/mouse`: the unsigned path for one-way pairings
 
-**Ships in:** every build from the first file-link release through
-`shell: bootstrap MeshService and NexusStore on the launched path` (pass 1).
-Still present after pass 1 — deliberately, not by oversight.
+**Ships in:** every build from the first file-link release. Authenticated for
+token holders from `file link: sign ping and mouse with the pairing token`
+(pass 3a) onward; the unsigned path below is what survives that pass.
 
-**Where:** `lib/mesh/file_transfer_service.dart`,
+**Where:** `lib/mesh/file_transfer_service.dart`, `_controlGate`, used by
 `_acceptPing` and `_acceptMouse`, dispatched from `_serve`.
 
-**What is true today:** the file link's four endpoints share one listener.
-`/nexus/file` verifies an HMAC over `sender|nonce|filename|size`, keyed with the
-receiver's own pairing token. `/nexus/hello` is public by design (it hands out
-the nonce that makes the signature possible). `/nexus/ping` and `/nexus/mouse`
-accept a request with **no signature and no token at all** — the helper's own
-comment states the reason: the shell's pairing is one-way, and the side that did
-not scan has no token to sign with.
+**What is true today:**
 
-**What that means in practice:** anything on the same local network that can
-reach the listening port can
+- A control request is **signed** (`x-nexus-nonce`, `x-nexus-ts`,
+  `x-nexus-signature` = HMAC-SHA256 over
+  `nexus/control/v1|<sender>|<nonce>|<ts>|ping` or `…|mouse|<dx>|<dy>|<click>`)
+  whenever the sender holds this device's transfer token — which is what its
+  QR carried, and therefore what a device that scanned this one has. A
+  signature that does not verify, a timestamp outside ±120 s, or a nonce seen
+  before is **refused with 401** and nothing is shown or moved.
+- A request with **no signature** is accepted only when the sender's id is a
+  device this shell has paired (shell list or mesh record). It is marked
+  unverified, the shell appends "(unverified)" to the notification, and the
+  name shown is the name in *that record*, never the `x-nexus-name` the request
+  claimed. An unsigned request from an id this shell does not know is refused
+  with 401 — that is the stranger-on-the-Wi-Fi attack the first version of this
+  entry recorded.
+- `/nexus/mouse` is refused unless the signature verified. A name is a label; a
+  cursor is an effect.
+- Once an id has signed successfully in this process, unsigned requests from it
+  are refused for the rest of the process: a signature that could be stripped
+  would otherwise be a downgrade rather than a proof.
 
-- POST `/nexus/ping` with `x-nexus-device` and `x-nexus-name` set to anything,
-  and the victim's shell shows **"Ping from &lt;name&gt;"** as a snackbar on
-  Android/iOS and a `notify-send` desktop notification on Linux (see
-  `_onPing` in `main_ui.dart`). The name is attacker-chosen; there is no
-  pairing lookup and no signature to check. This is a spoofing/phishing surface:
-  a convincing name is enough to make the notification look like it came from a
-  device the user trusts.
-- POST `/nexus/mouse` with `{x, y, click}` and the event is published on the
-  `mouse` stream. There is no pointer bridge consuming it yet, so the effect is
-  a log line rather than a cursor movement — but the endpoint is live, and the
-  first consumer that lands will inherit the missing check.
+**What is still open:** an attacker who knows the device id of one of your
+paired devices — before that device has ever signed to you this process — can
+post an unsigned ping and get a badged notification attributed to that device.
+They cannot choose the text (the name comes from your record) and they cannot
+move the cursor, but they can make your own device appear to nudge you. A fresh
+install has no token of its own until it first shows a code, so during that
+window it refuses every signed request and accepts unsigned ones from devices it
+knows.
 
-Neither endpoint persists anything and neither can read a file, run a command,
-or change pairing state.
+Also worth stating: the nonce cache is per process, so a restart re-opens a
+≤120 s replay window for a captured control request. Closing that needs
+persistent replay state, which is not worth it for a notification.
 
-**Why pass 1 did not fix it:** moving the listener off 51820 is not the moment
-to change what the protocol means. The honest fix is a signed request, which
-needs a secret both sides hold; at pass 1 the scanning side held the token and
-the scanned side held its own, and only a bidirectional pairing gives both.
+**Why the unsigned path exists at all:** the transfer token travels one way.
+The device that scans learns the other's token; the device that was scanned does
+not learn the scanner's. So a peer this shell scanned holds only its *own*
+token and has nothing to sign with, even on a current build — refusing all
+unsigned requests would break half of all live pairings.
 
-**Still open after pass 2.** The shell's QR now carries a mesh code
-(`mesh_code`, see `lib/core/pair_bridge.dart`), so a pairing *does* give both
-sides a shared secret — but the file link's endpoints were deliberately left
-alone in that pass; changing what `/nexus/ping` requires is its own commit with
-its own audit of every caller. Ping auth is pass 3, and until it lands this
-entry stands as written.
-
-**What fixing it looks like:** require the same nonce+HMAC scheme `/nexus/file`
-already uses on `/nexus/ping` and `/nexus/mouse`, or retire both endpoints in
-favour of mesh messages once pass 3 rebinds the tabs. Either way, the test that
-should exist first is one asserting a signature-less ping is *refused*; the
-current behaviour is recorded in `test/file_transfer_service_test.dart`
-("a ping needs no token — a known surface").
+**Removal condition:** the unsigned path can be deleted once 3b ships — token
+exchange over the authenticated mesh pairing. At that point both sides hold a
+secret for each other, every control request can be signed, and no unproven
+request is accepted at all. Do not delete it before then: a ping is the only way
+a one-way peer can reach this device.
 
 ---
 
