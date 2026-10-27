@@ -41,7 +41,16 @@ class SettingsTab extends StatefulWidget {
     this.onDevice,
     this.vision,
     this.refreshEpoch = 0,
+    this.mesh,
   });
+
+  /// The running mesh, when the shell started one.
+  ///
+  /// It reaches exactly one row here: "Pair Phone". That page's code has to
+  /// carry a mesh pairing as well as a transfer token, and the pairing is the
+  /// mesh's to mint — a code without one is a scan that pairs files only, which
+  /// the phone now refuses with a sentence about updating.
+  final MeshService? mesh;
 
   /// The appearance on screen right now — which, while [followSystem] is on, is
   /// the phone's answer rather than the user's.
@@ -685,7 +694,7 @@ class _SettingsTabState extends State<SettingsTab> {
               trailing: const NexusChevron(),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (routeContext) => const PairPhonePage(),
+                  builder: (routeContext) => PairPhonePage(mesh: widget.mesh),
                 ),
               ),
             ),

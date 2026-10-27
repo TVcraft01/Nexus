@@ -106,6 +106,8 @@ class PairInvite {
     this.ramBytes,
     this.platform = '',
     this.ollama = false,
+    this.meshCode = '',
+    this.meshPort = 0,
   });
 
   /// What the other user sees on their screen — "Paired with My phone".
@@ -153,6 +155,40 @@ class PairInvite {
   /// never learned.
   final String platform;
 
+  /// The short-lived code the *mesh* pairs with, or empty when the code was
+  /// written by a build that did not carry one.
+  ///
+  /// Two secrets travel in one QR, and they are not the same thing: [code] is
+  /// the file link's long-lived transfer token, and this is the five-minute
+  /// `XXXX-XXXX` code `MeshService.beginPairing` minted for the show. A scan
+  /// that discovers no mesh code cannot pair over the mesh at all — which is
+  /// what happens when the other device is running an older build — and the
+  /// scanner says so rather than writing a row that only sends files.
+  final String meshCode;
+
+  /// The port the mesh is listening on, or 0 when the code did not say.
+  ///
+  /// Carried separately from [port] because they are two listeners: the file
+  /// link on 51821 and the mesh on 51820 (see `FileTransferService.start`). A
+  /// scanner that paired over [port] would knock on the wrong door on every
+  /// build that runs a mesh.
+  final int meshPort;
+
+  /// The same invite, with the mesh pairing it should also carry.
+  PairInvite withMesh({required String code, required int port}) => PairInvite(
+    deviceName: deviceName,
+    deviceId: deviceId,
+    publicKey: publicKey,
+    addresses: addresses,
+    port: this.port,
+    code: this.code,
+    ramBytes: ramBytes,
+    platform: platform,
+    ollama: ollama,
+    meshCode: code,
+    meshPort: port,
+  );
+
   /// Whether the PC said Ollama was answering when it showed this code.
   ///
   /// The phone can route a heavy answer to a desktop it already paired with by
@@ -185,6 +221,11 @@ class PairInvite {
     if (ramBytes != null && ramBytes! > 0) 'ram_bytes': '$ramBytes',
     if (platform.isNotEmpty) 'platform': platform,
     if (ollama) 'ollama': true,
+    // Both or neither: a mesh code with no port is a code nobody can dial, and
+    // the scanner treats a lone mesh code as a stale code rather than pairing
+    // it against the file link's port.
+    if (meshCode.isNotEmpty && meshPort > 0) 'mesh_code': meshCode,
+    if (meshCode.isNotEmpty && meshPort > 0) 'mesh_port': '$meshPort',
   });
 
   /// The PC's code: the same identity, plus the two fields a phone needs to
@@ -204,6 +245,8 @@ class PairInvite {
     if (addresses.length > 1) 'ips': addresses.join(','),
     if (platform.isNotEmpty) 'platform': platform,
     if (ollama) 'ollama': true,
+    if (meshCode.isNotEmpty && meshPort > 0) 'mesh_code': meshCode,
+    if (meshCode.isNotEmpty && meshPort > 0) 'mesh_port': meshPort,
   });
 
   /// Reads a scanned string, or null when it is not a Nexus pairing code.
@@ -253,6 +296,8 @@ class PairInvite {
       ramBytes: ramBytes > 0 ? ramBytes : null,
       platform: platform ?? '',
       ollama: decoded['ollama'] == true,
+      meshCode: _field(decoded, 'mesh_code') ?? '',
+      meshPort: _intOf(decoded, 'mesh_port'),
     );
   }
 
@@ -303,6 +348,11 @@ class PairInvite {
       port: mesh.port,
       code: mesh.code,
       ramBytes: mesh.ramBytes,
+      // A `nexus://pair` URI *is* a mesh code: its `code` is the short-lived
+      // pairing code and its `port` the mesh listener, which is exactly the
+      // pair of facts a scan needs to complete the pairing the code began.
+      meshCode: mesh.code,
+      meshPort: mesh.port,
     );
   }
 

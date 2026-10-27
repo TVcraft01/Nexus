@@ -94,6 +94,7 @@ import 'core/connections.dart';
 import 'core/artifacts.dart';
 import 'core/attachment_pickers.dart';
 import 'core/attachments.dart';
+import 'core/capability.dart' show capabilityFor;
 import 'core/chat_log.dart';
 import 'core/clock_context.dart' show isClockQuestion;
 import 'core/composer_settings.dart';
@@ -117,6 +118,7 @@ import 'core/on_device_model.dart';
 import 'core/notification_sync.dart';
 import 'core/onboarding.dart';
 import 'core/app_services.dart';
+import 'core/pair_bridge.dart';
 import 'core/pair_invite.dart';
 import 'core/pair_token.dart';
 import 'core/paired_devices.dart';
@@ -137,6 +139,7 @@ import 'mesh/file_transfer_service.dart'
         ReceivedFile,
         kFileTransferPort;
 import 'mesh/mesh_lifecycle.dart' show MeshLifecycleObserver;
+import 'mesh/mesh_service.dart' show MeshService, PairingSession;
 
 // The thought splitter moved to `core` so the chat log can use it when it
 // reads an old answer; this export keeps every existing importer of the shell
@@ -1292,6 +1295,7 @@ class _NexusUiAppState extends State<NexusUiApp> {
             followSystem: _followSystem,
             darkMode: _dark,
             accent: _accent,
+            mesh: widget.services?.mesh,
             onFollowSystemChanged: (value) =>
                 setState(() => _followSystem = value),
             onDarkModeChanged: (value) => setState(() => _dark = value),
@@ -1936,7 +1940,18 @@ class NexusShell extends StatefulWidget {
     this.accent = NexusAccent.purple,
     this.onFollowSystemChanged,
     this.onAccentChanged,
+    this.mesh,
   });
+
+  /// The running mesh, when the app started one.
+  ///
+  /// Handed down rather than reached through a singleton because it is the only
+  /// thing on the launched path that is *not* a process-wide static: `main()`
+  /// starts it and owns its lifetime. Null is a widget test that built the
+  /// shell on its own; the Devices tab then behaves as it did before this pass
+  /// — a shell list with no presence and no capability line — rather than
+  /// pretending a mesh is there.
+  final MeshService? mesh;
 
   /// Whether the shell is currently in dark mode, as the user chose it. What is
   /// *on screen* is `Theme.of(context).brightness`, which differs from this
@@ -2103,7 +2118,7 @@ class _NexusShellState extends State<NexusShell> {
         // only the page whose index matches the selected tab does work on
         // launch.
         FilesTab(active: _tab == 1),
-        const DevicesTab(),
+        DevicesTab(mesh: widget.mesh),
         SettingsTab(
           darkMode: dark,
           onDarkModeChanged: widget.onDarkModeChanged,
@@ -2113,6 +2128,7 @@ class _NexusShellState extends State<NexusShell> {
           onAccentChanged: widget.onAccentChanged,
           scrollController: _settingsScroll,
           refreshEpoch: _settingsEpoch,
+          mesh: widget.mesh,
         ),
         if (_developerMode) const DeveloperLogsTab(),
       ],
@@ -5947,10 +5963,35 @@ class NexusFileRow extends StatelessWidget {
 /// with — see the note at the top of `paired_devices.dart` — because live
 /// reachability is the mesh's answer and this front end has no mesh.
 class DevicesTab extends StatefulWidget {
-  const DevicesTab({super.key});
+  const DevicesTab({super.key, this.mesh});
+
+  /// The running mesh, when the app started one. Null in a widget test, which
+  /// is why every read of it below is nullable: a shell with no mesh has no
+  /// presence to show and no pairing to offer, and says so by showing neither.
+  final MeshService? mesh;
 
   @override
   State<DevicesTab> createState() => _DevicesTabState();
+}
+
+/// One card's worth of state: the row the shell wrote, and what the mesh says
+/// about the same device right now.
+///
+/// The two are one row on purpose. Identity, address and the file token belong
+/// to [device] (the mesh does not carry them); presence and capabilities belong
+/// to [presence] (the shell does not know them). [notConnected] is the case the
+/// merge has to name rather than blur: a row whose device the mesh has never
+/// paired.
+class _DeviceRow {
+  const _DeviceRow({
+    required this.device,
+    required this.presence,
+    this.notConnected = false,
+  });
+
+  final PairedDevice device;
+  final PeerPresence? presence;
+  final bool notConnected;
 }
 
 class _DevicesTabState extends State<DevicesTab> {
@@ -5974,6 +6015,10 @@ class _DevicesTabState extends State<DevicesTab> {
     super.initState();
     _paired.addListener(_onChanged);
     _nearby.addListener(_onChanged);
+    // The mesh is a source for this screen now, not just for the file link:
+    // a peer going quiet, a capability list arriving and a device pairing into
+    // this one all arrive as notifications, and the rows have to follow them.
+    widget.mesh?.addListener(_onChanged);
     unawaited(
       DeviceMemory.totalBytes().then((int? bytes) {
         if (mounted && bytes != null) setState(() => _localRam = bytes);
@@ -5994,6 +6039,7 @@ class _DevicesTabState extends State<DevicesTab> {
   void dispose() {
     _paired.removeListener(_onChanged);
     _nearby.removeListener(_onChanged);
+    widget.mesh?.removeListener(_onChanged);
     unawaited(_nearby.stop());
     super.dispose();
   }
@@ -6004,29 +6050,54 @@ class _DevicesTabState extends State<DevicesTab> {
 
   /// Paired rows, with presence answered by what discovery is hearing right
   /// now: a device heard in the last minute is online, whoever said otherwise
-  /// when the row was written.
-  List<PairedDevice> get _rows => <PairedDevice>[
+  /// when the row was written — and by the mesh when it has a pairing, which is
+  /// the stronger answer of the two.
+  ///
+  /// The mesh-only rows at the end are devices that paired *into* this one (they
+  /// scanned our code). Nothing wrote a shell row for them, so without this the
+  /// device the user just paired with would be missing from the list they are
+  /// looking at — see [meshOnlyRows].
+  List<_DeviceRow> get _rows => <_DeviceRow>[
     for (final PairedDevice device in _paired.devices)
-      if (device.isThisDevice)
-        device
-      else if (_nearby.running && _nearby.device(device.id) != null)
-        device.copyWith(
-          online: true,
-          detail: 'Seen just now at ${_nearby.device(device.id)!.address}',
-        )
-      else
-        device,
+      _rowFor(device),
+    for (final PairedDevice peer in meshOnlyRows(widget.mesh, _paired))
+      _DeviceRow(device: peer, presence: peerPresence(widget.mesh, peer.id)),
   ];
+
+  _DeviceRow _rowFor(PairedDevice device) {
+    final PeerPresence? presence = peerPresence(widget.mesh, device.id);
+    PairedDevice row = device;
+    if (!device.isThisDevice) {
+      final DiscoveredDevice? heard = _nearby.running
+          ? _nearby.device(device.id)
+          : null;
+      if (heard != null) {
+        row = device.copyWith(
+          online: true,
+          detail: 'Seen just now at ${heard.address}',
+        );
+      }
+      if (presence?.online == true) row = row.copyWith(online: true);
+    }
+    return _DeviceRow(
+      device: row,
+      presence: presence,
+      // The mesh is only one of the two answers here, so "not connected" is
+      // only meaningful when there *is* a mesh and it has no record.
+      notConnected:
+          widget.mesh != null && presence == null && !device.isThisDevice,
+    );
+  }
 
   /// The memory on this mesh, in bytes: this device's own RAM plus every peer
   /// that shared a number. A peer that did not share is not a zero — it is a
   /// device this total cannot speak for, which is why the row also says how
   /// many devices answered.
   int? get _meshRam {
-    final List<PairedDevice> devices = _rows;
     int total = _localRam ?? 0;
     int counted = _localRam == null ? 0 : 1;
-    for (final PairedDevice device in devices) {
+    for (final _DeviceRow row in _rows) {
+      final PairedDevice device = row.device;
       final int? ram = device.ramBytes;
       if (device.isThisDevice || ram == null) continue;
       total += ram;
@@ -6036,10 +6107,9 @@ class _DevicesTabState extends State<DevicesTab> {
   }
 
   int get _meshRamDevices {
-    final List<PairedDevice> devices = _rows;
     int counted = _localRam == null ? 0 : 1;
-    for (final PairedDevice device in devices) {
-      if (!device.isThisDevice && device.ramBytes != null) counted++;
+    for (final _DeviceRow row in _rows) {
+      if (!row.device.isThisDevice && row.device.ramBytes != null) counted++;
     }
     return counted;
   }
@@ -6084,11 +6154,19 @@ class _DevicesTabState extends State<DevicesTab> {
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
-    final List<PairedDevice> devices = _rows;
+    final List<_DeviceRow> rows = _rows;
+    // Every id already on the list, including the ones only the mesh knows:
+    // a peer that paired into this device is paired, and offering it under
+    // Nearby as though it were a stranger would be the same double-answer the
+    // merge exists to remove.
+    final Set<String> known = <String>{
+      for (final _DeviceRow row in rows) row.device.id,
+    };
     final List<DiscoveredDevice> unpaired = <DiscoveredDevice>[
       for (final DiscoveredDevice device in _nearby.devices)
-        if (!_paired.contains(device.id)) device,
+        if (!known.contains(device.id)) device,
     ];
+    final MeshService? mesh = widget.mesh;
     return NexusTabBody(
       title: 'Devices',
       subtitle: 'Paired directly, over your own network.',
@@ -6098,7 +6176,8 @@ class _DevicesTabState extends State<DevicesTab> {
       trailing: IconButton(
         key: kNexusAddDevice,
         tooltip: kNexusAddDeviceLabel,
-        onPressed: () => unawaited(showDevicePairingSheet(context)),
+        onPressed: () =>
+            unawaited(showDevicePairingSheet(context, mesh: widget.mesh)),
         icon: const Icon(Icons.add_rounded),
         color: c.accent,
       ),
@@ -6111,16 +6190,20 @@ class _DevicesTabState extends State<DevicesTab> {
         ),
         children: <Widget>[
           const NexusSectionLabel('Connected Devices', first: true),
-          for (final device in devices) ...<Widget>[
+          for (final _DeviceRow row in rows) ...<Widget>[
             _ConnectedDeviceCard(
-              key: ValueKey<String>('device-card-${device.id}'),
-              device: device,
-              online: device.isThisDevice ? true : device.online,
-              address: _addressOf(device),
-              desktop: _isDesktop(device),
-              onForget: device.isThisDevice
+              key: ValueKey<String>('device-card-${row.device.id}'),
+              device: row.device,
+              online: row.device.isThisDevice ? true : row.device.online,
+              address: _addressOf(row.device),
+              desktop: _isDesktop(row.device),
+              presence: row.presence,
+              notConnected: row.notConnected,
+              onForget: row.device.isThisDevice
                   ? null
-                  : () => unawaited(_forget(device)),
+                  : () => unawaited(_forget(row.device)),
+              onPairAgain: () =>
+                  unawaited(showDevicePairingSheet(context, mesh: mesh)),
             ),
             const SizedBox(height: 10),
           ],
@@ -6128,6 +6211,24 @@ class _DevicesTabState extends State<DevicesTab> {
           // models were chosen by the strongest device rather than by the one
           // in the user's hand.
           const NexusSectionLabel('Mesh'),
+          // Off until the user says otherwise, and the switch is here rather
+          // than buried in Settings because this is the screen that owns the
+          // list it changes. Off is not a hidden default: the subtitle says
+          // what off means in the same breath.
+          if (mesh != null)
+            NexusRow(
+              key: kNexusMeshPairingToggle,
+              title: 'Mesh pairing',
+              subtitle: mesh.store.pairingEnabled
+                  ? 'Other devices can pair with this one from its code.'
+                  : 'Off — no device can pair with this one until you turn '
+                        'this on.',
+              leading: const NexusIconTile(Icons.link_rounded),
+              trailing: Switch.adaptive(
+                value: mesh.store.pairingEnabled,
+                onChanged: (bool value) => unawaited(_setPairing(value)),
+              ),
+            ),
           NexusRow(
             key: const ValueKey<String>('mesh-total-ram'),
             title: 'Mesh Total RAM',
@@ -6147,7 +6248,8 @@ class _DevicesTabState extends State<DevicesTab> {
             subtitle: 'Show your code, or scan one from another device',
             leading: const NexusIconTile(Icons.add_rounded),
             accentTitle: true,
-            onTap: () => unawaited(showDevicePairingSheet(context)),
+            onTap: () =>
+                unawaited(showDevicePairingSheet(context, mesh: widget.mesh)),
           ),
           const SizedBox(height: 14),
           OutlinedButton.icon(
@@ -6205,6 +6307,19 @@ class _DevicesTabState extends State<DevicesTab> {
     );
   }
 
+  /// Turns mesh pairing on or off for this device, and remembers it.
+  ///
+  /// The write is fire-and-forget for the same reason every other preference
+  /// row's is: the switch has already moved, and a slow disk is not a reason to
+  /// hold the frame. The mesh reads the store live, so the next inbound
+  /// `pair-request` is refused (or accepted) by the value the user just set.
+  Future<void> _setPairing(bool value) async {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null || mesh.store.pairingEnabled == value) return;
+    setState(() => mesh.store.pairingEnabled = value);
+    unawaited(mesh.store.save());
+  }
+
   /// Takes a device off the list, after asking.
   ///
   /// The question is not politeness. Forgetting is the only way to break a
@@ -6223,7 +6338,16 @@ class _DevicesTabState extends State<DevicesTab> {
       confirmLabel: 'Forget',
     );
     if (!confirmed || !mounted) return;
-    if (!_paired.forget(device.id)) return;
+    // Both lists, and the mesh too: a shell row that outlived its pairing
+    // would come back as "Not connected" on the next frame, which is the exact
+    // half-state this screen now names rather than hides. The mesh can also
+    // hold a device with no shell row (it paired by scanning our code), so the
+    // row is not the only place to forget from.
+    final MeshService? mesh = widget.mesh;
+    final bool meshHad = mesh?.isPaired(device.id) ?? false;
+    final bool forgotRow = _paired.forget(device.id);
+    if (meshHad) unawaited(mesh!.forgetDevice(device.id));
+    if (!forgotRow && !meshHad) return;
     // And out of discovery too: otherwise the next announcement re-adds the
     // same device to the Nearby section a second later, which looks exactly
     // like the Forget button having done nothing.
@@ -6316,13 +6440,28 @@ class _ConnectedDeviceCard extends StatefulWidget {
     required this.online,
     required this.address,
     required this.desktop,
+    this.presence,
+    this.notConnected = false,
     this.onForget,
+    this.onPairAgain,
   });
 
   final PairedDevice device;
   final bool online;
   final String? address;
   final bool desktop;
+
+  /// What the mesh says about this device right now — presence and the list it
+  /// announced. Null when the mesh has no pairing for it, which the card shows
+  /// as "Not connected" rather than as an offline device.
+  final PeerPresence? presence;
+
+  /// True for a shell row the mesh has never paired.
+  final bool notConnected;
+
+  /// Opens the pairing sheet again, for the row that says it should.
+  final VoidCallback? onPairAgain;
+
   final VoidCallback? onForget;
 
   @override
@@ -6545,6 +6684,13 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                 ],
               ),
               if (!self) ...<Widget>[
+                const SizedBox(height: 10),
+                _PeerCapabilities(
+                  deviceId: _device.id,
+                  presence: widget.presence,
+                  notConnected: widget.notConnected,
+                  onPairAgain: widget.onPairAgain,
+                ),
                 const SizedBox(height: 12),
                 Row(
                   children: <Widget>[
@@ -6654,6 +6800,193 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
   }
 }
 
+/// What this peer can do, said once per card, in five states.
+///
+/// The states are the whole point, and they are not decoration:
+///
+///   - no mesh pairing at all → "Not connected · pair again" (the row is a file
+///     destination the mesh has never met, and tapping it opens the pairing
+///     sheet);
+///   - paired but offline → "Offline". The chips a peer announced before it went
+///     quiet are not drawn greyed, because a greyed chip is still a claim about
+///     what is on the network right now;
+///   - never announced → "No capabilities announced yet". Nothing is
+///     substituted, least of all the platform's own defaults;
+///   - announced an empty list → "Reports no capabilities" — a different fact
+///     from the line above;
+///   - announced a list → its labels, plus one word for how it arrived.
+///
+/// The platform fallback the interpreter uses is deliberately absent here. A row
+/// is a statement about *that* device, and "it is probably like this one" is
+/// exactly the guess Phase 2's evidence ladder exists to keep out of the UI.
+class _PeerCapabilities extends StatelessWidget {
+  const _PeerCapabilities({
+    required this.deviceId,
+    required this.presence,
+    required this.notConnected,
+    this.onPairAgain,
+  });
+
+  final String deviceId;
+  final PeerPresence? presence;
+  final bool notConnected;
+  final VoidCallback? onPairAgain;
+
+  /// How many labels fit on one line before the rest become a count.
+  static const int _mostChips = 4;
+
+  @override
+  Widget build(BuildContext context) {
+    final NexusUiColors c = context.ui;
+    final TextStyle meta = NexusType.rowMeta(c).copyWith(fontSize: 11.5);
+    if (notConnected) {
+      return InkWell(
+        key: ValueKey<String>('pair-again-$deviceId'),
+        onTap: onPairAgain,
+        borderRadius: const BorderRadius.all(NexusLayout.tile),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: Row(
+            children: <Widget>[
+              Icon(Icons.link_off_rounded, size: 14, color: c.accent),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  kNexusNotConnected,
+                  key: ValueKey<String>('caps-$deviceId'),
+                  style: meta.copyWith(
+                    color: c.accent,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final PeerPresence? peer = presence;
+    // A shell with no mesh behind it has nothing to say about capabilities, and
+    // inventing a line would be worse than the empty space.
+    if (peer == null) return const SizedBox.shrink();
+    if (!peer.online) {
+      return Text(
+        kNexusCapsOffline,
+        key: ValueKey<String>('caps-$deviceId'),
+        style: meta,
+      );
+    }
+    if (!peer.announced) {
+      return Text(
+        kNexusCapsNoneYet,
+        key: ValueKey<String>('caps-$deviceId'),
+        style: meta,
+      );
+    }
+    if (peer.caps.isEmpty) {
+      return Text(
+        kNexusCapsNoneAnnounced,
+        key: ValueKey<String>('caps-$deviceId'),
+        style: meta,
+      );
+    }
+    final List<String> labels = <String>[
+      for (final String id in (peer.caps.toList()..sort()))
+        capabilityFor(id)?.label ?? id,
+    ];
+    final List<String> shown = labels.take(_mostChips).toList();
+    final int rest = labels.length - shown.length;
+    return Wrap(
+      key: ValueKey<String>('caps-$deviceId'),
+      spacing: 6,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: <Widget>[
+        for (final String label in shown) _chip(c, meta, label),
+        if (rest > 0) _chip(c, meta, '+$rest'),
+        // The provenance word is part of the same line, not a second one: one
+        // gesture opens it, and the colour alone never carries the difference.
+        InkWell(
+          key: ValueKey<String>('caps-proof-$deviceId'),
+          onTap: () => _showProof(context, peer.verified),
+          borderRadius: const BorderRadius.all(NexusLayout.tile),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(
+                  peer.verified
+                      ? Icons.verified_rounded
+                      : Icons.help_outline_rounded,
+                  size: 13,
+                  color: peer.verified ? c.online : c.textMuted,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  peer.verified ? kNexusCapsVerified : kNexusCapsAssumed,
+                  style: meta.copyWith(
+                    fontSize: 11,
+                    color: peer.verified ? c.online : c.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _chip(NexusUiColors c, TextStyle meta, String label) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: c.raised,
+      borderRadius: BorderRadius.circular(7),
+      border: Border.all(color: c.hairline),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      child: Text(label, style: meta.copyWith(fontSize: 11, color: c.textStrong)),
+    ),
+  );
+
+  /// What the provenance word means, in the user's words.
+  void _showProof(BuildContext context, bool verified) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: context.ui.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (BuildContext sheetContext) {
+        final NexusUiColors c = sheetContext.ui;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  verified ? kNexusCapsVerified : kNexusCapsAssumed,
+                  style: NexusType.rowTitle(c),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  verified
+                      ? kNexusCapsVerifiedBody
+                      : kNexusCapsAssumedBody,
+                  style: NexusType.rowMeta(c).copyWith(height: 1.5),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// One action inside a device card: a quiet raised tile, because the card is
 /// the object and these are the verbs on it.
 class _DeviceCardAction extends StatelessWidget {
@@ -6751,6 +7084,27 @@ String nexusPairRefusal(String raw) {
 /// The title on the sheet, the QR page and the scanner.
 const String kNexusPairTitle = 'Pair a device';
 
+/// The row on a device card whose device the mesh has never paired.
+const String kNexusNotConnected = 'Not connected · pair again';
+
+/// The capability line, in each of its states. Named here so the card, the
+/// tests and this note cannot drift into three spellings of one fact.
+const String kNexusCapsOffline = 'Offline';
+const String kNexusCapsNoneYet = 'No capabilities announced yet';
+const String kNexusCapsNoneAnnounced = 'Reports no capabilities';
+const String kNexusCapsVerified = 'Verified';
+const String kNexusCapsAssumed = 'As announced';
+const String kNexusCapsVerifiedBody =
+    'This device proved the list came from it: the frame it arrived on was '
+    'authenticated with the pairing the two of you hold.';
+const String kNexusCapsAssumedBody =
+    'This device sent the list, but the frame it arrived on was not '
+    'authenticated. Nexus shows the labels and says so rather than calling '
+    'them proved.';
+
+/// The switch that lets another device pair with this one.
+const Key kNexusMeshPairingToggle = Key('nexus-mesh-pairing-toggle');
+
 /// The + in the Devices header, and what it is called out loud. The key is what
 /// a test taps; the label is what a screen reader says.
 const Key kNexusAddDevice = Key('nexus-add-device');
@@ -6787,7 +7141,10 @@ Future<PairInvite?> openPairScanner(BuildContext context) async {
 /// sheet with a live `MeshService` behind it: this one has no mesh, only the
 /// invite a QR can carry, and two functions with one name would be a choice
 /// made by import order.
-Future<void> showDevicePairingSheet(BuildContext context) {
+Future<void> showDevicePairingSheet(
+  BuildContext context, {
+  MeshService? mesh,
+}) {
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: context.ui.surface,
@@ -6830,7 +7187,7 @@ Future<void> showDevicePairingSheet(BuildContext context) {
                 trailing: const NexusChevron(),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
-                  unawaited(_scanFrom(context));
+                  unawaited(_scanFrom(context, mesh: mesh));
                 },
               ),
               NexusRow(
@@ -6842,7 +7199,7 @@ Future<void> showDevicePairingSheet(BuildContext context) {
                   Navigator.of(sheetContext).pop();
                   Navigator.of(context).push<void>(
                     MaterialPageRoute<void>(
-                      builder: (routeContext) => const PairQrPage(),
+                      builder: (routeContext) => PairQrPage(mesh: mesh),
                     ),
                   );
                 },
@@ -6861,25 +7218,32 @@ Future<void> showDevicePairingSheet(BuildContext context) {
 const String kNexusScanQrLabel = 'Scan QR code';
 const String kNexusShowQrLabel = 'Show my QR code';
 
-/// Runs the scanner and puts whatever came back into the paired list.
+/// Runs the scanner and pairs what came back.
 ///
 /// Split out from the sheet so the sheet can close first: a modal sheet left
 /// open under a camera page is a sheet that comes back when the camera is
 /// dismissed, which is not what "scan a code" means.
-Future<void> _scanFrom(BuildContext context) async {
+///
+/// The scan is now one decision rather than a write: [pairScannedDevice] pairs
+/// the mesh and then writes the row, so the notice is the outcome of the pairing
+/// rather than of the list operation. A failure says what went wrong and leaves
+/// both lists exactly as they were.
+Future<void> _scanFrom(BuildContext context, {MeshService? mesh}) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   final PairInvite? invite = await openPairScanner(context);
   if (invite == null) return;
-  final bool added = PairedDevices.instance.add(invite);
+  final PairOutcome outcome = mesh == null
+      ? const PairOutcome.failure(kPairNoMeshText)
+      : await pairScannedDevice(
+          mesh: mesh,
+          invite: invite,
+          paired: PairedDevices.instance,
+        );
   messenger
     ?..hideCurrentSnackBar()
     ..showSnackBar(
       SnackBar(
-        content: Text(
-          added
-              ? 'Paired with ${invite.deviceName}'
-              : '${invite.deviceName} is already paired.',
-        ),
+        content: Text(outcome.notice),
         duration: const Duration(seconds: 3),
       ),
     );
@@ -6893,7 +7257,7 @@ Future<void> _scanFrom(BuildContext context) async {
 /// *not* printed on screen: it is 150 characters of JSON, and the one thing a
 /// user could do with it is mistype it.
 class PairQrPage extends StatefulWidget {
-  const PairQrPage({super.key, this.identity, this.addresses});
+  const PairQrPage({super.key, this.identity, this.addresses, this.mesh});
 
   /// Who this device is. Null uses [PairIdentity.current]; a test states it, so
   /// the QR it asserts on is not a random id.
@@ -6903,6 +7267,11 @@ class PairQrPage extends StatefulWidget {
   /// ([localAddresses]); a test states them, because a widget test host's
   /// interfaces are not the device's.
   final Future<List<String>> Function()? addresses;
+
+  /// The mesh this code should pair. Null is a page built on its own: it still
+  /// draws the file pairing it always did, and the scanning side will say the
+  /// code is too old rather than write half a pairing.
+  final MeshService? mesh;
 
   @override
   State<PairQrPage> createState() => PairQrPageState();
@@ -6917,11 +7286,74 @@ class PairQrPageState extends State<PairQrPage> {
   /// it would pair a device that could never send a file here.
   String _token = '';
 
+  /// The mesh pairing this page is showing, or null when there is no mesh (or
+  /// no consent to pair). Its code is what makes the scan a pairing rather than
+  /// a file-only row.
+  PairingSession? _session;
+
+  /// Whether this device accepts new pairings. Read from the store so the page
+  /// tells the truth the mesh will act on: with this off, the peer's request is
+  /// refused silently, and a QR that looks scannable would be a lie.
+  bool _pairingOn = true;
+
+  /// Mints the next code when the current one lapses, so a page left open is
+  /// not a page showing a dead QR.
+  Timer? _expiryTimer;
+
   @override
   void initState() {
     super.initState();
     unawaited(_readAddresses());
     unawaited(_readToken());
+    final MeshService? mesh = widget.mesh;
+    _pairingOn = mesh == null || mesh.store.pairingEnabled;
+    if (_pairingOn) _beginSession();
+  }
+
+  @override
+  void dispose() {
+    _expiryTimer?.cancel();
+    final MeshService? mesh = widget.mesh;
+    final PairingSession? session = _session;
+    // Closing the page closes the door. Showing a code is consent to be
+    // scanned, and a pending code that outlived its screen would be consent
+    // nobody can see — so it is cleared unless something newer replaced it.
+    if (mesh != null && session != null && mesh.pendingCode == session.code) {
+      mesh.pendingCode = null;
+      mesh.pendingCodeExpiry = null;
+    }
+    super.dispose();
+  }
+
+  /// Starts a five-minute mesh pairing, and schedules its replacement.
+  void _beginSession() {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null) return;
+    final PairingSession session = mesh.beginPairing();
+    _session = session;
+    _expiryTimer?.cancel();
+    final Duration wait = session.expiresAt.difference(DateTime.now());
+    // A second past the code's own expiry, so the replacement never races the
+    // code it is replacing.
+    _expiryTimer = Timer(
+      wait.isNegative ? Duration.zero : wait + const Duration(seconds: 1),
+      () {
+        if (!mounted) return;
+        setState(_beginSession);
+      },
+    );
+  }
+
+  /// Turns pairing on from the point of use, then mints the code.
+  Future<void> _enableMeshPairing() async {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null) return;
+    mesh.store.pairingEnabled = true;
+    unawaited(mesh.store.save());
+    setState(() {
+      _pairingOn = true;
+      _beginSession();
+    });
   }
 
   Future<void> _readAddresses() async {
@@ -6951,8 +7383,18 @@ class PairQrPageState extends State<PairQrPage> {
   /// other device needs to know *who* this is (id, name, key) and *where* it is
   /// (the address it just looked up), and a code carrying only the first would
   /// pair a device nobody could dial.
-  String payloadFor(List<String> addresses) =>
-      _who.withAddresses(addresses, port: kFileTransferPort).invite.encode();
+  String payloadFor(List<String> addresses) {
+    final PairInvite invite = _who
+        .withAddresses(addresses, port: kFileTransferPort)
+        .invite;
+    final PairingSession? session = _session;
+    if (session == null) return invite.encode();
+    // Both halves in one code: the file link's long-lived token under `code`,
+    // and the mesh's five-minute code under `mesh_code` with the port it dials.
+    return invite
+        .withMesh(code: session.code, port: widget.mesh!.port)
+        .encode();
+  }
 
   /// The identity half of the code, without addresses — what the page can say
   /// before the interface list comes back, and what an older `nexus_pair` code
@@ -6979,25 +7421,38 @@ class PairQrPageState extends State<PairQrPage> {
             style: NexusType.rowMeta(c).copyWith(height: 1.5),
           ),
           const SizedBox(height: 22),
-          Center(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: c.hairline),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: QrImageView(
-                  data: currentPayload,
-                  size: 236,
-                  backgroundColor: Colors.white,
-                  padding: EdgeInsets.zero,
-                  semanticsLabel: 'Pairing code for ${who.name}',
+          if (widget.mesh != null && !_pairingOn)
+            _PairingOffCard(onTurnOn: () => unawaited(_enableMeshPairing()))
+          else ...<Widget>[
+            Center(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: c.hairline),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: QrImageView(
+                    data: currentPayload,
+                    size: 236,
+                    backgroundColor: Colors.white,
+                    padding: EdgeInsets.zero,
+                    semanticsLabel: 'Pairing code for ${who.name}',
+                  ),
                 ),
               ),
             ),
-          ),
+            if (_session != null) ...<Widget>[
+              const SizedBox(height: 10),
+              Text(
+                kNexusQrValidity,
+                key: kNexusQrValidityLine,
+                textAlign: TextAlign.center,
+                style: NexusType.rowMeta(c),
+              ),
+            ],
+          ],
           const SizedBox(height: 22),
           Row(
             children: <Widget>[
@@ -7036,6 +7491,65 @@ class PairQrPageState extends State<PairQrPage> {
 /// The line under the QR's own name: the address the code now carries.
 const Key kNexusQrAddressLine = Key('nexus-qr-address');
 
+/// What the code is worth, in time. Shown only when this page is node to a
+/// mesh: a file-only code has no expiry and claiming one would be wrong.
+const String kNexusQrValidity = 'This code pairs this device for five minutes.';
+const Key kNexusQrValidityLine = Key('nexus-qr-validity');
+
+/// The card a "Show my QR code" page shows when mesh pairing is off.
+///
+/// It is here rather than only in Settings because this is the moment the user
+/// finds out: a code on screen with pairing off is a scan that fails silently
+/// on the other device. One tap fixes it from where the problem was found.
+class _PairingOffCard extends StatelessWidget {
+  const _PairingOffCard({required this.onTurnOn});
+
+  final VoidCallback onTurnOn;
+
+  @override
+  Widget build(BuildContext context) {
+    final NexusUiColors c = context.ui;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: c.raised,
+        borderRadius: const BorderRadius.all(NexusLayout.card),
+        border: Border.all(color: c.hairline),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(Icons.link_off_rounded, size: 18, color: c.accent),
+                const SizedBox(width: 8),
+                Text('Mesh pairing is off', style: NexusType.rowTitle(c)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Another device can only pair with this one while mesh pairing is '
+              'on. Turning it on does not pair anything by itself — it lets this '
+              'page\u2019s code be accepted.',
+              style: NexusType.rowMeta(c).copyWith(height: 1.5),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              key: kNexusPairingOffTurnOn,
+              onPressed: onTurnOn,
+              child: const Text('Turn on mesh pairing'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The one button on the pairing-off card.
+const Key kNexusPairingOffTurnOn = Key('nexus-pairing-off-turn-on');
+
 /// The code a desktop shows to a phone.
 ///
 /// It is the phone's own `nexus_pair` JSON with two desktop-shaped fields on
@@ -7047,7 +7561,27 @@ const Key kNexusQrAddressLine = Key('nexus-qr-address');
 /// dial, and the transfer token that proves it scanned this PC. A code drawn
 /// before either existed would pair a device that could never send a file.
 class PairPhonePage extends StatefulWidget {
-  const PairPhonePage({super.key});
+  const PairPhonePage({
+    super.key,
+    this.mesh,
+    this.identity,
+    this.addresses,
+  });
+
+  /// Who this device is, for a test that asserts on the code. Null uses
+  /// [PairIdentity.current].
+  final PairIdentity? identity;
+
+  /// Where this device can be reached. Null reads the real interfaces; a test
+  /// states them, because the host's interfaces are not the device's.
+  final Future<List<String>> Function()? addresses;
+
+  /// The mesh this code should pair, when the shell has one.
+  ///
+  /// The PC's code is the direction that made this necessary: a phone scans it
+  /// from the Settings row, and without a mesh code the scan is refused as an
+  /// old code. Null is a page a test built on its own.
+  final MeshService? mesh;
 
   @override
   State<PairPhonePage> createState() => PairPhonePageState();
@@ -7056,6 +7590,15 @@ class PairPhonePage extends StatefulWidget {
 class PairPhonePageState extends State<PairPhonePage> {
   List<String> _addresses = const <String>[];
   String _token = '';
+
+  /// The mesh pairing this code is showing, or null when there is no mesh.
+  PairingSession? _session;
+
+  /// Whether this device accepts new pairings (see [PairQrPage]'s note — the
+  /// same rule, on the other door).
+  bool _pairingOn = true;
+
+  Timer? _expiryTimer;
 
   /// Whether Ollama answered on this machine. Null while the first probe runs.
   bool? _ollama;
@@ -7069,11 +7612,59 @@ class PairPhonePageState extends State<PairPhonePage> {
     unawaited(_readIdentity());
     unawaited(_probeOllama());
     unawaited(_ensureFileLink());
+    final MeshService? mesh = widget.mesh;
+    _pairingOn = mesh == null || mesh.store.pairingEnabled;
+    if (_pairingOn) _beginSession();
+  }
+
+  @override
+  void dispose() {
+    _expiryTimer?.cancel();
+    final MeshService? mesh = widget.mesh;
+    final PairingSession? session = _session;
+    if (mesh != null && session != null && mesh.pendingCode == session.code) {
+      mesh.pendingCode = null;
+      mesh.pendingCodeExpiry = null;
+    }
+    super.dispose();
+  }
+
+  /// Starts the five-minute mesh pairing this code will carry, and schedules
+  /// its replacement so a page left open is not a page showing a dead code.
+  void _beginSession() {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null) return;
+    final PairingSession session = mesh.beginPairing();
+    _session = session;
+    _expiryTimer?.cancel();
+    final Duration wait = session.expiresAt.difference(DateTime.now());
+    _expiryTimer = Timer(
+      wait.isNegative ? Duration.zero : wait + const Duration(seconds: 1),
+      () {
+        if (!mounted) return;
+        setState(_beginSession);
+      },
+    );
+  }
+
+  /// Turns pairing on from this page, then mints the code.
+  Future<void> _enableMeshPairing() async {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null) return;
+    mesh.store.pairingEnabled = true;
+    unawaited(mesh.store.save());
+    setState(() {
+      _pairingOn = true;
+      _beginSession();
+    });
   }
 
   Future<void> _readIdentity() async {
-    final List<String> found = await localAddresses();
-    final String token = await PairToken.current();
+    final List<String> found = await (widget.addresses ?? localAddresses)();
+    final String known = widget.identity?.token.trim() ?? '';
+    final String token = known.isNotEmpty
+        ? known
+        : await PairToken.current();
     if (!mounted) return;
     setState(() {
       _addresses = found;
@@ -7102,7 +7693,7 @@ class PairPhonePageState extends State<PairPhonePage> {
     });
   }
 
-  PairIdentity get _who => PairIdentity.current;
+  PairIdentity get _who => (widget.identity ?? PairIdentity.current).withToken(_token);
 
   PairInvite get invite => PairInvite(
     deviceName: _who.name,
@@ -7116,8 +7707,17 @@ class PairPhonePageState extends State<PairPhonePage> {
   );
 
   /// The exact bytes the QR carries. Empty until an address and a token exist.
-  String get currentPayload =>
-      _addresses.isEmpty || _token.isEmpty ? '' : invite.encodeForDesktop();
+  ///
+  /// With a mesh session it also carries `mesh_code` and `mesh_port`, which is
+  /// what turns a scan from "this device sends files" into a pairing.
+  String get currentPayload {
+    if (_addresses.isEmpty || _token.isEmpty) return '';
+    final PairingSession? session = _session;
+    final PairInvite code = session == null
+        ? invite
+        : invite.withMesh(code: session.code, port: widget.mesh!.port);
+    return code.encodeForDesktop();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -7147,40 +7747,45 @@ class PairPhonePageState extends State<PairPhonePage> {
                     style: NexusType.rowMeta(c).copyWith(height: 1.5),
                   ),
                   const SizedBox(height: 22),
-                  Center(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: c.hairline),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: SizedBox(
-                          width: 260,
-                          height: 260,
-                          child: payload.isEmpty
-                              ? const Center(
-                                  child: SizedBox(
-                                    width: 26,
-                                    height: 26,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
+                  if (widget.mesh != null && !_pairingOn)
+                    _PairingOffCard(
+                      onTurnOn: () => unawaited(_enableMeshPairing()),
+                    )
+                  else
+                    Center(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: c.hairline),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: SizedBox(
+                            width: 260,
+                            height: 260,
+                            child: payload.isEmpty
+                                ? const Center(
+                                    child: SizedBox(
+                                      width: 26,
+                                      height: 26,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
                                     ),
+                                  )
+                                : QrImageView(
+                                    data: payload,
+                                    size: 260,
+                                    backgroundColor: Colors.white,
+                                    padding: EdgeInsets.zero,
+                                    semanticsLabel:
+                                        'Pairing code for ${_who.name}',
                                   ),
-                                )
-                              : QrImageView(
-                                  data: payload,
-                                  size: 260,
-                                  backgroundColor: Colors.white,
-                                  padding: EdgeInsets.zero,
-                                  semanticsLabel:
-                                      'Pairing code for ${_who.name}',
-                                ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
                   const SizedBox(height: 20),
                   NexusRow(
                     title: _who.name,

@@ -149,6 +149,47 @@ void main() {
     expect(meshB.isOnline('device-a'), isTrue);
   });
 
+  test('an HTTP GET at the mesh port is dropped, and the mesh survives it', () async {
+    await meshA.start();
+    await meshB.start();
+
+    // What a file-link probe looks like when the port it dialled turned out to
+    // be the mesh: `GET ` is 0x47455420, read as a 1.19 GB frame length. The
+    // decoder rejects it, the socket handler returns, and nothing is logged as
+    // an error — which matters, because this happens on the first dial to every
+    // peer whose row was written before the ports were separated.
+    final Socket probe = await Socket.connect(
+      '127.0.0.1',
+      meshA.port,
+      timeout: const Duration(seconds: 2),
+    );
+    final List<int> reply = <int>[];
+    final StreamSubscription<Uint8List> sub = probe.listen(reply.addAll);
+    probe.add(
+      utf8.encode('GET /nexus/hello HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n'),
+    );
+    await probe.flush();
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await sub.cancel();
+    probe.destroy();
+
+    // No answer and no state change: the garbage was never attributed to a
+    // peer, so it cannot make one appear.
+    expect(reply, isEmpty);
+    expect(meshA.pairedDevices, isEmpty);
+    expect(meshA.isPaired('device-b'), isFalse);
+
+    // And the listener is still a listener: the next real pairing works.
+    final PairingSession session = meshA.beginPairing();
+    final result = await meshB.pairWith(
+      address: '127.0.0.1',
+      port: meshA.port,
+      code: session.code,
+    );
+    expect(result.ok, isTrue, reason: result.error);
+    expect(meshA.isPaired('device-b'), isTrue);
+  });
+
   test('every ping and pong carries the local capability list', () async {
     final probeA = FakeCapabilityProbe({'camera', 'mic'});
     final probeB = FakeCapabilityProbe({'ssh-client'});

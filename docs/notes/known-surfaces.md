@@ -44,11 +44,17 @@ reach the listening port can
 Neither endpoint persists anything and neither can read a file, run a command,
 or change pairing state.
 
-**Why pass 1 does not fix it:** moving the listener off 51820 is not the moment
+**Why pass 1 did not fix it:** moving the listener off 51820 is not the moment
 to change what the protocol means. The honest fix is a signed request, which
-needs a secret both sides hold; today the scanning side holds the token and the
-scanned side holds its own, and only a bidirectional pairing gives both. That is
-pass 2's pairing bridge (`PairInvite.code` → `mesh.pairWith`).
+needs a secret both sides hold; at pass 1 the scanning side held the token and
+the scanned side held its own, and only a bidirectional pairing gives both.
+
+**Still open after pass 2.** The shell's QR now carries a mesh code
+(`mesh_code`, see `lib/core/pair_bridge.dart`), so a pairing *does* give both
+sides a shared secret — but the file link's endpoints were deliberately left
+alone in that pass; changing what `/nexus/ping` requires is its own commit with
+its own audit of every caller. Ping auth is pass 3, and until it lands this
+entry stands as written.
 
 **What fixing it looks like:** require the same nonce+HMAC scheme `/nexus/file`
 already uses on `/nexus/ping` and `/nexus/mouse`, or retire both endpoints in
@@ -56,3 +62,34 @@ favour of mesh messages once pass 3 rebinds the tabs. Either way, the test that
 should exist first is one asserting a signature-less ping is *refused*; the
 current behaviour is recorded in `test/file_transfer_service_test.dart`
 ("a ping needs no token — a known surface").
+
+---
+
+## The notification permission is asked for on every launch
+
+**Ships in:** every build since the mesh gained a foreground service
+(`NexusSyncService`), including the launched path after pass 1.
+
+**Where:** `android/app/src/main/kotlin/dev/nexus/nexus/MainActivity.kt`,
+`askToShowSyncNotification`, called from the `startSyncService` handler. The
+handler runs once per process, when the shell starts the mesh.
+
+**What is true today:** the call asks whenever the permission is not granted.
+There is no "already asked" flag and no `shouldShowRequestPermissionRationale`
+check, so a user who declined is asked again on the next launch. What stops it
+becoming a nag is Android 13's own two-strike rule: after two declines the
+system auto-denies without showing a dialog, and the app keeps asking into a
+void — one wasted call per launch, no visible prompt.
+
+**What that means in practice:** a user who declined once sees the dialog once
+more, then never again. A user who reinstalls or resets the permission is asked
+again from the first strike. Nothing is blocked either way: the mesh runs
+without the notification; the foreground service is what keeps it alive.
+
+**Why it is not fixed here:** the honest fix is to ask on the screen where the
+user turns mesh pairing on, rather than at launch, and to remember that they
+said no. Both are behaviour changes with their own on-device verification, and
+none of it can be tested off a phone — no device was attached when this was
+written (see `NotificationPermissionTest`, which pins the SDK/grant rule only).
+
+---

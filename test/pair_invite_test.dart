@@ -73,6 +73,68 @@ void main() {
       expect(pc?.ollama, isTrue);
     });
 
+    test('carries the mesh pairing beside the file token', () {
+      final PairInvite both = invite.withMesh(
+        code: 'ABCD-2345',
+        port: 51820,
+      );
+      final Map<String, dynamic> json =
+          jsonDecode(both.encode()) as Map<String, dynamic>;
+
+      // Two secrets, two field names, and the port each one dials. A scanner
+      // that read `mesh_code` but paired against `port` would knock on the file
+      // link, so `mesh_port` travels with it.
+      expect(json['code'], isNull);
+      expect(json['mesh_code'], 'ABCD-2345');
+      expect(json['mesh_port'], '51820');
+
+      final PairInvite? parsed = PairInvite.parse(both.encode());
+      expect(parsed?.meshCode, 'ABCD-2345');
+      expect(parsed?.meshPort, 51820);
+      // The desktop flavour carries the same pair of fields, as a number.
+      expect(
+        (jsonDecode(both.encodeForDesktop()) as Map<String, dynamic>)['mesh_port'],
+        51820,
+      );
+      expect(
+        PairInvite.parse(both.encodeForDesktop())?.meshCode,
+        'ABCD-2345',
+      );
+    });
+
+    test('a mesh code without a port is not written at all', () {
+      // Both or neither: a code nobody can dial is worse than a code that says
+      // nothing, because the scanner would pair against the wrong listener.
+      final PairInvite half = invite.withMesh(code: 'ABCD-2345', port: 0);
+      final Map<String, dynamic> json =
+          jsonDecode(half.encode()) as Map<String, dynamic>;
+      expect(json.containsKey('mesh_code'), isFalse);
+      expect(json.containsKey('mesh_port'), isFalse);
+      expect(PairInvite.parse(half.encode())?.meshCode, isEmpty);
+    });
+
+    test('an old code says nothing about a mesh, and is not refused', () {
+      // The absence is meaningful, not malformed: it is how a code from an
+      // older build arrives, and the pairing bridge — not the parser — is what
+      // asks for a fresh code.
+      final PairInvite? parsed = PairInvite.parse(invite.encode());
+      expect(parsed, isNotNull);
+      expect(parsed!.meshCode, isEmpty);
+      expect(parsed.meshPort, 0);
+    });
+
+    test('the mesh\u2019s own URI is a mesh code by construction', () {
+      // `nexus://pair` carries the short-lived code as `code` and the mesh
+      // listener as `port`, which is exactly the pair a scan needs.
+      const String uri =
+          'nexus://pair?v=1&id=pc000000000000000000000000000001&name=Study+PC'
+          '&port=51820&code=ABCD-2345&ip=192.168.1.20';
+      final PairInvite? parsed = PairInvite.fromAnyCode(uri);
+      expect(parsed?.meshCode, 'ABCD-2345');
+      expect(parsed?.meshPort, 51820);
+      expect(parsed?.addresses, <String>['192.168.1.20']);
+    });
+
     test('tolerates the whitespace a paste arrives with', () {
       final PairInvite? parsed = PairInvite.parse('  ${invite.encode()}\n');
       expect(parsed?.deviceName, 'My phone');
