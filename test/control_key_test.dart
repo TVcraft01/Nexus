@@ -18,7 +18,7 @@ import 'package:nexus/core/crypto.dart'
 import 'package:nexus/core/identity.dart' show DeviceInfo;
 import 'package:nexus/core/pair_invite.dart' show PairIdentity;
 import 'package:nexus/core/paired_devices.dart';
-import 'package:nexus/core/store.dart' show NexusStore;
+import 'package:nexus/core/store.dart' show ControlPath, NexusStore;
 import 'package:nexus/mesh/file_transfer_service.dart';
 import 'package:nexus/mesh/mesh_service.dart' as mesh
     show MeshService, PairedDevice;
@@ -357,6 +357,63 @@ void main() {
       expect(ping.verified, isTrue);
     });
 
+    /// A receiver whose acceptances land in a store, the way `main()` wires it.
+    Future<NexusStore> meteredInto(_Link link) async {
+      final Directory folder = Directory.systemTemp.createTempSync(
+        'nexus-meter-',
+      );
+      addTearDown(() {
+        if (folder.existsSync()) folder.deleteSync(recursive: true);
+      });
+      final NexusStore store = NexusStore(
+        explicitPath: '${folder.path}/store.json',
+      );
+      await store.load();
+      link.service.onControl = store.noteControlPath;
+      return store;
+    }
+
+    test('a ping proved by the pair key is counted on the derived path', () async {
+      final String key = await pairKey();
+      final _Link receiver = await knowing(key);
+      final NexusStore store = await meteredInto(receiver);
+      final _Link sender = await _link();
+      addTearDown(sender.dispose);
+      sender.service.peerControlKeyLookup = (String id) async => key;
+
+      final Future<NexusPing> arriving = receiver.service.pings.first;
+      await sender.service.ping(receiver.row());
+      await arriving.timeout(const Duration(seconds: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // The key that verified is named, not just "control worked": the token
+      // path cannot be deleted on the strength of the derived path's traffic.
+      expect(store.controlPathSeen(ControlPath.derived), 1);
+      expect(store.controlPathSeen(ControlPath.token), 0);
+      expect(store.controlPathSeen(ControlPath.unsigned), 0);
+      expect(store.controlPathLast(ControlPath.derived), contains(_me));
+    });
+
+    test('a ping proved by the token is counted on the token path', () async {
+      final String key = await pairKey();
+      final _Link receiver = await knowing(
+        key,
+        token: 'receiver-transfer-token',
+      );
+      final NexusStore store = await meteredInto(receiver);
+      final _Link sender = await _link();
+      addTearDown(sender.dispose);
+
+      final Future<NexusPing> arriving = receiver.service.pings.first;
+      await sender.service.ping(receiver.row(token: 'receiver-transfer-token'));
+      await arriving.timeout(const Duration(seconds: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(store.controlPathSeen(ControlPath.token), 1);
+      expect(store.controlPathSeen(ControlPath.derived), 0);
+      expect(store.controlPathSeen(ControlPath.unsigned), 0);
+    });
+
     test('a wrong signature is refused even when two keys are acceptable', () async {
       final String key = await pairKey();
       final _Link receiver = await knowing(
@@ -417,9 +474,10 @@ void main() {
       receiver.service.peerVersionLookup = (String id) =>
           id == _me ? '1.0.4' : null;
       final List<String> metered = <String>[];
-      receiver.service.onUnsignedControl = (String id, String name, String v) {
-        metered.add('$id|$name|$v');
-      };
+      receiver.service.onControl =
+          (ControlPath path, String id, String name, String v) {
+            metered.add('${path.name}|$id|$name|$v');
+          };
 
       final int status = await _post(receiver.port, kNexusPingPath, <String, String>{
         kHeaderDevice: _me,
@@ -432,7 +490,7 @@ void main() {
         lines.where((String l) => l.startsWith('control: unsigned from')),
         <String>['control: unsigned from Kitchen tablet 1.0.4'],
       );
-      expect(metered, <String>['$_me|Kitchen tablet|1.0.4']);
+      expect(metered, <String>['unsigned|$_me|Kitchen tablet|1.0.4']);
     });
 
     test('a peer that never announced a version is metered as unknown', () async {
@@ -475,7 +533,7 @@ void main() {
     });
   });
 
-  group('unsigned acceptances are counted where a release can read them', () {
+  group('control acceptances are counted where a release can read them', () {
     test('the count and the last one survive a reload', () async {
       final Directory folder = Directory.systemTemp.createTempSync(
         'nexus-count-',
@@ -507,6 +565,44 @@ void main() {
       await store.load();
       expect(store.unsignedControlSeen, 0);
       expect(store.unsignedControlLast, isEmpty);
+      for (final ControlPath path in ControlPath.values) {
+        expect(store.controlPathSeen(path), 0, reason: path.name);
+      }
+    });
+
+    test('each path keeps its own count and its own last sender', () async {
+      final Directory folder = Directory.systemTemp.createTempSync(
+        'nexus-paths-',
+      );
+      addTearDown(() {
+        if (folder.existsSync()) folder.deleteSync(recursive: true);
+      });
+      final String path = '${folder.path}/store.json';
+      final NexusStore store = NexusStore(explicitPath: path);
+      await store.load();
+
+      store.noteControlPath(ControlPath.unsigned, 'id-u', 'Old phone', '0.9.0');
+      store.noteControlPath(ControlPath.token, 'id-t', 'Scanned PC', '1.0.0');
+      store.noteControlPath(ControlPath.token, 'id-t', 'Scanned PC', '1.0.0');
+      store.noteControlPath(ControlPath.derived, 'id-d', 'Paired mac', '1.0.1');
+      await store.save();
+
+      final NexusStore reloaded = NexusStore(explicitPath: path);
+      await reloaded.load();
+
+      // Three separate questions, three separate answers: this is what makes
+      // "delete the token path" a decision rather than a guess.
+      expect(reloaded.controlPathSeen(ControlPath.unsigned), 1);
+      expect(reloaded.controlPathSeen(ControlPath.token), 2);
+      expect(reloaded.controlPathSeen(ControlPath.derived), 1);
+      expect(
+        reloaded.controlPathLast(ControlPath.token),
+        'Scanned PC 1.0.0 (id-t)',
+      );
+      expect(reloaded.controlPathLast(ControlPath.derived), 'Paired mac 1.0.1 (id-d)');
+      // The compatibility reader is the unsigned path, and only it.
+      expect(reloaded.unsignedControlSeen, 1);
+      expect(reloaded.unsignedControlLast, 'Old phone 0.9.0 (id-u)');
     });
   });
 }

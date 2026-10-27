@@ -7,6 +7,30 @@ import 'package:path_provider/path_provider.dart';
 import 'identity.dart';
 import 'memory.dart';
 
+/// Which key proved a control request the file link accepted.
+///
+/// The three paths reach the same two endpoints with three different proofs and
+/// three different lifetimes, so the meter counts them apart — a single total
+/// could not say which one is safe to delete:
+///
+/// - [unsigned] — no signature at all, accepted only from a device this shell
+///   already knows. The legacy path: it exists for builds that predate signing,
+///   and it can be deleted the day none of them is still running.
+/// - [token] — this device's own transfer token, the one-way direction where a
+///   peer scanned this device's QR. Deletable once every such peer has been
+///   re-paired through the mesh.
+/// - [derived] — the per-pair key both sides of a mesh pairing compute from the
+///   pairing secret. Nothing to delete: it is the direction that closes the
+///   residual gap.
+///
+/// The names are the storage keys, so they are part of the on-disk shape and
+/// renaming one is a migration.
+enum ControlPath {
+  unsigned,
+  token,
+  derived;
+}
+
 /// Everything Nexus persists on one device lives in a single JSON file in the
 /// app's private data directory. Nothing is ever sent anywhere; this is the
 /// device's own copy of its identity, its pairing secrets, and its history.
@@ -261,29 +285,67 @@ class NexusStore {
     }
   }
 
-  /// How many unsigned control requests this device has accepted, ever.
+  // --- The control meter ---------------------------------------------------
+
+  /// How many control requests this device has accepted on [path], ever.
   ///
   /// The deletion criterion for the unsigned ping path is "none from a build
   /// that signs", and a released install has no console to read `debugPrint`
-  /// from, so the count lives here where a later pass can read it off the
-  /// device. Written only by the file link's `onUnsignedControl`.
-  int get unsignedControlSeen =>
-      ((_data['settings'] as Map<String, dynamic>?)?['unsignedControlSeen']
-          as num?)?.toInt() ??
-      0;
-
-  /// Who the last one came from, as `name version (id)` — the same three facts
-  /// the log line carries, kept because a count alone cannot tell a retired
-  /// build from a forgotten pairing.
-  String get unsignedControlLast =>
-      ((_data['settings'] as Map<String, dynamic>?)?['unsignedControlLast']
-          as String?) ??
-      '';
-
-  void noteUnsignedControl(String peerId, String name, String version) {
-    _settings()['unsignedControlSeen'] = unsignedControlSeen + 1;
-    _settings()['unsignedControlLast'] = '$name $version ($peerId)';
+  /// from, so the counts live here where a later pass can read them off the
+  /// device. Written only by the file link's `onControl`.
+  ///
+  /// Counted per path rather than as one total, because the three paths die on
+  /// three different questions and a mixed count could answer none of them:
+  /// `unsigned` is deleted when no current build sends it, `token` when the
+  /// last pairing older than the mesh has been re-paired, `derived` never.
+  int controlPathSeen(ControlPath path) {
+    final Map<String, dynamic>? all =
+        (_data['settings'] as Map<String, dynamic>?)?['controlPaths']
+            as Map<String, dynamic>?;
+    final Map<String, dynamic>? entry =
+        all?[path.name] as Map<String, dynamic>?;
+    return (entry?['seen'] as num?)?.toInt() ?? 0;
   }
+
+  /// Who the last one on [path] came from, as `name version (id)` — the same
+  /// three facts the log line carries, kept because a count alone cannot tell
+  /// a retired build from a forgotten pairing.
+  String controlPathLast(ControlPath path) {
+    final Map<String, dynamic>? all =
+        (_data['settings'] as Map<String, dynamic>?)?['controlPaths']
+            as Map<String, dynamic>?;
+    final Map<String, dynamic>? entry =
+        all?[path.name] as Map<String, dynamic>?;
+    return (entry?['last'] as String?) ?? '';
+  }
+
+  void noteControlPath(
+    ControlPath path,
+    String peerId,
+    String name,
+    String version,
+  ) {
+    final Map<String, dynamic> all =
+        (_settings()['controlPaths'] ??= <String, dynamic>{})
+            as Map<String, dynamic>;
+    final Map<String, dynamic> entry =
+        (all[path.name] ??= <String, dynamic>{}) as Map<String, dynamic>;
+    entry['seen'] = ((entry['seen'] as num?)?.toInt() ?? 0) + 1;
+    entry['last'] = '$name $version ($peerId)';
+  }
+
+  /// The unsigned path's count and last sender, read through the meter above.
+  ///
+  /// The names are kept because they are what `docs/notes/known-surfaces.md`
+  /// and the commit that introduced them call this number; they become
+  /// `controlPathSeen(ControlPath.unsigned)` when the projection pass renames
+  /// everything together rather than one call site at a time.
+  int get unsignedControlSeen => controlPathSeen(ControlPath.unsigned);
+
+  String get unsignedControlLast => controlPathLast(ControlPath.unsigned);
+
+  void noteUnsignedControl(String peerId, String name, String version) =>
+      noteControlPath(ControlPath.unsigned, peerId, name, version);
 
   Map<String, dynamic> _settings() =>
       _data.putIfAbsent('settings', () => <String, dynamic>{});

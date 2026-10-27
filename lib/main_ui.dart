@@ -118,6 +118,7 @@ import 'core/on_device_model.dart';
 import 'core/notification_sync.dart';
 import 'core/onboarding.dart';
 import 'core/app_services.dart';
+import 'core/store.dart' show ControlPath;
 import 'core/pair_bridge.dart';
 import 'core/pair_invite.dart';
 import 'core/pair_token.dart';
@@ -1030,12 +1031,13 @@ void main() async {
   // peer the mesh has never paired — those rows keep the token rule.
   FileTransferService.instance.peerControlKeyLookup = services.mesh
       .controlKeyFor;
-  // What an unsigned ping is labelled with, and the count that says whether
-  // the unsigned path is still doing real work on a shipped build.
+  // What an accepted control request is labelled with, and the per-path count
+  // that says which proof is still doing real work on a shipped build. Three
+  // paths, three deletion criteria; see `NexusStore.controlPathSeen`.
   FileTransferService.instance.peerVersionLookup = services.mesh.peerAppVersion;
-  FileTransferService.instance.onUnsignedControl =
-      (String id, String name, String version) {
-        services.store.noteUnsignedControl(id, name, version);
+  FileTransferService.instance.onControl =
+      (ControlPath path, String id, String name, String version) {
+        services.store.noteControlPath(path, id, name, version);
         unawaited(services.store.save());
       };
   // The file listener opens with the app, not with the Send sheet: a phone

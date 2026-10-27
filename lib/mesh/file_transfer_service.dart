@@ -44,6 +44,7 @@ import '../core/file_link.dart' show FileSendResult, FileTransport;
 import '../core/pair_invite.dart' show PairIdentity;
 import '../core/pair_token.dart' show PairToken;
 import '../core/paired_devices.dart' show PairedDevice, PairedDevices;
+import '../core/store.dart' show ControlPath;
 
 /// The port the listener answers on, and the one a pairing code advertises.
 ///
@@ -281,20 +282,33 @@ bool isImageName(String name) {
 
 /// What one control request earned: a proof, a known sender, or nothing.
 class _ControlGate {
-  const _ControlGate({required this.verified, required this.name})
-    : rejected = false;
+  const _ControlGate({
+    required this.verified,
+    required this.name,
+    required this.path,
+  }) : rejected = false;
 
   const _ControlGate.refused()
     : verified = false,
       name = '',
+      path = null,
       rejected = true;
 
-  /// True when the signature verified against this device's token.
+  /// True when the signature verified against one of the keys this pair may
+  /// share.
   final bool verified;
 
   /// The name to show: this shell's own name for a known device, or the
   /// claimed one for a proved sender it has no record of.
   final String name;
+
+  /// Which proof was accepted, for the meter — null when nothing was accepted.
+  ///
+  /// The gate already knew this: it tries the derived key and the token in
+  /// turn. Answering with the path rather than a bool is what lets
+  /// `NexusStore.noteControlPath` count three separate deletion criteria
+  /// instead of one number that cannot name the path it measures.
+  final ControlPath? path;
 
   /// True when the request must be answered with 401.
   final bool rejected;
@@ -410,13 +424,15 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
   /// Claimed, not proven — enough to label a log, not to decide anything.
   String? Function(String id)? peerVersionLookup;
 
-  /// Called once for every unsigned control request this device accepts.
+  /// Called once for every control request this device accepts, with the proof
+  /// that was accepted.
   ///
-  /// The deletion criterion for the unsigned path is "zero of these from a
-  /// current build", and `debugPrint` is not readable on a released install,
-  /// so `main()` counts them in the store. The log line above it is the same
-  /// fact, for whoever has the console attached.
-  void Function(String peerId, String name, String version)? onUnsignedControl;
+  /// The deletion criteria are per path — "zero unsigned from a current
+  /// build", "no pairing older than the mesh left" — and `debugPrint` is not
+  /// readable on a released install, so `main()` counts them in the store. The
+  /// log line above it is the same fact, for whoever has the console attached.
+  void Function(ControlPath path, String peerId, String name, String version)?
+      onControl;
 
   final StreamController<ReceivedFile> _incoming =
       StreamController<ReceivedFile>.broadcast();
@@ -970,10 +986,10 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
       'NEXUS ping: ${ping.deviceName} <- $senderId'
       '${ping.verified ? '' : ' (unverified)'}',
     );
-    // Only an *accepted* unsigned ping is counted: the metered quantity is
-    // how often the legacy path is still doing real work, not how often a
-    // stranger was turned away.
-    if (!ping.verified) _noteUnsignedControl(senderId, ping.deviceName);
+    // Every *accepted* request is counted, on whichever path it arrived: the
+    // metered quantity is how often each proof is still doing real work, not
+    // how often a stranger was turned away.
+    if (gate.path != null) _noteControl(gate.path!, senderId, gate.name);
     await _json(request, HttpStatus.ok, <String, Object?>{'ok': true});
   }
 
@@ -1062,6 +1078,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     );
     _mouse.add(event);
     debugPrint('NEXUS mouse: $event');
+    if (gate.path != null) _noteControl(gate.path!, senderId, gate.name);
     await _json(request, HttpStatus.ok, <String, Object?>{'ok': true});
   }
 
@@ -1109,12 +1126,13 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     // Derived first, then the token: two proofs are both acceptable while
     // builds from before this pass are in the field, because the token is the
     // only thing such a receiver can check and the derived key is the only
-    // thing the tokenless direction can produce. The token half is metered —
-    // see [onUnsignedControl]'s sibling note in `docs/notes/known-surfaces.md`
-    // — and it is what the next pass deletes.
-    final List<String> accepted = <String>[
-      ?derivedKey,
-      if (ownToken.isNotEmpty) ownToken,
+    // thing the tokenless direction can produce. The pairs carry *which* key
+    // verified, so the meter can say whether the token path is still doing
+    // work on a shipped build rather than only that control is still working —
+    // see `NexusStore.controlPathSeen` and `docs/notes/known-surfaces.md`.
+    final List<(ControlPath, String)> accepted = <(ControlPath, String)>[
+      if (derivedKey != null) (ControlPath.derived, derivedKey),
+      if (ownToken.isNotEmpty) (ControlPath.token, ownToken),
     ];
     final bool presentedSignature =
         nonce.isNotEmpty || signature.isNotEmpty || rawTs.isNotEmpty;
@@ -1135,17 +1153,17 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
         // token is a claim this build cannot check, so it is not accepted.
         return const _ControlGate.refused();
       }
-      bool proved = false;
-      for (final String key in accepted) {
+      ControlPath? proved;
+      for (final (ControlPath path, String key) in accepted) {
         if (constantTimeEquals(
           await _signRaw(key, canonical(nonce, ts)),
           signature,
         )) {
-          proved = true;
+          proved = path;
           break;
         }
       }
-      if (!proved) {
+      if (proved == null) {
         return const _ControlGate.refused();
       }
       // Only a verified request is allowed to spend a nonce, so garbage cannot
@@ -1157,6 +1175,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
       final String? stored = _storedNameOf(senderId);
       return _ControlGate(
         verified: true,
+        path: proved,
         name: stored ??
             (claimedName.isEmpty ? 'a paired device' : claimedName),
       );
@@ -1169,7 +1188,11 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     }
     final String? stored = _storedNameOf(senderId);
     if (stored == null) return const _ControlGate.refused();
-    return _ControlGate(verified: false, name: stored);
+    return _ControlGate(
+      verified: false,
+      path: ControlPath.unsigned,
+      name: stored,
+    );
   }
 
   /// The per-pair control key [id] may sign with, or null when the mesh has no
@@ -1201,15 +1224,17 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     return await _controlKeyForId(device.id) ?? '';
   }
 
-  /// One line per unsigned acceptance, plus the store counter `main()` wires.
+  /// One line per acceptance, plus the per-path counter `main()` wires.
   ///
   /// The name is the one this shell stores, never the claimed one; the version
   /// is the peer's last presence claim, or `unknown` when it has never said.
-  void _noteUnsignedControl(String senderId, String name) {
+  /// The path is the proof that was accepted, so a week of these lines answers
+  /// "is the token path still used?" without a debugger attached.
+  void _noteControl(ControlPath path, String senderId, String name) {
     final String version = peerVersionLookup?.call(senderId)?.trim() ?? '';
     final String shown = version.isEmpty ? 'unknown' : version;
-    debugPrint('control: unsigned from $name $shown');
-    onUnsignedControl?.call(senderId, name, shown);
+    debugPrint('control: ${path.name} from $name $shown');
+    onControl?.call(path, senderId, name, shown);
   }
 
   /// The name this shell stores for [id], or null when it is not a device this

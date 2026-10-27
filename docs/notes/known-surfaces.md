@@ -83,24 +83,30 @@ has nothing to sign with on that path. Refusing all unsigned requests would
 break those pairings outright, and a ping is the only way such a peer can reach
 this device.
 
-**Metering:** every accepted unsigned request writes one line,
-`control: unsigned from <name> <version>` (`version` is the peer's last presence
-claim, or `unknown`), and increments `unsignedControlSeen` in the store with
-`unsignedControlLast` alongside it. A released build has no console, so the
-counter — not the log line — is the observable.
+**Metering:** every accepted control request writes one line,
+`control: <path> from <name> <version>` (`path` is `unsigned`, `token` or
+`derived`; `version` is the peer's last presence claim, or `unknown`), and
+increments `NexusStore.controlPathSeen(path)` with `controlPathLast(path)`
+alongside it. A released build has no console, so the counter — not the log
+line — is the observable. The paths are counted apart because they die on three
+different questions, and one mixed total could answer none of them.
+`unsignedControlSeen` / `unsignedControlLast` remain as readers of the
+`unsigned` path, under the names this note and the commit that introduced them
+use.
 
-**Removal condition:** delete the unsigned path once `unsignedControlSeen` stops
-growing from builds that sign — i.e. zero accepted unsigned requests whose
-version is 3b or later, over a release cycle. Do not delete it on the strength of
-the mechanism existing: 3b closed the *tokenless* direction only, and the one-way
-half is still live until those pairings age out or are re-paired through the
-mesh.
+**Removal condition:** delete the unsigned path once
+`controlPathSeen(unsigned)` stops growing from builds that sign — i.e. zero
+accepted unsigned requests whose version is 3b or later, over a release cycle.
+Do not delete it on the strength of the mechanism existing: 3b closed the
+*tokenless* direction only, and the one-way half is still live until those
+pairings age out or are re-paired through the mesh.
 
-**Known gap for the next pass:** the token-signed path is not metered. 3b left it
-in place on purpose (it is what an older receiver verifies, and what every
-existing pairing uses), so `unsignedControlSeen` cannot say when *it* is dead.
-Deleting the token path needs its own count — the same shape, a different field —
-before it can be removed honestly.
+**The token path's own condition:** `controlPathSeen(token)` is the count that
+was missing when this note was first written. Delete the token path once it
+stops growing, which is when every one-way pairing has been re-paired through
+the mesh (so both sides hold a derived key) or has gone away. Until then it is
+the only thing an older receiver and an older sender can use, and removing it
+would turn working pings into 401s in both directions.
 
 ---
 
