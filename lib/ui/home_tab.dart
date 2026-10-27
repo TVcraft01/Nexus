@@ -15,8 +15,19 @@ class HomeTab extends StatefulWidget {
     super.key,
     this.refreshEpoch = 0,
     this.wide = false,
+    this.cramped = false,
     this.onOpenSettings,
   });
+
+  /// True when the window has no room for chrome beside an open keyboard.
+  ///
+  /// Decided by the shell rather than here, and for a reason that is easy to
+  /// get wrong: a [Scaffold] consumes the keyboard inset for the page it sizes
+  /// and hands its body a [MediaQuery] with those insets already zeroed, so a
+  /// screen below one cannot tell by looking that the keyboard is up. The shell
+  /// sits above that Scaffold and can. In this state the header and the advice
+  /// banners stand down so the composer keeps the room the keyboard left.
+  final bool cramped;
 
   /// True when the shell is drawing its permanent sidebar beside this tab.
   ///
@@ -3362,6 +3373,14 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         : NexusLayout.content;
     final double bubbleWidth = (column - 40) * 0.82;
 
+    // A landscape phone with the keyboard open is the one window where the
+    // chrome above the thread does not fit above it. The header and the advice
+    // banners stand down so the composer does not: all three are fixed height,
+    // and keeping them laid the field out below the bottom of the window —
+    // still holding the sentence, invisible under the keys. The banners come
+    // back when the keyboard is put away, which is when they can be read.
+    final bool cramped = widget.cramped;
+
     // Back closes the open drawer instead of leaving the app.
     //
     // Material's Scaffold pushes a local history entry while its drawer is open,
@@ -3403,21 +3422,22 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
           bottom: false,
           child: Column(
             children: <Widget>[
-              _HomeHeader(
-                onMenu: widget.wide
-                    ? null
-                    : () => _homeScaffold.currentState?.openDrawer(),
-              ),
-              if (_hiveBanner)
+              if (!cramped)
+                _HomeHeader(
+                  onMenu: widget.wide
+                      ? null
+                      : () => _homeScaffold.currentState?.openDrawer(),
+                ),
+              if (!cramped && _hiveBanner)
                 _PcConnectedBanner(
                   onDismiss: () => setState(() => _hiveBanner = false),
                 ),
-              if (!_pcBannerDismissed && _pcPeer != null)
+              if (!cramped && !_pcBannerDismissed && _pcPeer != null)
                 _PcUpgradeBanner(
                   peer: _pcPeer!,
                   onDismiss: () => setState(() => _pcBannerDismissed = true),
                 ),
-              if (_startupUpdate != null && !_updateBannerDismissed)
+              if (!cramped && _startupUpdate != null && !_updateBannerDismissed)
                 _UpdateBanner(
                   info: _startupUpdate!,
                   onInstall: () => unawaited(
@@ -3445,6 +3465,12 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
                     // banners and the composer to repaint with it.
                     child: RepaintBoundary(
                       child: SingleChildScrollView(
+                        // Named, so the offset is also written to the page's
+                        // own storage: with the controller surviving inside the
+                        // shell a rotation already keeps it, and this is what
+                        // keeps it for the case the controller does not
+                        // survive — the screen being rebuilt elsewhere.
+                        key: const PageStorageKey<String>('nexus-thread'),
                         controller: _threadScroll,
                         // The platform's responsive physics rather than the
                         // clamping default: the list gives a little under the

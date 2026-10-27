@@ -147,6 +147,8 @@ import 'core/version.dart';
 import 'ui/artifact_page.dart';
 import 'ui/image_viewer_page.dart';
 import 'ui/local_files.dart' show openLocalFile;
+import 'ui/privacy_policy_view.dart' show PrivacyPolicyView;
+import 'ui/server_agent_page.dart';
 import 'ui/text_file_page.dart';
 import 'ui/trackpad_page.dart';
 import 'core/speech.dart';
@@ -428,6 +430,22 @@ const double kNexusWideBreakpoint = 600;
 /// two-word chat title, narrow enough that the thread keeps the majority of a
 /// small tablet.
 const double kNexusSidebarWidth = 280;
+
+/// The window height below which there is no room for chrome beside a keyboard.
+///
+/// Measured, not chosen: a phone in landscape is about 390dp tall, its keyboard
+/// takes roughly 250 of those, and the body that is left — around 140dp — is
+/// smaller than the sidebar (280dp) and barely fits the composer. So below this
+/// height the things that are not the conversation (the sidebar, Home's header,
+/// the advice banners) stand down while the keyboard is open, and the field the
+/// user is typing into stays on screen.
+///
+/// 520 is a first cut derived from that measurement. It is the kind of number
+/// that should eventually come from the content's own minimum heights rather
+/// than from a constant; until then it is pinned from both sides by the
+/// boundary tests in `test/main_ui_test.dart` (700x500 with and without the
+/// keyboard), so it cannot drift by accident.
+const double kNexusShortHeight = 520;
 
 /// The RAM a PC needs before it is worth suggesting the 3B model. Eight
 /// gigabytes is the model's own floor with room for the desktop around it —
@@ -2048,8 +2066,27 @@ class _NexusShellState extends State<NexusShell> {
     // the drawer the phone already had. The two are the same data and the same
     // taps; only the shape differs, and the shape is decided by the width the
     // app was given rather than by a device category.
-    final double width = MediaQuery.sizeOf(context).width;
+    final Size window = MediaQuery.sizeOf(context);
+    final double width = window.width;
     final bool wide = nexusIsDesktopApp || width >= kNexusWideBreakpoint;
+    // A landscape phone with the keyboard up has about 140dp of body left, and
+    // a sidebar that wants twice that. The keys are the edge the user is using,
+    // so the sidebar steps aside until they are put away — the same rule the
+    // phone's tab bar already follows. Passing the answer to Home as `wide` is
+    // what gives the thread its drawer and menu button back while the sidebar is
+    // hidden; closing the keyboard restores the column, and because the pages
+    // keep their State neither side of the swap loses the draft.
+    //
+    // Read *here*, above the Scaffold, and not inside the page below it: a
+    // Scaffold consumes the keyboard inset for the box it sizes and hands its
+    // body a MediaQuery with those insets zeroed. `viewInsetsOf` in HomeTab is
+    // always zero — a check written there reads as "no keyboard" on a phone with
+    // the keyboard covering half the screen, and the fix silently does nothing.
+    // That is exactly how the first attempt at this looked.
+    final bool crampedByKeyboard =
+        MediaQuery.viewInsetsOf(context).bottom > 0 &&
+        window.height < kNexusShortHeight;
+    final bool hasSidebar = wide && !crampedByKeyboard;
     final Widget pages = IndexedStack(
       index: _tab,
       children: <Widget>[
@@ -2058,7 +2095,8 @@ class _NexusShellState extends State<NexusShell> {
         // list, is the kind of duplicate a wide layout exists to remove.
         HomeTab(
           refreshEpoch: _homeEpoch,
-          wide: wide,
+          wide: hasSidebar,
+          cramped: crampedByKeyboard,
           onOpenSettings: () => _select(_settingsIndex),
         ),
         // The index in this stack is the design: 0 is Home, 1 is Files, and
@@ -2079,40 +2117,73 @@ class _NexusShellState extends State<NexusShell> {
         if (_developerMode) const DeveloperLogsTab(),
       ],
     );
-    if (!wide) {
-      return Scaffold(
-        backgroundColor: c.background,
-        body: pages,
-        bottomNavigationBar: NexusTabBar(
-          index: _tab,
-          onSelected: _select,
-          tabs: tabs,
-        ),
-      );
-    }
+    // One tree at every width, and a fixed number of children in it: the row has
+    // two slots whatever the width, and slot 0 is never absent — the sidebar
+    // lives in a SizedBox that collapses to zero when it is hidden.
+    //
+    // That collapse is load-bearing, not tidiness. The page slot used to be
+    // renumbered by the sidebar's presence (`[if (wide) Sidebar(), Expanded(
+    // pages)]`), and Flutter reconciles children by position and type: when the
+    // sidebar appeared at index 0 the Expanded moved to index 1, `canUpdate`
+    // failed, and the entire page subtree — every tab's State, the half-typed
+    // message, the focus holding the keyboard open, the thread's scroll
+    // position — was unmounted and rebuilt from nothing. On a rotation that is
+    // the difference between a relayout and a lost draft.
+    //
+    // So: two slots, always, and the sidebar is hidden *inside* the first one.
+    // If a future change adds a third child here, give it a slot of its own too
+    // — or make it the last one — rather than letting it appear only when wide.
+    final Widget pagesPane = KeyedSubtree(
+      key: const ValueKey<String>('nexus-shell-pages'),
+      child: pages,
+    );
     return Scaffold(
       backgroundColor: c.background,
+      // The Row's two child slots must stay stable; the sidebar hides inside slot 0.
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
+          // Slot 0 is always present; narrow layouts hide the sidebar here at zero width.
           SizedBox(
-            width: kNexusSidebarWidth,
-            child: _NexusWideSidebar(
-              index: _tab,
-              tabs: tabs,
-              onSelected: _select,
-              onOpenChat: (String id) {
-                _select(_homeIndex);
-                ChatLog.instance.selectSession(id);
-              },
-            ),
+            width: hasSidebar ? kNexusSidebarWidth + 1 : 0,
+            child: hasSidebar
+                ? Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      SizedBox(
+                        width: kNexusSidebarWidth,
+                        child: _NexusWideSidebar(
+                          key: const ValueKey<String>('nexus-wide-sidebar'),
+                          index: _tab,
+                          tabs: tabs,
+                          onSelected: _select,
+                          onOpenChat: (String id) {
+                            _select(_homeIndex);
+                            ChatLog.instance.selectSession(id);
+                          },
+                        ),
+                      ),
+                      // A hairline rather than a shadow: the two panes are one
+                      // surface cut in two, not a floating sheet beside a page.
+                      VerticalDivider(
+                        width: 1,
+                        thickness: 1,
+                        color: c.hairline,
+                      ),
+                    ],
+                  )
+                : null,
           ),
-          // A hairline rather than a shadow: the two panes are one surface cut
-          // in two, not a floating sheet beside a page.
-          VerticalDivider(width: 1, thickness: 1, color: c.hairline),
-          Expanded(child: pages),
+          // Slot 1: the pages, at the same index on every device.
+          Expanded(child: pagesPane),
         ],
       ),
+      // The destinations live at the bottom of a phone and in the sidebar of a
+      // wide window. Removing the bar is a slot change in the Scaffold, not a
+      // rebuild of the body above it.
+      bottomNavigationBar: wide
+          ? null
+          : NexusTabBar(index: _tab, onSelected: _select, tabs: tabs),
     );
   }
 }
@@ -2127,6 +2198,7 @@ class _NexusShellState extends State<NexusShell> {
 /// place a rename or a pin could fail to appear.
 class _NexusWideSidebar extends StatefulWidget {
   const _NexusWideSidebar({
+    super.key,
     required this.index,
     required this.tabs,
     required this.onSelected,

@@ -2,7 +2,7 @@ name: nexus
 description: "Nexus — your devices, one system. A local-first mesh where your devices find, pair, and talk to each other directly — no cloud, no account."
 publish_to: 'none'
 
-version: 1.0.0+158
+version: 1.0.0+159
 
 environment:
   sdk: ^3.13.0
@@ -40,6 +40,7 @@ dependencies:
   flutter_localizations:
     sdk: flutter
   share_plus: ^13.3.1
+  dartssh2: ^4.1.0
 
 dev_dependencies:
   flutter_test:

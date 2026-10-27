@@ -1753,6 +1753,82 @@ void main() {
     expect(tabIconColor(tester, Icons.home_outlined), isNot(kNexusAccent));
   });
 
+  testWidgets('rotating the phone keeps the draft and the thread position', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+
+    // Home's thread, found inside the tab rather than by type alone: the other
+    // tabs are built too (they live in an IndexedStack), and a rotation test
+    // must not scroll somebody else's list.
+    Finder threadIn() => find.descendant(
+      of: find.byType(HomeTab),
+      matching: find.byType(SingleChildScrollView),
+    );
+    ScrollController scroll() =>
+        tester.widget<SingleChildScrollView>(threadIn()).controller!;
+
+    // A thread taller than the screen: an offset is only something to lose once
+    // there is more than a screenful to scroll.
+    for (int i = 0; i < 12; i++) {
+      await tester.enterText(find.byType(TextField), 'message number $i');
+      await tester.pump();
+      await tapTheButton(tester, sendButton());
+      await tester.pumpAndSettle();
+    }
+    expect(scroll().position.maxScrollExtent, greaterThan(200));
+
+    // The user scrolls back to re-read something, leaving the end of the
+    // thread behind — a position, not a side effect of the newest bubble.
+    await tester.drag(threadIn(), const Offset(0, 200));
+    await tester.pumpAndSettle();
+    final double parked = scroll().offset;
+    expect(parked, greaterThan(0));
+    expect(parked, lessThan(scroll().position.maxScrollExtent));
+
+    // And starts a reply without sending it.
+    await tester.enterText(find.byType(TextField), 'half a thought');
+    await tester.pump();
+    final ScrollController before = tester
+        .widget<SingleChildScrollView>(threadIn())
+        .controller!;
+    final FocusNode focusBefore = tester
+        .widget<TextField>(find.byType(TextField))
+        .focusNode!;
+    expect(focusBefore.hasFocus, isTrue);
+
+    // The rotation a phone performs: 390x844 portrait to 844x390 landscape,
+    // across the shell's wide breakpoint, where the sidebar appears.
+    tester.view.physicalSize = const Size(2532, 1170);
+    await tester.pumpAndSettle();
+
+    // The sentence is still in the field, not thrown away by a rebuild.
+    expect(find.text('half a thought'), findsOneWidget);
+
+    // The thread is the same scroll view, at the same offset: not a new
+    // controller starting at zero, and not a re-created screen that has to
+    // re-read the conversation from disk.
+    final ScrollController after = tester
+        .widget<SingleChildScrollView>(threadIn())
+        .controller!;
+    expect(identical(after, before), isTrue);
+    expect(after.offset, closeTo(parked, 1));
+
+    // The field still owns the keyboard: the focus node is the same object, so
+    // the rotation does not close and re-open the keyboard under the fingers.
+    final FocusNode focusAfter = tester
+        .widget<TextField>(find.byType(TextField))
+        .focusNode!;
+    expect(identical(focusAfter, focusBefore), isTrue);
+    expect(focusAfter.hasFocus, isTrue);
+
+    // Back to portrait: the draft and the position survive the way back too.
+    tester.view.physicalSize = const Size(1170, 2532);
+    await tester.pumpAndSettle();
+    expect(find.text('half a thought'), findsOneWidget);
+    expect(scroll().offset, closeTo(parked, 1));
+  });
+
   testWidgets('Files shows this device, its peers, and the two folders', (
     tester,
   ) async {
@@ -6605,6 +6681,85 @@ void main() {
     expect(find.text('16 GB'), findsWidgets);
   });
 
+  testWidgets('a landscape keyboard leaves the composer on screen', (
+    tester,
+  ) async {
+    // The case the phone actually hit: a landscape screen with the PC advice
+    // banner up and the keyboard open. The banner, the header and the composer
+    // are all fixed height, and the body the keyboard leaves behind is about
+    // 150dp — so the field the user was typing into was laid out below the
+    // bottom of the window, still holding its text but invisible.
+    _pairAPc();
+    await pumpShell(tester);
+    expect(find.byKey(kNexusPcUpgradeBanner), findsOneWidget);
+
+    // Portrait to landscape, then the keyboard: 844x390dp with 240dp of keys.
+    tester.view.physicalSize = const Size(2532, 1170);
+    await tester.pumpAndSettle();
+    tester.view.viewInsets = const FakeViewPadding(bottom: 720);
+    await tester.pumpAndSettle();
+
+    final Rect field = tester.getRect(find.byType(TextField));
+    const double keyboardTop = 390 - 240;
+    expect(field.top, greaterThanOrEqualTo(0));
+    expect(field.bottom, lessThanOrEqualTo(keyboardTop));
+
+    // And typing into it works where it is: the field is reachable, and what
+    // goes in is on screen above the keys.
+    await tester.enterText(find.byType(TextField), 'draft above the keys');
+    await tester.pump();
+    expect(find.text('draft above the keys'), findsOneWidget);
+  });
+
+  // The two tests below pin kNexusShortHeight from both sides at one size, so
+  // the number cannot drift without a failure: same window, keyboard the only
+  // difference. 700x500 is short by height and wide by width, which is exactly
+  // the corner where "the chrome does not fit" and "the sidebar should be
+  // there" meet.
+  testWidgets('a 700x500 window without the keyboard keeps its chrome', (
+    tester,
+  ) async {
+    _pairAPc();
+    await pumpShell(tester);
+    tester.view.physicalSize = const Size(2100, 1500);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('nexus-wide-sidebar')),
+      findsOneWidget,
+    );
+    expect(find.byKey(kNexusPcUpgradeBanner), findsOneWidget);
+  });
+
+  testWidgets('a 700x500 window with the keyboard stands the chrome down', (
+    tester,
+  ) async {
+    _pairAPc();
+    await pumpShell(tester);
+    tester.view.physicalSize = const Size(2100, 1500);
+    await tester.pumpAndSettle();
+    // The same window before the keyboard: nothing has stood down yet.
+    expect(
+      find.byKey(const ValueKey<String>('nexus-wide-sidebar')),
+      findsOneWidget,
+    );
+    expect(find.byKey(kNexusPcUpgradeBanner), findsOneWidget);
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 720);
+    await tester.pumpAndSettle();
+
+    // Short window *and* keyboard is what moves the line; either alone does not.
+    expect(
+      find.byKey(const ValueKey<String>('nexus-wide-sidebar')),
+      findsNothing,
+    );
+    expect(find.byKey(kNexusPcUpgradeBanner), findsNothing);
+
+    final Rect field = tester.getRect(find.byType(TextField));
+    expect(field.top, greaterThanOrEqualTo(0));
+    expect(field.bottom, lessThanOrEqualTo(500 - 240));
+  });
+
   test('the destructive red is solid, not a faded pink', () {
     // The dark theme shipped #FFB4AB, which reads as a secondary label rather
     // than as "this deletes something". Delete controls use `danger`, and it is
@@ -6613,4 +6768,32 @@ void main() {
     expect(NexusUiColors.light.danger, const Color(0xFFD32F2F));
     expect(NexusUiColors.dark.danger, isNot(NexusUiColors.dark.textMuted));
   });
+}
+
+/// A paired PC with RAM to spare, which is what puts Home's "run the 3B model"
+/// advice on screen — the tallest fixed-height thing above the thread, and the
+/// one the short-window tests need in order to have something to stand down.
+void _pairAPc() {
+  final PairedDevices paired = PairedDevices(
+    store: MemoryPairedDevicesStore(),
+    seed: <PairedDevice>[
+      const PairedDevice(
+        id: 'this-device',
+        name: 'This Phone',
+        publicKey: '',
+        online: true,
+        isThisDevice: true,
+      ),
+      const PairedDevice(
+        id: 'pc',
+        name: 'My PC',
+        publicKey: 'pc-key',
+        detail: 'Windows desktop',
+        online: true,
+        ramBytes: 16 * 1024 * 1024 * 1024,
+      ),
+    ],
+  );
+  PairedDevices.override = () => paired;
+  addTearDown(() => PairedDevices.override = null);
 }

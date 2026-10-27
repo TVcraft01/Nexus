@@ -22,6 +22,10 @@ const Key kNexusVisionProgress = Key('nexus-vision-progress');
 /// The desktop-only row that opens the phone pairing code.
 const Key kNexusPairPhoneRow = Key('nexus-pair-phone-row');
 
+/// The row that opens the Server Agent — the only screen in the app that can
+/// change a machine other than this one.
+const Key kNexusServerAgentRow = Key('nexus-server-agent-row');
+
 /// The settings screen: appearance, voice, the brain, privacy, and what this
 /// build is.
 class SettingsTab extends StatefulWidget {
@@ -647,6 +651,25 @@ class _SettingsTabState extends State<SettingsTab> {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (routeContext) => const ConnectionsPage(),
+              ),
+            ),
+          ),
+          // A server is a computer the user owns, not a device Nexus paired
+          // with: there is no handshake and no shared key, only a login they
+          // already have. The page it opens holds the only shell text the app
+          // will ever run on another machine (see server_playbooks.dart), which
+          // is why it is filed under an advanced row rather than offered in the
+          // chat.
+          const NexusSectionLabel('Devices'),
+          NexusRow(
+            key: kNexusServerAgentRow,
+            title: 'Server Agent (Advanced)',
+            subtitle: 'Set up software on a Linux server over SSH',
+            leading: const NexusIconTile(Icons.dns_outlined),
+            trailing: const NexusChevron(),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (routeContext) => const ServerAgentPage(),
               ),
             ),
           ),
@@ -1841,14 +1864,9 @@ class PrivacyPage extends StatefulWidget {
 class PrivacyPolicyPage extends StatelessWidget {
   const PrivacyPolicyPage({super.key});
 
-  static const String policy =
-      'Nexus is a local-first application. No data, audio, or images ever '
-      'leave your device unless you explicitly send them to your PC. Your AI '
-      'models run locally on your device. No accounts, no cloud, no telemetry.'
-      '\n\n'
-      'Nexus learns about you using a local memory vault. This data never '
-      'leaves your device, is never used to train models, and you can view, '
-      'edit, or delete it at any time.';
+  /// The same sentences [PrivacyPolicyView] shows — one copy, two shells, so a
+  /// promise cannot fork between the settings page and the policy screen.
+  static const String policy = PrivacyPolicyView.policy;
 
   @override
   Widget build(BuildContext context) {

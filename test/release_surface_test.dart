@@ -61,6 +61,17 @@ void main() {
     expect(find.text('Privacy Policy'), findsWidgets);
   });
 
+  test('the policy states the 1.0 promise verbatim', () {
+    // Pinned word for word: this is the sentence the release notes point at, so
+    // a rewrite has to be a decision rather than a drift.
+    const String promise =
+        'Nexus is 100% local. No data, audio, or images are ever sent to a '
+        'cloud server. No accounts are required. All AI processing happens '
+        'on-device or via your own paired local network.';
+    expect(PrivacyPolicyPage.policy, contains(promise));
+    expect(PrivacyPolicyView.policy, contains(promise));
+  });
+
   testWidgets('the shipping Privacy page links to the same policy', (
     tester,
   ) async {
