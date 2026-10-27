@@ -28,7 +28,7 @@ import '../core/device_memory.dart' show DeviceMemory;
 import '../core/identity.dart' show DeviceInfo;
 import '../core/pair_invite.dart' show PairIdentity;
 import 'discovery.dart'
-    show DiscoveredDevice, DiscoveryService, DiscoveryStatus;
+    show MeshNearbySource, DiscoveredDevice, DiscoveryService, DiscoveryStatus;
 
 /// How long a device stays on the list after the last time it was heard.
 ///
@@ -84,6 +84,55 @@ class NearbyDevices extends ChangeNotifier {
   String? _problem;
   Timer? _sweep;
 
+  /// The mesh whose own discovery this screen is reading, when there is one.
+  ///
+  /// Null in a build with no mesh, which is when this object opens its own
+  /// socket. The launched app always has a mesh, and two [DiscoveryService]s
+  /// in one process is one too many: they announce the same device twice and
+  /// the second one loses the discovery port to the first.
+  MeshNearbySource? _mesh;
+
+  /// True while this list is a view of the mesh's discovery rather than a
+  /// socket of its own.
+  bool get boundToMesh => _mesh != null;
+
+  /// Reads the mesh's discovery from now on instead of opening a socket.
+  ///
+  /// Safe to call before or after [start], and idempotent for the same mesh.
+  /// The list keeps its [ChangeNotifier] shape, so the Devices tab — which
+  /// listens to this object and calls [start] and [stop] with its own life —
+  /// needs no change at all.
+  void bindTo(MeshNearbySource mesh) {
+    if (identical(_mesh, mesh)) return;
+    unbind();
+    _mesh = mesh;
+    mesh.addListener(_pullFromMesh);
+    if (_running) _pullFromMesh();
+    notifyListeners();
+  }
+
+  /// Goes back to owning a socket. Called when the mesh it was reading goes
+  /// away, so this object never points at a stopped mesh.
+  void unbind() {
+    final MeshNearbySource? mesh = _mesh;
+    _mesh = null;
+    mesh?.removeListener(_pullFromMesh);
+  }
+
+  /// One change from the mesh, mirrored into what this screen shows.
+  void _pullFromMesh() {
+    final MeshNearbySource? mesh = _mesh;
+    if (mesh == null || !_running) return;
+    _heard
+      ..clear()
+      ..addEntries(<MapEntry<String, DiscoveredDevice>>[
+        for (final DiscoveredDevice device in mesh.nearbyDevices)
+          if (!_forgotten.contains(device.id))
+            MapEntry<String, DiscoveredDevice>(device.id, device),
+      ]);
+    notifyListeners();
+  }
+
   /// Everything heard recently, by device id — the latest announcement wins.
   final Map<String, DiscoveredDevice> _heard = <String, DiscoveredDevice>{};
 
@@ -132,6 +181,15 @@ class NearbyDevices extends ChangeNotifier {
   String get status {
     if (!_running) return 'Not looking for devices.';
     if (_problem != null) return _problem!;
+    if (_mesh != null) {
+      final int count = _heard.length;
+      if (count == 0) {
+        return 'Listening with the mesh; no other Nexus device has been heard '
+            'yet.';
+      }
+      return 'Heard $count Nexus ${count == 1 ? 'device' : 'devices'} on this '
+          'network.';
+    }
     if (_heard.isEmpty) {
       return _service?.status.describe() ??
           'Discovery is listening; no other Nexus device has been heard yet.';
@@ -147,11 +205,17 @@ class NearbyDevices extends ChangeNotifier {
   /// The service's own counters, for a screen or a log that wants the details.
   DiscoveryStatus? get discoveryStatus => _service?.status;
 
-  /// Opens the socket and starts announcing. Safe to call twice.
+  /// Opens the socket and starts announcing — or, when bound to a mesh, starts
+  /// reading the discovery the mesh already runs. Safe to call twice.
   Future<void> start() async {
     if (_running) return;
     _running = true;
     _problem = null;
+    if (_mesh != null) {
+      _pullFromMesh();
+      notifyListeners();
+      return;
+    }
     // The RAM this device shares with the room. Read once per start rather
     // than per announcement, and allowed to fail: a device that will not say
     // simply does not advertise a number, which is better than advertising a
@@ -182,6 +246,12 @@ class NearbyDevices extends ChangeNotifier {
     _running = false;
     _sweep?.cancel();
     _sweep = null;
+    if (_mesh != null) {
+      // Nothing of this object's is open: the socket belongs to the mesh, and
+      // stopping the mesh is the app's decision, not a tab's.
+      notifyListeners();
+      return;
+    }
     final DiscoveryService? service = _service;
     _service = null;
     notifyListeners();
@@ -228,6 +298,7 @@ class NearbyDevices extends ChangeNotifier {
   void dispose() {
     _sweep?.cancel();
     _sweep = null;
+    unbind();
     unawaited(stop());
     super.dispose();
   }
@@ -240,10 +311,10 @@ class NearbyDevices extends ChangeNotifier {
 /// on the network — one identity for the code and the announcements, rather
 /// than two names for one phone.
 ///
-/// The TCP port announced is the mesh's default (51820). This build has no mesh
-/// listening there yet, so the port is a fact about what the device *would*
-/// answer on rather than a promise — and the announce payload has no field for
-/// "maybe", which is the honest shape it can be sent in.
+/// The TCP port announced is the mesh's default (51820), which on the launched
+/// path is now the mesh itself. The launched app does not call this at all — it
+/// reads the mesh's discovery through [NearbyDevices.bindTo] — so this stays
+/// for the build that has no mesh to read.
 DiscoveryService _defaultDiscovery(void Function(DiscoveredDevice) onHeard) {
   final PairIdentity who = PairIdentity.current;
   return DiscoveryService(

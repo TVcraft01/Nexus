@@ -13,34 +13,16 @@ import 'package:flutter/services.dart'
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'core/app_services.dart';
 import 'core/cable_pairing.dart';
-import 'core/identity.dart';
 import 'core/llm.dart';
 import 'core/services/icon_service.dart';
-import 'core/store.dart';
 import 'mesh/gateway.dart';
 import 'mesh/mesh_lifecycle.dart';
 import 'mesh/mesh_service.dart';
 import 'ui/components/nexus_ui.dart' show NexusCupertinoTheme, NexusTextScaling;
 import 'ui/home_shell.dart';
 import 'ui/theme.dart';
-
-String _platformName(TargetPlatform platform) {
-  switch (platform) {
-    case TargetPlatform.android:
-      return 'android';
-    case TargetPlatform.linux:
-      return 'linux';
-    case TargetPlatform.windows:
-      return 'windows';
-    case TargetPlatform.macOS:
-      return 'macos';
-    case TargetPlatform.iOS:
-      return 'ios';
-    default:
-      return 'other';
-  }
-}
 
 /// Warm-start cable provisioning: MainActivity forwards every incoming
 /// `nexus://pair` intent here (see onNewIntent), so an already-running Nexus
@@ -72,27 +54,12 @@ Future<void> main() async {
     }
   }
 
-  final store = NexusStore(
-    explicitPath: dataDir == null
-        ? null
-        : '$dataDir${Platform.pathSeparator}state.json',
-  );
-  await store.load();
-
-  var identity = store.identity;
-  if (identity.id == 'unknown') {
-    final platform = _platformName(defaultTargetPlatform);
-    identity = DeviceInfo(
-      id: generateDeviceId(),
-      name: defaultDeviceName(platform),
-      platform: platform,
-    );
-    store.setIdentity(identity);
-    await store.save();
-  }
-
-  final mesh = MeshService(identity: identity, store: store);
-  await mesh.start();
+  // The same start the launched shell uses — one store, one identity, one
+  // mesh, and the identity installed into `PairIdentity` so a QR shown from
+  // either entry point names the same device.
+  final AppServices services = await startAppServices(dataDir: dataDir);
+  final store = services.store;
+  final mesh = services.mesh;
 
   // A PC that has just provisioned this Android device launches Nexus with a
   // one-time pairing URI. Pair immediately so the user never has to copy a

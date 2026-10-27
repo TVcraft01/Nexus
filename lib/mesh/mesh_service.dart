@@ -281,7 +281,7 @@ class _RealClipboard implements ClipboardBackend {
 /// Discovery announcements are never enough — they only make a device
 /// *visible*, and the UI says so.
 class MeshService extends ChangeNotifier
-    implements FileFetchMesh, MeshTransport {
+    implements FileFetchMesh, MeshTransport, MeshNearbySource {
   final DeviceInfo identity;
   final NexusStore store;
   final ClipboardBackend clipboard;
@@ -1066,6 +1066,7 @@ class MeshService extends ChangeNotifier
 
   /// Devices heard from recently. Anything older than [nearbyWindow] is
   /// dropped — a device that stopped announcing is gone, not a ghost.
+  @override
   List<DiscoveredDevice> get nearbyDevices {
     final cutoff = DateTime.now().subtract(nearbyWindow);
     _nearby.removeWhere((_, d) => d.lastSeen.isBefore(cutoff));

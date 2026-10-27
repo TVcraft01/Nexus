@@ -30,7 +30,7 @@ import 'package:flutter/foundation.dart'
 
 import 'dart:io' show InternetAddress, InternetAddressType, NetworkInterface;
 
-import 'identity.dart' show defaultDeviceName, generateDeviceId;
+import 'identity.dart' show DeviceInfo, defaultDeviceName, generateDeviceId;
 import 'pair_payload.dart' show PairPayload;
 
 /// The `type` field every Nexus pairing code carries.
@@ -371,6 +371,25 @@ class PairIdentity {
   /// Forgets the memoised identity. Tests use it; the app never does.
   @visibleForTesting
   static void debugReset() => _memo = null;
+
+  /// Makes [info] the identity this process answers with.
+  ///
+  /// Called once by `startAppServices`, after the store has been loaded: the id
+  /// in the store is the one the device keeps, and the QR, the discovery
+  /// announcements and the file link all have to speak it. Without this each
+  /// launch generated a new id ([generateDeviceId]'s fallback), so no peer could
+  /// keep recognising this device — the pairing rows they wrote pointed at an id
+  /// this process had already thrown away.
+  ///
+  /// [override] still wins, so a test that states an identity is unaffected.
+  static void install(DeviceInfo info) {
+    _memo = PairIdentity(
+      name: info.name,
+      id: info.id,
+      publicKey: placeholderPublicKey(),
+      platform: info.platform,
+    );
+  }
 
   final String name;
   final String id;

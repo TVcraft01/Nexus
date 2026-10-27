@@ -116,6 +116,7 @@ import 'core/on_device_ai_service.dart';
 import 'core/on_device_model.dart';
 import 'core/notification_sync.dart';
 import 'core/onboarding.dart';
+import 'core/app_services.dart';
 import 'core/pair_invite.dart';
 import 'core/pair_token.dart';
 import 'core/paired_devices.dart';
@@ -135,6 +136,7 @@ import 'mesh/file_transfer_service.dart'
         NexusRequestResult,
         ReceivedFile,
         kFileTransferPort;
+import 'mesh/mesh_lifecycle.dart' show MeshLifecycleObserver;
 
 // The thought splitter moved to `core` so the chat log can use it when it
 // reads an old answer; this export keeps every existing importer of the shell
@@ -975,6 +977,13 @@ void main() async {
   unawaited(SystemPrompt.instance.attach());
   unawaited(VoiceSettings.instance.attach());
   unawaited(ModelChoice.instance.ensureLoaded());
+  // The mesh, the store and this device's identity, in that order of
+  // consequence: the mesh binds TCP 51820 before the file link starts, which
+  // is what lets the link take 51821 on this build and 51820 where nothing has
+  // the port (see `FileTransferService.start`). It also installs the stored
+  // id into `PairIdentity`, so the QR and the announcements agree from the
+  // first frame.
+  final AppServices services = await startAppServices();
   // The file listener opens with the app, not with the Send sheet: a phone
   // that has to be looked at before it can receive is a phone that misses the
   // file somebody just sent it. The same object is the send transport, so the
@@ -982,7 +991,9 @@ void main() async {
   FileLink.transport = FileTransferService.instance;
   unawaited(FileTransferService.instance.start());
   final int? seed = await Appearance.accentSeed();
-  runApp(NexusUiApp(initialAccent: accentFromSeed(seed)));
+  runApp(
+    NexusUiApp(initialAccent: accentFromSeed(seed), services: services),
+  );
 }
 
 /// The accent a stored seed stands for.
@@ -1009,11 +1020,20 @@ NexusAccent accentFromSeed(int? seed) {
 /// The override is deliberately all-or-nothing (dark or light, not a third
 /// "system" switch position) because the row above it is the one that decides.
 class NexusUiApp extends StatefulWidget {
-  const NexusUiApp({super.key, this.initialAccent});
+  const NexusUiApp({super.key, this.initialAccent, this.services});
 
   /// The accent to open with, read from the preference before the first frame.
   /// Null is a test that does not care, and starts on the shipped purple.
   final NexusAccent? initialAccent;
+
+  /// What `main()` started before the first frame: the store, the identity and
+  /// the running mesh.
+  ///
+  /// Null is a widget test that builds the shell on its own. Nothing on screen
+  /// reads it yet — the tabs still draw their own lists — so a null services
+  /// object is the same shell a test has always got, and the production path is
+  /// the one that has a mesh behind it. Pass 2 is what moves a tab onto it.
+  final AppServices? services;
 
   @override
   State<NexusUiApp> createState() => _NexusUiAppState();
@@ -1041,6 +1061,11 @@ class _NexusUiAppState extends State<NexusUiApp> {
   /// in the Devices tab: a ping that only arrives while its tab is open is not
   /// a ping.
   StreamSubscription<NexusPing>? _pings;
+
+  /// Releases TCP 51820 when the engine goes away, so a recreated engine can
+  /// take the port back (see `mesh/mesh_lifecycle.dart`). Null when this shell
+  /// was built without services, which is every widget test.
+  MeshLifecycleObserver? _meshLifecycle;
 
   /// Whether this device has already seen the welcome screen.
   ///
@@ -1074,6 +1099,16 @@ class _NexusUiAppState extends State<NexusUiApp> {
   @override
   void initState() {
     super.initState();
+    final AppServices? services = widget.services;
+    if (services != null) {
+      // The mesh belongs to the app, not to a tab: its discovery, its pairing
+      // rows and what a peer announced are the same answers wherever the user
+      // is standing. The observer stops it on engine detach, which is the one
+      // thing that keeps 51820 from staying bound to a dead engine.
+      _meshLifecycle = MeshLifecycleObserver(services.mesh);
+      WidgetsBinding.instance.addObserver(_meshLifecycle!);
+      NearbyDevices.instance.bindTo(services.mesh);
+    }
     _pings = FileTransferService.instance.pings.listen(_onPing);
     _voice.addListener(_onVoiceChanged);
     // The first reply should not pay for constructing a speech engine. This is
@@ -1106,6 +1141,13 @@ class _NexusUiAppState extends State<NexusUiApp> {
 
   @override
   void dispose() {
+    final MeshLifecycleObserver? lifecycle = _meshLifecycle;
+    final AppServices? services = widget.services;
+    if (lifecycle != null && services != null) {
+      WidgetsBinding.instance.removeObserver(lifecycle);
+      NearbyDevices.instance.unbind();
+      unawaited(stopAppServices(services));
+    }
     unawaited(_pings?.cancel());
     _pings = null;
     _voice.removeListener(_onVoiceChanged);

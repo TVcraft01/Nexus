@@ -6,10 +6,11 @@
 // it says when it heard nothing, a device that goes quiet leaves the list, a
 // socket that will not open is a sentence rather than a crash, and stopping it
 // really closes the transport.
+import 'package:flutter/foundation.dart' show ChangeNotifier, VoidCallback;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/identity.dart' show DeviceInfo;
 import 'package:nexus/mesh/discovery.dart'
-    show DiscoveredDevice, DiscoveryService, DiscoveryStatus;
+    show MeshNearbySource, DiscoveredDevice, DiscoveryService, DiscoveryStatus;
 import 'package:nexus/mesh/nearby.dart' show NearbyDevices;
 
 final DiscoveredDevice _tablet = DiscoveredDevice(
@@ -67,6 +68,38 @@ class _FakeTransport extends DiscoveryService {
     failedSends: 0,
     received: heard.length,
   );
+}
+
+/// A mesh standing in for the real one: the peers it heard, and a change
+/// notification. Exactly what `NearbyDevices.bindTo` needs.
+class _FakeMesh extends ChangeNotifier implements MeshNearbySource {
+  _FakeMesh(this._peers);
+
+  List<DiscoveredDevice> _peers;
+
+  /// How many listeners are attached. `hasListeners` is protected, so a test
+  /// counts through the calls it is allowed to make.
+  int attached = 0;
+
+  @override
+  List<DiscoveredDevice> get nearbyDevices => _peers;
+
+  @override
+  void addListener(VoidCallback listener) {
+    attached++;
+    super.addListener(listener);
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    attached--;
+    super.removeListener(listener);
+  }
+
+  void hear(List<DiscoveredDevice> peers) {
+    _peers = peers;
+    notifyListeners();
+  }
 }
 
 void main() {
@@ -163,5 +196,69 @@ void main() {
     // Deaf, and it knows why: on another port the announces never arrive.
     expect(nearby.status, contains('cannot hear other devices'));
     await nearby.stop();
+  });
+
+  group('bound to the mesh', () {
+    test('reads the mesh\'s discovery instead of opening a socket', () async {
+      final _FakeMesh mesh = _FakeMesh(<DiscoveredDevice>[_tablet]);
+      // A factory that throws is the assertion: a bound list must not try.
+      final NearbyDevices nearby = NearbyDevices(
+        discovery: (void Function(DiscoveredDevice) _) =>
+            throw StateError('a bound list must not open a socket'),
+      );
+      // Disposed inside the test, not in a tearDown: the last assertion is
+      // about what dispose() does, and ChangeNotifier refuses a second one.
+
+      nearby.bindTo(mesh);
+      await nearby.start();
+
+      expect(nearby.boundToMesh, isTrue);
+      expect(nearby.running, isTrue);
+      expect(nearby.devices.single.id, _tablet.id);
+      // No socket of its own means no discovery status to report.
+      expect(nearby.discoveryStatus, isNull);
+      expect(nearby.status, contains('Heard 1 Nexus device'));
+
+      // The Devices tab stops the list when it goes away; the mesh is the
+      // app's, so that must not stop the mesh.
+      await nearby.stop();
+      expect(nearby.running, isFalse);
+      expect(mesh.attached, 1);
+
+      nearby.dispose();
+      expect(mesh.attached, 0);
+      expect(nearby.boundToMesh, isFalse);
+    });
+
+    test('follows the mesh, and keeps a forgotten device out', () async {
+      final DiscoveredDevice laptop = DiscoveredDevice(
+        id: 'laptop000000000000000000000000001',
+        name: 'Study laptop',
+        platform: 'linux',
+        address: '192.168.1.9',
+        port: 51820,
+        lastSeen: DateTime(2026, 10, 18, 12),
+      );
+      final _FakeMesh mesh = _FakeMesh(<DiscoveredDevice>[_tablet]);
+      final NearbyDevices nearby = NearbyDevices(
+        discovery: (void Function(DiscoveredDevice) _) =>
+            throw StateError('a bound list must not open a socket'),
+      );
+      addTearDown(nearby.dispose);
+
+      nearby.bindTo(mesh);
+      await nearby.start();
+
+      mesh.hear(<DiscoveredDevice>[laptop]);
+      expect(nearby.devices.single.name, 'Study laptop');
+
+      // Forget is about the list the user is reading, and the mesh's next
+      // change must not put the device back under Nearby.
+      nearby.forget(laptop.id);
+      mesh.hear(<DiscoveredDevice>[laptop, _tablet]);
+      expect(nearby.devices.map((DiscoveredDevice d) => d.id), <String>[
+        _tablet.id,
+      ]);
+    });
   });
 }

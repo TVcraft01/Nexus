@@ -248,4 +248,41 @@ void main() {
     expect(await post(), HttpStatus.unauthorized);
     expect(receiver.service.received, hasLength(1));
   });
+
+  test('a ping needs no token — a known surface', () async {
+    // This is not desirable behaviour being pinned; it is the behaviour that
+    // ships, recorded so that closing it is a deliberate change rather than a
+    // surprise. `/nexus/ping` was built for a one-way pairing where the side
+    // that did not scan has no token to sign with, and the effect is a
+    // notification with a name the sender chose. See
+    // docs/notes/known-surfaces.md.
+    final _Peer receiver = await _peer('token-only-the-scanner-has');
+    addTearDown(receiver.dispose);
+
+    final Future<NexusPing> arriving = receiver.service.pings.first;
+    final HttpClient client = HttpClient();
+    try {
+      final HttpClientRequest request = await client.postUrl(
+        Uri(
+          scheme: 'http',
+          host: '127.0.0.1',
+          port: receiver.port,
+          path: kNexusPingPath,
+        ),
+      );
+      // No nonce, no signature — just two headers anyone can write.
+      request.headers
+        ..set(kHeaderDevice, 'stranger-on-the-wifi')
+        ..set(kHeaderName, 'Your bank');
+      request.contentLength = 0;
+      final HttpClientResponse response = await request.close();
+      await response.drain<void>();
+      expect(response.statusCode, HttpStatus.ok);
+    } finally {
+      client.close(force: true);
+    }
+
+    final NexusPing ping = await arriving.timeout(const Duration(seconds: 2));
+    expect(ping.deviceName, 'Your bank');
+  });
 }

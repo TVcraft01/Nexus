@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/core/identity.dart' show DeviceInfo;
 import 'package:nexus/core/pair_invite.dart';
 import 'package:nexus/core/qr_pairing.dart';
 
@@ -168,15 +169,37 @@ void main() {
       expect(PairInvite.parse(who.invite.encode())?.deviceId, who.id);
     });
 
-    test('is the same device until the app restarts', () {
-      // Showing the code twice in one session must show the same code: an id
-      // that changed between the sheet and the page would make the other
-      // device's scan fail for a reason nobody could see.
+    test('answers the id the bootstrap installed, not a fresh one', () {
+      // This used to assert the opposite — that a reset produced a *new* id —
+      // and that was the bug: a device invented an identity per process, so a
+      // peer's saved row pointed at an id this device would never answer to
+      // again. The bootstrap now installs the stored one (see
+      // `startAppServices`), and the code a user shows carries it.
+      final DeviceInfo stored = DeviceInfo(
+        id: 'stored-device-id-0000000000000001',
+        name: 'Hallway tablet',
+        platform: 'linux',
+      );
+      PairIdentity.install(stored);
+
+      expect(PairIdentity.current.id, stored.id);
+      expect(PairIdentity.current.name, 'Hallway tablet');
+      expect(
+        PairInvite.parse(PairIdentity.current.invite.encode())?.deviceId,
+        stored.id,
+      );
+
+      // Showing the code twice in one session is still one code.
       final PairIdentity first = PairIdentity.current;
-      final PairIdentity second = PairIdentity.current;
-      expect(identical(first, second), isTrue);
+      expect(identical(first, PairIdentity.current), isTrue);
+
+      // The next launch is a fresh process that reads the same store and
+      // installs the same id — and the code is the same code again. (The
+      // store round trip itself is proved in test/app_services_test.dart,
+      // which has a data directory to prove it with.)
       PairIdentity.debugReset();
-      expect(PairIdentity.current.id, isNot(first.id));
+      PairIdentity.install(stored);
+      expect(PairIdentity.current.id, stored.id);
     });
 
     test('says "My phone" on Android, and the hostname on a desktop', () {

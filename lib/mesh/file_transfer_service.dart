@@ -19,9 +19,13 @@
 //
 // This is the transport the "Send to…" sheet has been waiting for. It is
 // deliberately not the mesh's TCP protocol: that protocol is a framed,
-// encrypted session between MeshService instances, and this front end runs no
-// MeshService. What both sides do share is the pairing record, which is the
-// only thing a transfer needs to be allowed.
+// encrypted session between MeshService instances, and these endpoints are
+// plain HTTP so a request can be read, signed and answered in one round trip.
+// What both sides do share is the pairing record, which is the only thing a
+// transfer needs to be allowed.
+//
+// The launched app now runs a mesh as well, which is why this link listens on
+// 51821 rather than the mesh's 51820 — see [kFileTransferPort].
 library;
 
 import 'dart:async';
@@ -43,10 +47,20 @@ import '../core/paired_devices.dart' show PairedDevice;
 
 /// The port the listener answers on, and the one a pairing code advertises.
 ///
-/// 51820 is the mesh's default port, which discovery already announces; making
-/// the HTTP listener answer there is what turns that announcement into a fact
-/// rather than a hint about a port nothing listens on.
-const int kFileTransferPort = 51820;
+/// It used to be 51820 — the mesh's default port — because on a build with no
+/// mesh the HTTP listener was the only thing that could answer there. Now the
+/// mesh owns 51820 on the launched path, so the link lives one port up and a
+/// scanning device learns it from the pairing code's own `port` field.
+const int kFileTransferPort = 51821;
+
+/// The port this link used before the mesh owned the launched path.
+///
+/// Still tried first when binding (see [FileTransferService.start]): a build
+/// with no mesh listening on 51820 keeps answering where existing pairings
+/// expect it, and a build whose mesh took 51820 lands on [kFileTransferPort].
+/// It is also the port older pairing records carry, which is why dialling has
+/// to ask rather than assume — see `FileTransferService._portToDial`.
+const int kLegacyFileTransferPort = 51820;
 
 /// Where liveness and the transfer nonce are asked for.
 const String kNexusHelloPath = '/nexus/hello';
@@ -203,10 +217,14 @@ bool isImageName(String name) {
 /// The listener, the sender, and the list of what arrived.
 class FileTransferService extends ChangeNotifier implements FileTransport {
   FileTransferService({
-    this.port = kFileTransferPort,
+    int? port,
     Future<Directory?> Function()? directory,
     String? token,
-  }) : _directory = directory ?? _defaultDirectory,
+    @visibleForTesting List<int>? bindLadder,
+  }) : port = port ?? kFileTransferPort,
+       _explicitPort = port != null,
+       _debugBindLadder = bindLadder,
+       _directory = directory ?? _defaultDirectory,
        _tokenOverride = token;
 
   /// Test seam, in the same shape as the rest of the app: a widget test states
@@ -227,11 +245,35 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
   @visibleForTesting
   static void debugReset() => _instance = null;
 
-  /// The port asked for. [boundPort] is the one actually listening, which
-  /// differs when this was constructed with port 0.
+  /// The port asked for — and, when this is the app's own service, the port a
+  /// peer that carries no port of its own is expected to answer on.
+  ///
+  /// [boundPort] is the one actually listening, which can differ: the app's
+  /// service walks the ladder in [start], and a test may ask for port 0.
   final int port;
+
+  /// True when a port was stated explicitly, which replaces the ladder with
+  /// that one port. A test that binds its own ephemeral port must not be
+  /// surprised by the app's ladder trying 51820 first.
+  final bool _explicitPort;
+
+  /// A ladder a test states, over the one this build would use.
+  ///
+  /// The shipped ladder names two fixed ports, and a test that occupies them to
+  /// watch the walk would be competing with every other test isolate on the
+  /// machine — the port lottery this suite has been bitten by before. A stated
+  /// ladder exercises the walk on ports the test itself holds.
+  final List<int>? _debugBindLadder;
+
   int get boundPort => _server?.port ?? _boundPort;
   int _boundPort = 0;
+
+  /// The port each device answered [kNexusHelloPath] on, for this session.
+  ///
+  /// Dialling is the one place a stale pairing record costs a round trip
+  /// instead of being visible, so the first answer is kept: a ping loop or a
+  /// second transfer should not re-probe.
+  final Map<String, int> _dialPorts = <String, int>{};
 
   final Future<Directory?> Function() _directory;
   final String? _tokenOverride;
@@ -290,18 +332,52 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
 
   /// Opens the listener. Safe to call twice, and safe to call when a previous
   /// attempt failed (the next call tries again).
+  /// The ports to try, in the order that keeps both directions working.
+  ///
+  /// The legacy port comes first because a build with no mesh on 51820 is a
+  /// build whose existing pairings dial 51820 — this service has to be there.
+  /// On the launched path the mesh holds 51820, so the bind fails and the next
+  /// rung ([port], 51821) wins; a host where both are busy still gets a socket
+  /// rather than a dead link.
+  List<int> get _bindLadder {
+    final List<int>? stated = _debugBindLadder;
+    if (stated != null && stated.isNotEmpty) return stated;
+    return _explicitPort ? <int>[port] : <int>[kLegacyFileTransferPort, port, 0];
+  }
+
+  /// The ladder this service would walk, for a test that pins the order rather
+  /// than occupying the ports.
+  @visibleForTesting
+  List<int> get debugBindLadder => _bindLadder;
+
   Future<void> start() async {
     if (_running || _starting) return;
     _starting = true;
     _problem = null;
+    Object? lastError;
     try {
       _token = _tokenOverride ?? await PairToken.current();
-      final HttpServer server = await HttpServer.bind(
-        InternetAddress.anyIPv4,
-        port,
-      );
-      _server = server;
-      _boundPort = server.port;
+      for (final int candidate in _bindLadder) {
+        try {
+          final HttpServer server = await HttpServer.bind(
+            InternetAddress.anyIPv4,
+            candidate,
+          );
+          _server = server;
+          _boundPort = server.port;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      final HttpServer? server = _server;
+      if (server == null) {
+        _running = false;
+        _problem =
+            'File transfer could not open a port (tried '
+            '${_bindLadder.join(', ')}) — $lastError';
+        return;
+      }
       _running = true;
       server.listen(
         (HttpRequest request) => unawaited(_serve(request)),
@@ -328,6 +404,9 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     final bool wasRunning = _running;
     _running = false;
     _nonces.clear();
+    // A port decided in this session is not a promise for the next one: a peer
+    // that updates, or a network that changes under us, should be asked again.
+    _dialPorts.clear();
     _mouseClient?.close(force: true);
     _mouseClient = null;
     try {
@@ -359,7 +438,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
   Future<FileTransferHello?> hello(PairedDevice device) async {
     final String? address = _addressOf(device);
     if (address == null) return null;
-    final int port = _portOf(device);
+    final int port = await _portToDial(device);
     final HttpClient client = HttpClient()
       ..connectionTimeout = kTransferProbeTimeout;
     try {
@@ -415,6 +494,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
       );
     }
     final PairIdentity me = PairIdentity.current;
+    final int port = await _portToDial(device);
     final HttpClient client = HttpClient()
       ..connectionTimeout = kTransferProbeTimeout;
     try {
@@ -423,7 +503,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
             Uri(
               scheme: 'http',
               host: address,
-              port: _portOf(device),
+              port: port,
               path: kNexusPingPath,
             ),
           )
@@ -475,6 +555,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     final String? address = _addressOf(device);
     if (address == null) return false;
     final PairIdentity me = PairIdentity.current;
+    final int port = await _portToDial(device);
     final HttpClient client = _mouseClient ??= (HttpClient()
       ..connectionTimeout = kTransferProbeTimeout);
     try {
@@ -483,7 +564,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
             Uri(
               scheme: 'http',
               host: address,
-              port: _portOf(device),
+              port: port,
               path: kNexusMousePath,
             ),
           )
@@ -566,6 +647,9 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
       filename: name,
       size: size,
     );
+    // [hello] just resolved this — and cached it — so on a legacy record the
+    // body goes to the port that answered rather than to a guess.
+    final int port = await _portToDial(device);
     final HttpClient client = HttpClient()
       ..connectionTimeout = kTransferProbeTimeout;
     try {
@@ -574,7 +658,7 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
             Uri(
               scheme: 'http',
               host: address,
-              port: _portOf(device),
+              port: port,
               path: kNexusFilePath,
             ),
           )
@@ -684,6 +768,13 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
   /// No token check, because this shell's pairing is one-way and the side that
   /// did not scan has no token to sign with. The request carries no file, no
   /// command and no persisted state; its whole effect is a notification.
+  ///
+  /// TODO(pass-2): this is an unauthenticated surface, not a missing check —
+  /// anyone on the local network can post here with any name and the shell
+  /// shows "Ping from …". See `docs/notes/known-surfaces.md`
+  /// ("Unauthenticated /nexus/ping and /nexus/mouse"). Adding the token is a
+  /// deliberate behaviour change, not a tidying; it lands when pairing carries
+  /// a secret to both sides, which is what the mesh pairing bridge brings.
   Future<void> _acceptPing(HttpRequest request) async {
     final String senderId = request.headers.value(kHeaderDevice)?.trim() ?? '';
     final String senderName = request.headers.value(kHeaderName)?.trim() ?? '';
@@ -935,8 +1026,60 @@ class FileTransferService extends ChangeNotifier implements FileTransport {
     return null;
   }
 
-  int _portOf(PairedDevice device) =>
-      device.port > 0 ? device.port : kFileTransferPort;
+  /// The port [device]'s file link answers on, decided by asking it.
+  ///
+  /// A pairing record says what the *other* device was listening on when the
+  /// code was shown. Records written before the mesh owned 51820 say 51820,
+  /// and that number now means two different things depending on the peer: an
+  /// older build answers the file link there, a newer one has its mesh on it
+  /// and its link on [kFileTransferPort]. A mapping would be wrong half the
+  /// time, so the link is asked directly — `hello` is the cheapest honest
+  /// test, because the mesh's framed TCP listener cannot answer it. The answer
+  /// is kept for the session so a ping loop pays for it once.
+  Future<int> _portToDial(PairedDevice device) async {
+    final String? address = _addressOf(device);
+    final int stored = device.port > 0 ? device.port : port;
+    if (address == null || stored == port) return stored;
+    final String key = '${device.id}@$address';
+    final int? known = _dialPorts[key];
+    if (known != null) return known;
+    for (final int candidate in <int>[stored, port]) {
+      if (await _answersHello(address, candidate)) {
+        _dialPorts[key] = candidate;
+        return candidate;
+      }
+    }
+    // Nothing answered the question; the stored port is the best guess left,
+    // and the caller's own error message is the honest one to show.
+    return stored;
+  }
+
+  /// Whether [candidate] on [address] answers the file link's `hello`.
+  Future<bool> _answersHello(String address, int candidate) async {
+    final HttpClient client = HttpClient()
+      ..connectionTimeout = kTransferProbeTimeout;
+    try {
+      final HttpClientRequest request = await client
+          .getUrl(
+            Uri(
+              scheme: 'http',
+              host: address,
+              port: candidate,
+              path: kNexusHelloPath,
+            ),
+          )
+          .timeout(kTransferProbeTimeout);
+      final HttpClientResponse response = await request.close().timeout(
+        kTransferProbeTimeout,
+      );
+      await response.drain<void>();
+      return response.statusCode == HttpStatus.ok;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close(force: true);
+    }
+  }
 
   static String _safeName(String raw) {
     String name = raw.split(RegExp(r'[/\\]')).last.trim();

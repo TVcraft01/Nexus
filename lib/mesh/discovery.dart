@@ -2,9 +2,21 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show Listenable, debugPrint;
 
 import '../core/identity.dart';
+
+/// What `NearbyDevices.bindTo` needs from a mesh: the peers its own discovery
+/// has heard, and a change notification.
+///
+/// Declared here, next to [DiscoveredDevice], rather than importing
+/// `MeshService` into the shell's discovery list: it keeps that list usable in
+/// a build with no mesh, and it lets a test stand in for the mesh with a fake
+/// instead of opening sockets.
+abstract class MeshNearbySource implements Listenable {
+  /// Devices heard recently, most recently seen first.
+  List<DiscoveredDevice> get nearbyDevices;
+}
 
 /// A device seen on the local network via [DiscoveryService].
 class DiscoveredDevice {
