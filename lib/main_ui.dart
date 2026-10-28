@@ -124,7 +124,6 @@ import 'core/onboarding.dart';
 // keeps the other import unambiguous.
 import 'core/agent_contract.dart' hide DeviceCapabilities;
 import 'core/app_services.dart';
-import 'l10n/app_localizations.dart';
 import 'core/device_actions.dart' show ActionResult, DeviceActionBackend;
 import 'core/phone_actions.dart' show PhoneActionBackend;
 import 'core/store.dart' show AgentPolicy, ControlPath;
@@ -1529,11 +1528,6 @@ class _NexusUiAppState extends State<NexusUiApp> {
       // not, which is honest preparation rather than a half-translated screen.
       locale: nexusLocaleFor(_voice.language),
       localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
-        // The app's own copy first: everything the shell says for itself comes
-        // from here (see lib/l10n). The three Global delegates below are what
-        // make Material's strings — dialog buttons, tooltips, date pickers —
-        // and Cupertino's follow the same locale.
-        AppLocalizations.delegate,
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,

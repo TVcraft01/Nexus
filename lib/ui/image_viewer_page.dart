@@ -10,7 +10,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import '../l10n/copy.dart';
 
 /// The key on the close button, so a test can find the one control here.
 const Key kImageViewerClose = ValueKey<String>('image-viewer-close');
@@ -104,7 +103,7 @@ class ImageViewerPage extends StatelessWidget {
                     key: kImageViewerSend,
                     onPressed: onSend,
                     icon: const Icon(Icons.send_rounded, size: 20),
-                    label: Text(context.l10n.sendTo),
+                    label: const Text('Send to…'),
                   ),
                 ),
               ),
@@ -116,7 +115,7 @@ class ImageViewerPage extends StatelessWidget {
                 padding: const EdgeInsets.all(8),
                 child: IconButton(
                   key: kImageViewerClose,
-                  tooltip: context.l10n.close,
+                  tooltip: 'Close',
                   icon: const Icon(Icons.close_rounded),
                   color: Colors.white,
                   style: IconButton.styleFrom(

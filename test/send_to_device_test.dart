@@ -12,9 +12,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nexus/l10n/app_localizations.dart';
 import 'package:nexus/core/file_link.dart';
 import 'package:nexus/core/paired_devices.dart';
 import 'package:nexus/main_ui.dart'
@@ -103,18 +101,6 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: NexusTheme.dark(),
-        // The bubble's own copy comes from the app's ARB files, so a test that
-        // builds its own MaterialApp has to install the app's delegate. Without
-        // it `context.l10n` throws — deliberately, rather than quietly
-        // rendering English over a French screen.
-        locale: const Locale('en'),
-        supportedLocales: AppLocalizations.supportedLocales,
-        localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
-          AppLocalizations.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
         home: Scaffold(
           body: Center(
             child: NexusAttachmentBubble(

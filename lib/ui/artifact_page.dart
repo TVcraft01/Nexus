@@ -18,7 +18,6 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../core/artifacts.dart' show NexusArtifact;
 import 'local_files.dart' show saveLocalFileAs;
-import '../l10n/copy.dart';
 
 /// The button that writes the file.
 const Key kArtifactSave = ValueKey<String>('artifact-save');
@@ -122,7 +121,7 @@ class _NexusArtifactPageState extends State<NexusArtifactPage> {
         ),
         actions: <Widget>[
           IconButton(
-            tooltip: context.l10n.copyAction,
+            tooltip: 'Copy',
             icon: const Icon(Icons.copy_rounded, size: 20),
             onPressed: () async {
               await Clipboard.setData(

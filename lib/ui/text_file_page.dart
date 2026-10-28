@@ -12,7 +12,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import '../l10n/copy.dart';
 
 /// The close control, named so a test can leave the page.
 const Key kTextFileClose = ValueKey<String>('text-file-close');
@@ -136,7 +135,7 @@ class _TextFilePageState extends State<TextFilePage> {
         actions: <Widget>[
           IconButton(
             key: kTextFileClose,
-            tooltip: context.l10n.close,
+            tooltip: 'Close',
             icon: const Icon(Icons.close_rounded),
             onPressed: () => Navigator.of(context).pop(),
           ),
