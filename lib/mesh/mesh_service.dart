@@ -2179,9 +2179,18 @@ class MeshService extends ChangeNotifier
             policy: store.agentPolicy(request.action),
           );
           lastIncomingAgentRequest = {'from': msg.from, 'request': request};
+          // One line the hardware can show: a request that reaches this device
+          // but never becomes a card is otherwise invisible, because every
+          // refusal downstream answers the sender instead of logging here.
+          debugPrint(
+            'NEXUS mesh: peer action ${request.action} from ${msg.from} '
+            '(${_incomingAction!.policy.name}, '
+            '${_incomingAction!.trusted ? 'proven' : 'unproven'})',
+          );
           notifyListeners();
-        } catch (_) {
+        } catch (error) {
           // Malformed request — drop it; never execute garbage.
+          debugPrint('NEXUS mesh: unreadable peer action from ${msg.from} ($error)');
         }
 
       case NexusMessage.agentResult:

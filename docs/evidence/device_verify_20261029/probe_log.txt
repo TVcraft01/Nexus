@@ -1,0 +1,5 @@
+2026-10-29T00:52:51.966830 mesh up on 51820
+2026-10-29T00:52:51.968351 paired=goou4tt557c220n1qbudc3xiq65c6hdf/TVcraft01' phone
+2026-10-29T00:52:55.283536 saw go3
+2026-10-29T00:52:55.284950 agent request probe-1793231575284 -> goou4tt557c220n1qbudc3xiq65c6hdf
+2026-10-29T00:52:57.031910 agent reply {"status":"denied","message":"This device does not accept that action from paired peers.","at":"2026-10-29T00:52:57.031490"}
