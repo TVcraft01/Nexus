@@ -39,6 +39,10 @@ dependencies:
   package_info_plus: ^10.2.2
   flutter_localizations:
     sdk: flutter
+  # Pinned to what flutter_localizations already resolves (0.20.3): gen-l10n
+  # fails outright when the app's intl and the SDK's disagree, so the pin is a
+  # build requirement rather than a preference.
+  intl: ^0.20.3
   share_plus: ^13.3.1
   dartssh2: ^4.1.0
 
@@ -112,6 +116,9 @@ flutter_native_splash:
 
 flutter:
   uses-material-design: true
+  # gen-l10n runs on every build and writes lib/l10n/app_localizations*.dart
+  # (there is no synthetic package on this Flutter — see l10n.yaml).
+  generate: true
 
   assets:
     # The splash's own marks (one per system theme), also drawn under the first

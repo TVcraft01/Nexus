@@ -19,6 +19,7 @@ import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../core/paired_devices.dart' show PairedDevice;
 import '../mesh/file_transfer_service.dart' show FileTransferService;
+import '../l10n/copy.dart';
 
 /// The seam a widget test uses to see what the pad would send. Production
 /// leaves it null and the real service sends the request.
@@ -136,7 +137,7 @@ class _TrackpadPageState extends State<TrackpadPage> {
               child: Row(
                 children: <Widget>[
                   IconButton(
-                    tooltip: 'Back',
+                    tooltip: context.l10n.back,
                     onPressed: () => Navigator.maybePop(context),
                     icon: const Icon(
                       Icons.arrow_back_rounded,

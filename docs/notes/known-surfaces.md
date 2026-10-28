@@ -172,3 +172,41 @@ user turns mesh pairing on, rather than at launch, and to remember that they
 said no. Both are behaviour changes with their own on-device verification, and
 none of it can be tested off a phone — no device was attached when this was
 written (see `NotificationPermissionTest`, which pins the SDK/grant rule only).
+
+## The denial is a sentence on the wire, so it cannot be translated
+
+**Ships in:** every build since peer-initiated actions (pass 3c).
+
+**Where:** `kNexusPeerActionDenied` in `lib/main_ui.dart`, sent by
+`IncomingAgentAction.refuse` over `agent.result` and also shown on the device
+that refused.
+
+**What is true today:** the string is both the refuser's own card text and the
+payload the other device receives and prints ("<name> asked — <that sentence>").
+Translating it in place would translate the wire: a French car would send French
+to an English phone, and `peer_actions_test.dart` pins the exact English string
+as the reply contract. Two constants exist instead — the wire one stays English,
+a local display one may be translated — so the wire is a protocol string and the
+card is copy, which is the rule i18n works by everywhere else.
+
+**Removal condition:** when the reply carries a status (`AgentResultStatus`)
+rather than a display sentence, the receiving side renders the reason in its own
+language and the English wire constant can go. That is a protocol change with
+its own compatibility story, not a translation pass.
+
+## Dates and times are formatted by hand, so they do not follow the language
+
+**Ships in:** every build. Found while preparing the i18n pass (Pass A).
+
+**Where:** anywhere the app shows a date or a clock: `lib/core/clock_context.dart`,
+the reminder rows, the thread's timestamps.
+
+**What is true today:** there is no `DateFormat` anywhere in `lib/` — every date
+and time is assembled with string interpolation. Translating the copy around them
+leaves the formats themselves English: a French screen can still read
+"2:30 PM" and "Oct 28".
+
+**Removal condition:** when the app formats dates through `Intl.DateFormat` with
+the active locale. Named here because the i18n pass deliberately does not touch
+formatting — copy and formats are two different jobs, and doing the second badly
+(guessing locales from strings) is worse than leaving it visible.
