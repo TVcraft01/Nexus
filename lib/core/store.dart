@@ -31,6 +31,31 @@ enum ControlPath {
   derived;
 }
 
+/// What this device will do with an action a paired peer asks for.
+///
+/// Per action, not per peer, because that is the shape of the question a person
+/// actually answers: "should the car be able to play music when Kit asks?" is a
+/// decision about playing music, and answering it once should not also answer
+/// it for calls, alarms and the flashlight.
+///
+/// [ask] is the default and the only value a fresh install has. Nothing is
+/// seeded: an action that did not exist when the user set their choices is
+/// absent from the table, and absent means ask. Seeding every action would mean
+/// migrating the table whenever the vocabulary grew.
+enum AgentPolicy {
+  /// Show the request and wait for the user. The default, and the only one
+  /// that needs a person.
+  ask,
+
+  /// Run it without asking — but only for a frame that proved itself
+  /// (`MeshService.agentFrameProven`). An unproven request falls back to
+  /// [ask] rather than inheriting a promise made about a different peer.
+  auto,
+
+  /// Refuse it, with the reason the peer is told.
+  deny,
+}
+
 /// Everything Nexus persists on one device lives in a single JSON file in the
 /// app's private data directory. Nothing is ever sent anywhere; this is the
 /// device's own copy of its identity, its pairing secrets, and its history.
@@ -346,6 +371,46 @@ class NexusStore {
 
   void noteUnsignedControl(String peerId, String name, String version) =>
       noteControlPath(ControlPath.unsigned, peerId, name, version);
+
+  // --- What this device accepts from paired peers ---------------------------
+
+  /// What [action] is allowed to do here, read fresh so a change takes effect
+  /// on the next request rather than the next launch.
+  ///
+  /// Absent means [AgentPolicy.ask]: the table holds only what the user chose,
+  /// which is what makes a new action safe by construction rather than by
+  /// remembering to seed it.
+  AgentPolicy agentPolicy(String action) {
+    final Map<String, dynamic>? all =
+        (_data['settings'] as Map<String, dynamic>?)?['agentPolicy']
+            as Map<String, dynamic>?;
+    final String? stored = all?[action] as String?;
+    for (final AgentPolicy policy in AgentPolicy.values) {
+      if (policy.name == stored) return policy;
+    }
+    return AgentPolicy.ask;
+  }
+
+  /// Every choice the user has made, by action id. Empty on a fresh install.
+  Map<String, AgentPolicy> get agentPolicyChoices {
+    final Map<String, dynamic>? all =
+        (_data['settings'] as Map<String, dynamic>?)?['agentPolicy']
+            as Map<String, dynamic>?;
+    final Map<String, AgentPolicy> out = <String, AgentPolicy>{};
+    all?.forEach((String action, Object? value) {
+      for (final AgentPolicy policy in AgentPolicy.values) {
+        if (policy.name == value) out[action] = policy;
+      }
+    });
+    return out;
+  }
+
+  void setAgentPolicy(String action, AgentPolicy policy) {
+    final Map<String, dynamic> all =
+        (_settings()['agentPolicy'] ??= <String, dynamic>{})
+            as Map<String, dynamic>;
+    all[action] = policy.name;
+  }
 
   Map<String, dynamic> _settings() =>
       _data.putIfAbsent('settings', () => <String, dynamic>{});

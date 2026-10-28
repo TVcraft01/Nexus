@@ -110,6 +110,42 @@ would turn working pings into 401s in both directions.
 
 ---
 
+## The Devices list is lazy, and the test that measures it is not
+
+**Ships in:** every build with the `DevicesTab` list, i.e. all of them. Found by
+accident during pass 3c, when the peer-request policy table was briefly drawn
+*inside* that list.
+
+**Where:** `test/main_ui_test.dart`, `Devices shows a dot and a word per peer`,
+against `DevicesTab`'s `ListView` in `lib/main_ui.dart`. It asserts
+`find.text('Online')` finds 2, `find.text('Offline')` finds 1, and
+`find.byType(NexusStatusDot)` finds 3 after opening the tab.
+
+**What is true today — both sides are responsible:**
+
+- *Test side:* the counts are of what is **built**, and the list only builds what
+  fits the viewport. The finders themselves are not over-specific; the
+  assumption "built == exists" is what is wrong. The failure surfaces as a
+  *lower* count, so it reads as a device that went missing rather than one that
+  scrolled out of the built area.
+- *List side:* `DevicesTab` puts fixed-height blocks above a lazy list, so the
+  height of everything above the cards decides whether the cards exist for the
+  test. Nothing in the list signals that it is being counted this way.
+
+**Measured, not guessed (2026-10-28):** with a 140 px block above the cards (the
+approval card's height) the test passes; with a 600 px block (a settings
+section) it fails on its first assertion with `Expected: exactly 2 matching
+candidates / Actual: Found 1 widget with text "Online"`.
+
+**What it costs:** a future change that adds one long block to the top of this
+list will read as "the mesh lost a device". Two ways out, both small, neither
+taken yet: assert per row — find the row by key and read its own dot — or scroll
+each row into view before counting (the file already does that for
+`Pair a device`). Until one lands, keep additions to this list short: the
+peer-request **card** (140 px, and only while a request waits) is inside that
+budget, which is why the pre-approval table is a sheet behind a Settings row
+(pass 3c) instead of a section on this list.
+
 ## The notification permission is asked for on every launch
 
 **Ships in:** every build since the mesh gained a foreground service
@@ -136,5 +172,3 @@ user turns mesh pairing on, rather than at launch, and to remember that they
 said no. Both are behaviour changes with their own on-device verification, and
 none of it can be tested off a phone — no device was attached when this was
 written (see `NotificationPermissionTest`, which pins the SDK/grant rule only).
-
----

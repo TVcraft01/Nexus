@@ -670,6 +670,21 @@ class _SettingsTabState extends State<SettingsTab> {
           // is why it is filed under an advanced row rather than offered in the
           // chat.
           const NexusSectionLabel('Devices'),
+          // What a paired device may ask this one to do. Here rather than on the
+          // Devices list: a permission table is a setting, and the two dozen
+          // rows it needs would push the devices that list exists for off the
+          // screen. Nothing is pre-approved until the user chooses it.
+          if (widget.mesh != null)
+            NexusRow(
+              key: kNexusPeerRequestsRow,
+              title: 'Peer requests',
+              subtitle: 'What a paired device may ask this one to do',
+              leading: const NexusIconTile(Icons.notifications_active_rounded),
+              trailing: const NexusChevron(),
+              onTap: () => unawaited(
+                showPeerRequestPolicySheet(context, mesh: widget.mesh!),
+              ),
+            ),
           NexusRow(
             key: kNexusServerAgentRow,
             title: 'Server Agent (Advanced)',

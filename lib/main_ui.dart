@@ -94,7 +94,7 @@ import 'core/connections.dart';
 import 'core/artifacts.dart';
 import 'core/attachment_pickers.dart';
 import 'core/attachments.dart';
-import 'core/capability.dart' show capabilityFor;
+import 'core/capability.dart' show capabilityFor, defaultCapabilitiesFor;
 import 'core/chat_log.dart';
 import 'core/clock_context.dart' show isClockQuestion;
 import 'core/composer_settings.dart';
@@ -117,10 +117,16 @@ import 'core/on_device_ai_service.dart';
 import 'core/on_device_model.dart';
 import 'core/notification_sync.dart';
 import 'core/onboarding.dart';
+// Hidden rather than shown name by name: this file needs the whole library —
+// the status words are an extension, and an extension comes with the import
+// rather than with a `show` list. `DeviceCapabilities` is the one name that
+// exists in both this and `device_capabilities.dart`, and hiding it is what
+// keeps the other import unambiguous.
+import 'core/agent_contract.dart' hide DeviceCapabilities;
 import 'core/app_services.dart';
-import 'core/device_actions.dart' show DeviceActionBackend;
+import 'core/device_actions.dart' show ActionResult, DeviceActionBackend;
 import 'core/phone_actions.dart' show PhoneActionBackend;
-import 'core/store.dart' show ControlPath;
+import 'core/store.dart' show AgentPolicy, ControlPath;
 import 'core/pair_bridge.dart';
 import 'core/pair_invite.dart';
 import 'core/pair_token.dart';
@@ -142,7 +148,8 @@ import 'mesh/file_transfer_service.dart'
         ReceivedFile,
         kFileTransferPort;
 import 'mesh/mesh_lifecycle.dart' show MeshLifecycleObserver;
-import 'mesh/mesh_service.dart' show MeshService, PairingSession;
+import 'mesh/mesh_service.dart'
+    show IncomingAgentAction, MeshService, PairingSession;
 
 // The thought splitter moved to `core` so the chat log can use it when it
 // reads an old answer; this export keeps every existing importer of the shell
@@ -1098,6 +1105,39 @@ DeviceExecutor? launchedExecutor(
         phoneBackend: phoneBackend,
       );
 
+/// What a peer is told when this device refuses an action by policy.
+///
+/// One string, pinned by a test, because it is the whole of what the other
+/// person sees: it has to name the reason without implying they did something
+/// wrong, and it has to be the same sentence in the reply and on this screen.
+const String kNexusPeerActionDenied =
+    'This device does not accept that action from paired peers.';
+
+/// What the shell does with an action a peer asked for.
+///
+/// [runNow] is the only one that acts without a person watching, which is why
+/// it is derived from two facts and nothing else — see [decidePeerAction].
+enum PeerActionDecision { runNow, ask, refuse }
+
+/// The decision, from the policy the user set and whether the frame proved
+/// itself.
+///
+/// The 'auto' case is the one worth stating in code rather than in a comment:
+/// a pre-approval is a promise the user made about a *specific* peer ("Kit may
+/// play music here"), so it is only spent on a frame that proved it came from
+/// that peer. Anything else — no signature, an unknown id, a pairing this
+/// session never exchanged a frame with — is asked about, never run. Failing
+/// towards the person is the right direction for that doubt.
+@visibleForTesting
+PeerActionDecision decidePeerAction({
+  required AgentPolicy policy,
+  required bool trusted,
+}) => switch (policy) {
+  AgentPolicy.deny => PeerActionDecision.refuse,
+  AgentPolicy.auto when trusted => PeerActionDecision.runNow,
+  AgentPolicy.auto || AgentPolicy.ask => PeerActionDecision.ask,
+};
+
 /// The shell app. Holds what outlives a tab — appearance and accent — because
 /// the Settings tab changes them and the whole frame has to follow.
 ///
@@ -1159,6 +1199,14 @@ class _NexusUiAppState extends State<NexusUiApp> {
   /// backends rather than state. Null in a widget test, which has no services.
   DeviceExecutor? _executor;
 
+  /// A peer's request that was not answered immediately — the one waiting for
+  /// the user, shown as a card at the top of the Devices list.
+  ///
+  /// Held here rather than in the tab because the request outlives a visit to
+  /// it: a peer that asked while the user was on Home is still waiting, and the
+  /// card is where they find it.
+  IncomingAgentAction? _peerRequest;
+
   /// Whether this device has already seen the welcome screen.
   ///
   /// Null is the one frame before the preference has been read, and it is not
@@ -1204,6 +1252,11 @@ class _NexusUiAppState extends State<NexusUiApp> {
       // property of the app (what *this* device can do), not of a screen, and
       // a second one built on a tab rebuild would be a second answer.
       _executor = launchedExecutor(services);
+      // A peer's request must be answered wherever the user is standing, and
+      // the shell is the one thing that is always mounted. A card that only
+      // appeared while its tab was open is the same mistake the ping handler
+      // refuses to make.
+      services.mesh.addListener(_onMeshChanged);
     }
     _pings = FileTransferService.instance.pings.listen(_onPing);
     _voice.addListener(_onVoiceChanged);
@@ -1239,6 +1292,7 @@ class _NexusUiAppState extends State<NexusUiApp> {
   void dispose() {
     final MeshLifecycleObserver? lifecycle = _meshLifecycle;
     final AppServices? services = widget.services;
+    if (services != null) services.mesh.removeListener(_onMeshChanged);
     if (lifecycle != null && services != null) {
       WidgetsBinding.instance.removeObserver(lifecycle);
       NearbyDevices.instance.unbind();
@@ -1258,15 +1312,132 @@ class _NexusUiAppState extends State<NexusUiApp> {
     // the same ping. `verified` is the file link's answer about the signature;
     // false means the sender holds no token of ours and this shell knows it by
     // its own record rather than by anything the request claimed.
-    final String text =
-        'Ping from ${ping.deviceName}${ping.verified ? '' : ' (unverified)'}';
+    _notifyDevice(
+      'Ping from ${ping.deviceName}${ping.verified ? '' : ' (unverified)'}',
+      haptic: true,
+    );
+  }
+
+  /// One message about a device, on the two surfaces this build has.
+  ///
+  /// A phone feels it when [haptic] says so and shows it in the app; a desktop
+  /// hands it to the platform's notification centre. One string for both, so
+  /// the snackbar and the notification cannot disagree about the same event.
+  void _notifyDevice(String text, {bool haptic = false}) {
     if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
-      unawaited(HapticFeedback.heavyImpact());
+      if (haptic) unawaited(HapticFeedback.heavyImpact());
       _showPingSnack(text);
       return;
     }
     unawaited(_showDesktopPing(text));
+  }
+
+  /// A mesh notification, used for exactly one thing: claiming a peer's action
+  /// request before a later notification finds it gone.
+  ///
+  /// Deliberately not a rebuild trigger. The mesh notifies on every message it
+  /// handles — presence, results, relays — and rebuilding the whole app for
+  /// each of those would be work done for nothing; only an unanswered request
+  /// has something to say, and the tabs listen to the mesh themselves.
+  void _onMeshChanged() {
+    final AppServices? services = widget.services;
+    if (services == null) return;
+    final IncomingAgentAction? action = services.mesh.takeIncomingAgentAction();
+    if (action == null) return;
+    unawaited(_handlePeerAction(action));
+  }
+
+  /// The name this device knows [id] by, for a sentence a person reads.
+  String _peerNameOf(String id) {
+    final AppServices? services = widget.services;
+    if (services == null) return id;
+    for (final peer in services.mesh.pairedDevices) {
+      if (peer.id == id) return peer.name;
+    }
+    return id;
+  }
+
+  /// Handles a request a peer sent, by the decision [decidePeerAction] made.
+  ///
+  /// Two of the three outcomes answer the peer here and now, and the third
+  /// puts a card on the Devices list instead. Whichever it is, the sender gets
+  /// an answer: [IncomingAgentAction] cannot be resolved any other way.
+  Future<void> _handlePeerAction(IncomingAgentAction action) async {
+    final bool trusted = action.trusted;
+    switch (decidePeerAction(policy: action.policy, trusted: trusted)) {
+      case PeerActionDecision.refuse:
+        final AgentDispatchResult result = await action.refuse(
+          kNexusPeerActionDenied,
+        );
+        if (mounted) {
+          _notifyDevice(_peerActionLine(action.from, result));
+        }
+      case PeerActionDecision.runNow:
+        // The only path in the app that acts without a person watching. It is
+        // reached only for a policy the user set to 'auto' *and* a frame that
+        // proved itself, and the sentence the user sees is the reply's own.
+        final AgentDispatchResult result = await action.resolveWith(
+          () => _runPeerAction(action),
+        );
+        if (mounted) {
+          _notifyDevice(_peerActionLine(action.from, result));
+        }
+      case PeerActionDecision.ask:
+        if (mounted) setState(() => _peerRequest = action);
+    }
+  }
+
+  /// The line a peer-initiated action writes on the user's screen.
+  ///
+  /// Built from the reply's own words, never from what this shell hoped
+  /// happened: an action that could not be run says why, and a hard-coded
+  /// "Playing: X" would have told the user it played.
+  String _peerActionLine(String from, AgentDispatchResult result) {
+    final String words = result.message.trim();
+    return '${_peerNameOf(from)} asked — '
+        '${words.isEmpty ? result.status.label : words}';
+  }
+
+  /// Runs a peer's request on this device and turns the outcome into the truth
+  /// the peer is told.
+  ///
+  /// The mapping is [ActionResult]'s own three-way answer kept intact: a
+  /// question (`needsDetail`) is not a failure, and reporting "what should I
+  /// play?" as "Unavailable" would call the feature broken when the sentence
+  /// was merely incomplete.
+  Future<AgentDispatchResult> _runPeerAction(IncomingAgentAction action) async {
+    final DeviceExecutor? executor = _executor;
+    if (executor == null) {
+      return const AgentDispatchResult(
+        status: AgentResultStatus.unavailable,
+        message: 'This device has nothing to run actions with.',
+      );
+    }
+    final ActionResult outcome = await executor.run(action.request);
+    return AgentDispatchResult(
+      status: outcome.ok
+          ? AgentResultStatus.succeeded
+          : (outcome.needsDetail
+                ? AgentResultStatus.needsInfo
+                : AgentResultStatus.unavailable),
+      message: outcome.message,
+      dispatch: outcome.ok ? AgentMessage(outcome.message) : null,
+    );
+  }
+
+  /// The user's answer to the card: run it here, or refuse it.
+  ///
+  /// Approving runs the same path an 'auto' request takes, so the sentence the
+  /// peer gets is the same sentence it would have got without the tap.
+  Future<void> _answerPeerRequest(bool approve) async {
+    final IncomingAgentAction? action = _peerRequest;
+    if (action == null) return;
+    setState(() => _peerRequest = null);
+    final AgentDispatchResult result = approve
+        ? await action.resolveWith(() => _runPeerAction(action))
+        : await action.refuse(kNexusPeerActionDenied);
+    if (mounted) _notifyDevice(_peerActionLine(action.from, result));
   }
 
   void _showPingSnack(String text) {
@@ -1378,6 +1549,8 @@ class _NexusUiAppState extends State<NexusUiApp> {
             accent: _accent,
             mesh: widget.services?.mesh,
             executor: _executor,
+            peerRequest: _peerRequest,
+            onPeerRequestAnswered: _answerPeerRequest,
             onFollowSystemChanged: (value) =>
                 setState(() => _followSystem = value),
             onDarkModeChanged: (value) => setState(() => _dark = value),
@@ -2024,6 +2197,8 @@ class NexusShell extends StatefulWidget {
     this.onAccentChanged,
     this.mesh,
     this.executor,
+    this.peerRequest,
+    this.onPeerRequestAnswered,
   });
 
   /// The running mesh, when the app started one.
@@ -2039,6 +2214,14 @@ class NexusShell extends StatefulWidget {
   /// Runs an action on this device ([launchedExecutor]), handed to the Devices
   /// tab because that is the tab that owns peers. Null in a widget test.
   final DeviceExecutor? executor;
+
+  /// A peer's request waiting for the user, claimed by the app and shown at the
+  /// top of the Devices list. Null when nothing is waiting — which is the
+  /// ordinary state.
+  final IncomingAgentAction? peerRequest;
+
+  /// The user's answer to [peerRequest]. True runs it here; false refuses.
+  final Future<void> Function(bool approve)? onPeerRequestAnswered;
 
   /// Whether the shell is currently in dark mode, as the user chose it. What is
   /// *on screen* is `Theme.of(context).brightness`, which differs from this
@@ -2205,7 +2388,12 @@ class _NexusShellState extends State<NexusShell> {
         // only the page whose index matches the selected tab does work on
         // launch.
         FilesTab(active: _tab == 1),
-        DevicesTab(mesh: widget.mesh, executor: widget.executor),
+        DevicesTab(
+          mesh: widget.mesh,
+          executor: widget.executor,
+          peerRequest: widget.peerRequest,
+          onPeerRequestAnswered: widget.onPeerRequestAnswered,
+        ),
         SettingsTab(
           darkMode: dark,
           onDarkModeChanged: widget.onDarkModeChanged,
@@ -6050,7 +6238,13 @@ class NexusFileRow extends StatelessWidget {
 /// with — see the note at the top of `paired_devices.dart` — because live
 /// reachability is the mesh's answer and this front end has no mesh.
 class DevicesTab extends StatefulWidget {
-  const DevicesTab({super.key, this.mesh, this.executor});
+  const DevicesTab({
+    super.key,
+    this.mesh,
+    this.executor,
+    this.peerRequest,
+    this.onPeerRequestAnswered,
+  });
 
   /// The running mesh, when the app started one. Null in a widget test, which
   /// is why every read of it below is nullable: a shell with no mesh has no
@@ -6065,6 +6259,17 @@ class DevicesTab extends StatefulWidget {
   /// services — a shell that cannot run a peer's request says so instead of
   /// pretending.
   final DeviceExecutor? executor;
+
+  /// A peer's request waiting for an answer, shown as the first card on this
+  /// list. This screen is where devices are, so it is where a question about
+  /// one belongs — and the card is above the list rather than inside it, so a
+  /// request cannot be missed by scrolling past it.
+  final IncomingAgentAction? peerRequest;
+
+  /// The user's answer to [peerRequest]. Null on a shell that has no app above
+  /// it, which is a widget test: the card then shows what is waiting without
+  /// pretending it can answer.
+  final Future<void> Function(bool approve)? onPeerRequestAnswered;
 
   @override
   State<DevicesTab> createState() => _DevicesTabState();
@@ -6088,6 +6293,267 @@ class _DeviceRow {
   final PairedDevice device;
   final PeerPresence? presence;
   final bool notConnected;
+}
+
+/// The one request a peer sent that needs a person.
+///
+/// It names the action in the catalogue's words rather than the protocol's id —
+/// "Media", not `media.play` — because the person reading it is deciding
+/// whether to let another device play something, not reading a log. The line
+/// under it says whether the request proved itself, which is the difference
+/// between a device the user paired and a device that says it is one.
+class _PeerRequestCard extends StatelessWidget {
+  const _PeerRequestCard({
+    required this.action,
+    required this.peerName,
+    required this.onAnswered,
+  });
+
+  final IncomingAgentAction action;
+  final String peerName;
+
+  /// Null on a shell with no app above it, which is a widget test: the card
+  /// then shows what is waiting rather than pretending it can answer.
+  final Future<void> Function(bool approve)? onAnswered;
+
+  @override
+  Widget build(BuildContext context) {
+    final NexusUiColors c = context.ui;
+    final String what =
+        capabilityFor(action.request.action)?.label ?? action.request.action;
+    final bool answered = onAnswered != null;
+    return Container(
+      key: const ValueKey<String>('peer-request-card'),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: c.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.danger.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Icon(
+                Icons.notification_important_rounded,
+                size: 18,
+                color: c.danger,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '$peerName wants to: $what',
+                  key: const ValueKey<String>('peer-request-title'),
+                  style: NexusType.rowTitle(c).copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            action.trusted
+                ? 'From a paired, verified device.'
+                : 'Could not be verified — approve this only if you asked for '
+                      'it.',
+            key: const ValueKey<String>('peer-request-trust'),
+            style: NexusType.rowMeta(c).copyWith(height: 1.35),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: FilledButton(
+                  key: const ValueKey<String>('peer-request-approve'),
+                  onPressed: answered
+                      ? () => unawaited(onAnswered!(true))
+                      : null,
+                  child: const Text('Run it here'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton(
+                  key: const ValueKey<String>('peer-request-deny'),
+                  onPressed: answered
+                      ? () => unawaited(onAnswered!(false))
+                      : null,
+                  child: const Text('Refuse'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// What this device will accept from paired peers, as a sheet.
+///
+/// A sheet rather than a section of the device list, and that is a measurement
+/// rather than a preference: the same rows as a section added three thousand
+/// pixels of scroll to the list, which pushed the paired cards out of the built
+/// area for anyone who scrolled down to the pairing row. The list is about who
+/// is here; this is a decision about them, and the pairing flow already opens a
+/// sheet for exactly that kind of thing.
+Future<void> showPeerRequestPolicySheet(
+  BuildContext context, {
+  required MeshService mesh,
+}) => showModalBottomSheet<void>(
+  context: context,
+  backgroundColor: context.ui.background,
+  isScrollControlled: true,
+  shape: const RoundedRectangleBorder(
+    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+  ),
+  builder: (BuildContext sheetContext) => _PeerPolicySheet(mesh: mesh),
+);
+
+class _PeerPolicySheet extends StatefulWidget {
+  const _PeerPolicySheet({required this.mesh});
+
+  final MeshService mesh;
+
+  @override
+  State<_PeerPolicySheet> createState() => _PeerPolicySheetState();
+}
+
+class _PeerPolicySheetState extends State<_PeerPolicySheet> {
+  /// The actions offered: what this device can actually do, derived from the
+  /// catalogue rather than hand-listed, so a new capability appears here the
+  /// day it exists.
+  ///
+  /// Deliberately not "every action Nexus knows" — a policy for something this
+  /// device cannot run is a promise about nothing. A choice stored for an
+  /// action outside this list still applies, because the table is read by
+  /// action id when a request arrives, not from what this sheet drew.
+  late final List<String> _actions = <String>[
+    for (final DeviceCapability capability
+        in defaultCapabilitiesFor(widget.mesh.identity.platform))
+      capability.id,
+  ];
+
+  Future<void> _choose(String action, AgentPolicy policy) async {
+    widget.mesh.store.setAgentPolicy(action, policy);
+    // Drawn before it is written, deliberately. The decision the user just made
+    // is already true -- the table the mesh reads is in memory -- and a row that
+    // kept saying "Ask first" until a disk write finished would be showing them
+    // the old answer to their own question. The write follows.
+    if (mounted) setState(() {});
+    await widget.mesh.store.save();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final NexusUiColors c = context.ui;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          NexusLayout.gutter,
+          18,
+          NexusLayout.gutter,
+          18,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('Peer requests', style: NexusType.pageTitle(c)),
+            const SizedBox(height: 8),
+            Text(kNexusPeerRequestsExplainer, style: NexusType.lede(c)),
+            const SizedBox(height: 16),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: <Widget>[
+                  for (final String action in _actions)
+                    _PeerPolicyRow(
+                      key: ValueKey<String>('peer-policy-$action'),
+                      action: action,
+                      policy: widget.mesh.store.agentPolicy(action),
+                      onChanged: (AgentPolicy policy) =>
+                          unawaited(_choose(action, policy)),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One action's pre-approval, as a row with a picker.
+///
+/// The label and the sentence under it come from the same table, so a row can
+/// never say "Auto-approve" while explaining something else. The words are
+/// deliberately not the raw enum names: "ask", "auto" and "deny" are the
+/// storage, and a settings row is read by a person.
+class _PeerPolicyRow extends StatelessWidget {
+  const _PeerPolicyRow({
+    super.key,
+    required this.action,
+    required this.policy,
+    required this.onChanged,
+  });
+
+  final String action;
+  final AgentPolicy policy;
+  final ValueChanged<AgentPolicy> onChanged;
+
+  static String label(AgentPolicy policy) => switch (policy) {
+    AgentPolicy.ask => 'Ask first',
+    AgentPolicy.auto => 'Auto-approve',
+    AgentPolicy.deny => 'Never',
+  };
+
+  static String explain(AgentPolicy policy) => switch (policy) {
+    AgentPolicy.ask => 'Shows the request on this screen and waits for you.',
+    AgentPolicy.auto =>
+      'Runs without asking when the other device is paired and the request '
+          'is verified.',
+    AgentPolicy.deny => 'Refused, and the other device is told why.',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final NexusUiColors c = context.ui;
+    final String what = capabilityFor(action)?.label ?? action;
+    return NexusRow(
+      title: what,
+      subtitle: explain(policy),
+      trailing: PopupMenuButton<AgentPolicy>(
+        key: ValueKey<String>('peer-policy-menu-$action'),
+        initialValue: policy,
+        onSelected: onChanged,
+        itemBuilder: (BuildContext context) => <PopupMenuEntry<AgentPolicy>>[
+          for (final AgentPolicy choice in AgentPolicy.values)
+            PopupMenuItem<AgentPolicy>(
+              value: choice,
+              child: Text(label(choice)),
+            ),
+        ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                label(policy),
+                key: ValueKey<String>('peer-policy-value-$action'),
+                style: NexusType.rowTitle(c).copyWith(fontSize: 13, color: c.accent),
+              ),
+              const Icon(Icons.arrow_drop_down_rounded, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _DevicesTabState extends State<DevicesTab> {
@@ -6247,6 +6713,21 @@ class _DevicesTabState extends State<DevicesTab> {
         words.contains('mac');
   }
 
+  /// What this screen calls [id]: the shell's row when there is one, because
+  /// that is the name the user gave it, then the mesh's, then the id itself.
+  String _nameOf(String id) {
+    for (final PairedDevice device in _paired.devices) {
+      if (device.id == id) return device.name;
+    }
+    final MeshService? mesh = widget.mesh;
+    if (mesh != null) {
+      for (final peer in mesh.pairedDevices) {
+        if (peer.id == id) return peer.name;
+      }
+    }
+    return id;
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
@@ -6285,6 +6766,17 @@ class _DevicesTabState extends State<DevicesTab> {
           28,
         ),
         children: <Widget>[
+          // The one request waiting for a person, above everything: it is the
+          // only thing on this screen that will not wait, and it belongs to a
+          // peer rather than to any row below it.
+          if (widget.peerRequest != null) ...<Widget>[
+            _PeerRequestCard(
+              action: widget.peerRequest!,
+              peerName: _nameOf(widget.peerRequest!.from),
+              onAnswered: widget.onPeerRequestAnswered,
+            ),
+            const SizedBox(height: 10),
+          ],
           const NexusSectionLabel('Connected Devices', first: true),
           for (final _DeviceRow row in rows) ...<Widget>[
             _ConnectedDeviceCard(
@@ -7179,6 +7671,26 @@ String nexusPairRefusal(String raw) {
 
 /// The title on the sheet, the QR page and the scanner.
 const String kNexusPairTitle = 'Pair a device';
+
+/// The Settings row that opens the pre-approval sheet.
+///
+/// A row in Settings › Devices rather than a section of the Devices list, and
+/// that is a measurement rather than a taste: the same rows drawn inside that
+/// list add three thousand pixels of scroll, and the list is scrolled to its
+/// bottom by the pairing flow — which pushes the paired cards that page is
+/// about out of the built area. A permission table is a setting; the Devices
+/// list is about who is here.
+const Key kNexusPeerRequestsRow = ValueKey<String>('peer-requests-row');
+
+/// What the pre-approval sheet says before it lists anything.
+///
+/// It has to say what "Auto-approve" does *and* what it refuses to do, because
+/// the promise the user is making is narrower than the words suggest: it is
+/// spent only on a request that proved itself.
+const String kNexusPeerRequestsExplainer =
+    'What a paired device may ask this one to do. Nothing is pre-approved '
+    'until you choose it here. "Auto-approve" runs a request without asking, '
+    'but only when the other device is paired and the request is verified.';
 
 /// The row on a device card whose device the mesh has never paired.
 const String kNexusNotConnected = 'Not connected · pair again';

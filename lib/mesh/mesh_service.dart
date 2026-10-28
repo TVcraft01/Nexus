@@ -273,6 +273,76 @@ class _RealClipboard implements ClipboardBackend {
       Clipboard.setData(ClipboardData(text: text));
 }
 
+/// One action a paired peer asked this device to run, as it arrived.
+///
+/// The type exists to make the reply non-optional. The sender registers a
+/// completer before it sends and waits fifteen seconds for `agent.result`, so a
+/// receiver that handles a request and forgets to answer leaves the other
+/// person's screen with nothing to say about a thing it may well have done. The
+/// only ways to handle one — [resolveWith] and [refuse] — both end in a reply,
+/// and [resolveWith] answers even when the body throws.
+///
+/// It carries the two decisions rather than leaving them to the caller, because
+/// both are facts about this frame and this session that only the mesh knows:
+/// [trusted] (it arrived encrypted, from a paired peer, on this session's key)
+/// and [policy] (what the user has said this device accepts for this action).
+class IncomingAgentAction {
+  /// [reply] is the wire back to the sender, first and positional because
+  /// nothing about this type is usable without it — the rest of the arguments
+  /// say what the request *is*, and this one is what makes it answerable.
+  IncomingAgentAction(
+    this._reply, {
+    required this.from,
+    required this.request,
+    required this.trusted,
+    required this.policy,
+  });
+
+  /// The peer that sent it — the id the channel proved, never a claimed one.
+  final String from;
+
+  final AgentRequest request;
+
+  /// True only for a frame that satisfied every condition in
+  /// [MeshService.agentFrameProven]. 'auto' is refused without it.
+  final bool trusted;
+
+  /// What this device accepts for [request.action], as stored: `ask` unless the
+  /// user said otherwise.
+  final AgentPolicy policy;
+
+  final Future<bool> Function(String requestId, AgentDispatchResult result)
+  _reply;
+
+  /// Runs [body] and answers the sender whatever happens.
+  ///
+  /// The reply is not a courtesy: it is what the sender's completer is waiting
+  /// for, and the sender is a person looking at a screen. So a throw from the
+  /// body becomes [AgentResultStatus.unavailable] with the reason in it rather
+  /// than silence, and the reply is sent on every path out of here.
+  Future<AgentDispatchResult> resolveWith(
+    Future<AgentDispatchResult> Function() body,
+  ) async {
+    AgentDispatchResult result;
+    try {
+      result = await body();
+    } catch (error) {
+      result = AgentDispatchResult(
+        status: AgentResultStatus.unavailable,
+        message: 'This device could not run that: $error',
+      );
+    }
+    await _reply(request.requestId, result);
+    return result;
+  }
+
+  /// Answers without running anything, in [message]'s words.
+  Future<AgentDispatchResult> refuse(String message) => resolveWith(
+    () async =>
+        AgentDispatchResult(status: AgentResultStatus.denied, message: message),
+  );
+}
+
 /// The mesh: one service per device that owns the TCP server, discovery,
 /// presence, pairing, and encrypted messaging.
 ///
@@ -463,7 +533,17 @@ class MeshService extends ChangeNotifier
   /// `{'from': peerId, 'request': AgentRequest}`. The peer already asked its
   /// user; THIS device re-gates before executing (its approval value is never
   /// trusted) and answers with [sendAgentResult].
+  ///
+  /// Read by the assistant view, which is the only surface that consumed it
+  /// before this pass. The launched shell claims the request through
+  /// [takeIncomingAgentAction] instead, which clears this field — one request,
+  /// one owner.
   Map<String, dynamic>? lastIncomingAgentRequest;
+
+  /// The request [lastIncomingAgentRequest] names, as the type that cannot be
+  /// handled without answering it. Null when nothing is waiting, when the
+  /// assistant view already dismissed it, or once it has been claimed.
+  IncomingAgentAction? _incomingAction;
 
   /// Fired when a paired device teaches a phrase and syncs it here. The view
   /// wires this into the live [CommandService] so the learned meaning is
@@ -961,6 +1041,60 @@ class MeshService extends ChangeNotifier
           ),
         ),
       ),
+    );
+  }
+
+  /// Whether an `agent.action` frame from [id] has proved itself.
+  ///
+  /// Three conditions, and all three are needed before a pre-approval may be
+  /// spent — see [IncomingAgentAction.trusted] and the shell's decision:
+  ///
+  /// 1. **the frame arrived encrypted** — the channel key came from a pairing
+  ///    secret, so the bytes are the peer's;
+  /// 2. **the peer is paired** — there is a record to hang a promise on;
+  /// 3. **this session derived the key** — a pairing that exists but has never
+  ///    carried a frame is a row, not a peer. A restart forgets this, and a
+  ///    request that arrives before the first exchange is asked about rather
+  ///    than run, which is the safe direction for the doubt.
+  ///
+  /// Named and separate because 'auto' is the only thing in the app that acts
+  /// without a person watching, and "we think this is probably them" is not a
+  /// standard to spend that on.
+  bool agentFrameProven(String id, {required bool encrypted}) =>
+      encrypted && _paired.containsKey(id) && _sessionKeys.containsKey(id);
+
+  /// Claims the peer-initiated action that is waiting, if any.
+  ///
+  /// One owner: taking it clears [lastIncomingAgentRequest] as well, so a
+  /// second surface cannot pick up a request the first one is already
+  /// answering. Null on every call after the first.
+  IncomingAgentAction? takeIncomingAgentAction() {
+    final IncomingAgentAction? pending = _incomingAction;
+    if (pending == null) return null;
+    _incomingAction = null;
+    lastIncomingAgentRequest = null;
+    return pending;
+  }
+
+  /// Records a session key for [id] without a handshake, for the tests that ask
+  /// about [agentFrameProven] one condition at a time.
+  @visibleForTesting
+  void debugNoteSessionKey(String id) {
+    _sessionKeys[id] = Uint8List(32);
+  }
+
+  /// Records a pairing for [id] without a handshake, for the same reason: the
+  /// trust gate has three conditions and a test has to be able to pose each of
+  /// them on its own.
+  @visibleForTesting
+  void debugNotePairedForTest(String id, {String name = 'a device'}) {
+    _paired[id] = PairedDevice(
+      id: id,
+      name: name,
+      platform: 'android',
+      address: '127.0.0.1',
+      port: 51820,
+      pairingSecret: 'debug-pair-ABCD-2345',
     );
   }
 
@@ -2026,13 +2160,24 @@ class MeshService extends ChangeNotifier
 
       case NexusMessage.agentAction:
         // A paired device routed an approved action here. The request's own
-        // approval value is ignored — this device re-gates via the UI before
-        // executing and replies with agent.result.
+        // approval value is ignored — this device re-gates before executing
+        // and answers with agent.result. The gate is two facts decided here
+        // and now, because both are properties of *this* frame and this
+        // session: whether it proved itself ([agentFrameProven]), and what the
+        // user has said this device accepts ([NexusStore.agentPolicy]).
         if (!encrypted) return;
         final raw = msg.payload['request'];
         if (raw is! Map<String, dynamic>) break;
         try {
           final request = AgentRequest.fromJson(raw);
+          _incomingAction = IncomingAgentAction(
+            (String requestId, AgentDispatchResult result) =>
+                sendAgentResult(msg.from, requestId, result),
+            from: msg.from,
+            request: request,
+            trusted: agentFrameProven(msg.from, encrypted: encrypted),
+            policy: store.agentPolicy(request.action),
+          );
           lastIncomingAgentRequest = {'from': msg.from, 'request': request};
           notifyListeners();
         } catch (_) {
