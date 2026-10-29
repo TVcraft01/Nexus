@@ -12,7 +12,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 ///
 /// test/version_test.dart now fails when the two drift apart again, and proves
 /// the shipped version never reads as an update to itself.
-const String appVersion = '1.0.0';
+const String appVersion = '1.0.1';
 
 /// The version the installed package reports, read from the platform.
 ///

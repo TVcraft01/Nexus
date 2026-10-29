@@ -7,6 +7,81 @@ sprint and earlier work is not listed. The format follows
 
 ## [Unreleased]
 
+Nothing yet. Pass A (translation) is the next pass.
+
+## [1.0.1] — 2026-10-29
+
+A patch over 1.0.0. The 1.0.0 tag was cut before the mesh work was
+verified on a device and before the command audit, and its release
+assets were then rebuilt over the same version by every later push —
+so the tag, the binaries and the changelog had stopped agreeing. This
+release is that verification, its fixes, and a version number that
+moves again.
+
+### Added
+
+- **A half-command asks its question.** "set a timer" or "get
+  report.pdf" used to go to the model, which answered in prose and ran
+  nothing. The composer now shows the interpreter's own question —
+  "How long should the timer run?", "Which device?" — and what you type
+  next answers it: "5 minutes" runs the timer. An answer that is itself
+  a command wins outright, so an abandoned question never swallows the
+  next instruction.
+
+### Fixed
+
+- **Thirteen parser gaps** found by the audit's corpus: phrasings that
+  were read as the wrong action, or as nothing at all. Unspecified verbs
+  ("play", "pause" with no object) no longer invent their content.
+  Every phrase that was fixed is now a test in
+  `test/command_inventive_test.dart`, and every action is named by at
+  least one test in `test/command_coverage_test.dart`.
+- **A critic test that never sent.** The widget helper tapped a send
+  button mid-animation, the message stayed in the field, and the
+  assertion found its own text there — a green test for an unsent
+  message. It now settles, presses at the button's centre, and asserts
+  the field is empty.
+- **CI's analyze gate.** The new audit tests shipped with five unused
+  imports, which `flutter analyze` treats as fatal, so CI was red on a
+  tree whose test suite was green. Fixed; analyze is clean.
+- **A release that can no longer be overwritten.** While `pubspec.yaml`
+  said 1.0.0, the release job rebuilt and clobbered the `v1.0.0`
+  assets on every push while the tag stayed put. The version now moves
+  per release, and the release body is taken from this file.
+
+### Changed
+
+- The launched composer no longer hands a sentence to the model when
+  the interpreter has already read it; the model answers what the
+  parser cannot.
+- `DeviceExecutor` is constructed on the launched path, so typed
+  actions run against real devices there and not only in the old view.
+- Identity is persisted across launches instead of rotating each time.
+- `FileTransferService` listens on 51821; the legacy 51820 is still
+  dialled so older peers are not stranded.
+
+### Verified
+
+- Notification permission, two-strike behaviour, on R5CX73XFGKW.
+- 3a capability badge, on device.
+- 3c peer-request card, approve and refuse, on device.
+
+### Known limits
+
+- 3b derived-key pairing between mixed clients is unverified.
+- Auto and deny approval policies are unverified on device; only the
+  ask-every-time path has been driven.
+- `adb connect` refused during this pass, so nothing here is a fresh
+  device result: the checks above are the ones recorded at 3c, not
+  re-run today.
+- Seven of the audit's twenty-two critic sentences parse but have no
+  executor — they are answered honestly and nothing runs. That is 3e.
+- No translation (Pass A), no AI/provider toggle (Pass B), no
+  car-song verb (3d).
+- SSH is verified against a simulated runner only, not a real server.
+
+## [1.0.0] — 2026-10-28
+
 ### Added
 
 - **Secure QR pairing.** Showing a QR starts a single-use request that
@@ -32,6 +107,23 @@ sprint and earlier work is not listed. The format follows
   OpenStreetMap lookup, and rings when you arrive — even with the app
   closed. The row says the price before the toggle can move; turning it
   off means no lookup ever happens.
+- **Peer actions, approved per action.** A paired device can ask this
+  one to do something, and the ask arrives as a card rather than a
+  command: it names the peer, the action, and what it would do, then
+  waits for Approve or Refuse. Which actions a peer may even ask for is
+  an explicit table, and the card is the only way one runs.
+- **The launched shell.** The chat you get on launch is the mesh-aware
+  one — composer, cards, device badges, interpreter. The older
+  AssistantView still has its entry point and is retired in 3e, not
+  here.
+- **A server agent over SSH.** Point Nexus at a Linux box and it runs a
+  command and reads the answer in a page that yields to the keyboard.
+- **Wake word, off by default.** openWakeWord on the phone; turning it
+  on is a capability row that states its cost first.
+- **Capability announcements with provenance.** Each device says what
+  it can do and where that claim came from, so a card never promises a
+  peer capability that nothing proved.
+- **Tailscale.** Pair over a tailnet by name, not only by LAN address.
 
 ### Honest note
 
