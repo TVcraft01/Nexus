@@ -47,7 +47,11 @@ CommandInterpreter ──> CommandService ──> answers.localAnswer
 | `core/reminders.dart` | ~215 | **The reminder engine** (since the architecture pass): the model (`Reminder`), the decisions (`splitTime`, `dueNow`) and the lifecycle (`ReminderEngine` — the live list, the ticking due-check, the one-shot fire). The engine is store/mesh-free: persistence, broadcast and thread messages are edge callbacks the view wires. |
 | `core/query_log.dart` | ~170 | Append-only ask log + read-back, with `@visibleForTesting` seams for fake-async tests. |
 | `core/store.dart` | ~270 | JSON persistence (`NexusStore`). The store is a *mirror* — setter + `save()`, no logic — plus identity/devices/files metadata. |
-| `mesh/mesh_service.dart` | 3558 | Mesh transport, pairing, sync handlers, remote file access, clipboard. Its size is next on the chopping block. |
+| `mesh/mesh_service.dart` | 1985 | **The shared state object and the transport**: `_MeshBase` owns the peers, sockets, session/control keys, discovery, presence, clipboard and the store; the public `MeshService` mixes the concerns below in. Frames arrive here; `_handleMessage` decides what they mean. |
+| `mesh/mesh_pairing.dart` | 985 | **Pairing**: the code this device shows, the QR handshake, accept/reject, and the state only pairing reads (shown code, spent-code guard, inbound requests). A `part of` the service library. |
+| `mesh/mesh_relay.dart` | 662 | **Relay**: `_handleMessage`, the agent/brain request round trips, and the multi-hop path to a serial node on another device's cable. |
+| `mesh/mesh_sync.dart` | 309 | **Sync handlers**: the broadcast senders, the live callbacks the assistant wires in, and the five inbound handlers that adopt a peer's knowledge. |
+| `mesh/mesh_files.dart` | 1247 | **Remote file access**: listing, reading, writing, moving and deleting on this device for a peer, plus the requesting half the Files tab and `file.fetch` share — with the state each transfer needs while it is in flight. |
 | `ui/device_executor.dart` | 1728 | **The device executor**: every platform action this device can run (apps, screenshots, calls, texts, media, timers…) and the switch routing an `AgentRequest` to the right one. Injectable backends — unit-tested without widgets (`test/device_executor_test.dart`). |
 | `ui/assistant_view.dart` | 2773 | The assistant screen: thread UI, service wiring, mesh/approval flows. It decides *what* the assistant says and when to run; `DeviceExecutor` decides *how* an action runs. The reminder engine was extracted into `core/reminders.dart` (the view only renders its banner and wires its edges); the dream review sheet and the clock widget are still extractable here. |
 
@@ -138,10 +142,6 @@ sync. `capabilityFor(id)` is how any other layer asks what an action is.
 
 ## Known debt (do not grow)
 
-- `mesh/mesh_service.dart` (3.2k) is now the last monolith; extract by
-  concern (relay vs pairing vs sync vs file serving) before adding to it.
-  Its parts share one state object, so split state with the seams, not
-  around them.
 - `ui/assistant_view.dart` (1.5k) still holds the dream sheet, the live
   clock, and `_ThreadEntry` next to the conversation UI; extracting them
   into their own files is the next clean slice.
