@@ -36,6 +36,7 @@ mixin _MeshRelay on _MeshBase {
 
   /// A node on our cable reported something — relay it to whichever peer
   /// asked (multi-hop), or note it locally.
+  @override
   void _relaySerialUp(String deviceId, Map<String, dynamic> data) {
     final requester = _serialRequesters[deviceId];
     if (requester != null && _paired.containsKey(requester)) {
@@ -267,6 +268,7 @@ mixin _MeshRelay on _MeshBase {
 
   /// The serial devices on our cable, as announced to peers in ping/pong.
   /// Only live nodes: an unplugged node must not be offered for relay.
+  @override
   List<Map<String, dynamic>> _serialAnnouncement() {
     return (_serial?.liveDevices ?? const [])
         .map((d) => {'id': d.id, 'name': d.name, 'caps': d.caps})
@@ -299,6 +301,7 @@ mixin _MeshRelay on _MeshBase {
     }
   }
 
+  @override
   Future<void> _handleMessage(
     NexusMessage msg,
     Socket socket, {

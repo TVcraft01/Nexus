@@ -169,6 +169,7 @@ mixin _MeshSync on _MeshBase {
   /// A paired device taught a phrase. Knowledge, not an action — adopted
   /// without an approval gate; a local correction wins, and nothing is
   /// re-broadcast or the mesh would loop.
+  @override
   Future<void> _handleSyncedLearned(NexusMessage msg) async {
     // A paired device taught a phrase — adopt it silently (it is
     // knowledge, not an action, so no approval gate). The phrase arrives
@@ -211,6 +212,7 @@ mixin _MeshSync on _MeshBase {
 
   /// A paired device told the assistant a fact. Same ownership rule as the
   /// learned phrase: one writer, no loop.
+  @override
   Future<void> _handleSyncedFact(NexusMessage msg) async {
     // A paired device told the assistant a fact — adopt it silently
     // (knowledge, not an action, so no approval gate). Duplicates are
@@ -240,6 +242,7 @@ mixin _MeshSync on _MeshBase {
   }
 
   /// A paired device set a reminder, so this device reminds the user too.
+  @override
   Future<void> _handleSyncedReminder(NexusMessage msg) async {
     // A paired device set a reminder — adopt it silently (knowledge,
     // not an action, so no approval gate). Duplicates are dropped; we
@@ -257,6 +260,7 @@ mixin _MeshSync on _MeshBase {
   }
 
   /// A paired device remembered a "which …?" answer. A local answer wins.
+  @override
   Future<void> _handleSyncedDefault(NexusMessage msg) async {
     // A paired device remembered a "which …?" answer — adopt it
     // silently (knowledge, not an action). A local answer wins over an
@@ -282,6 +286,7 @@ mixin _MeshSync on _MeshBase {
 
   /// A paired device renamed the user or the assistant. Last write wins, per
   /// field; an absent field means no information, never erase.
+  @override
   Future<void> _handleSyncedProfile(NexusMessage msg) async {
     // A paired device renamed the user or the assistant — adopt it
     // silently (knowledge, not an action); last write wins, per field.

@@ -41,6 +41,7 @@ mixin _MeshPairing on _MeshBase {
   /// A code that was already spent is still understood, but only so the
   /// duplicate can be refused with a reason instead of silence — see
   /// [_rejectPairing].
+  @override
   Future<void> _tryPairingFrame(Socket socket, String enc) async {
     // v2 QR handshake first: the shown token's pid|nonce key. A scan only
     // ever stages a request for explicit accept — never pairs on receipt.

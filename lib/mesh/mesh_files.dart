@@ -142,6 +142,7 @@ mixin _MeshFiles on _MeshBase {
     }
   }
 
+  @override
   Future<void> _handleFileListRequest(NexusMessage msg) async {
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
@@ -240,6 +241,7 @@ mixin _MeshFiles on _MeshBase {
     }
   }
 
+  @override
   Future<void> _handleFileGetRequest(NexusMessage msg) async {
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
@@ -357,6 +359,7 @@ mixin _MeshFiles on _MeshBase {
     );
   }
 
+  @override
   Future<void> _handleFileListResult(NexusMessage msg) async {
     final req = msg.payload['req'];
     final completer = req is String ? _pendingLists.remove(req) : null;
@@ -379,6 +382,7 @@ mixin _MeshFiles on _MeshBase {
     if (!completer.isCompleted) completer.complete(entries);
   }
 
+  @override
   Future<void> _handleFileChunk(NexusMessage msg) async {
     final req = msg.payload['req'];
     if (req is! String) return;
@@ -433,6 +437,7 @@ mixin _MeshFiles on _MeshBase {
   /// carries data. Frames are dispatched concurrently, so all disk writes
   /// chain onto the push's [chain] — the same serialization that fixed the
   /// pull-side overlap bug.
+  @override
   Future<void> _handleFilePush(NexusMessage msg) async {
     _filePushChain = _filePushChain.then((_) => _handleFilePushNow(msg));
     await _filePushChain.catchError((_) {});
@@ -583,6 +588,7 @@ mixin _MeshFiles on _MeshBase {
     unawaited(_sendFileError(peer, req, message));
   }
 
+  @override
   Future<void> _handleFileError(NexusMessage msg) async {
     final req = msg.payload['req'];
     final message =
@@ -621,6 +627,7 @@ mixin _MeshFiles on _MeshBase {
     }
   }
 
+  @override
   Future<void> _handleFilePushAck(NexusMessage msg) async {
     final req = msg.payload['req'];
     final completer = req is String ? _outgoingPushes.remove(req) : null;
@@ -632,6 +639,7 @@ mixin _MeshFiles on _MeshBase {
   /// Deletes a file (or empty folder) on this device at the peer's request.
   /// The path must resolve inside the served root — the same sandbox that
   /// governs listing and reading — and the root itself is never deletable.
+  @override
   Future<void> _handleFileOperation(NexusMessage msg) async {
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
@@ -773,6 +781,7 @@ mixin _MeshFiles on _MeshBase {
     }
   }
 
+  @override
   Future<void> _handleFileDelete(NexusMessage msg) async {
     final req = msg.payload['req'];
     final peer = _paired[msg.from];
@@ -826,12 +835,14 @@ mixin _MeshFiles on _MeshBase {
     );
   }
 
+  @override
   Future<void> _handleFileDeleteAck(NexusMessage msg) async {
     final req = msg.payload['req'];
     final completer = req is String ? _pendingDeletes.remove(req) : null;
     if (completer != null && !completer.isCompleted) completer.complete(true);
   }
 
+  @override
   Future<void> _handleFileOperationAck(NexusMessage msg) async {
     final req = msg.payload['req'];
     final completer = req is String ? _pendingOperations.remove(req) : null;
