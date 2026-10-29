@@ -48,6 +48,11 @@ moves again.
   said 1.0.0, the release job rebuilt and clobbered the `v1.0.0`
   assets on every push while the tag stayed put. The version now moves
   per release, and the release body is taken from this file.
+- **The v1.0.0 GitHub release is deleted.** Its assets had been rebuilt
+  from a later commit than its tag, so they were not 1.0.0. The `v1.0.0`
+  git tag remains and the code is still checkoutable; the release that
+  would have lied is gone. Publishing is now frozen: the step runs only
+  when the version's tag does not exist yet.
 
 ### Changed
 

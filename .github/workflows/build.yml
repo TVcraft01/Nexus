@@ -130,23 +130,38 @@ jobs:
           if [ ! -s release-notes.md ]; then
             echo "Nexus v$V — platform bundles for Linux, Windows, and Android." > release-notes.md
           fi
+      - name: Is this version already released?
+        id: tag
+        shell: bash
+        run: |
+          V="v${{ steps.ver.outputs.version }}"
+          # A published version is frozen: its tag names the commit its
+          # assets were built from. Rebuilding under an existing tag is how
+          # v1.0.0's binaries drifted away from its tag — the workflow
+          # clobbered the same release on every push while the version
+          # stayed put. If the tag is already on the remote, publish
+          # nothing; the next version is a bump, not a rebuild.
+          #
+          # `git tag` would not answer this: actions/checkout fetches no
+          # tags, so ask the remote directly.
+          if git ls-remote --tags origin "refs/tags/$V" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$V is already released: assets are frozen, nothing published."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish complete release
+        if: steps.tag.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           V="v${{ steps.ver.outputs.version }}"
-          if gh release view "$V" >/dev/null 2>&1; then
-            gh release upload "$V" \
-              nexus-linux-x64.tar.gz \
-              nexus.apk \
-              nexus-windows-x64.zip \
-              --clobber
-            gh release edit "$V" --title "Nexus $V" --notes-file release-notes.md
-          else
-            gh release create "$V" \
-              nexus-linux-x64.tar.gz \
-              nexus.apk \
-              nexus-windows-x64.zip \
-              --title "Nexus $V" \
-              --notes-file release-notes.md
-          fi
+          # Create only. A version that is already tagged was handled above,
+          # so there is no upload-and-clobber path any more: that path is what
+          # let binaries drift away from the tag they were published under.
+          gh release create "$V" \
+            nexus-linux-x64.tar.gz \
+            nexus.apk \
+            nexus-windows-x64.zip \
+            --title "Nexus $V" \
+            --notes-file release-notes.md
