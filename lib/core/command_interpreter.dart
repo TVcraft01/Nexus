@@ -17,6 +17,31 @@ import 'intent.dart';
 ///  - [unknown] — genuinely not understood.
 enum InterpretOutcome { matched, needsInfo, ambiguous, unsupported, unknown }
 
+/// The content of a capture whose optional connective went unconsumed.
+///
+/// A pattern like `^(note|write down)( that)? (.+)$` treats the connective as
+/// optional, so when the user types only the verb the `(.+)` claims the word
+/// instead: "note that" arrives as a note whose text is `that`, "search for"
+/// as a search for `for`. Neither is a command — the person typed a verb and
+/// stopped — so the connective is stripped and an empty answer means the
+/// sentence named nothing after all.
+String _contentWithoutConnective(String value) {
+  final String text = value.trim();
+  if (text.isEmpty) return '';
+  final String lower = text.toLowerCase();
+  for (final String word in const <String>[
+    'that',
+    'to',
+    'for',
+    'the',
+    'about',
+    'saying',
+  ]) {
+    if (lower == word) return '';
+  }
+  return text;
+}
+
 class InterpretResult {
   final InterpretOutcome outcome;
   final ParsedCommand? command;
@@ -787,8 +812,11 @@ class CommandInterpreter {
     // --- LED blink
     final blink = RegExp(r'^(?:blink|flash) (?:the )?(.+)$').firstMatch(norm);
     if (blink != null) {
+      final String target = _contentWithoutConnective(blink.group(1)!);
+      // "blink the" names no node. Blinking nothing is not a command.
+      if (target.isEmpty) return InterpretResult.unknown();
       return InterpretResult.matched(
-        ParsedCommand(action: AgentActions.ledBlink, target: blink.group(1)!),
+        ParsedCommand(action: AgentActions.ledBlink, target: target),
       );
     }
 
@@ -1383,6 +1411,9 @@ class CommandInterpreter {
       'time remaining',
       'timer status',
       'how long until the timer',
+      'how long is left',
+      'how long is left on the timer',
+      'time left on the timer',
       'combien de temps reste il',
       'temps restant',
       'etat du minuteur',
@@ -1394,9 +1425,12 @@ class CommandInterpreter {
     if (_oneOf(norm, const [
       'cancel the timer',
       'cancel timer',
+      'cancel my timer',
       'stop the timer',
       'stop timer',
+      'stop my timer',
       'end the timer',
+      'end my timer',
       'end timer',
       'abort timer',
       'delete the timer',
@@ -1441,11 +1475,14 @@ class CommandInterpreter {
       r'^(search|google|look up|search the web|find)( for )?(.+)$',
     ).firstMatch(norm);
     if (search != null) {
+      final String query = _contentWithoutConnective(search.group(3)!);
+      // "search for" has nothing to search for.
+      if (query.isEmpty) return InterpretResult.unknown();
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.webSearch,
           target: 'local',
-          arguments: {'query': search.group(3)!.trim()},
+          arguments: {'query': query},
         ),
       );
     }
@@ -1462,6 +1499,11 @@ class CommandInterpreter {
       'open my alarms',
       'open the alarm list',
       'view my alarms',
+      'list alarms',
+      'list my alarms',
+      'what alarms do i have',
+      'what alarms have i got',
+      'what alarms do i have set',
       'liste des alarmes',
       'montre mes alarmes',
     ])) {
@@ -1588,6 +1630,8 @@ class CommandInterpreter {
       'cancel my alarm',
       'dismiss the alarm',
       'dismiss my alarm',
+      'dismiss alarm',
+      'turn off alarm',
       'turn off the alarm',
       'turn off my alarm',
       'arrete le reveil',
@@ -1752,11 +1796,16 @@ class CommandInterpreter {
             .firstMatch(norm) ??
         RegExp(r'^save (.+)$').firstMatch(norm);
     if (note != null) {
+      final String text = _contentWithoutConnective(
+        note.group(note.groupCount) ?? '',
+      );
+      // "note that" is a request without a note, not a note saying "that".
+      if (text.isEmpty) return InterpretResult.unknown();
       return InterpretResult.matched(
         ParsedCommand(
           action: AgentActions.noteCreate,
           target: 'local',
-          arguments: {'text': note.group(note.groupCount)},
+          arguments: {'text': text},
         ),
       );
     }
@@ -2883,7 +2932,9 @@ class CommandInterpreter {
     ).firstMatch(norm);
     if (remind != null) {
       final connector = remind.group(1);
-      final rest = remind.group(2)!.trim();
+      final String rest = _contentWithoutConnective(remind.group(2)!);
+      // "remind me to" and nothing after it is a reminder about the word "to".
+      if (rest.isEmpty) return InterpretResult.unknown();
       // "remind me in 10 minutes" is a delay, not a reminder text — it
       // becomes a real timer so it actually fires in 10 minutes.
       if (connector == 'in' || connector == 'dans') {
@@ -3038,6 +3089,7 @@ class CommandInterpreter {
       'what can i do',
       'what are you able to do',
       'what can you help with',
+      'what can you help me with',
       'what commands do you know',
       'what do you know how to do',
       'show me what you can do',
