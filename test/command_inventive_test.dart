@@ -18,7 +18,6 @@
 //       reach an action: guessing here is how "call mom on facetime on my
 //       phone via whatsapp" places a phone call.
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nexus/core/agent_contract.dart';
 import 'package:nexus/core/command_interpreter.dart';
 
 typedef Phrase = ({String phrase, String action});

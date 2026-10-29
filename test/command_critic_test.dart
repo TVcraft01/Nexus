@@ -8,17 +8,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:nexus/core/ai_status.dart';
 import 'package:nexus/core/chat_log.dart';
-import 'package:nexus/core/composer_settings.dart';
 import 'package:nexus/core/device_actions.dart';
 import 'package:nexus/core/device_capabilities.dart';
-import 'package:nexus/core/llm.dart';
 import 'package:nexus/core/local_ai_service.dart';
 import 'package:nexus/core/ollama_service.dart';
 import 'package:nexus/core/on_device_model.dart';
 import 'package:nexus/core/onboarding.dart';
-import 'package:nexus/core/speech.dart';
 import 'package:nexus/core/system_actions.dart';
 import 'package:nexus/main_ui.dart';
 
@@ -111,23 +107,29 @@ void main() {
 
   /// Types [phrase] and presses send. Returns false when the composer refused
   /// to take the text at all, which is itself a finding.
+  /// Settled before the press, and pressed at the send control's own centre:
+  /// the slot slides in with the first character, so a tap computed while it is
+  /// still moving lands where the button was and nothing is sent — which, with
+  /// an assertion that only looks for the words, is a green test for a message
+  /// that never left the field.
   Future<bool> send(WidgetTester tester, String phrase) async {
     final Finder field = find.byType(TextField);
     if (field.evaluate().isEmpty) return false;
     await tester.enterText(field, phrase);
-    await tester.pump();
-    final Finder button = find.byTooltip('Send');
+    await tester.pumpAndSettle();
+    final Finder button = find.byIcon(Icons.arrow_upward_rounded);
     if (button.evaluate().isEmpty) return false;
-    await tester.tap(button);
+    await tester.tapAt(tester.getCenter(button));
     await tester.pumpAndSettle();
     return true;
   }
 
   test('the phrase translator does know these sentences', () {
-    // The shell's typed path asks the model; core has a translator that reads
-    // the same sentences without one. Every action phrase in the table above
-    // that the translator recognises is one the composer *could* run with no
-    // model at all — the fact that it does not is the gap.
+    // The composer asks this translator before the model (home_tab.dart's
+    // `fastPathAction`), so every action phrase it recognises here is one the
+    // shell runs without a model. The seven sentences above that the
+    // interpreter parses and this translator declines are the ones with no
+    // executor behind them — measured in the audit report, not asserted here.
     final List<String> recognised = <String>[for (final _Case c in _cases)
       if (c.call != null && actionFromPhrase(c.phrase) != null) c.phrase];
     expect(
@@ -154,12 +156,21 @@ void main() {
       }
       expect(accepted, isTrue, reason: 'the composer would not take the text');
       expect(tester.takeException(), isNull);
+      // Sent, not merely typed: the field is empty again, so the words this
+      // test finds below are the thread's, never the draft's.
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text,
+        isEmpty,
+        reason: 'the sentence never left the composer',
+      );
 
       // The user's own words are in the conversation and the composer is back.
-      // Whether the action *ran* is not asserted here: on the typed path this
-      // shell asks the model what to do, so a prose answer runs nothing. That
-      // gap is the first complaint in the audit report, and it is pinned by the
-      // translator test below rather than pretended away here.
+      // Whether the action *ran* is not asserted here: the test host is not a
+      // phone, so `fastPathAction` filters the phone-only actions out, and the
+      // seven sentences the interpreter parses but nothing can execute are
+      // exactly the audit report's third complaint. What the shell owes on the
+      // typed path is that it takes the words, shows them, and stays alive —
+      // that is what this asserts.
       expect(find.text(c.phrase), findsWidgets);
       expect(find.byType(TextField), findsWidgets);
     });

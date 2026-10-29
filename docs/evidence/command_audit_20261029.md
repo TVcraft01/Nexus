@@ -174,26 +174,47 @@ covering one per family plus hostile, empty, French and voice-glued input.
 Every one is accepted by the composer, produces no exception, and leaves the
 user's own words in the conversation.
 
-That is where the good news ends. The complaints, ranked:
+Ten of the twenty-two are answered without the model. The complaints, ranked:
 
-1. **Typed commands do not run.** The launched composer hands every sentence to
-   the model; if the model answers prose, nothing executes. The shell already
-   ships a translator that reads "flashlight on" and fifteen of these sentences
-   without a model, and the typed path never consults it. This is the single
-   largest gap in the tree, and it is not a parser problem — the interpreter is
-   fine. **Structural: 3e's rebind.**
+1. **The same sentence gets opposite answers on the two surfaces.** "what is the
+   weather in paris" through the legacy `AssistantView` reaches `localAnswer`
+   ([answers.dart:1091](lib/core/answers.dart#L1091)) and says *"Checking the
+   weather in Paris…"* with a real fetch behind it. The same sentence typed into
+   the launched shell hits `fastPathReply` ([fast_path.dart:76](lib/core/fast_path.dart#L76))
+   and says **"I need internet access to check the weather. I am a local AI."**
+   One query, one app, two answers — a refusal on the surface a user actually
+   uses, where the other surface would answer. `play hotline bling` is the same
+   shape: the legacy path opens a search, the shell asks the model. This is a
+   real bug, and it is worse than the complaint it replaced, because nothing in
+   the shell looks broken — it answers, confidently, with the wrong answer.
+   **Structural: 3e (one answer owner).**
 2. **A verb with nothing after it invented content.** "note that" created a
    note whose text was `that`; "search for" searched for `for`; "remind me to"
    set a reminder about `to`; "blink the" blinked a node named `the`. Fixed
    this pass (section 4) — the four sites shared one cause.
-3. **The calendar writes when it should read, and cannot write when it
+3. **Sentences that parse cleanly and then run nothing.** This entry replaces an
+   earlier claim that the composer never asks the parser. It does —
+   [home_tab.dart:872-916](lib/ui/home_tab.dart#L872-L916) runs the clock, the
+   canned weather line, arithmetic, and `fastPathAction` before the model is
+   asked. Measured over the critic's own 22 sentences: **10 run without the
+   model** (time, math, flashlight, wifi, open app, alarm, timer, call, text,
+   battery), and 13 reach it. Of those 13, **7 are read correctly and dropped for
+   want of an executor** — `note that buy milk`, `add eggs to my shopping list`,
+   `remember that my bike code is 4321`, `who is mom`, `play hotline bling`,
+   `get report.pdf from my pc`, `search for cats`. That is not a parsing gap and
+   not 3d vocabulary: `actionFromPhrase` only speaks the closed
+   `SystemActionCall` list, and the layer that runs everything else is
+   `CommandService` + `localAnswer`, which the launched shell has never
+   constructed (`CommandService(` appears in `assistant_view.dart:402` and
+   nowhere else). **Structural: 3e (the executor, not the parser).**
+4. **The calendar writes when it should read, and cannot write when it
    should.** "schedule a meeting tomorrow at 3" returns the day's events;
    "add lunch tomorrow at noon" is not understood at all. The only working write
    is "… to my calendar". **Structural: 4e.**
-4. **Currency questions land somewhere else.** "what is the exchange rate" is
+5. **Currency questions land somewhere else.** "what is the exchange rate" is
    answered as a memory question — a confident answer to a different question.
    **Structural: 4e.**
-5. **French is thin.** Eight everyday sentences fail; the media verbs are the
+6. **French is thin.** Eight everyday sentences fail; the media verbs are the
    only French family that works end to end. **Structural: 4e.**
 
 Two more, lower:
@@ -230,11 +251,12 @@ already there.
 
 Structural, left alone and named for the next pass:
 
-- **3e** — the typed path runs nothing without the model (complaint 1); the
-  compound-sentence question (category D).
+- **3e** — one answer owner across the two surfaces (complaint 1), and an
+  executor on the launched path for the seven sentences that parse and are
+  dropped (complaint 3); the compound-sentence question (category D).
 - **4e** — calendar writes without the "… to my calendar" tail and the
-  read/write misroute; currency (`currency.get` has no route); the thirteen
-  remaining twenty-one B entries, mostly French and filler; word-order forms.
+  read/write misroute; currency (`currency.get` has no route); the
+  twenty-one B entries, mostly French and filler; word-order forms.
 
 ---
 
@@ -248,8 +270,10 @@ Structural, left alone and named for the next pass:
 - `test/command_inventive_test.dart` — the corpus. Category A fails the build;
   B is skipped with a reason that names the closing pass.
 - `test/command_critic_test.dart` — the sentences, through the real shell. It
-  proves the composer takes them and nothing throws; it does **not** pretend
-  the action ran, because on the typed path it does not.
+  proves the composer takes them and nothing throws. It does **not** assert
+  that each one ran: on the test host the phone-only actions are filtered out
+  by platform, and the seven parsed-but-executorless sentences have nothing to
+  run. What runs where is measured in section 3, not asserted here.
 
 ---
 
