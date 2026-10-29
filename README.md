@@ -4,7 +4,7 @@ Nexus is an AI assistant that runs on the devices you already own. It pairs your
 phone and your PC directly, keeps the answers and the memories on those
 machines, and never asks you to make an account.
 
-Version **1.0.0**.
+Version **1.0.1**.
 
 ## Features
 
