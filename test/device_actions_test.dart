@@ -166,4 +166,14 @@ void main() {
       }
     });
   });
+
+  test('music.play is a device capability, described in words a person reads',
+      () {
+    // The one action the command interpreter never emits: a peer that was
+    // asked to "play" opens its own music player, so the id travels on the
+    // device channel instead of through a phrase. Asserting what it says is
+    // the honest half of covering it — the phrase half does not exist.
+    expect(AgentActions.musicPlay, 'music.play');
+    expect(capabilityWord(AgentActions.musicPlay), 'open your music player');
+  });
 }
