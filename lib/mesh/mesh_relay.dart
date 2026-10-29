@@ -642,135 +642,20 @@ mixin _MeshRelay on _MeshBase {
         }
 
       case NexusMessage.agentLearned:
-        // A paired device taught a phrase — adopt it silently (it is
-        // knowledge, not an action, so no approval gate). The phrase arrives
-        // already normalized by the sender; a local correction wins over an
-        // incoming one, and we never re-broadcast (that would loop forever).
         if (!encrypted) return;
-        final rawPhrase = msg.payload['phrase'];
-        final rawMeaning = msg.payload['meaning'];
-        final phrase = CommandInterpreter.normalizePhrase(
-          rawPhrase?.toString() ?? '',
-        );
-        final meaning = rawMeaning?.toString().trim().toLowerCase();
-        if (phrase.isEmpty || meaning == null || meaning.isEmpty) {
-          break;
-        }
-        final existing = store.agentLearned[phrase];
-        if (existing != null && existing != meaning) {
-          QueryLog.i.synced(phrase, meaning, from: msg.from, conflict: true);
-          break;
-        }
-        // Who taught it, in the user's terms: the paired device's name when
-        // this device knows it, its id otherwise. Recorded either way, so the
-        // memory never carries a phrase with no source.
-        final learnedFrom = _paired[msg.from]?.name ?? msg.from;
-        // No live assistant to claim this phrase — persist it ourselves so it
-        // survives until one starts. With a live listener, the assistant's own
-        // persistence funnel owns the write (see [onLearnedPhraseReceived]).
-        if (onLearnedPhraseReceived == null) {
-          store.agentLearned = {...store.agentLearned, phrase: meaning};
-          store.agentLedger = store.agentLedger.record(
-            MemoryLedgerKind.phrase,
-            phrase,
-            MemoryStamp.now(MemoryOrigin.device, learnedFrom),
-          );
-          _queueSave();
-        }
-        QueryLog.i.synced(phrase, meaning, from: msg.from);
-        onLearnedPhraseReceived?.call(phrase, meaning, learnedFrom);
-        notifyListeners();
-
+        await _handleSyncedLearned(msg);
       case NexusMessage.agentFact:
-        // A paired device told the assistant a fact — adopt it silently
-        // (knowledge, not an action, so no approval gate). Duplicates are
-        // dropped; we never re-broadcast (that would loop forever).
         if (!encrypted) return;
-        final text = msg.payload['text']?.toString().trim() ?? '';
-        if (text.isEmpty) break;
-        if (store.agentFacts.any(
-          (f) => f.text.toLowerCase() == text.toLowerCase(),
-        )) {
-          QueryLog.i.syncedFact(text, from: msg.from, conflict: true);
-          break;
-        }
-        final toldBy = _paired[msg.from]?.name ?? msg.from;
-        // No live assistant to claim this fact — persist it ourselves so it
-        // survives until one starts. With a live listener, the assistant's own
-        // persistence funnel owns the write (see [onFactReceived]).
-        if (onFactReceived == null) {
-          store.agentFacts = [
-            ...store.agentFacts,
-            MemoryFact(text, MemoryStamp.now(MemoryOrigin.device, toldBy)),
-          ];
-          _queueSave();
-        }
-        QueryLog.i.syncedFact(text, from: msg.from);
-        onFactReceived?.call(text, toldBy);
-        notifyListeners();
-
+        await _handleSyncedFact(msg);
       case NexusMessage.agentReminder:
-        // A paired device set a reminder — adopt it silently (knowledge,
-        // not an action, so no approval gate). Duplicates are dropped; we
-        // never re-broadcast (that would loop forever).
         if (!encrypted) return;
-        final line = msg.payload['reminder']?.toString().trim() ?? '';
-        if (line.isEmpty) break;
-        if (store.agentReminders.contains(line)) break;
-        // No live assistant: persist it ourselves so it fires later.
-        if (onReminderReceived == null) {
-          store.agentReminders = [...store.agentReminders, line];
-          _queueSave();
-        }
-        onReminderReceived?.call(line);
-        notifyListeners();
-
+        await _handleSyncedReminder(msg);
       case NexusMessage.agentDefault:
-        // A paired device remembered a "which …?" answer — adopt it
-        // silently (knowledge, not an action). A local answer wins over an
-        // incoming one; we never re-broadcast (that would loop forever).
         if (!encrypted) return;
-        final key = msg.payload['key']?.toString().trim() ?? '';
-        final value = msg.payload['value'];
-        if (key.isEmpty || value == null) break;
-        if (store.agentDefaults.containsKey(key)) break;
-        // No live assistant: persist it ourselves so it survives.
-        final answeredOn = _paired[msg.from]?.name ?? msg.from;
-        if (onDefaultReceived == null) {
-          store.agentDefaults = {...store.agentDefaults, key: value};
-          store.agentLedger = store.agentLedger.record(
-            MemoryLedgerKind.preference,
-            key,
-            MemoryStamp.now(MemoryOrigin.device, answeredOn),
-          );
-          _queueSave();
-        }
-        onDefaultReceived?.call(key, value, answeredOn);
-        notifyListeners();
-
+        await _handleSyncedDefault(msg);
       case NexusMessage.agentProfile:
-        // A paired device renamed the user or the assistant — adopt it
-        // silently (knowledge, not an action); last write wins, per field.
-        // Each name travels independently: a rename can legitimately carry a
-        // null userName (the user never set their own name), and an absent
-        // field means "no information" — never "erase".
         if (!encrypted) return;
-        final userName = msg.payload['userName']?.toString().trim();
-        final assistantName = msg.payload['assistantName']?.toString().trim();
-        final hasUser = userName != null && userName.isNotEmpty;
-        final hasAssistant = assistantName != null && assistantName.isNotEmpty;
-        if (!hasUser && !hasAssistant) break;
-        // No live assistant: persist it ourselves so it survives.
-        if (onProfileReceived == null) {
-          if (hasUser) store.profileUserName = userName;
-          if (hasAssistant) store.profileAssistantName = assistantName;
-          _queueSave();
-        }
-        onProfileReceived?.call(
-          hasUser ? userName : null,
-          hasAssistant ? assistantName : null,
-        );
-        notifyListeners();
+        await _handleSyncedProfile(msg);
     }
   }
 

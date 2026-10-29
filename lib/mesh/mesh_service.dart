@@ -42,6 +42,7 @@ import 'sync_service.dart';
 
 part 'mesh_pairing.dart';
 part 'mesh_relay.dart';
+part 'mesh_sync.dart';
 
 /// A device that has been paired with us. "Paired" means we share a secret
 /// (the pairing code) and can talk to each other encrypted.
@@ -509,43 +510,6 @@ abstract class _MeshBase extends ChangeNotifier
 
 
 
-  /// Fired when a paired device teaches a phrase and syncs it here. The view
-  /// wires this into the live [CommandService] so the learned meaning is
-  /// usable immediately, not only after a restart. Receivers never re-broadcast
-  /// — that would loop the mesh forever.
-  /// [from] names the peer that sent it, so the memory keeps a real source
-  /// ("this came from TVcraft's phone") instead of a vague "a device".
-  void Function(String phrase, String meaning, [String from])?
-  onLearnedPhraseReceived;
-
-  /// Fired when a paired device tells the assistant a fact and syncs it here.
-  /// The view wires this into the live [CommandService] so the fact is usable
-  /// immediately. Receivers never re-broadcast — that would loop the mesh.
-  ///
-  /// Ownership rule: inbound knowledge is persisted by whoever claims it. When
-  /// this (or [onLearnedPhraseReceived]) is attached, the mesh only delivers
-  /// and the live assistant's own persistence funnel writes the store — never
-  /// both. When nobody is listening (startup window, headless mesh), the mesh
-  /// writes the store itself so the knowledge survives for the next boot.
-  void Function(String fact, [String from])? onFactReceived;
-
-  /// Fired when a paired device sets a reminder and syncs it here, so the
-  /// assistant on THIS device reminds the user too — whoever they are near.
-  /// Same ownership rule as [onFactReceived]: with a listener attached, the
-  /// live assistant's own funnel writes the store; otherwise the mesh
-  /// persists the reminder itself so it survives for the next boot.
-  void Function(String line)? onReminderReceived;
-
-  /// Fired when a paired device answers a "which …?" question and syncs the
-  /// remembered default here. Same ownership rule as [onFactReceived]: with
-  /// a listener attached, the live assistant's own funnel writes the store;
-  /// otherwise the mesh persists it so it survives for the next boot.
-  void Function(String key, dynamic value, [String from])? onDefaultReceived;
-
-  /// Fired when a paired device renames the user or the assistant and syncs
-  /// the profile here, so every device answers as one person. Same
-  /// ownership rule as [onFactReceived].
-  void Function(String? userName, String? assistantName)? onProfileReceived;
 
 
   List<SerialDevice> get remoteSerialDevices {
@@ -751,125 +715,10 @@ abstract class _MeshBase extends ChangeNotifier
 
 
 
-  /// Tells every paired device that the user taught [phrase] to mean
-  /// [meaning] (e.g. "call tvcraft" -> "call TVcraft01 〘✘ΔτΚ⑤⑦〙"), so one
-  /// teaching works on all of them. Fire-and-forget: a peer that is offline
-  /// simply misses this one — the phrase stays local until the next teach.
-  Future<void> broadcastLearnedPhrase(String phrase, String meaning) async {
-    final peers = _paired.values.toList();
-    if (peers.isEmpty) return;
-    await Future.wait(
-      peers.map(
-        (peer) => _sendEnc(
-          peer,
-          NexusMessage(
-            type: NexusMessage.agentLearned,
-            from: identity.id,
-            to: peer.id,
-            payload: {'phrase': phrase, 'meaning': meaning},
-            id: _newId(),
-            ts: DateTime.now().millisecondsSinceEpoch,
-          ),
-        ),
-      ),
-    );
-  }
 
-  /// Tells every paired device a fact the user just told the assistant
-  /// ("remember that …"), so one telling is known on all of them.
-  /// Fire-and-forget, like [broadcastLearnedPhrase]: a peer that is offline
-  /// misses this one until the next telling.
-  Future<void> broadcastFact(String fact) async {
-    final peers = _paired.values.toList();
-    if (peers.isEmpty) return;
-    await Future.wait(
-      peers.map(
-        (peer) => _sendEnc(
-          peer,
-          NexusMessage(
-            type: NexusMessage.agentFact,
-            from: identity.id,
-            to: peer.id,
-            payload: {'text': fact},
-            id: _newId(),
-            ts: DateTime.now().millisecondsSinceEpoch,
-          ),
-        ),
-      ),
-    );
-  }
 
-  /// Tells every paired device a "which …?" answer the user just picked
-  /// (e.g. timer length -> "5 minutes"), so one answer works on all of
-  /// them. Fire-and-forget, like [broadcastFact].
-  Future<void> broadcastDefault(String key, dynamic value) async {
-    final peers = _paired.values.toList();
-    if (peers.isEmpty) return;
-    await Future.wait(
-      peers.map(
-        (peer) => _sendEnc(
-          peer,
-          NexusMessage(
-            type: NexusMessage.agentDefault,
-            from: identity.id,
-            to: peer.id,
-            payload: {'key': key, 'value': value},
-            id: _newId(),
-            ts: DateTime.now().millisecondsSinceEpoch,
-          ),
-        ),
-      ),
-    );
-  }
 
-  /// Tells every paired device the user's and the assistant's names after a
-  /// rename ("call me sam", first-run setup), so every device knows the
-  /// person. Fire-and-forget, like [broadcastFact].
-  Future<void> broadcastProfile({
-    String? userName,
-    String? assistantName,
-  }) async {
-    final peers = _paired.values.toList();
-    if (peers.isEmpty) return;
-    await Future.wait(
-      peers.map(
-        (peer) => _sendEnc(
-          peer,
-          NexusMessage(
-            type: NexusMessage.agentProfile,
-            from: identity.id,
-            to: peer.id,
-            payload: {'userName': userName, 'assistantName': assistantName},
-            id: _newId(),
-            ts: DateTime.now().millisecondsSinceEpoch,
-          ),
-        ),
-      ),
-    );
-  }
 
-  /// Tells every paired device about a reminder the user just set, so it
-  /// fires on whichever device they are near. Fire-and-forget: a peer that
-  /// is offline misses this one until the next setting.
-  Future<void> broadcastReminder(String line) async {
-    final peers = _paired.values.toList();
-    if (peers.isEmpty) return;
-    await Future.wait(
-      peers.map(
-        (peer) => _sendEnc(
-          peer,
-          NexusMessage(
-            type: NexusMessage.agentReminder,
-            from: identity.id,
-            to: peer.id,
-            payload: {'reminder': line},
-            id: _newId(),
-            ts: DateTime.now().millisecondsSinceEpoch,
-          ),
-        ),
-      ),
-    );
-  }
 
 
 
@@ -3254,6 +3103,15 @@ abstract class _MeshBase extends ChangeNotifier
     await _saveChain; // flush any pending write before we return
   }
 
+  /// Adopts knowledge a paired device shared (taught phrase, fact, reminder,
+  /// default answer, profile rename). Implemented by [_MeshSync]; the relay
+  /// only decides that the frame was authenticated and addressed here.
+  Future<void> _handleSyncedLearned(NexusMessage msg);
+  Future<void> _handleSyncedFact(NexusMessage msg);
+  Future<void> _handleSyncedReminder(NexusMessage msg);
+  Future<void> _handleSyncedDefault(NexusMessage msg);
+  Future<void> _handleSyncedProfile(NexusMessage msg);
+
   /// Dispatches one authenticated frame. Implemented by [_MeshRelay]: the
   /// transport decides who proved themselves, the relay decides what it means.
   Future<void> _handleMessage(
@@ -3281,7 +3139,7 @@ abstract class _MeshBase extends ChangeNotifier
 /// The mesh service the rest of the app sees. Its public API is exactly what
 /// it was before the split; each concern lives in its own part file as a mixin
 /// over the one state object above.
-class MeshService extends _MeshBase with _MeshPairing, _MeshRelay {
+class MeshService extends _MeshBase with _MeshPairing, _MeshRelay, _MeshSync {
   /// The canonical mesh port.
   static const int defaultPort = 51820;
 
