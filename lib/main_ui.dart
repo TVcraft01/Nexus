@@ -97,6 +97,8 @@ import 'core/attachments.dart';
 import 'core/capability.dart' show capabilityFor, defaultCapabilitiesFor;
 import 'core/chat_log.dart';
 import 'core/clock_context.dart' show isClockQuestion;
+import 'core/command_interpreter.dart'
+    show CommandInterpreter, InterpretOutcome, InterpretResult;
 import 'core/composer_settings.dart';
 import 'core/interaction_mode.dart';
 import 'core/device_capabilities.dart';

@@ -60,9 +60,24 @@ class HomeTab extends StatefulWidget {
   State<HomeTab> createState() => _HomeTabState();
 }
 
+/// The interpreter the composer reads half-commands with. Const and stateless,
+/// like the ones in fast_path.dart and system_actions.dart.
+const CommandInterpreter _commands = CommandInterpreter();
+
+/// A question the interpreter asked, waiting for its answer.
+///
+/// [key] is the argument that is missing (`timer.set.seconds`), kept so the
+/// question can be asked again with the same identity rather than as a new one.
+typedef _Clarification = ({String original, String key, String question});
+
 class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   final TextEditingController _message = TextEditingController();
   final FocusNode _focus = FocusNode();
+
+  /// The half-command the last turn was about, when the interpreter asked a
+  /// question about it. Consumed by the next send, whether or not the next
+  /// send answers it.
+  _Clarification? _clarification;
 
   /// Where the thread is scrolled to. The latest bubble is the one that matters
   /// — the user just sent it, or just got an answer to it — so every change to
@@ -823,6 +838,14 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // spoken one.
     final bool spoken = _voiceTurn;
     _voiceTurn = false;
+    // An answer to the question the interpreter asked last turn. "Set a timer"
+    // is understood and incomplete, the next thing typed is its other half,
+    // and the sentence the chain reads is the two of them together. The bubble
+    // still shows what the person typed — the merge is how the command is read,
+    // not what the user said.
+    final _Clarification? asked = _clarification;
+    _clarification = null;
+    final String read = asked == null ? text : _answered(asked, text);
     // Anything the user just told Nexus about themselves is remembered before
     // the answer is asked for, so the same turn can already be answered with it.
     // The original text, tags included: [absorb] applies a typed tag as a
@@ -859,7 +882,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // (with the time in its system turn) it answered "07:30" at 14:24. So a
     // question about the time is answered here, and the model is not asked at
     // all — the same rule as the phrase bridge below, for the same reason.
-    if (isClockQuestion(text)) {
+    if (isClockQuestion(read)) {
       unawaited(
         _runAction(
           const SystemActionCall('get_time'),
@@ -873,7 +896,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // weather is the one this app must answer itself: there is no weather
     // service behind a local-first assistant, and a model asked for tomorrow's
     // forecast invents one. The sentence is canned, instant, and says why.
-    final String? canned = fastPathReply(text);
+    final String? canned = fastPathReply(read);
     if (canned != null) {
       _sayLocally(canned, _thread.length - 1, spoken: spoken);
       return;
@@ -883,7 +906,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // `{"action":"set_timer","seconds":420}` — a seven-minute timer where an
     // answer belonged. One operation between two numbers has one answer, so
     // the shell works it out and the model is not asked.
-    final String? sum = nexusMathAnswer(text);
+    final String? sum = nexusMathAnswer(read);
     if (sum != null) {
       _sayLocally(sum, _thread.length - 1, spoken: spoken);
       return;
@@ -907,12 +930,36 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // Strict commands — call, timer, flashlight — are the shell's, not the
     // model's. This is the Siri fast path: recognised before a single token is
     // generated, executed through the same native channel as any other action.
-    final SystemActionCall? known = fastPathAction(text);
+    final SystemActionCall? known = fastPathAction(read);
     if (known != null) {
       unawaited(_runAction(known, _thread.length - 1, spoken: spoken));
       return;
     }
-    unawaited(_answer(text, _thread.length - 1, spoken: spoken));
+    // A command the interpreter understood but could not finish — "set a
+    // timer", "get report.pdf". It asked exactly what it is missing, and that
+    // question is Nexus's to ask: handed to the model it becomes a paragraph of
+    // prose that asks nothing. The answer arrives on the next send and is read
+    // as the other half of this sentence.
+    final InterpretResult half = _commands.interpret(read);
+    // A question that quotes something ("How long is \"five\"?") is the
+    // interpreter admitting it could not read a word the user did give. That
+    // one goes to the model, which usually can read it — "five" is five
+    // minutes to anyone but a parser. Only a slot the sentence left empty is a
+    // question this shell is the right one to ask.
+    final bool unreadWord = half.question?.contains('"') ?? false;
+    if (half.outcome == InterpretOutcome.needsInfo &&
+        half.question != null &&
+        half.missingArgKey != null &&
+        !unreadWord) {
+      _clarification = (
+        original: asked?.original ?? read,
+        key: half.missingArgKey!,
+        question: half.question!,
+      );
+      _sayLocally(half.question!, _thread.length - 1, spoken: spoken);
+      return;
+    }
+    unawaited(_answer(read, _thread.length - 1, spoken: spoken));
   }
 
   /// Sends the attachment and the words together.
@@ -1128,6 +1175,21 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// sum, or what the vision layer said — not the model and not a system pill:
   /// it looks like every other answer, it is stored like one, and a spoken
   /// question hears it back.
+  /// The sentence to read now that [answered] arrived for [asked].
+  ///
+  /// Joined to the half-command it answers ("set a timer" + "5 minutes"), so
+  /// the same chain that reads every other sentence reads this one. The answer
+  /// wins on its own when it is itself a command: a person who abandons the
+  /// question and types something new is not answering it, and merging the two
+  /// would turn two requests into one nobody made.
+  String _answered(_Clarification asked, String answer) {
+    if (answer.isEmpty) return asked.original;
+    if (_commands.interpret(answer).outcome == InterpretOutcome.matched) {
+      return answer;
+    }
+    return '${asked.original} $answer';
+  }
+
   void _sayLocally(String answer, int index, {required bool spoken}) {
     if (!mounted || index >= _thread.length) return;
     setState(() => _thread[index] = NexusMockMessage(answer));
