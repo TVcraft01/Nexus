@@ -208,4 +208,43 @@ void main() {
       expect(result.error, contains('Pairing is off'));
     });
   });
+
+  group('rejectQrPairing', () {
+    // Characterization: the explicit Deny tap had no test of its own, and it is
+    // the path that must not pair. Pinned here so the mesh extraction cannot
+    // quietly change it.
+    test('denying an inbound request drops it and spends the pid', () async {
+      final tmp = await Directory.systemTemp.createTemp('nexus_qr_reject');
+      addTearDown(() => tmp.delete(recursive: true));
+      final store = NexusStore(explicitPath: '${tmp.path}/store.json');
+      final mesh = _mesh(id: 'shower', name: 'Shower', store: store);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      const pid = 'pid-deny-1';
+
+      mesh.stageInboundQrForTest(
+        QrInboundRequest(
+          pairingId: pid,
+          fromDeviceLabel: 'Scanner',
+          code: 'ABCD-1234',
+          expiryMs: now + 60000,
+          address: '192.168.1.50',
+          port: 51820,
+        ),
+      );
+
+      expect(mesh.pendingQrRequests.map((r) => r.pairingId), [pid]);
+      expect(mesh.qrPidUsable(pid, now + 60000), isTrue);
+
+      await mesh.rejectQrPairing(pid);
+
+      // Gone from the list, spent for good, and the device was never paired.
+      expect(mesh.pendingQrRequests, isEmpty);
+      expect(mesh.qrPidUsable(pid, now + 60000), isFalse);
+      expect(mesh.isPaired('scanner'), isFalse);
+
+      // A second Deny (the tap that arrives twice) is harmless.
+      await mesh.rejectQrPairing(pid);
+      expect(mesh.pendingQrRequests, isEmpty);
+    });
+  });
 }
