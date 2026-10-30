@@ -5020,7 +5020,16 @@ const List<NexusMockFile> kNexusMockFiles = <NexusMockFile>[
 
 /// The Drive-shaped files screen: pick a device, then read its list.
 class FilesTab extends StatefulWidget {
-  const FilesTab({super.key, this.active = true});
+  const FilesTab({super.key, this.active = true, this.mesh});
+
+  /// The running mesh, when the app started one. Null in a widget test.
+  ///
+  /// Read for one thing: whether a paired device is reachable *now*. A row's
+  /// stored `online` flag is what it was when the row was written, which is the
+  /// only answer there is for an example row or a pairing the mesh never made —
+  /// but for a device the mesh has paired, "can I send this file" is the mesh's
+  /// answer, not a memory.
+  final MeshService? mesh;
 
   /// True while this tab is the one on screen.
   ///
@@ -5132,10 +5141,24 @@ class _FilesTabState extends State<FilesTab> {
     if (mounted) setState(() {});
   }
 
+  /// Whether this device can be sent a file right now.
+  ///
+  /// The mesh answers for a device it has paired, in both directions: a peer
+  /// whose row was written `online: false` and which has been talking to us
+  /// since is reachable, and a peer the mesh has watched go quiet is not,
+  /// whatever the row remembers. Only a row the mesh has never recorded falls
+  /// back to the stored flag — the example rows, and a pairing that failed
+  /// halfway — because replacing their answer with a null would empty the
+  /// destination list of the demo build that has no mesh at all.
+  bool _reachable(PairedDevice device) {
+    final PeerPresence? presence = peerPresence(widget.mesh, device.id);
+    return presence?.online ?? device.online;
+  }
+
   /// The peers a file can actually be sent to right now.
   List<PairedDevice> get _onlinePeers => <PairedDevice>[
     for (final PairedDevice device in PairedDevices.instance.devices)
-      if (!device.isThisDevice && device.online) device,
+      if (!device.isThisDevice && _reachable(device)) device,
   ];
 
   /// Every file the tab is showing, in folder order. Used by the AI sorter and
@@ -5358,6 +5381,7 @@ class _FilesTabState extends State<FilesTab> {
             _ConnectedDeviceRow(
               key: ValueKey<String>('files-device-${device.id}'),
               device: device,
+              online: _reachable(device),
             ),
           if (connected.every((PairedDevice d) => d.isThisDevice))
             Padding(
@@ -5482,9 +5506,19 @@ class _FilesTabState extends State<FilesTab> {
 /// shared. The row is a statement rather than a door — browsing a peer's disk
 /// from this tab is the mesh's next feature, and a chevron would promise it now.
 class _ConnectedDeviceRow extends StatelessWidget {
-  const _ConnectedDeviceRow({super.key, required this.device});
+  const _ConnectedDeviceRow({
+    super.key,
+    required this.device,
+    required this.online,
+  });
 
   final PairedDevice device;
+
+  /// Whether the device is reachable right now, which is the mesh's answer when
+  /// it has one and the row's own flag when it does not. Not read off [device]
+  /// here: the row says what is true now, the same fact the destination list
+  /// above is built from.
+  final bool online;
 
   @override
   Widget build(BuildContext context) {
@@ -5529,12 +5563,12 @@ class _ConnectedDeviceRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          NexusStatusDot(online: device.isThisDevice || device.online),
+          NexusStatusDot(online: device.isThisDevice || online),
           const SizedBox(width: 6),
           Text(
             device.isThisDevice
                 ? 'This phone'
-                : (device.online ? 'Online' : 'Offline'),
+                : (online ? 'Online' : 'Offline'),
             style: NexusType.rowMeta(c),
           ),
         ],
@@ -6235,9 +6269,9 @@ class NexusFileRow extends StatelessWidget {
 /// The list is [PairedDevices] rather than a constant, which is the whole
 /// change this screen has been waiting for: a pairing made on this screen is
 /// the same list the next screen reads, and it is still there after a restart.
-/// The online/offline word beside each row is the state the row was written
-/// with — see the note at the top of `paired_devices.dart` — because live
-/// reachability is the mesh's answer and this front end has no mesh.
+/// The online/offline word beside each row is what discovery and the mesh are
+/// hearing now, and the flag the row was written with is only used for a device
+/// the mesh has never recorded — see [_DevicesTabState._rows].
 class DevicesTab extends StatefulWidget {
   const DevicesTab({
     super.key,
@@ -6624,8 +6658,24 @@ class _DevicesTabState extends State<DevicesTab> {
   List<_DeviceRow> get _rows => <_DeviceRow>[
     for (final PairedDevice device in _paired.devices) _rowFor(device),
     for (final PairedDevice peer in meshOnlyRows(widget.mesh, _paired))
-      _DeviceRow(device: peer, presence: peerPresence(widget.mesh, peer.id)),
+      _meshRow(peer),
   ];
+
+  /// A row for a peer only the mesh knows, drawn from live presence.
+  ///
+  /// The same rule as [_rowFor], and it has to be: the store never wrote this
+  /// row, so its `online` flag is [PairedDevice]'s default of false rather than
+  /// anybody's answer. Rendering that would show a device that is talking to us
+  /// right now as Offline, with its actions greyed out — the state this screen
+  /// was reported for. Presence is the only answer there is here, and a null
+  /// one (no mesh) leaves the row as it was built.
+  _DeviceRow _meshRow(PairedDevice peer) {
+    final PeerPresence? presence = peerPresence(widget.mesh, peer.id);
+    return _DeviceRow(
+      device: presence == null ? peer : peer.copyWith(online: presence.online),
+      presence: presence,
+    );
+  }
 
   _DeviceRow _rowFor(PairedDevice device) {
     final PeerPresence? presence = peerPresence(widget.mesh, device.id);
