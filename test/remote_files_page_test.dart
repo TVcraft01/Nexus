@@ -261,6 +261,35 @@ void main() {
       expect(mesh.listed, <String>['']);
     });
 
+    testWidgets('a peer that paired into us is listed, and is a door', (
+      tester,
+    ) async {
+      // It scanned our code, so the mesh holds it and no shell row was ever
+      // written. The Devices tab already lists such a peer; Files has to as
+      // well, or the one pairing a phone can make without a camera would be the
+      // one pairing whose folders cannot be opened.
+      seedShell(<shell.PairedDevice>[]);
+      final _RemoteMesh mesh = _RemoteMesh(
+        <PairedDevice>[_meshPeer('peer-a', 'Kit')],
+        store: store,
+        online: <String>{'peer-a'},
+        listings: <String, List<FileEntry>>{
+          '': <FileEntry>[_file('notes.txt')],
+        },
+      );
+      addTearDown(mesh.stop);
+      await pumpFilesTab(tester, mesh);
+
+      expect(find.text('Kit'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey<String>('files-device-peer-a')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Browse devices'), findsOneWidget);
+      expect(find.text('notes.txt'), findsOneWidget);
+    });
+
     testWidgets('a peer that is not answering stays a statement', (
       tester,
     ) async {

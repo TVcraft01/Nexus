@@ -5380,6 +5380,12 @@ class _FilesTabState extends State<FilesTab> {
             !device.id.startsWith('example-') ||
             device.online)
           device,
+      // A device that paired *into* this one (it scanned our code) has no shell
+      // row — nothing on that path writes one — but it is paired, it is in the
+      // mesh, and its folders can be opened. Leaving it out here would hide a
+      // device the Devices tab is already listing, and would make the browser
+      // unreachable for exactly the pairing a phone makes by scanning.
+      ...meshOnlyRows(widget.mesh, PairedDevices.instance),
     ];
     return NexusTabBody(
       title: 'Files',
