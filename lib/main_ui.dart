@@ -8005,6 +8005,9 @@ class _DevPairByCodePageState extends State<DevPairByCodePage> {
             key: kNexusDevPairPortField,
             controller: _port,
             keyboardType: TextInputType.number,
+            // The last field submits: one keystroke after the port is typed is
+            // the whole form, which is how the desktop driver fills it too.
+            onSubmitted: (_) => _pair(),
             decoration: const InputDecoration(labelText: 'Port'),
           ),
           if (_error != null) ...<Widget>[
