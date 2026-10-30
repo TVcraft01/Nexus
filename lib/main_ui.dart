@@ -165,6 +165,7 @@ import 'ui/device_executor.dart' show DeviceExecutor;
 import 'ui/image_viewer_page.dart';
 import 'ui/local_files.dart' show openLocalFile;
 import 'ui/privacy_policy_view.dart' show PrivacyPolicyView;
+import 'ui/remote_files_page.dart' show RemoteFilesPage;
 import 'ui/server_agent_page.dart';
 import 'ui/text_file_page.dart';
 import 'ui/trackpad_page.dart';
@@ -2388,7 +2389,7 @@ class _NexusShellState extends State<NexusShell> {
         // The index in this stack is the design: 0 is Home, 1 is Files, and
         // only the page whose index matches the selected tab does work on
         // launch.
-        FilesTab(active: _tab == 1),
+        FilesTab(active: _tab == 1, mesh: widget.mesh),
         DevicesTab(
           mesh: widget.mesh,
           executor: widget.executor,
@@ -5168,6 +5169,27 @@ class _FilesTabState extends State<FilesTab> {
       if (folder.error == null) ...folder.entries,
   ];
 
+  /// The browser for [device], or null when there is nothing to browse.
+  ///
+  /// Both questions are the mesh's, not the row's: it has to *hold* this device
+  /// — a row written by a scan, or the example rows of a build with no mesh,
+  /// carries no pairing the mesh can dial — and the device has to be answering
+  /// now. A row offering a browser for a device nobody can reach would open on
+  /// an error the user did nothing to cause.
+  VoidCallback? _remoteBrowser(PairedDevice device) {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null || device.isThisDevice) return null;
+    if (!mesh.isPaired(device.id) || !_reachable(device)) return null;
+    return () => unawaited(
+      Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (BuildContext context) =>
+              RemoteFilesPage(mesh: mesh, deviceId: device.id),
+        ),
+      ),
+    );
+  }
+
   void _notify(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -5382,6 +5404,7 @@ class _FilesTabState extends State<FilesTab> {
               key: ValueKey<String>('files-device-${device.id}'),
               device: device,
               online: _reachable(device),
+              onBrowse: _remoteBrowser(device),
             ),
           if (connected.every((PairedDevice d) => d.isThisDevice))
             Padding(
@@ -5503,13 +5526,18 @@ class _FilesTabState extends State<FilesTab> {
 }
 
 /// A device at the top of Files: this phone, or a paired peer with the RAM it
-/// shared. The row is a statement rather than a door — browsing a peer's disk
-/// from this tab is the mesh's next feature, and a chevron would promise it now.
+/// shared.
+///
+/// A peer the mesh can reach is a door — tapping it opens that device's folders
+/// ([RemoteFilesPage]) and the chevron says so. A peer it cannot reach is a
+/// statement: the same row, no chevron, because a browser opened on an
+/// unreachable device is an error page the user did not ask for.
 class _ConnectedDeviceRow extends StatelessWidget {
   const _ConnectedDeviceRow({
     super.key,
     required this.device,
     required this.online,
+    this.onBrowse,
   });
 
   final PairedDevice device;
@@ -5520,6 +5548,10 @@ class _ConnectedDeviceRow extends StatelessWidget {
   /// above is built from.
   final bool online;
 
+  /// Opens this device's files. Null for this device, for a row the mesh never
+  /// paired, and for a device that is not answering.
+  final VoidCallback? onBrowse;
+
   @override
   Widget build(BuildContext context) {
     final c = context.ui;
@@ -5529,7 +5561,8 @@ class _ConnectedDeviceRow extends StatelessWidget {
               ? Icons.laptop_mac_rounded
               : Icons.desktop_windows_rounded);
     final int? ram = device.ramBytes;
-    return Padding(
+    final VoidCallback? onBrowse = this.onBrowse;
+    final Widget row = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
       child: Row(
         children: <Widget>[
@@ -5571,8 +5604,20 @@ class _ConnectedDeviceRow extends StatelessWidget {
                 : (online ? 'Online' : 'Offline'),
             style: NexusType.rowMeta(c),
           ),
+          // A chevron only where there is a place to go: it is the row's own
+          // promise that the tap does something.
+          if (onBrowse != null) ...<Widget>[
+            const SizedBox(width: 4),
+            const NexusChevron(),
+          ],
         ],
       ),
+    );
+    if (onBrowse == null) return row;
+    return InkWell(
+      onTap: onBrowse,
+      borderRadius: const BorderRadius.all(NexusLayout.tile),
+      child: row,
     );
   }
 }

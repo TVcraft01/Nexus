@@ -65,7 +65,31 @@ class FilesView extends StatefulWidget {
   /// launching anything; null uses the real one (ACTION_VIEW / xdg-open).
   final Future<bool> Function(String path)? openFile;
 
-  const FilesView({super.key, required this.mesh, this.openFile});
+  /// The peer to open on, when the caller already knows which one the user
+  /// meant. The shell's windowed copy does: it is opened from one device's row
+  /// on the Files tab, and landing on a different peer would make that row a
+  /// lie. Null opens on the first device in the list, which is what this view
+  /// wants when it is the whole screen — its first chip is the answer.
+  final String? initialDeviceId;
+
+  /// Whether the page draws its own "Files" header. False for the shell's
+  /// windowed copy, which sits under a page bar that already names it; two
+  /// titles over one listing is one too many.
+  final bool showHeader;
+
+  /// Where a download lands, by file name. Null uses this device's Downloads
+  /// folder (see [downloadsFilePath]); injectable so a widget test can tap a
+  /// row without writing into the machine running the suite.
+  final Future<String> Function(String name)? downloadPath;
+
+  const FilesView({
+    super.key,
+    required this.mesh,
+    this.openFile,
+    this.initialDeviceId,
+    this.showHeader = true,
+    this.downloadPath,
+  });
 
   @override
   State<FilesView> createState() => _FilesViewState();
@@ -140,6 +164,14 @@ class _FilesViewState extends State<FilesView> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final devices = _selectableDevices();
+      final wanted = widget.initialDeviceId;
+      if (wanted != null) {
+        for (final PairedDevice device in devices) {
+          if (device.id != wanted) continue;
+          _selectDevice(device);
+          return;
+        }
+      }
       if (devices.isNotEmpty) _selectDevice(devices.first);
     });
   }
@@ -314,7 +346,9 @@ class _FilesViewState extends State<FilesView> {
       _progress[entry.path] = 0;
     });
 
-    final savePath = await downloadsFilePath(entry.name);
+    final savePath = await (widget.downloadPath ?? downloadsFilePath)(
+      entry.name,
+    );
 
     final file = await widget.mesh.pullRemoteFile(
       device,
@@ -673,11 +707,8 @@ class _FilesViewState extends State<FilesView> {
                       subtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodySmall?.copyWith(
-                        color: palette.textTertiary,
-                      ),
+                      style: Theme.of(context).textTheme.bodySmall
+                          ?.copyWith(color: palette.textTertiary),
                     ),
                   ],
                 ),
@@ -747,20 +778,24 @@ class _FilesViewState extends State<FilesView> {
     // The header belongs to the tab, not to the file listing — show it even
     // when there is nothing paired yet (the empty state below it). No icon
     // tile: it carried no state, and a tile beside a title is decoration.
-    const header = Padding(
-      padding: EdgeInsets.fromLTRB(
-        NexusSpace.page,
-        NexusSpace.xxl,
-        NexusSpace.page,
-        0,
-      ),
-      child: NexusPageHeader(
-        title: 'Files',
-        subtitle:
-            'Browse, download and send files on your devices — over LAN at '
-            'home, or from anywhere via a Tailscale address.',
-      ),
-    );
+    final Widget header = widget.showHeader
+        ? const Padding(
+            padding: EdgeInsets.fromLTRB(
+              NexusSpace.page,
+              NexusSpace.xxl,
+              NexusSpace.page,
+              0,
+            ),
+            child: NexusPageHeader(
+              title: 'Files',
+              subtitle:
+                  'Browse, download and send files on your devices — over LAN '
+                  'at home, or from anywhere via a Tailscale address.',
+            ),
+          )
+        // The caller owns the title (the shell's page bar), so the listing
+        // still starts below it by the same gap the header would have left.
+        : const SizedBox(height: NexusSpace.xxl);
 
     if (devices.isEmpty) {
       return Column(
@@ -2165,7 +2200,8 @@ class _EntryTile extends StatelessWidget {
       container: true,
       button: true,
       label: entry.isDir
-          ? '${entry.name}, folder'            : '${entry.name}, ${fileSizeLabel(entry.size)}',
+          ? '${entry.name}, folder'
+          : '${entry.name}, ${fileSizeLabel(entry.size)}',
       customSemanticsActions: {
         CustomSemanticsAction(label: 'Rename'): onRename,
         CustomSemanticsAction(label: 'Copy to…'): onActions,
