@@ -33,15 +33,10 @@ import 'package:nexus/mesh/mesh_service.dart' show MeshService, PairedDevice;
 
 /// A mesh that answers from a list instead of a socket.
 class _PresenceMesh extends MeshService {
-  _PresenceMesh({
-    required List<PairedDevice> peers,
-    required this.online,
-    required NexusStore store,
-  }) : _peers = peers,
-       super(
-         identity: DeviceInfo(id: 'pc-1', name: 'This PC', platform: 'linux'),
-         store: store,
-       );
+  _PresenceMesh(this._peers, {required this.online, required super.store})
+    : super(
+        identity: DeviceInfo(id: 'pc-1', name: 'This PC', platform: 'linux'),
+      );
 
   final List<PairedDevice> _peers;
 
@@ -144,7 +139,7 @@ void main() {
   }
 
   /// Whether the action behind [key] can be tapped at all.
-  bool _enabled(WidgetTester tester, String key) {
+  bool actionEnabled(WidgetTester tester, String key) {
     final Finder ink = find.descendant(
       of: find.byKey(ValueKey<String>(key)),
       matching: find.byType(InkWell),
@@ -160,7 +155,7 @@ void main() {
       // no row was ever written for it.
       seedShell(<shell.PairedDevice>[]);
       final MeshService mesh = _PresenceMesh(
-        peers: <PairedDevice>[_meshPeer('peer-a', 'Kit')],
+        <PairedDevice>[_meshPeer('peer-a', 'Kit')],
         online: <String>{'peer-a'},
         store: store,
       );
@@ -172,13 +167,13 @@ void main() {
       expect(find.text('Offline'), findsNothing);
       // The state and the buttons are one fact: a row that says Online with a
       // dead Send File is the old bug wearing the new label.
-      expect(_enabled(tester, 'send-peer-a'), isTrue);
+      expect(actionEnabled(tester, 'send-peer-a'), isTrue);
     });
 
     testWidgets('a peer the mesh has gone quiet on is Offline', (tester) async {
       seedShell(<shell.PairedDevice>[]);
       final MeshService mesh = _PresenceMesh(
-        peers: <PairedDevice>[_meshPeer('peer-a', 'Kit')],
+        <PairedDevice>[_meshPeer('peer-a', 'Kit')],
         online: const <String>{},
         store: store,
       );
@@ -190,7 +185,7 @@ void main() {
       // read Online.
       expect(find.text('Offline'), findsWidgets);
       expect(find.text('Online'), findsNothing);
-      expect(_enabled(tester, 'send-peer-a'), isFalse);
+      expect(actionEnabled(tester, 'send-peer-a'), isFalse);
     });
   });
 
@@ -203,11 +198,12 @@ void main() {
           id: 'peer-a',
           name: 'Kit',
           publicKey: 'k1',
-          online: false, // what the pairing wrote; the mesh disagrees
+          // `online` stays at its default of false: that is what the pairing
+          // wrote, and the mesh has since verified the opposite.
         ),
       ]);
       final MeshService mesh = _PresenceMesh(
-        peers: <PairedDevice>[_meshPeer('peer-a', 'Kit')],
+        <PairedDevice>[_meshPeer('peer-a', 'Kit')],
         online: <String>{'peer-a'},
         store: store,
       );
@@ -246,7 +242,7 @@ void main() {
         ),
       ]);
       final MeshService mesh = _PresenceMesh(
-        peers: const <PairedDevice>[],
+        const <PairedDevice>[],
         online: const <String>{},
         store: store,
       );
