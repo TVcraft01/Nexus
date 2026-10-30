@@ -32,6 +32,7 @@ import 'package:nexus/core/ollama_service.dart';
 import 'package:nexus/core/on_device_ai_service.dart';
 import 'package:nexus/core/on_device_model.dart';
 import 'package:nexus/core/onboarding.dart';
+import 'package:nexus/core/pair_bridge.dart' show kPairNoMeshText;
 import 'package:nexus/core/paired_devices.dart';
 import 'package:nexus/core/screen_capture.dart';
 import 'package:nexus/core/services/icon_service.dart';
@@ -5113,6 +5114,72 @@ void main() {
     expect(find.text(kNexusScanQrLabel), findsOneWidget);
     expect(find.text(kNexusShowQrLabel), findsOneWidget);
   });
+
+  testWidgets(
+    'the pairing sheet has no typed-code row unless the dev flag is on',
+    (tester) async {
+      // The shipped sheet is what it always was: two rows. NEXUS_DEV_PAIR is not
+      // set in this process, so nothing has to be forced to prove it.
+      debugDevPairEnabled = null;
+      addTearDown(() => debugDevPairEnabled = null);
+      await pumpShell(tester);
+      await openTab(tester, 'Devices', 2);
+
+      await tester.tap(find.byKey(kNexusAddDevice));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kNexusScanQrLabel), findsOneWidget);
+      expect(find.text(kNexusShowQrLabel), findsOneWidget);
+      expect(find.text(kNexusDevPairLabel), findsNothing);
+      expect(find.byKey(kNexusDevPairRow), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'NEXUS_DEV_PAIR adds a typed-code row that reaches the code form',
+    (tester) async {
+      debugDevPairEnabled = true;
+      addTearDown(() => debugDevPairEnabled = null);
+      await pumpShell(tester);
+      await openTab(tester, 'Devices', 2);
+
+      await tester.tap(find.byKey(kNexusAddDevice));
+      await tester.pumpAndSettle();
+      expect(find.byKey(kNexusDevPairRow), findsOneWidget);
+
+      await tester.tap(find.byKey(kNexusDevPairRow));
+      await tester.pumpAndSettle();
+
+      // The three fields the typed flow needs, and the same validation the
+      // mesh-side sheet does: no code first, then no destination, then no mesh.
+      expect(find.byKey(kNexusDevPairCodeField), findsOneWidget);
+      expect(find.byKey(kNexusDevPairAddressField), findsOneWidget);
+      expect(find.byKey(kNexusDevPairPortField), findsOneWidget);
+
+      // The form scrolls on a phone-sized surface, and a tap on a button below
+      // the fold is a tap the framework never delivers.
+      await tester.ensureVisible(find.byKey(kNexusDevPairSubmit));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kNexusDevPairSubmit));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Enter the code shown on the other device.'),
+        findsOneWidget,
+      );
+
+      await tester.enterText(find.byKey(kNexusDevPairCodeField), 'ABCD-1234');
+      await tester.enterText(
+        find.byKey(kNexusDevPairAddressField),
+        '127.0.0.1',
+      );
+      await tester.enterText(find.byKey(kNexusDevPairPortField), '51820');
+      await tester.ensureVisible(find.byKey(kNexusDevPairSubmit));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kNexusDevPairSubmit));
+      await tester.pumpAndSettle();
+      expect(find.text(kPairNoMeshText), findsOneWidget);
+    },
+  );
 
   testWidgets('an action reply becomes a pill, and the JSON never shows', (
     tester,

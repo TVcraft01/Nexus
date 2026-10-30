@@ -67,6 +67,7 @@ import 'package:flutter/foundation.dart'
         ValueListenable,
         defaultTargetPlatform,
         kIsWeb,
+        kReleaseMode,
         listEquals,
         visibleForTesting;
 import 'package:flutter/scheduler.dart' show Ticker;
@@ -151,7 +152,7 @@ import 'mesh/file_transfer_service.dart'
         kFileTransferPort;
 import 'mesh/mesh_lifecycle.dart' show MeshLifecycleObserver;
 import 'mesh/mesh_service.dart'
-    show IncomingAgentAction, MeshService, PairingSession;
+    show IncomingAgentAction, MeshService, PairResult, PairingSession;
 
 // The thought splitter moved to `core` so the chat log can use it when it
 // reads an old answer; this export keeps every existing importer of the shell
@@ -1041,8 +1042,8 @@ void main() async {
   // derive it from the pairing secret they already share, so nothing is sent
   // to arrange it and the transfer token never leaves this device. Null for a
   // peer the mesh has never paired — those rows keep the token rule.
-  FileTransferService.instance.peerControlKeyLookup = services.mesh
-      .controlKeyFor;
+  FileTransferService.instance.peerControlKeyLookup =
+      services.mesh.controlKeyFor;
   // What an accepted control request is labelled with, and the per-path count
   // that says which proof is still doing real work on a shipped build. Three
   // paths, three deletion criteria; see `NexusStore.controlPathSeen`.
@@ -1059,9 +1060,7 @@ void main() async {
   FileLink.transport = FileTransferService.instance;
   unawaited(FileTransferService.instance.start());
   final int? seed = await Appearance.accentSeed();
-  runApp(
-    NexusUiApp(initialAccent: accentFromSeed(seed), services: services),
-  );
+  runApp(NexusUiApp(initialAccent: accentFromSeed(seed), services: services));
 }
 
 /// The accent a stored seed stands for.
@@ -6347,9 +6346,8 @@ class _PeerRequestCard extends StatelessWidget {
                 child: Text(
                   '$peerName wants to: $what',
                   key: const ValueKey<String>('peer-request-title'),
-                  style: NexusType.rowTitle(c).copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: NexusType.rowTitle(c)
+                      .copyWith(fontWeight: FontWeight.w600),
                 ),
               ),
             ],
@@ -6433,8 +6431,9 @@ class _PeerPolicySheetState extends State<_PeerPolicySheet> {
   /// action outside this list still applies, because the table is read by
   /// action id when a request arrives, not from what this sheet drew.
   late final List<String> _actions = <String>[
-    for (final DeviceCapability capability
-        in defaultCapabilitiesFor(widget.mesh.identity.platform))
+    for (final DeviceCapability capability in defaultCapabilitiesFor(
+      widget.mesh.identity.platform,
+    ))
       capability.id,
   ];
 
@@ -6547,7 +6546,8 @@ class _PeerPolicyRow extends StatelessWidget {
               Text(
                 label(policy),
                 key: ValueKey<String>('peer-policy-value-$action'),
-                style: NexusType.rowTitle(c).copyWith(fontSize: 13, color: c.accent),
+                style: NexusType.rowTitle(c)
+                    .copyWith(fontSize: 13, color: c.accent),
               ),
               const Icon(Icons.arrow_drop_down_rounded, size: 18),
             ],
@@ -6622,8 +6622,7 @@ class _DevicesTabState extends State<DevicesTab> {
   /// device the user just paired with would be missing from the list they are
   /// looking at — see [meshOnlyRows].
   List<_DeviceRow> get _rows => <_DeviceRow>[
-    for (final PairedDevice device in _paired.devices)
-      _rowFor(device),
+    for (final PairedDevice device in _paired.devices) _rowFor(device),
     for (final PairedDevice peer in meshOnlyRows(widget.mesh, _paired))
       _DeviceRow(device: peer, presence: peerPresence(widget.mesh, peer.id)),
   ];
@@ -7536,7 +7535,10 @@ class _PeerCapabilities extends StatelessWidget {
     ),
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      child: Text(label, style: meta.copyWith(fontSize: 11, color: c.textStrong)),
+      child: Text(
+        label,
+        style: meta.copyWith(fontSize: 11, color: c.textStrong),
+      ),
     ),
   );
 
@@ -7563,9 +7565,7 @@ class _PeerCapabilities extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  verified
-                      ? kNexusCapsVerifiedBody
-                      : kNexusCapsAssumedBody,
+                  verified ? kNexusCapsVerifiedBody : kNexusCapsAssumedBody,
                   style: NexusType.rowMeta(c).copyWith(height: 1.5),
                 ),
               ],
@@ -7751,10 +7751,7 @@ Future<PairInvite?> openPairScanner(BuildContext context) async {
 /// sheet with a live `MeshService` behind it: this one has no mesh, only the
 /// invite a QR can carry, and two functions with one name would be a choice
 /// made by import order.
-Future<void> showDevicePairingSheet(
-  BuildContext context, {
-  MeshService? mesh,
-}) {
+Future<void> showDevicePairingSheet(BuildContext context, {MeshService? mesh}) {
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: context.ui.surface,
@@ -7814,6 +7811,26 @@ Future<void> showDevicePairingSheet(
                   );
                 },
               ),
+              // Third row only when a developer asked for it: two desktops on
+              // one machine cannot point a camera at each other, and the typed
+              // flow already exists — this is the door, not a new lock.
+              if (nexusDevPairEnabled)
+                NexusRow(
+                  key: kNexusDevPairRow,
+                  title: kNexusDevPairLabel,
+                  subtitle: 'Type the code, address and port — dev builds only',
+                  leading: const NexusIconTile(Icons.keyboard_rounded),
+                  trailing: const NexusChevron(),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    Navigator.of(context).push<void>(
+                      MaterialPageRoute<void>(
+                        builder: (routeContext) =>
+                            DevPairByCodePage(mesh: mesh),
+                      ),
+                    );
+                  },
+                ),
               const SizedBox(height: 6),
             ],
           ),
@@ -7827,6 +7844,187 @@ Future<void> showDevicePairingSheet(
 /// it are talking about the same words.
 const String kNexusScanQrLabel = 'Scan QR code';
 const String kNexusShowQrLabel = 'Show my QR code';
+
+// ---------------------------------------------------------------------------
+// Dev-only pairing by code
+// ---------------------------------------------------------------------------
+
+/// The third row, and the words it uses. Named the same way as the two above so
+/// a test that asserts its absence and a test that taps it read one spelling.
+const Key kNexusDevPairRow = Key('nexus-dev-pair-row');
+const String kNexusDevPairLabel = 'Pair by code';
+const String kNexusDevPairHint =
+    'For two builds on one desktop: the other side shows its code, this one '
+    'types it. No camera, no scan.';
+
+/// The page's fields and button, keyed for the widget tests and the desktop
+/// driver that types into them.
+const Key kNexusDevPairCodeField = Key('nexus-dev-pair-code');
+const Key kNexusDevPairAddressField = Key('nexus-dev-pair-address');
+const Key kNexusDevPairPortField = Key('nexus-dev-pair-port');
+const Key kNexusDevPairSubmit = Key('nexus-dev-pair-submit');
+const String kNexusDevPairSubmitLabel = 'Pair';
+
+/// Whether the dev-only pairing entry is on at all.
+///
+/// It exists because one machine cannot scan its own screen: pairing two
+/// desktop builds needs the typed-code path that [PairSheet] in `lib/ui` already
+/// has, wired into the shell that actually runs. Two conditions, both required:
+///
+///   * `NEXUS_DEV_PAIR=1` in the environment — off by default, so an ordinary
+///     run shows the same two rows it always has;
+///   * not a release build — [kReleaseMode] is a compile-time constant, so the
+///     row and the page are not in a shipped binary at all.
+///
+/// [debugDevPairEnabled] is the seam a widget test flips, in the same shape as
+/// [debugPairScannerOverride].
+bool get nexusDevPairEnabled {
+  final bool? forced = _devPairOverride;
+  if (forced != null) return forced;
+  if (kReleaseMode) return false;
+  return (Platform.environment['NEXUS_DEV_PAIR'] ?? '') == '1';
+}
+
+bool? _devPairOverride;
+
+/// Turns the dev row on or off for one test, and back off with `null`.
+@visibleForTesting
+set debugDevPairEnabled(bool? value) => _devPairOverride = value;
+
+/// Types a code, an address and a port, and pairs with it.
+///
+/// The same call the QR scanner makes when the code came from a camera
+/// ([MeshService.pairWithCandidates]), so the wire format under test is the
+/// shipped one: the code derives the key, the request is encrypted with it, and
+/// the device showing the code stores the pairing. Only the way the code gets
+/// here is different — typed instead of decoded from a picture.
+class DevPairByCodePage extends StatefulWidget {
+  const DevPairByCodePage({super.key, this.mesh});
+
+  /// The mesh that pairs. Null is a page built on its own: it still draws, and
+  /// its Pair button says there is no mesh rather than pretending.
+  final MeshService? mesh;
+
+  @override
+  State<DevPairByCodePage> createState() => _DevPairByCodePageState();
+}
+
+class _DevPairByCodePageState extends State<DevPairByCodePage> {
+  final TextEditingController _code = TextEditingController();
+  final TextEditingController _address = TextEditingController();
+  final TextEditingController _port = TextEditingController();
+  bool _pairing = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _code.dispose();
+    _address.dispose();
+    _port.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pair() async {
+    // Fields first, mesh second: a missing field is something the user can fix
+    // in front of them, and reporting "no mesh" over an empty form would hide
+    // the part they were asked to type.
+    final String code = _code.text.trim().toUpperCase();
+    final String address = _address.text.trim();
+    final int? port = int.tryParse(_port.text.trim());
+    if (code.isEmpty) {
+      setState(() => _error = 'Enter the code shown on the other device.');
+      return;
+    }
+    if (address.isEmpty || port == null || port <= 0 || port > 65535) {
+      setState(
+        () => _error = 'Enter the address and port of the other device.',
+      );
+      return;
+    }
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null) {
+      setState(() => _error = kPairNoMeshText);
+      return;
+    }
+    setState(() {
+      _pairing = true;
+      _error = null;
+    });
+    final PairResult result = await mesh.pairWithCandidates(
+      addresses: <String>[address],
+      port: port,
+      code: code,
+    );
+    if (!mounted) return;
+    setState(() => _pairing = false);
+    if (result.ok) {
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Paired with ${result.peerName ?? 'device'}.')),
+      );
+      return;
+    }
+    setState(() => _error = result.error);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ui;
+    return Scaffold(
+      backgroundColor: c.background,
+      appBar: AppBar(title: const Text(kNexusDevPairLabel)),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+        children: <Widget>[
+          Text(
+            kNexusDevPairHint,
+            style: NexusType.rowMeta(c).copyWith(height: 1.5),
+          ),
+          const SizedBox(height: 18),
+          TextField(
+            key: kNexusDevPairCodeField,
+            controller: _code,
+            autofocus: true,
+            textCapitalization: TextCapitalization.characters,
+            decoration: const InputDecoration(
+              labelText: 'Code',
+              hintText: 'ABCD-1234',
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: kNexusDevPairAddressField,
+            controller: _address,
+            decoration: const InputDecoration(
+              labelText: 'Address',
+              hintText: '127.0.0.1',
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: kNexusDevPairPortField,
+            controller: _port,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Port'),
+          ),
+          if (_error != null) ...<Widget>[
+            const SizedBox(height: 12),
+            Text(
+              _error!,
+              style: NexusType.rowMeta(c).copyWith(color: c.danger),
+            ),
+          ],
+          const SizedBox(height: 18),
+          FilledButton(
+            key: kNexusDevPairSubmit,
+            onPressed: _pairing ? null : _pair,
+            child: Text(_pairing ? 'Pairing…' : kNexusDevPairSubmitLabel),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// Runs the scanner and pairs what came back.
 ///
@@ -8171,12 +8369,7 @@ const Key kNexusPairingOffTurnOn = Key('nexus-pairing-off-turn-on');
 /// dial, and the transfer token that proves it scanned this PC. A code drawn
 /// before either existed would pair a device that could never send a file.
 class PairPhonePage extends StatefulWidget {
-  const PairPhonePage({
-    super.key,
-    this.mesh,
-    this.identity,
-    this.addresses,
-  });
+  const PairPhonePage({super.key, this.mesh, this.identity, this.addresses});
 
   /// Who this device is, for a test that asserts on the code. Null uses
   /// [PairIdentity.current].
@@ -8272,9 +8465,7 @@ class PairPhonePageState extends State<PairPhonePage> {
   Future<void> _readIdentity() async {
     final List<String> found = await (widget.addresses ?? localAddresses)();
     final String known = widget.identity?.token.trim() ?? '';
-    final String token = known.isNotEmpty
-        ? known
-        : await PairToken.current();
+    final String token = known.isNotEmpty ? known : await PairToken.current();
     if (!mounted) return;
     setState(() {
       _addresses = found;
@@ -8303,7 +8494,8 @@ class PairPhonePageState extends State<PairPhonePage> {
     });
   }
 
-  PairIdentity get _who => (widget.identity ?? PairIdentity.current).withToken(_token);
+  PairIdentity get _who =>
+      (widget.identity ?? PairIdentity.current).withToken(_token);
 
   PairInvite get invite => PairInvite(
     deviceName: _who.name,
