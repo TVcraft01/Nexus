@@ -22,7 +22,8 @@ import 'package:nexus/core/paired_devices.dart'
     as shell
     show PairedDevice, PairedDevices;
 import 'package:nexus/core/store.dart';
-import 'package:nexus/main_ui.dart' show FilesTab, NexusChevron;
+import 'package:nexus/main_ui.dart'
+    show DevicesTab, FilesTab, NexusChevron, kNexusFileSharingToggle;
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/ui/components/nexus_ui.dart' show NexusPressable;
 import 'package:nexus/ui/files_view.dart' show FilesView;
@@ -359,6 +360,47 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Browse devices'), findsNothing);
     });
+  });
+
+  testWidgets('the switch that lets a peer in is on the shipped Devices tab', (
+    tester,
+  ) async {
+    // The serving side gates every file request on `store.fileShare`, which is
+    // off on a fresh install. Its only switch used to live in the old
+    // SettingsView — unreachable from the shell — so the browser below could
+    // never list anything on a default install, whatever the user tried.
+    final _RemoteMesh mesh = _RemoteMesh(const <PairedDevice>[], store: store);
+    addTearDown(mesh.stop);
+    expect(store.fileShare, isFalse, reason: 'off on a fresh install');
+    // The Mesh section is below the device cards: a phone-sized window would
+    // never build it in a lazily-built list, and a switch a user has to scroll
+    // to is still on the screen.
+    tester.view.physicalSize = const Size(900, 3200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildNexusTheme(),
+        home: Scaffold(body: DevicesTab(mesh: mesh)),
+      ),
+    );
+    await tester.pump();
+
+    final Finder toggle = find.descendant(
+      of: find.byKey(kNexusFileSharingToggle),
+      matching: find.byType(Switch),
+    );
+    expect(toggle, findsOneWidget);
+    expect(find.text('File sharing'), findsOneWidget);
+    expect(tester.widget<Switch>(toggle).value, isFalse);
+
+    await tester.tap(toggle);
+    await tester.pump();
+
+    expect(mesh.store.fileShare, isTrue, reason: 'the gate the mesh reads');
+    expect(tester.widget<Switch>(toggle).value, isTrue);
   });
 
   group('what the browser does with a peer folder', () {

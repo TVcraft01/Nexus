@@ -6905,7 +6905,7 @@ class _DevicesTabState extends State<DevicesTab> {
           // than buried in Settings because this is the screen that owns the
           // list it changes. Off is not a hidden default: the subtitle says
           // what off means in the same breath.
-          if (mesh != null)
+          if (mesh != null) ...<Widget>[
             NexusRow(
               key: kNexusMeshPairingToggle,
               title: 'Mesh pairing',
@@ -6919,6 +6919,26 @@ class _DevicesTabState extends State<DevicesTab> {
                 onChanged: (bool value) => unawaited(_setPairing(value)),
               ),
             ),
+            // The other half of a pairing, and off on a fresh install: a pair
+            // that can reach this device can still see none of its folders
+            // until this says so. It sits under Mesh pairing because it is the
+            // same question one step further — who may reach this device, and
+            // what may they read once they do.
+            NexusRow(
+              key: kNexusFileSharingToggle,
+              title: 'File sharing',
+              subtitle: mesh.store.fileShare
+                  ? 'Paired devices can browse this device\u2019s folders and '
+                        'download from them.'
+                  : 'Off — a paired device sees no folders on this one until '
+                        'you turn this on.',
+              leading: const NexusIconTile(Icons.folder_shared_rounded),
+              trailing: Switch.adaptive(
+                value: mesh.store.fileShare,
+                onChanged: (bool value) => unawaited(_setFileShare(value)),
+              ),
+            ),
+          ],
           NexusRow(
             key: const ValueKey<String>('mesh-total-ram'),
             title: 'Mesh Total RAM',
@@ -7007,6 +7027,16 @@ class _DevicesTabState extends State<DevicesTab> {
     final MeshService? mesh = widget.mesh;
     if (mesh == null || mesh.store.pairingEnabled == value) return;
     setState(() => mesh.store.pairingEnabled = value);
+    unawaited(mesh.store.save());
+  }
+
+  /// Turns serving this device's folders to paired devices on or off. The mesh
+  /// reads the switch per request, so this is the whole change: no restart, and
+  /// the next browse from the other side sees it.
+  Future<void> _setFileShare(bool value) async {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null || mesh.store.fileShare == value) return;
+    setState(() => mesh.store.fileShare = value);
     unawaited(mesh.store.save());
   }
 
@@ -7815,6 +7845,11 @@ const String kNexusCapsAssumedBody =
 
 /// The switch that lets another device pair with this one.
 const Key kNexusMeshPairingToggle = Key('nexus-mesh-pairing-toggle');
+
+/// The switch that lets a paired device see this one's folders. Off on a fresh
+/// install, and the browser's own empty state is what a user sees until it is
+/// on.
+const Key kNexusFileSharingToggle = Key('nexus-file-sharing-toggle');
 
 /// The + in the Devices header, and what it is called out loud. The key is what
 /// a test taps; the label is what a screen reader says.
