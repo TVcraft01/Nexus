@@ -10,8 +10,10 @@
 // whole capture path minus the system apps.
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show DebugPrintCallback, debugPrint;
+import 'package:flutter/foundation.dart'
+    show ByteData, DebugPrintCallback, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -154,6 +156,48 @@ void main() {
     final File file = File('${dir.path}/shot.png');
     await file.writeAsBytes(_onePixelPng);
     return file;
+  }
+
+  /// A real 480 x 640 PNG — the shape of a phone photo.
+  ///
+  /// The one-pixel capture above is enough for the composer, but not for the
+  /// bubble: a picture that small has no tap area of its own, so a tap meant
+  /// for the picture lands on the caption or on the actions underneath it.
+  Future<File> photo() async {
+    final Directory dir = await Directory.systemTemp.createTemp('nexus-photo-');
+    addTearDown(() => dir.delete(recursive: true));
+    final ui.PictureRecorder recorder = ui.PictureRecorder();
+    ui.Canvas(recorder).drawRect(
+      const ui.Rect.fromLTWH(0, 0, 480, 640),
+      ui.Paint()..color = const ui.Color(0xFF336699),
+    );
+    final ui.Image image = await recorder.endRecording().toImage(480, 640);
+    final ByteData? png = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    final File file = File('${dir.path}/photo.png');
+    await file.writeAsBytes(png!.buffer.asUint8List());
+    return file;
+  }
+
+  /// Decodes and caches [file] before the bubble is built.
+  ///
+  /// A decode is real asynchronous work, which a widget test's fake clock
+  /// never advances; warmed here, the picture has its size on the first frame
+  /// the way it does on a phone. Without it the bubble is only its caption and
+  /// its actions, and a tap in the middle lands on the actions.
+  Future<void> warmImage(WidgetTester tester, File file) async {
+    await tester.runAsync(() async {
+      final ImageStream stream = FileImage(
+        file,
+      ).resolve(ImageConfiguration.empty);
+      final Completer<void> done = Completer<void>();
+      stream.addListener(
+        ImageStreamListener((ImageInfo info, bool synchronous) {
+          if (!done.isCompleted) done.complete();
+        }),
+      );
+      await done.future;
+    });
   }
 
   group('the caption and the prompt are one decision', () {
@@ -611,13 +655,14 @@ void main() {
     ) async {
       // Real file IO has to run outside the fake clock a widget test uses,
       // or it never completes.
-      final File file = (await tester.runAsync(shot))!;
+      final File file = (await tester.runAsync(photo))!;
       chat = ChatLog(
         store: MemoryChatLogStore(<ChatEntry>[
           ChatEntry('Photo attached', mine: true, imagePath: file.path),
         ]),
       );
       ChatLog.override = () => chat;
+      await warmImage(tester, file);
       await pumpShell(tester);
 
       await tester.tap(find.byType(NexusAttachmentBubble));
