@@ -1067,7 +1067,18 @@ void main() async {
   FileLink.transport = FileTransferService.instance;
   unawaited(FileTransferService.instance.start());
   final int? seed = await Appearance.accentSeed();
-  runApp(NexusUiApp(initialAccent: accentFromSeed(seed), services: services));
+  // Read here with the accent, and for the same reason: an app that opens
+  // light and swaps to dark after the engine starts is a flash of the wrong
+  // half of the day on every launch.
+  final ({bool followSystem, bool dark}) theme = await Appearance.theme();
+  runApp(
+    NexusUiApp(
+      initialAccent: accentFromSeed(seed),
+      initialFollowSystem: theme.followSystem,
+      initialDark: theme.dark,
+      services: services,
+    ),
+  );
 }
 
 /// The accent a stored seed stands for.
@@ -1155,11 +1166,23 @@ PeerActionDecision decidePeerAction({
 /// The override is deliberately all-or-nothing (dark or light, not a third
 /// "system" switch position) because the row above it is the one that decides.
 class NexusUiApp extends StatefulWidget {
-  const NexusUiApp({super.key, this.initialAccent, this.services});
+  const NexusUiApp({
+    super.key,
+    this.initialAccent,
+    this.initialFollowSystem = true,
+    this.initialDark = false,
+    this.services,
+  });
 
   /// The accent to open with, read from the preference before the first frame.
   /// Null is a test that does not care, and starts on the shipped purple.
   final NexusAccent? initialAccent;
+
+  /// Whether the app opens following the platform's brightness, and which
+  /// side to open on when it does not — both read from the preference before
+  /// the first frame, and both stored by the switches in Settings › Theme.
+  final bool initialFollowSystem;
+  final bool initialDark;
 
   /// What `main()` started before the first frame: the store, the identity and
   /// the running mesh.
@@ -1175,13 +1198,15 @@ class NexusUiApp extends StatefulWidget {
 }
 
 class _NexusUiAppState extends State<NexusUiApp> {
-  /// True while the app takes its brightness from the platform. Starts true:
-  /// the phone already knows what time it is, and an app that opens in the
-  /// wrong half of the day is a setting the user never chose.
-  bool _followSystem = true;
+  /// True while the app takes its brightness from the platform. Read from the
+  /// preference before the first frame, and stored by every flip: a choice
+  /// that survived only until the laundry app asked for memory was the bug.
+  late bool _followSystem = widget.initialFollowSystem;
 
-  /// The user's own choice, used only while [_followSystem] is false.
-  bool _dark = false;
+  /// The user's own choice, used only while [_followSystem] is false. Stored
+  /// separately from [_followSystem], so turning Follow system back off lands
+  /// in the half of the day the user picked rather than in light.
+  late bool _dark = widget.initialDark;
 
   /// Which accent every surface paints itself with. Read from the preference in
   /// [main] so the first frame is already the user's colour.
@@ -1559,9 +1584,14 @@ class _NexusUiAppState extends State<NexusUiApp> {
             executor: _executor,
             peerRequest: _peerRequest,
             onPeerRequestAnswered: _answerPeerRequest,
-            onFollowSystemChanged: (value) =>
-                setState(() => _followSystem = value),
-            onDarkModeChanged: (value) => setState(() => _dark = value),
+            onFollowSystemChanged: (value) {
+              setState(() => _followSystem = value);
+              unawaited(Appearance.setFollowSystem(value));
+            },
+            onDarkModeChanged: (value) {
+              setState(() => _dark = value);
+              unawaited(Appearance.setDarkMode(value));
+            },
             onAccentChanged: _setAccent,
           ),
           false => WelcomeView(onDone: _finishOnboarding),
