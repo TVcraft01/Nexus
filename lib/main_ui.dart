@@ -152,7 +152,12 @@ import 'mesh/file_transfer_service.dart'
         kFileTransferPort;
 import 'mesh/mesh_lifecycle.dart' show MeshLifecycleObserver;
 import 'mesh/mesh_service.dart'
-    show IncomingAgentAction, MeshService, PairResult, PairingSession;
+    show
+        ClipEntry,
+        IncomingAgentAction,
+        MeshService,
+        PairResult,
+        PairingSession;
 
 // The thought splitter moved to `core` so the chat log can use it when it
 // reads an old answer; this export keeps every existing importer of the shell
@@ -176,6 +181,7 @@ import 'mesh/updater.dart';
 // The shell's screens, split into part files: one library (so the private
 // helpers stay private) with a file per screen for editing and review.
 part 'ui/chat_bubbles.dart';
+part 'ui/clipboard_banner.dart';
 part 'ui/composer.dart';
 part 'ui/connections_view.dart';
 part 'ui/home_tab.dart';
@@ -2428,7 +2434,17 @@ class _NexusShellState extends State<NexusShell> {
     // — or make it the last one — rather than letting it appear only when wide.
     final Widget pagesPane = KeyedSubtree(
       key: const ValueKey<String>('nexus-shell-pages'),
-      child: pages,
+      // A clip that arrived while the user was somewhere else has to be able to
+      // say so from that somewhere else: the bar sits above the pages, is zero
+      // height unless something is waiting, and leaves every tab's State alone
+      // because it is added above the IndexedStack rather than inside it.
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          if (widget.mesh != null) NexusClipboardBanner(mesh: widget.mesh!),
+          Expanded(child: pages),
+        ],
+      ),
     );
     return Scaffold(
       backgroundColor: c.background,

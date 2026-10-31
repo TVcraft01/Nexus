@@ -18,7 +18,7 @@
 ///      build where nothing is on 51820 (see `FileTransferService.start`).
 library;
 
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
@@ -99,7 +99,7 @@ Future<AppServices> startAppServices({
   final MeshService mesh = MeshService(
     identity: identity,
     store: store,
-    clipboard: clipboard,
+    clipboard: clipboard ?? devClipboardFromEnvironment(),
     capabilityProbe: capabilityProbe,
   );
   await mesh.start();
@@ -109,3 +109,44 @@ Future<AppServices> startAppServices({
 /// Stops the mesh — and with it the Android foreground service and the
 /// listening socket on 51820 — and leaves the process able to start again.
 Future<void> stopAppServices(AppServices services) => services.mesh.stop();
+
+/// A clipboard kept in a file, turned on only by `NEXUS_CLIPBOARD_FILE=<path>`.
+///
+/// Two windows on one desk share one OS clipboard, which makes a clipboard that
+/// travels between them impossible to watch: copying in one is copying in both,
+/// and an echo looks exactly like a delivery. A file per instance is the seam
+/// [ClipboardBackend] was left for. Unset — the ordinary case — returns null and
+/// the mesh keeps the platform clipboard it always had.
+ClipboardBackend? devClipboardFromEnvironment() {
+  final String path = (Platform.environment['NEXUS_CLIPBOARD_FILE'] ?? '')
+      .trim();
+  if (path.isEmpty) return null;
+  return _FileClipboard(path);
+}
+
+/// One text file standing in for the system clipboard. Missing or empty reads
+/// as "nothing was copied", which is what the real one answers too.
+class _FileClipboard implements ClipboardBackend {
+  _FileClipboard(this.path);
+
+  final String path;
+
+  @override
+  Future<String?> readText() async {
+    try {
+      final File file = File(path);
+      if (!await file.exists()) return null;
+      final String text = (await file.readAsString()).trim();
+      return text.isEmpty ? null : text;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> writeText(String text) async {
+    final File file = File(path);
+    await file.parent.create(recursive: true);
+    await file.writeAsString(text, flush: true);
+  }
+}
