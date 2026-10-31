@@ -22,6 +22,14 @@ const Key kNexusVisionProgress = Key('nexus-vision-progress');
 /// The desktop-only row that opens the phone pairing code.
 const Key kNexusPairPhoneRow = Key('nexus-pair-phone-row');
 
+/// The switch that lets text copied here reach paired devices. Off on a fresh
+/// install, and the row says so in the same breath as what it does.
+const Key kNexusClipboardSyncToggle = Key('nexus-clipboard-sync-toggle');
+
+/// The row that pushes what is on the clipboard right now, without waiting for
+/// the next copy.
+const Key kNexusSendClipboard = Key('nexus-send-clipboard');
+
 /// The row that opens the Server Agent — the only screen in the app that can
 /// change a machine other than this one.
 const Key kNexusServerAgentRow = Key('nexus-server-agent-row');
@@ -467,6 +475,62 @@ class _SettingsTabState extends State<SettingsTab> {
   static int _megabytes(int bytes) =>
       (bytes + 1024 * 1024 - 1) ~/ (1024 * 1024);
 
+  /// True from the tap on "Send this clipboard" until the mesh has answered:
+  /// one send per tap, and the row shows that it is working.
+  bool _sendingClip = false;
+
+  /// Turns clipboard sync on or off. The mesh reads the flag per copy, so this
+  /// is the whole change — no restart, and the next copy is the one affected.
+  Future<void> _setClipboardSync(bool value) async {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null || mesh.store.clipboardSync == value) return;
+    setState(() => mesh.store.clipboardSync = value);
+    unawaited(mesh.store.save());
+  }
+
+  /// Sends what is on this device's clipboard now, and says what happened.
+  ///
+  /// Reading and sending are one action: a text this screen never read is a
+  /// text the user cannot see going out, so the clipboard is read first and a
+  /// read that answers nothing is reported rather than treated as a quiet
+  /// success. The count is the mesh's own — a peer that did not take the copy
+  /// (offline, or not active) is not counted as one that did.
+  Future<void> _sendClipboard() async {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null || _sendingClip) return;
+    setState(() => _sendingClip = true);
+    String? text;
+    try {
+      text = await mesh.clipboard.readText();
+    } catch (_) {
+      text = null;
+    }
+    final bool empty = text == null || text.trim().isEmpty;
+    final int sent = empty ? 0 : await mesh.broadcastClipboard(text);
+    if (!mounted) return;
+    setState(() => _sendingClip = false);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          key: ValueKey<String>(
+            empty
+                ? 'clipboard-send-empty'
+                : sent == 0
+                ? 'clipboard-send-nobody'
+                : 'clipboard-send-done',
+          ),
+          content: Text(
+            empty
+                ? 'Nothing to send — copy some text first.'
+                : sent == 0
+                ? 'No paired device took it. Check that one is online.'
+                : 'Sent to $sent ${sent == 1 ? 'device' : 'devices'}.',
+          ),
+        ),
+      );
+  }
+
   /// True while a release check is in flight, so a second tap cannot start a
   /// second request or stack two dialogs.
   bool _checkingUpdate = false;
@@ -647,6 +711,49 @@ class _SettingsTabState extends State<SettingsTab> {
             trailing: Text('Off', style: NexusType.rowMeta(c)),
             onTap: _showCloudOffNote,
           ),
+          // Copy and paste across devices is the one capability here that acts
+          // on its own the moment it is switched on, so what it does is said in
+          // the row that switches it, not on a page behind it. The second row
+          // is the deliberate version of the same wire: one copy, now, without
+          // waiting for the user to press Ctrl+C again.
+          if (widget.mesh != null) ...<Widget>[
+            const NexusSectionLabel('Clipboard'),
+            NexusRow(
+              key: kNexusClipboardSyncToggle,
+              title: 'Clipboard sync',
+              subtitle:
+                  'Send what you copy to paired devices — off until you turn '
+                  'it on',
+              leading: const NexusIconTile(Icons.sync_rounded),
+              trailing: Switch.adaptive(
+                value: widget.mesh!.store.clipboardSync,
+                onChanged: (bool value) => unawaited(_setClipboardSync(value)),
+              ),
+              // The whole row is the control, as it is for the appearance
+              // switches above: a thumb that lands on the label is asking for
+              // the same thing.
+              onTap: () => unawaited(
+                _setClipboardSync(!widget.mesh!.store.clipboardSync),
+              ),
+            ),
+            NexusRow(
+              key: kNexusSendClipboard,
+              title: 'Send this clipboard',
+              subtitle: 'Copy text first, then send it to your paired devices',
+              leading: const NexusIconTile(Icons.send_rounded),
+              // No chevron while it works: the row is a button that answers in
+              // a snack bar, and a chevron would promise a page that never
+              // opens.
+              trailing: _sendingClip
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : null,
+              onTap: _sendClipboard,
+            ),
+          ],
           // What Nexus may touch, and the record of what it has. The one screen
           // in the app that can take a capability away, so it sits beside the
           // privacy promise rather than inside the developer log.
