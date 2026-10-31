@@ -2361,7 +2361,12 @@ class _NexusShellState extends State<NexusShell> {
     // app was given rather than by a device category.
     final Size window = MediaQuery.sizeOf(context);
     final double width = window.width;
-    final bool wide = nexusIsDesktopApp || width >= kNexusWideBreakpoint;
+    // Width alone, on purpose. A desktop window dragged narrow is the same
+    // problem as a phone: 280 points of sidebar in a 360-point window leaves
+    // the page a column one character wide. The desktop app used to take the
+    // wide layout at any width, which is why that window drew its content as
+    // a vertical ribbon instead of switching to the tab bar the phone uses.
+    final bool wide = width >= kNexusWideBreakpoint;
     // A landscape phone with the keyboard up has about 140dp of body left, and
     // a sidebar that wants twice that. The keys are the edge the user is using,
     // so the sidebar steps aside until they are put away — the same rule the
@@ -2734,12 +2739,19 @@ class _WideNavRow extends StatelessWidget {
                   color: selected ? c.accent : c.textMuted,
                 ),
                 const SizedBox(width: 11),
-                Text(
-                  spec.label,
-                  style: NexusType.rowTitle(c).copyWith(
-                    fontSize: 14,
-                    color: selected ? c.accent : c.textStrong,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                // The sidebar is a fixed 280 points, so the label is what
+                // gives way when the text is large: at 200% "Settings" is
+                // wider than the column and used to push the row past it.
+                Expanded(
+                  child: Text(
+                    spec.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: NexusType.rowTitle(c).copyWith(
+                      fontSize: 14,
+                      color: selected ? c.accent : c.textStrong,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                    ),
                   ),
                 ),
               ],
@@ -2807,7 +2819,15 @@ class NexusTabBar extends StatelessWidget {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: NexusLayout.content),
               child: SizedBox(
-                height: NexusLayout.tabBar,
+                // The label under each icon follows the user's text size, so
+                // the bar has to follow it too: at 200% a fixed 56 clips the
+                // word and takes the tap target with it. Only the label's own
+                // line grows, so the icons stay on one baseline across the row.
+                height:
+                    NexusLayout.tabBar +
+                    NexusType.tab(c).fontSize! *
+                        1.3 *
+                        (MediaQuery.textScalerOf(context).scale(1.0) - 1),
                 child: Row(
                   children: <Widget>[
                     for (int i = 0; i < tabs.length; i++)
