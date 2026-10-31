@@ -5457,31 +5457,51 @@ class _FilesTabState extends State<FilesTab> {
                 style: NexusType.rowMeta(c).copyWith(height: 1.4),
               ),
             ),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          // A Wrap, not a Row: at 200% text on a 360-point window the sort
+          // button is wider than what the heading leaves, and a Row can only
+          // overflow there. A Wrap puts it on its own line instead, which is
+          // the same affordance one row further down.
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: <Widget>[
-              const Expanded(child: NexusSectionLabel('Local Files')),
+              const NexusSectionLabel('Local Files'),
               Padding(
                 padding: const EdgeInsets.only(top: 12, right: 2),
-                child: TextButton.icon(
+                // Built here rather than with TextButton.icon: that helper
+                // puts the label in a Row that cannot shrink, so at 200% the
+                // words run past the button and the button past the window.
+                // A Flexible label truncates instead, and keeps the tap.
+                child: TextButton(
                   key: const ValueKey<String>('files-sort-ai'),
                   onPressed: _folders == null || _allEntries.isEmpty || _sorting
                       ? null
                       : () => unawaited(_sortWithAi()),
-                  icon: _sorting
-                      ? const SizedBox(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      if (_sorting)
+                        const SizedBox(
                           width: 14,
                           height: 14,
                           child: CircularProgressIndicator(strokeWidth: 1.8),
                         )
-                      : const Icon(Icons.auto_awesome_rounded, size: 15),
-                  label: Text(
-                    _aiGroups == null ? 'Sort with AI' : 'Newest first',
-                    style: NexusType.rowMeta(c).copyWith(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: c.accent,
-                    ),
+                      else
+                        const Icon(Icons.auto_awesome_rounded, size: 15),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          _aiGroups == null ? 'Sort with AI' : 'Newest first',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: NexusType.rowMeta(c).copyWith(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: c.accent,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   style: TextButton.styleFrom(
                     foregroundColor: c.accent,
@@ -5609,7 +5629,7 @@ class _ConnectedDeviceRow extends StatelessWidget {
       child: Row(
         children: <Widget>[
           NexusIconTile(icon),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -5638,13 +5658,28 @@ class _ConnectedDeviceRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          NexusStatusDot(online: device.isThisDevice || online),
-          const SizedBox(width: 6),
-          Text(
-            device.isThisDevice
-                ? 'This phone'
-                : (online ? 'Online' : 'Offline'),
-            style: NexusType.rowMeta(c),
+          // The state keeps its word at every text size — colour alone would
+          // fail the same rule it always did — but the word is allowed to
+          // truncate when 200% text and a 360-point window leave no room for
+          // it next to the name.
+          Flexible(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                NexusStatusDot(online: device.isThisDevice || online),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    device.isThisDevice
+                        ? 'This phone'
+                        : (online ? 'Online' : 'Offline'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: NexusType.rowMeta(c),
+                  ),
+                ),
+              ],
+            ),
           ),
           // A chevron only where there is a place to go: it is the row's own
           // promise that the tap does something.
