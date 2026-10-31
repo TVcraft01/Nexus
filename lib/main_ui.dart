@@ -6583,7 +6583,7 @@ class _PeerPolicySheetState extends State<_PeerPolicySheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            Text('Peer requests', style: NexusType.pageTitle(c)),
+            Text('Device requests', style: NexusType.pageTitle(c)),
             const SizedBox(height: 8),
             Text(kNexusPeerRequestsExplainer, style: NexusType.lede(c)),
             const SizedBox(height: 16),
@@ -6936,7 +6936,7 @@ class _DevicesTabState extends State<DevicesTab> {
           // The mesh's memory, in one row: what the room could run if the
           // models were chosen by the strongest device rather than by the one
           // in the user's hand.
-          const NexusSectionLabel('Mesh'),
+          const NexusSectionLabel('Pairing'),
           // Off until the user says otherwise, and the switch is here rather
           // than buried in Settings because this is the screen that owns the
           // list it changes. Off is not a hidden default: the subtitle says
@@ -6944,7 +6944,7 @@ class _DevicesTabState extends State<DevicesTab> {
           if (mesh != null) ...<Widget>[
             NexusRow(
               key: kNexusMeshPairingToggle,
-              title: 'Mesh pairing',
+              title: 'Pairing',
               subtitle: mesh.store.pairingEnabled
                   ? 'Other devices can pair with this one from its code.'
                   : 'Off — no device can pair with this one until you turn '
@@ -6977,12 +6977,11 @@ class _DevicesTabState extends State<DevicesTab> {
           ],
           NexusRow(
             key: const ValueKey<String>('mesh-total-ram'),
-            title: 'Mesh Total RAM',
+            title: 'Total memory',
             subtitle: _meshRam == null
-                ? 'No device has shared its memory yet'
+                ? 'No device has shared its memory yet.'
                 : 'Across $_meshRamDevices '
-                      '${_meshRamDevices == 1 ? 'device' : 'devices'} on this '
-                      'mesh',
+                      '${_meshRamDevices == 1 ? 'paired device' : 'paired devices'}',
             leading: const NexusIconTile(Icons.memory_rounded),
             trailing: Text(
               _meshRam == null ? '—' : DeviceMemory.label(_meshRam),
@@ -7454,7 +7453,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                       child: _DeviceCardAction(
                         key: ValueKey<String>('send-${_device.id}'),
                         icon: Icons.upload_file_rounded,
-                        label: 'Send File',
+                        label: 'Send file',
                         onTap: widget.online && !_busy ? _sendFile : null,
                       ),
                     ),
@@ -7508,7 +7507,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Notification Sync',
+                          'Notification sync',
                           style: NexusType.rowTitle(c).copyWith(fontSize: 13.5),
                         ),
                       ),
@@ -7867,7 +7866,7 @@ const String kNexusNotConnected = 'Not connected · pair again';
 /// The capability line, in each of its states. Named here so the card, the
 /// tests and this note cannot drift into three spellings of one fact.
 const String kNexusCapsOffline = 'Offline';
-const String kNexusCapsNoneYet = 'No capabilities announced yet';
+const String kNexusCapsNoneYet = 'No capabilities announced yet.';
 const String kNexusCapsNoneAnnounced = 'Reports no capabilities';
 const String kNexusCapsVerified = 'Verified';
 const String kNexusCapsAssumed = 'As announced';
