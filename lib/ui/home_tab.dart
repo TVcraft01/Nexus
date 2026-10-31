@@ -3901,7 +3901,6 @@ class _UpdateBanner extends StatelessWidget {
                       key: const ValueKey<String>('update-banner-dismiss'),
                       tooltip: 'Dismiss',
                       onPressed: onDismiss,
-                      visualDensity: VisualDensity.compact,
                       icon: Icon(
                         Icons.close_rounded,
                         size: NexusLayout.icon,
@@ -3966,7 +3965,6 @@ class _PcConnectedBanner extends StatelessWidget {
                     key: const ValueKey<String>('hive-pc-banner-dismiss'),
                     tooltip: 'Dismiss',
                     onPressed: onDismiss,
-                    visualDensity: VisualDensity.compact,
                     icon: Icon(
                       Icons.close_rounded,
                       size: NexusLayout.icon,
@@ -4094,7 +4092,6 @@ class _PcUpgradeBanner extends StatelessWidget {
                     key: const ValueKey<String>('pc-upgrade-dismiss'),
                     tooltip: 'Dismiss',
                     onPressed: onDismiss,
-                    visualDensity: VisualDensity.compact,
                     icon: Icon(
                       Icons.close_rounded,
                       size: NexusLayout.icon,

@@ -741,7 +741,10 @@ abstract final class NexusLayout {
 
   /// The diameter of the composer's primary circle (mic, send, live). One
   /// size for the three of them: the button changes glyph, not footprint.
-  static const double button = 44;
+  ///
+  /// 48, the smallest target a thumb hits reliably. It was 44, which measured
+  /// 43.8 on the phone and asked a finger to be more precise than the rules do.
+  static const double button = 48;
 
   /// The one corner radius family: pills, sheets and tiles all come from it.
   static const Radius pill = Radius.circular(26);

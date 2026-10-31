@@ -62,6 +62,30 @@ void main() {
     }
   }
 
+  testWidgets('the composer\u2019s small controls are 48-point targets', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const NexusUiApp());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+
+    // The add badge is drawn 32 across and the speak badge 36; both sit in a
+    // 48-point box, because 48 is the smallest target a thumb hits reliably.
+    for (final Finder target in <Finder>[
+      find.byKey(kComposerAdd),
+      find.byKey(kSpeakRepliesToggle),
+    ]) {
+      expect(target, findsOneWidget);
+      final Size size = tester.getSize(target);
+      expect(size.width, greaterThanOrEqualTo(48));
+      expect(size.height, greaterThanOrEqualTo(48));
+    }
+  });
+
   testWidgets('a narrow desktop window uses the phone layout, not a sidebar '
       'crammed beside a ribbon', (tester) async {
     tester.view.physicalSize = const Size(360, 800);

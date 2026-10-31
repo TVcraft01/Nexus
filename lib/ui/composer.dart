@@ -210,6 +210,11 @@ class _Composer extends StatelessWidget {
                     micNotice ?? brainNote,
                     key: ValueKey<String>(micNotice ?? brainNote),
                     textAlign: TextAlign.center,
+                    // One line, ellipsised: the note is a hint above the field,
+                    // and at 200% text a second line of it takes the height the
+                    // field needs.
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: NexusType.rowMeta(c).copyWith(fontSize: 11.5),
                   ),
                 ),
@@ -620,20 +625,30 @@ class _SpeakRepliesButtonState extends State<_SpeakRepliesButton> {
       child: InkResponse(
         key: kSpeakRepliesToggle,
         onTap: () => _voice.speakReplies = !on,
-        radius: 22,
-        child: Container(
-          width: 36,
-          height: 36,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            borderRadius: const BorderRadius.all(NexusLayout.tile),
-            color: on ? c.accent.withValues(alpha: 0.14) : Colors.transparent,
-            border: Border.all(color: on ? c.accent : c.hairline),
-          ),
-          child: Icon(
-            on ? Icons.volume_up_rounded : Icons.volume_off_rounded,
-            size: NexusLayout.icon,
-            color: on ? c.accent : c.textMuted,
+        radius: 24,
+        // 48 is the smallest target a thumb can reliably hit, and the visible
+        // badge stays 36: the extra 12 is hit area, not ink.
+        child: SizedBox(
+          width: 48,
+          height: 48,
+          child: Center(
+            child: Container(
+              width: 36,
+              height: 36,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: const BorderRadius.all(NexusLayout.tile),
+                color: on
+                    ? c.accent.withValues(alpha: 0.14)
+                    : Colors.transparent,
+                border: Border.all(color: on ? c.accent : c.hairline),
+              ),
+              child: Icon(
+                on ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+                size: NexusLayout.icon,
+                color: on ? c.accent : c.textMuted,
+              ),
+            ),
           ),
         ),
       ),
@@ -670,20 +685,27 @@ class _AddButton extends StatelessWidget {
         child: InkResponse(
           key: kComposerAdd,
           onTap: onTap,
-          radius: 22,
-          child: Container(
-            width: 32,
-            height: 32,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: c.raised,
-              border: Border.all(color: c.hairline),
-            ),
-            child: Icon(
-              Icons.add_rounded,
-              size: NexusLayout.icon,
-              color: c.textMuted,
+          radius: 24,
+          // 32 is the circle; 48 is what a thumb gets to hit.
+          child: SizedBox(
+            width: 48,
+            height: 48,
+            child: Center(
+              child: Container(
+                width: 32,
+                height: 32,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: c.raised,
+                  border: Border.all(color: c.hairline),
+                ),
+                child: Icon(
+                  Icons.add_rounded,
+                  size: NexusLayout.icon,
+                  color: c.textMuted,
+                ),
+              ),
             ),
           ),
         ),
