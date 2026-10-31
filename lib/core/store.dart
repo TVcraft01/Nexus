@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'identity.dart';
 import 'memory.dart';
+import 'shared_settings.dart';
 
 /// Which key proved a control request the file link accepted.
 ///
@@ -25,11 +26,7 @@ import 'memory.dart';
 ///
 /// The names are the storage keys, so they are part of the on-disk shape and
 /// renaming one is a migration.
-enum ControlPath {
-  unsigned,
-  token,
-  derived;
-}
+enum ControlPath { unsigned, token, derived }
 
 /// What this device will do with an action a paired peer asks for.
 ///
@@ -78,6 +75,67 @@ class NexusStore {
     _data['identity'] = info.toJson();
   }
 
+  // --- Settings that are stored but unreachable ----------------------------
+  //
+  // Seven fields in this file read like knobs and are not. Nothing in the
+  // shipped shell (`main.dart` → `lib/main_ui.dart`) can change any of them, so
+  // a stored value is all any of them has ever held — and four of them are not
+  // read by anything at all. They are listed together here so nobody builds on
+  // one by mistake: a settings-sync UI, a debug panel, or a "why is this off?"
+  // bug report would all be answering a question the app never asks.
+  //
+  // Unreachable — no consumer anywhere:
+  //   broadcastDiscovery  (only ui/settings_view.dart, which is never mounted)
+  //   notificationShare   (ditto)
+  //   locationShare       (ditto)
+  //   voiceInput          (ditto; the mic button does not consult it)
+  //
+  // Unreachable — consumed, but the only switch is in ui/settings_view.dart:
+  //   wakeWord            (read by ui/assistant_view.dart on launch)
+  //   autoUpdate          (read only by the legacy ui/home_shell.dart)
+  //   locationReminders   (read by the location tool gate in assistant_view)
+  //
+  // Giving any of them a live switch is a feature, not a fix: until then the
+  // default in the getter below is the only value a real user ever has.
+
+  /// What the user said to do with changes to a shared setting, when they asked
+  /// not to be asked again: [SettingScope.local] or [SettingScope.all]. Null —
+  /// the default — means the sheet asks on every change.
+  String? settingScope(String key) {
+    final Map<String, dynamic>? all =
+        (_data['settings'] as Map<String, dynamic>?)?['settingScope']
+            as Map<String, dynamic>?;
+    final String? scope = all?[key] as String?;
+    return scope == SettingScope.local || scope == SettingScope.all
+        ? scope
+        : null;
+  }
+
+  void setSettingScope(String key, String scope) {
+    final Map<String, dynamic> all =
+        (_settings()['settingScope'] ??= <String, dynamic>{})
+            as Map<String, dynamic>;
+    all[key] = scope;
+  }
+
+  /// The wall clock (ms) of the newest value this device holds for [key] — its
+  /// own change or the last one it adopted. The receiver compares against this,
+  /// so a frame that arrives late loses to the value somebody actually chose
+  /// after it.
+  int settingStamp(String key) {
+    final Map<String, dynamic>? all =
+        (_data['settings'] as Map<String, dynamic>?)?['settingStamp']
+            as Map<String, dynamic>?;
+    return (all?[key] as num?)?.toInt() ?? 0;
+  }
+
+  void setSettingStamp(String key, int stamp) {
+    final Map<String, dynamic> all =
+        (_settings()['settingStamp'] ??= <String, dynamic>{})
+            as Map<String, dynamic>;
+    all[key] = stamp;
+  }
+
   int get port =>
       ((_data['settings'] as Map<String, dynamic>?)?['port'] as num?)
           ?.toInt() ??
@@ -118,8 +176,7 @@ class NexusStore {
   /// Whether paired devices may browse files on this device. OFF on a fresh
   /// install; the Files UI and the mesh file handlers both gate on this.
   bool get fileShare =>
-      ((_data['settings'] as Map<String, dynamic>?)?['fileShare']
-          as bool?) ??
+      ((_data['settings'] as Map<String, dynamic>?)?['fileShare'] as bool?) ??
       false;
 
   set fileShare(bool value) => _settings()['fileShare'] = value;
@@ -131,8 +188,7 @@ class NexusStore {
           as bool?) ??
       false;
 
-  set notificationShare(bool value) =>
-      _settings()['notificationShare'] = value;
+  set notificationShare(bool value) => _settings()['notificationShare'] = value;
 
   /// Whether this device shares its location with paired devices.
   /// OFF on a fresh install. Distinct from [locationReminders] (which gates
@@ -150,7 +206,7 @@ class NexusStore {
   List<Map<String, dynamic>> get pairingAudit => [
     for (final raw
         in (_data['settings'] as Map<String, dynamic>?)?['pairingAudit']
-            as List? ??
+                as List? ??
             const [])
       if (raw is Map<String, dynamic>)
         raw
@@ -166,8 +222,9 @@ class NexusStore {
         'event': event,
         if (detail.isNotEmpty) 'detail': detail,
       });
-    _settings()['pairingAudit'] =
-        list.length > 100 ? list.sublist(list.length - 100) : list;
+    _settings()['pairingAudit'] = list.length > 100
+        ? list.sublist(list.length - 100)
+        : list;
   }
 
   /// Whether the app checks GitHub for a newer release on startup.
@@ -195,8 +252,7 @@ class NexusStore {
           as bool?) ??
       false;
 
-  set locationReminders(bool value) =>
-      _settings()['locationReminders'] = value;
+  set locationReminders(bool value) => _settings()['locationReminders'] = value;
 
   /// Place reminders ("milk at the store"), stored beside the switch that
   /// gates them. Raw maps — [LocationReminder] converts — under a key of
@@ -204,7 +260,7 @@ class NexusStore {
   List<Map<String, dynamic>> get placeReminders => [
     for (final raw
         in (_data['settings'] as Map<String, dynamic>?)?['placeReminders']
-            as List? ??
+                as List? ??
             const [])
       if (raw is Map<String, dynamic>)
         raw
@@ -232,8 +288,7 @@ class NexusStore {
   /// Whether the microphone button listens. Off on a fresh install;
   /// enabling asks for the microphone the same way it always did.
   bool get voiceInput =>
-      ((_data['settings'] as Map<String, dynamic>?)?['voiceInput']
-          as bool?) ??
+      ((_data['settings'] as Map<String, dynamic>?)?['voiceInput'] as bool?) ??
       false;
 
   set voiceInput(bool value) => _settings()['voiceInput'] = value;
@@ -243,8 +298,7 @@ class NexusStore {
   /// do, so it starts disabled, shows a persistent notification while on,
   /// and processes everything on-device. A stored value always wins.
   bool get wakeWord =>
-      ((_data['settings'] as Map<String, dynamic>?)?['wakeWord']
-          as bool?) ??
+      ((_data['settings'] as Map<String, dynamic>?)?['wakeWord'] as bool?) ??
       false;
 
   set wakeWord(bool value) => _settings()['wakeWord'] = value;
@@ -252,8 +306,7 @@ class NexusStore {
   /// A saved place ("home", "work"): latitude and longitude cached
   /// on-device, set once by standing there. Null until saved.
   (double, double)? savedPlace(String name) {
-    final raw =
-        (_data['settings'] as Map<String, dynamic>?)?['place:$name'];
+    final raw = (_data['settings'] as Map<String, dynamic>?)?['place:$name'];
     if (raw is! Map) return null;
     final lat = (raw['lat'] as num?)?.toDouble();
     final lng = (raw['lng'] as num?)?.toDouble();
@@ -281,9 +334,7 @@ class NexusStore {
   /// 'grid'. Bounded the same way as [fileSort].
   String get fileLayout {
     final raw = (_data['settings'] as Map<String, dynamic>?)?['fileLayout'];
-    return raw is String && const {'list', 'grid'}.contains(raw)
-        ? raw
-        : 'list';
+    return raw is String && const {'list', 'grid'}.contains(raw) ? raw : 'list';
   }
 
   set fileLayout(String value) => _settings()['fileLayout'] = value;
@@ -614,9 +665,10 @@ class NexusStore {
   void recordFetchedFile(Map<String, dynamic> file) {
     final path = file['path']?.toString() ?? '';
     if (path.isEmpty) return;
-    final list =
-        _data.putIfAbsent('recentFetched', () => <Map<String, dynamic>>[])
-            as List;
+    final list = _data.putIfAbsent(
+      'recentFetched',
+      () => <Map<String, dynamic>>[],
+    ) as List;
     list.removeWhere((e) => e is Map && e['path'] == path);
     list.insert(0, {...file, 'fetchedAt': DateTime.now().toIso8601String()});
     if (list.length > 10) list.removeRange(10, list.length);

@@ -577,7 +577,9 @@ mixin _MeshRelay on _MeshBase {
           notifyListeners();
         } catch (error) {
           // Malformed request — drop it; never execute garbage.
-          debugPrint('NEXUS mesh: unreadable peer action from ${msg.from} ($error)');
+          debugPrint(
+            'NEXUS mesh: unreadable peer action from ${msg.from} ($error)',
+          );
         }
 
       case NexusMessage.agentResult:
@@ -659,7 +661,15 @@ mixin _MeshRelay on _MeshBase {
       case NexusMessage.agentProfile:
         if (!encrypted) return;
         await _handleSyncedProfile(msg);
+      case NexusMessage.agentSetting:
+        // A shared setting somebody changed on another device. The handler
+        // decides whether the key is one this build may adopt at all; the relay
+        // only insists the frame was encrypted and addressed here.
+        if (!encrypted) return;
+        await _handleSyncedSetting(msg);
+      // No default arm: a type this build does not know is dropped exactly
+      // like a case that is not listed — which is how a build without
+      // `agent.setting` survives receiving one.
     }
   }
-
 }

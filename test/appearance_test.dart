@@ -9,7 +9,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/appearance.dart';
 import 'package:nexus/core/onboarding.dart';
 import 'package:nexus/main_ui.dart'
-    show NexusAccent, NexusTheme, NexusUiApp, accentFromSeed, kNexusAccent;
+    show
+        NexusAccent,
+        NexusTheme,
+        NexusUiApp,
+        accentFromSeed,
+        kNexusAccent,
+        kNexusDarkModeRow;
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// The green a wheel drag left on the A25 during the phone pass.
@@ -63,6 +69,81 @@ void main() {
       await Appearance.setAccentSeed(_green);
       final SharedPreferences prefs = await SharedPreferences.getInstance();
       expect(prefs.getInt(Appearance.accentKey), _green);
+    });
+  });
+
+  group('brightness, across launches', () {
+    test(
+      'a fresh install follows the system, and is light if it must choose',
+      () async {
+        final ({bool dark, bool followSystem}) theme = await Appearance.theme();
+        expect(theme.followSystem, isTrue);
+        expect(theme.dark, isFalse);
+      },
+    );
+
+    test('both switches round trip under their own keys', () async {
+      await Appearance.setFollowSystem(false);
+      await Appearance.setDarkMode(true);
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      expect(prefs.getBool(Appearance.followSystemKey), isFalse);
+      expect(prefs.getBool(Appearance.darkModeKey), isTrue);
+      final ({bool dark, bool followSystem}) theme = await Appearance.theme();
+      expect(theme.followSystem, isFalse);
+      expect(theme.dark, isTrue);
+    });
+
+    test(
+      'the two are stored apart, so turning Follow system off keeps the choice',
+      () async {
+        // The bug this design avoids: one derived "dark" would forget the
+        // user's own pick while the phone was in charge.
+        await Appearance.setDarkMode(true);
+        await Appearance.setFollowSystem(true);
+        await Appearance.setFollowSystem(false);
+        expect((await Appearance.theme()).dark, isTrue);
+      },
+    );
+
+    testWidgets('the app opens on the stored side, before any tap', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        Onboarding.key: true,
+      });
+      await tester.pumpWidget(
+        const NexusUiApp(initialFollowSystem: false, initialDark: true),
+      );
+      await tester.pumpAndSettle();
+      final MaterialApp app = tester.widget<MaterialApp>(
+        find.byType(MaterialApp),
+      );
+      expect(app.themeMode, ThemeMode.dark);
+    });
+
+    testWidgets('flipping the switch in Settings stores it', (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        Onboarding.key: true,
+      });
+      await tester.pumpWidget(const NexusUiApp(initialFollowSystem: false));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(kNexusDarkModeRow),
+          matching: find.byType(Switch),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      expect(
+        prefs.getBool(Appearance.darkModeKey),
+        isTrue,
+        reason: 'the preference a relaunch reads',
+      );
     });
   });
 

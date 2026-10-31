@@ -1,13 +1,172 @@
 part of 'mesh_service.dart';
 
+/// One shared setting this device adopted from a peer, with what it replaced.
+///
+/// The notice bar reads this: what changed, who sent it, and the value Undo puts
+/// back. It is one slot rather than a queue — the second setting to arrive
+/// replaces the notice for the first, the same way a second toast does.
+class AdoptedSetting {
+  const AdoptedSetting({
+    required this.setting,
+    required this.value,
+    required this.previous,
+    required this.fromName,
+  });
+
+  final SharedSetting setting;
+
+  /// What the peer's value was, and what this device held before it arrived.
+  final Object? value;
+  final Object? previous;
+
+  /// The name of the device it came from, as this device knows it.
+  final String fromName;
+}
+
 /// Sync: the knowledge a paired device shares — a taught phrase, a fact, a
-/// reminder, a "which …?" answer, a renamed profile — sent by the device
-/// that learned it and adopted here without an approval gate.
+/// reminder, a "which …?" answer, a renamed profile, a shared setting — sent by
+/// the device that learned or chose it, and adopted here without an approval
+/// gate wherever that is safe.
 ///
 /// Split out of `mesh_service.dart` without touching the code. The live
 /// callbacks the assistant wires in and the handlers that answer them now
 /// live side by side, which is the point: one concern, one file.
 mixin _MeshSync on _MeshBase {
+  /// The last shared setting a peer changed here, for the notice with Undo.
+  /// Null when nothing is waiting to be acknowledged.
+  AdoptedSetting? lastAdoptedSetting;
+
+  /// What this device currently holds for a shared setting.
+  Object? _readSharedSetting(SharedSetting setting) => switch (setting) {
+    SharedSetting.systemPrompt => syncedSystemPrompt.text,
+    SharedSetting.alwaysMerge => store.alwaysMerge,
+  };
+
+  /// Writes one, through whichever owner keeps it. The system prompt lives in
+  /// its own preference; the clipboard policy lives in the store.
+  Future<void> _writeSharedSetting(
+    SharedSetting setting,
+    Object? value,
+  ) async => switch (setting) {
+    SharedSetting.systemPrompt => await syncedSystemPrompt.setText(
+      value?.toString() ?? '',
+    ),
+    SharedSetting.alwaysMerge => () async {
+      store.alwaysMerge = value == true;
+      _queueSave();
+    }(),
+  };
+
+  /// Records that this device just changed [setting] itself.
+  ///
+  /// The stamp is what makes "last write wins" mean the last write rather than
+  /// the last packet: without it a frame a peer sent before the user's change
+  /// would still beat the change when it arrived late.
+  void noteLocalSettingChange(SharedSetting setting) {
+    store.setSettingStamp(setting.key, DateTime.now().millisecondsSinceEpoch);
+    _queueSave();
+  }
+
+  /// Sends one shared setting to every paired device, and answers how many took
+  /// it.
+  ///
+  /// Only a [SharedSetting] can be sent — the enum is the whitelist — so there is
+  /// no code path here that could put a permission on the wire. The local stamp
+  /// moves first: this device is now the newest holder of the value, whether or
+  /// not anybody is listening.
+  Future<int> broadcastSetting(SharedSetting setting, Object? value) async {
+    if (!setting.accepts(value)) {
+      debugPrint('NEXUS settings: refusing to send ${setting.key}');
+      return 0;
+    }
+    final int ts = DateTime.now().millisecondsSinceEpoch;
+    store.setSettingStamp(setting.key, ts);
+    _queueSave();
+    final peers = _paired.values.toList();
+    if (peers.isEmpty) return 0;
+    var sent = 0;
+    await Future.wait(
+      peers.map((peer) async {
+        final bool ok = await _sendEnc(
+          peer,
+          NexusMessage(
+            type: NexusMessage.agentSetting,
+            from: identity.id,
+            to: peer.id,
+            payload: {'key': setting.key, 'value': value},
+            id: _newId(),
+            ts: ts,
+          ),
+        );
+        if (ok) sent++;
+      }),
+    );
+    return sent;
+  }
+
+  /// A paired device changed one shared setting.
+  ///
+  /// Three refusals happen before anything is written: the key is not a
+  /// [SharedSetting] (so pairing, file sharing, clipboard sync, the agent policy
+  /// and the wake word can never arrive here), the value is not the shape that
+  /// key stores, and the frame is older than what this device already holds.
+  /// What is adopted is never re-broadcast — that silence is what ends the loop.
+  @override
+  Future<void> _handleSyncedSetting(NexusMessage msg) async {
+    final String key = msg.payload['key']?.toString() ?? '';
+    final SharedSetting? setting = SharedSetting.byKey(key);
+    if (setting == null) {
+      debugPrint(
+        "NEXUS settings: ignored '$key' from ${msg.from} — not shared",
+      );
+      return;
+    }
+    final Object? value = msg.payload['value'];
+    if (!setting.accepts(value)) {
+      debugPrint('NEXUS settings: ignored ${setting.key} — wrong value type');
+      return;
+    }
+    if (msg.ts <= store.settingStamp(setting.key)) return;
+    final Object? previous = _readSharedSetting(setting);
+    await _writeSharedSetting(setting, value);
+    store.setSettingStamp(setting.key, msg.ts);
+    _queueSave();
+    if (previous != value) {
+      lastAdoptedSetting = AdoptedSetting(
+        setting: setting,
+        value: value,
+        previous: previous,
+        fromName: _paired[msg.from]?.name ?? msg.from,
+      );
+    }
+    notifyListeners();
+  }
+
+  /// Puts back what the last adopted setting replaced.
+  ///
+  /// Local only, deliberately: Undo is this device disagreeing with the value it
+  /// was handed, not a new value for the other devices to adopt. The stamp moves
+  /// to now so a duplicate of the frame just undone cannot arrive late and win.
+  Future<void> undoAdoptedSetting() async {
+    final AdoptedSetting? adopted = lastAdoptedSetting;
+    if (adopted == null) return;
+    lastAdoptedSetting = null;
+    await _writeSharedSetting(adopted.setting, adopted.previous);
+    store.setSettingStamp(
+      adopted.setting.key,
+      DateTime.now().millisecondsSinceEpoch,
+    );
+    _queueSave();
+    notifyListeners();
+  }
+
+  /// Drops the notice without changing anything.
+  void dismissAdoptedSetting() {
+    if (lastAdoptedSetting == null) return;
+    lastAdoptedSetting = null;
+    notifyListeners();
+  }
+
   /// Fired when a paired device teaches a phrase and syncs it here. The view
   /// wires this into the live [CommandService] so the learned meaning is
   /// usable immediately, not only after a restart. Receivers never re-broadcast
@@ -310,5 +469,4 @@ mixin _MeshSync on _MeshBase {
     );
     notifyListeners();
   }
-
 }
