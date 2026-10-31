@@ -212,7 +212,7 @@ void main() {
       await tester.tap(row);
       await tester.pumpAndSettle();
 
-      expect(find.text('Peer requests'), findsWidgets);
+      expect(find.text('Device requests'), findsWidgets);
       expect(find.text('Ask first'), findsWidgets);
     });
 

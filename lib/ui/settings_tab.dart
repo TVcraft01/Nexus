@@ -607,7 +607,7 @@ class _SettingsTabState extends State<SettingsTab> {
           const NexusSectionLabel('Theme', first: true),
           NexusRow(
             title: 'Follow system',
-            subtitle: 'Use your phone’s light and dark setting',
+            subtitle: 'Use your device’s light and dark setting',
             leading: const NexusIconTile(Icons.brightness_auto_outlined),
             trailing: Switch(
               value: widget.followSystem,
@@ -624,7 +624,7 @@ class _SettingsTabState extends State<SettingsTab> {
           NexusRow(
             title: 'Dark mode',
             subtitle: widget.followSystem
-                ? 'From your phone — turn off Follow system to choose'
+                ? 'From your device — turn off Follow system to choose'
                 : 'Neutral greys either way — your accent stays for actions',
             leading: const NexusIconTile(Icons.dark_mode_outlined),
             key: kNexusDarkModeRow,
@@ -666,7 +666,7 @@ class _SettingsTabState extends State<SettingsTab> {
           ),
           NexusRow(
             title: 'Customization',
-            subtitle: 'App icon — and what else you can change',
+            subtitle: 'The icon Nexus shows on your home screen',
             leading: const NexusIconTile(Icons.tune_rounded),
             trailing: const NexusChevron(),
             onTap: () => Navigator.of(context).push(
@@ -704,11 +704,15 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
             ),
           ),
+          // Not a switch and not a setting: there is no cloud to turn on. The
+          // row says so once and stays out of the Theme list's way — an "Off"
+          // state on something with no control reads as a setting that is
+          // stuck.
           NexusRow(
-            title: 'Cloud sync',
-            subtitle: 'No account, no server copy',
+            title: 'Cloud',
+            subtitle: 'No account and no server copy — your chats stay here',
             leading: const NexusIconTile(Icons.cloud_off_outlined),
-            trailing: Text('Off', style: NexusType.rowMeta(c)),
+            trailing: const NexusChevron(),
             onTap: _showCloudOffNote,
           ),
           // Copy and paste across devices is the one capability here that acts
@@ -784,7 +788,7 @@ class _SettingsTabState extends State<SettingsTab> {
           if (widget.mesh != null)
             NexusRow(
               key: kNexusPeerRequestsRow,
-              title: 'Peer requests',
+              title: 'Device requests',
               subtitle: 'What a paired device may ask this one to do',
               leading: const NexusIconTile(Icons.notifications_active_rounded),
               trailing: const NexusChevron(),
@@ -810,8 +814,8 @@ class _SettingsTabState extends State<SettingsTab> {
             const NexusSectionLabel('This PC'),
             NexusRow(
               key: kNexusPairPhoneRow,
-              title: 'Pair Phone',
-              subtitle: 'Show a code your phone scans — no address to type',
+              title: 'Pair a device',
+              subtitle: 'Show a code another device scans — no address to type',
               leading: const NexusIconTile(Icons.phone_iphone_rounded),
               trailing: const NexusChevron(),
               onTap: () => Navigator.of(context).push(
@@ -1421,14 +1425,6 @@ class _CustomizationPageState extends State<CustomizationPage> {
             NexusSectionLabel(section.label),
             ...section.rows,
           ],
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 24, 4, 0),
-            child: Text(
-              'Accent colour, type and motion join this page the same way — one '
-              'row each.',
-              style: NexusType.rowMeta(c).copyWith(height: 1.5),
-            ),
-          ),
         ],
       ),
     );

@@ -46,7 +46,7 @@ class AiStatus {
     AiSource.onDevice =>
       'On-Device AI: ${model ?? 'this device'} (Loaded)',
     AiSource.pc => 'PC (Ollama)',
-    AiSource.none => 'No AI: Download a model in Settings.',
+    AiSource.none => 'No AI yet. Download a model.',
   };
 
   /// One line under the row saying what that means for the user, in the order

@@ -29,7 +29,7 @@ abstract final class _Dark {
   static const separator = Color(0xFF232D3D);
   static const textPrimary = Color(0xFFE8ECF2);
   static const textSecondary = Color(0xFF8A94A6);
-  static const textTertiary = Color(0xFF6B7686);
+  static const textTertiary = Color(0xFF828E9E);
   static const accent = Color(0xFF0A84FF);
   static const accentStrong = Color(0xFF409CFF);
   static const onAccent = Color(0xFFFFFFFF);
@@ -48,7 +48,7 @@ abstract final class _Light {
   static const separator = Color(0xFFDCE1E8);
   static const textPrimary = Color(0xFF111820);
   static const textSecondary = Color(0xFF5A6474);
-  static const textTertiary = Color(0xFF6E7887);
+  static const textTertiary = Color(0xFF636D7A);
   static const accent = Color(0xFF007AFF);
   static const accentStrong = Color(0xFF0062CC);
   static const onAccent = Color(0xFFFFFFFF);

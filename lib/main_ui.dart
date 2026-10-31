@@ -741,7 +741,10 @@ abstract final class NexusLayout {
 
   /// The diameter of the composer's primary circle (mic, send, live). One
   /// size for the three of them: the button changes glyph, not footprint.
-  static const double button = 44;
+  ///
+  /// 48, the smallest target a thumb hits reliably. It was 44, which measured
+  /// 43.8 on the phone and asked a finger to be more precise than the rules do.
+  static const double button = 48;
 
   /// The one corner radius family: pills, sheets and tiles all come from it.
   static const Radius pill = Radius.circular(26);
@@ -2361,7 +2364,12 @@ class _NexusShellState extends State<NexusShell> {
     // app was given rather than by a device category.
     final Size window = MediaQuery.sizeOf(context);
     final double width = window.width;
-    final bool wide = nexusIsDesktopApp || width >= kNexusWideBreakpoint;
+    // Width alone, on purpose. A desktop window dragged narrow is the same
+    // problem as a phone: 280 points of sidebar in a 360-point window leaves
+    // the page a column one character wide. The desktop app used to take the
+    // wide layout at any width, which is why that window drew its content as
+    // a vertical ribbon instead of switching to the tab bar the phone uses.
+    final bool wide = width >= kNexusWideBreakpoint;
     // A landscape phone with the keyboard up has about 140dp of body left, and
     // a sidebar that wants twice that. The keys are the edge the user is using,
     // so the sidebar steps aside until they are put away — the same rule the
@@ -2734,12 +2742,19 @@ class _WideNavRow extends StatelessWidget {
                   color: selected ? c.accent : c.textMuted,
                 ),
                 const SizedBox(width: 11),
-                Text(
-                  spec.label,
-                  style: NexusType.rowTitle(c).copyWith(
-                    fontSize: 14,
-                    color: selected ? c.accent : c.textStrong,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                // The sidebar is a fixed 280 points, so the label is what
+                // gives way when the text is large: at 200% "Settings" is
+                // wider than the column and used to push the row past it.
+                Expanded(
+                  child: Text(
+                    spec.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: NexusType.rowTitle(c).copyWith(
+                      fontSize: 14,
+                      color: selected ? c.accent : c.textStrong,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                    ),
                   ),
                 ),
               ],
@@ -2807,7 +2822,15 @@ class NexusTabBar extends StatelessWidget {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: NexusLayout.content),
               child: SizedBox(
-                height: NexusLayout.tabBar,
+                // The label under each icon follows the user's text size, so
+                // the bar has to follow it too: at 200% a fixed 56 clips the
+                // word and takes the tap target with it. Only the label's own
+                // line grows, so the icons stay on one baseline across the row.
+                height:
+                    NexusLayout.tabBar +
+                    NexusType.tab(c).fontSize! *
+                        1.3 *
+                        (MediaQuery.textScalerOf(context).scale(1.0) - 1),
                 child: Row(
                   children: <Widget>[
                     for (int i = 0; i < tabs.length; i++)
@@ -3311,7 +3334,7 @@ Future<bool> showNexusPermissionDialog(
 /// The About section's one update control. It asks GitHub for the latest
 /// release and, when there is one, offers its APK — it never sends the user to
 /// the releases page to find the file themselves.
-const String kNexusCheckUpdatesRow = 'Check for Updates';
+const String kNexusCheckUpdatesRow = 'Check for updates';
 
 /// Offers [info]'s APK in a dialog, and opens its download URL only on a yes.
 ///
@@ -3569,7 +3592,7 @@ class _AccentRow extends StatelessWidget {
       child: Semantics(
         container: true,
         button: true,
-        label: 'Accent colour. ${selected.label}. Opens the colour wheel.',
+        label: 'Accent color. ${selected.label}. Opens the color wheel.',
         child: Material(
           type: MaterialType.transparency,
           child: InkWell(
@@ -3603,7 +3626,7 @@ class _AccentRow extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: <Widget>[
                         Text(
-                          'Accent colour',
+                          'Accent color',
                           style: NexusType.rowTitle(c)
                               .copyWith(fontWeight: FontWeight.w600),
                         ),
@@ -5437,31 +5460,51 @@ class _FilesTabState extends State<FilesTab> {
                 style: NexusType.rowMeta(c).copyWith(height: 1.4),
               ),
             ),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          // A Wrap, not a Row: at 200% text on a 360-point window the sort
+          // button is wider than what the heading leaves, and a Row can only
+          // overflow there. A Wrap puts it on its own line instead, which is
+          // the same affordance one row further down.
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: <Widget>[
-              const Expanded(child: NexusSectionLabel('Local Files')),
+              const NexusSectionLabel('Local Files'),
               Padding(
                 padding: const EdgeInsets.only(top: 12, right: 2),
-                child: TextButton.icon(
+                // Built here rather than with TextButton.icon: that helper
+                // puts the label in a Row that cannot shrink, so at 200% the
+                // words run past the button and the button past the window.
+                // A Flexible label truncates instead, and keeps the tap.
+                child: TextButton(
                   key: const ValueKey<String>('files-sort-ai'),
                   onPressed: _folders == null || _allEntries.isEmpty || _sorting
                       ? null
                       : () => unawaited(_sortWithAi()),
-                  icon: _sorting
-                      ? const SizedBox(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      if (_sorting)
+                        const SizedBox(
                           width: 14,
                           height: 14,
                           child: CircularProgressIndicator(strokeWidth: 1.8),
                         )
-                      : const Icon(Icons.auto_awesome_rounded, size: 15),
-                  label: Text(
-                    _aiGroups == null ? 'Sort with AI' : 'Newest first',
-                    style: NexusType.rowMeta(c).copyWith(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: c.accent,
-                    ),
+                      else
+                        const Icon(Icons.auto_awesome_rounded, size: 15),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          _aiGroups == null ? 'Sort with AI' : 'Newest first',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: NexusType.rowMeta(c).copyWith(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: c.accent,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   style: TextButton.styleFrom(
                     foregroundColor: c.accent,
@@ -5589,7 +5632,7 @@ class _ConnectedDeviceRow extends StatelessWidget {
       child: Row(
         children: <Widget>[
           NexusIconTile(icon),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -5618,13 +5661,28 @@ class _ConnectedDeviceRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          NexusStatusDot(online: device.isThisDevice || online),
-          const SizedBox(width: 6),
-          Text(
-            device.isThisDevice
-                ? 'This phone'
-                : (online ? 'Online' : 'Offline'),
-            style: NexusType.rowMeta(c),
+          // The state keeps its word at every text size — colour alone would
+          // fail the same rule it always did — but the word is allowed to
+          // truncate when 200% text and a 360-point window leave no room for
+          // it next to the name.
+          Flexible(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                NexusStatusDot(online: device.isThisDevice || online),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    device.isThisDevice
+                        ? 'This phone'
+                        : (online ? 'Online' : 'Offline'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: NexusType.rowMeta(c),
+                  ),
+                ),
+              ],
+            ),
           ),
           // A chevron only where there is a place to go: it is the row's own
           // promise that the tap does something.
@@ -6563,7 +6621,7 @@ class _PeerPolicySheetState extends State<_PeerPolicySheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            Text('Peer requests', style: NexusType.pageTitle(c)),
+            Text('Device requests', style: NexusType.pageTitle(c)),
             const SizedBox(height: 8),
             Text(kNexusPeerRequestsExplainer, style: NexusType.lede(c)),
             const SizedBox(height: 16),
@@ -6916,7 +6974,7 @@ class _DevicesTabState extends State<DevicesTab> {
           // The mesh's memory, in one row: what the room could run if the
           // models were chosen by the strongest device rather than by the one
           // in the user's hand.
-          const NexusSectionLabel('Mesh'),
+          const NexusSectionLabel('Pairing'),
           // Off until the user says otherwise, and the switch is here rather
           // than buried in Settings because this is the screen that owns the
           // list it changes. Off is not a hidden default: the subtitle says
@@ -6924,7 +6982,7 @@ class _DevicesTabState extends State<DevicesTab> {
           if (mesh != null) ...<Widget>[
             NexusRow(
               key: kNexusMeshPairingToggle,
-              title: 'Mesh pairing',
+              title: 'Pairing',
               subtitle: mesh.store.pairingEnabled
                   ? 'Other devices can pair with this one from its code.'
                   : 'Off — no device can pair with this one until you turn '
@@ -6957,12 +7015,11 @@ class _DevicesTabState extends State<DevicesTab> {
           ],
           NexusRow(
             key: const ValueKey<String>('mesh-total-ram'),
-            title: 'Mesh Total RAM',
+            title: 'Total memory',
             subtitle: _meshRam == null
-                ? 'No device has shared its memory yet'
+                ? 'No device has shared its memory yet.'
                 : 'Across $_meshRamDevices '
-                      '${_meshRamDevices == 1 ? 'device' : 'devices'} on this '
-                      'mesh',
+                      '${_meshRamDevices == 1 ? 'paired device' : 'paired devices'}',
             leading: const NexusIconTile(Icons.memory_rounded),
             trailing: Text(
               _meshRam == null ? '—' : DeviceMemory.label(_meshRam),
@@ -7434,7 +7491,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                       child: _DeviceCardAction(
                         key: ValueKey<String>('send-${_device.id}'),
                         icon: Icons.upload_file_rounded,
-                        label: 'Send File',
+                        label: 'Send file',
                         onTap: widget.online && !_busy ? _sendFile : null,
                       ),
                     ),
@@ -7488,7 +7545,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Notification Sync',
+                          'Notification sync',
                           style: NexusType.rowTitle(c).copyWith(fontSize: 13.5),
                         ),
                       ),
@@ -7847,7 +7904,7 @@ const String kNexusNotConnected = 'Not connected · pair again';
 /// The capability line, in each of its states. Named here so the card, the
 /// tests and this note cannot drift into three spellings of one fact.
 const String kNexusCapsOffline = 'Offline';
-const String kNexusCapsNoneYet = 'No capabilities announced yet';
+const String kNexusCapsNoneYet = 'No capabilities announced yet.';
 const String kNexusCapsNoneAnnounced = 'Reports no capabilities';
 const String kNexusCapsVerified = 'Verified';
 const String kNexusCapsAssumed = 'As announced';
@@ -8487,12 +8544,12 @@ class _PairingOffCard extends StatelessWidget {
               children: <Widget>[
                 Icon(Icons.link_off_rounded, size: 18, color: c.accent),
                 const SizedBox(width: 8),
-                Text('Mesh pairing is off', style: NexusType.rowTitle(c)),
+                Text('Pairing is off', style: NexusType.rowTitle(c)),
               ],
             ),
             const SizedBox(height: 8),
             Text(
-              'Another device can only pair with this one while mesh pairing is '
+              'Another device can only pair with this one while pairing is '
               'on. Turning it on does not pair anything by itself — it lets this '
               'page\u2019s code be accepted.',
               style: NexusType.rowMeta(c).copyWith(height: 1.5),
@@ -8501,7 +8558,7 @@ class _PairingOffCard extends StatelessWidget {
             OutlinedButton(
               key: kNexusPairingOffTurnOn,
               onPressed: onTurnOn,
-              child: const Text('Turn on mesh pairing'),
+              child: const Text('Turn on pairing'),
             ),
           ],
         ),
@@ -8682,7 +8739,7 @@ class PairPhonePageState extends State<PairPhonePage> {
     final String payload = currentPayload;
     return Scaffold(
       backgroundColor: c.background,
-      appBar: AppBar(title: const Text('Pair Phone')),
+      appBar: AppBar(title: const Text('Pair a device')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
         children: <Widget>[
@@ -8876,16 +8933,49 @@ class _PairScanPageState extends State<PairScanPage> {
       body: Stack(
         children: <Widget>[
           Positioned.fill(child: camera(context, _onCode)),
-          // The frame, so it is obvious where to point the camera.
-          Center(
-            child: Container(
-              width: 240,
-              height: 240,
-              decoration: BoxDecoration(
-                border: Border.all(color: context.ui.accent, width: 2.5),
-                borderRadius: BorderRadius.circular(24),
-              ),
-            ),
+          // The frame, so it is obvious where to point the camera, and the
+          // sentence that says what to do with it.
+          //
+          // One block, not two: with the frame centred and the sentence pinned
+          // to the bottom of the screen, a short window — a phone held
+          // sideways — draws the words across the frame's lower edge. The
+          // frame gives up height to the sentence rather than growing into it.
+          LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) {
+              final double side = math.min(
+                240,
+                math.max(120, constraints.maxHeight - 140),
+              );
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Container(
+                      width: side,
+                      height: side,
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: context.ui.accent,
+                          width: 2.5,
+                        ),
+                        borderRadius: BorderRadius.circular(24),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Text(
+                        'Point at the QR code on the other device',
+                        textAlign: TextAlign.center,
+                        style: NexusType.rowMeta(
+                          context.ui,
+                        ).copyWith(color: Colors.white70),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
           if (_notice != null)
             Positioned(
@@ -8912,16 +9002,6 @@ class _PairScanPageState extends State<PairScanPage> {
                 ),
               ),
             ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 44,
-            child: Text(
-              'Point at the QR code on the other device',
-              textAlign: TextAlign.center,
-              style: NexusType.rowMeta(c).copyWith(color: Colors.white70),
-            ),
-          ),
         ],
       ),
     );

@@ -707,7 +707,7 @@ void main() {
   ) async {
     await _pumpFiles(tester, _FakeMesh(const []));
 
-    expect(find.text('No devices yet'), findsOneWidget);
+    expect(find.text('No paired devices yet'), findsOneWidget);
     expect(find.text('Send file…'), findsNothing);
     expect(
       find.byTooltip('More'),

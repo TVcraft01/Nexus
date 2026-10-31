@@ -810,10 +810,10 @@ class _FilesViewState extends State<FilesView> {
                 padding: EdgeInsets.all(NexusSpace.page),
                 child: NexusEmptyState(
                   icon: Icons.folder_rounded,
-                  title: 'No devices yet',
+                  title: 'No paired devices yet',
                   message:
-                      'Pair a device and its home folder becomes browsable '
-                      'here — from LAN at home, or anywhere via Tailscale.',
+                      'Pair a device in Devices and its folder opens here, '
+                      'over your own network.',
                 ),
               ),
             ),
