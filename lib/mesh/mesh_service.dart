@@ -29,8 +29,10 @@ import '../core/qr_pairing.dart';
 import '../core/protocol.dart';
 import '../core/query_log.dart';
 import '../core/serial_transport.dart';
+import '../core/shared_settings.dart';
 import '../core/storage_roots.dart' as storage;
 import '../core/store.dart';
+import '../core/system_prompt.dart';
 import '../core/version.dart';
 import '../core/watchdog_latch.dart';
 import 'connection_supervisor.dart';
@@ -379,7 +381,6 @@ abstract class _MeshBase extends ChangeNotifier
   /// nothing is waiting.
   ClipEntry? lastIncomingClip;
 
-
   List<String>? _ipsCache;
   DateTime? _ipsCacheAt;
 
@@ -388,7 +389,6 @@ abstract class _MeshBase extends ChangeNotifier
   // server is deployed. Kept as a field so wiring it up has one owner.
   // ignore: unused_field
   late final RelayClient _relay;
-
 
   String? lastNotice; // honest operational notices ("port was busy, using X")
 
@@ -446,10 +446,6 @@ abstract class _MeshBase extends ChangeNotifier
   /// The last `up` payload relayed from a remote (or local) cable node:
   /// `{from, name, data}`. Read by the UI to show what a node reported.
   Map<String, dynamic>? lastSerialUp;
-
-
-
-
 
   List<SerialDevice> get remoteSerialDevices {
     final now = DateTime.now();
@@ -553,7 +549,6 @@ abstract class _MeshBase extends ChangeNotifier
     _queueSave();
   }
 
-
   /// Confirms a serial node as paired (persists its state on the node).
   Future<void> pairSerialDevice(String id) async {
     await _serial?.pair(id);
@@ -651,16 +646,6 @@ abstract class _MeshBase extends ChangeNotifier
     notifyListeners();
   }
 
-
-
-
-
-
-
-
-
-
-
   /// Records a session key for [id] without a handshake, for the tests that ask
   /// about [agentFrameProven] one condition at a time.
   @visibleForTesting
@@ -682,11 +667,6 @@ abstract class _MeshBase extends ChangeNotifier
       pairingSecret: 'debug-pair-ABCD-2345',
     );
   }
-
-
-
-
-
 
   int get port => store.port;
 
@@ -1304,8 +1284,6 @@ abstract class _MeshBase extends ChangeNotifier
   // Messaging
   // ---------------------------------------------------------------------
 
-
-
   void _notePeerVersion(String peerId, Object? rawVersion) {
     if (!_paired.containsKey(peerId) ||
         rawVersion is! String ||
@@ -1589,7 +1567,6 @@ abstract class _MeshBase extends ChangeNotifier
       _heartbeatLatch.release();
     }
   }
-
 
   // ---------------------------------------------------------------------
   // Clipboard — smart delayed sync
@@ -1894,6 +1871,27 @@ abstract class _MeshBase extends ChangeNotifier
   Future<void> _handleSyncedReminder(NexusMessage msg);
   Future<void> _handleSyncedDefault(NexusMessage msg);
   Future<void> _handleSyncedProfile(NexusMessage msg);
+
+  /// A paired device changed one shared setting. Implemented by [_MeshSync],
+  /// which owns the whitelist: a key that is not a [SharedSetting] is refused
+  /// there, not here.
+  Future<void> _handleSyncedSetting(NexusMessage msg);
+
+  /// The standing instruction this device applies to every turn. A getter so a
+  /// test can hand the mesh its own instance instead of the process-wide one
+  /// (two meshes in one test process would otherwise share it).
+  @visibleForTesting
+  SystemPrompt get syncedSystemPrompt => SystemPrompt.instance;
+
+  /// Hands the setting handler one frame, without a socket.
+  ///
+  /// For tests that are about what a frame *means* — a forbidden key, an old
+  /// timestamp — rather than about the transport that delivered it. The
+  /// transport's own path (encrypted, from a paired peer) is what pairing and
+  /// relay tests cover.
+  @visibleForTesting
+  Future<void> debugDeliverSetting(NexusMessage msg) =>
+      _handleSyncedSetting(msg);
 
   /// Dispatches one authenticated frame. Implemented by [_MeshRelay]: the
   /// transport decides who proved themselves, the relay decides what it means.

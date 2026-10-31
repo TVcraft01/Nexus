@@ -153,6 +153,7 @@ import 'mesh/file_transfer_service.dart'
 import 'mesh/mesh_lifecycle.dart' show MeshLifecycleObserver;
 import 'mesh/mesh_service.dart'
     show
+        AdoptedSetting,
         ClipEntry,
         IncomingAgentAction,
         MeshService,
@@ -174,6 +175,7 @@ import 'ui/remote_files_page.dart' show RemoteFilesPage;
 import 'ui/server_agent_page.dart';
 import 'ui/text_file_page.dart';
 import 'ui/trackpad_page.dart';
+import 'core/shared_settings.dart';
 import 'core/speech.dart';
 import 'core/system_actions.dart';
 import 'mesh/updater.dart';
@@ -186,6 +188,7 @@ part 'ui/composer.dart';
 part 'ui/connections_view.dart';
 part 'ui/home_tab.dart';
 part 'ui/live_mode_page.dart';
+part 'ui/setting_share.dart';
 part 'ui/settings_tab.dart';
 
 // ---------------------------------------------------------------------------
@@ -2471,7 +2474,13 @@ class _NexusShellState extends State<NexusShell> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          if (widget.mesh != null) NexusClipboardBanner(mesh: widget.mesh!),
+          if (widget.mesh != null) ...<Widget>[
+            NexusClipboardBanner(mesh: widget.mesh!),
+            // A setting a peer changed here says so on every tab, for the same
+            // reason: it is a fact about the app, not about the screen that
+            // happens to be open.
+            NexusSettingNoticeBar(mesh: widget.mesh!),
+          ],
           Expanded(child: pages),
         ],
       ),

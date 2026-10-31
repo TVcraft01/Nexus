@@ -64,6 +64,8 @@ class NexusMessage {
       'agent.default'; // device → peers: a "which …?" answer just remembered
   static const agentProfile =
       'agent.profile'; // device → peers: the user/assistant were renamed
+  static const agentSetting =
+      'agent.setting'; // device → peers: one shared setting changed here
   static const brainAsk =
       'brain.ask'; // peer → device: answer a conversation question for me
   static const brainAnswer =

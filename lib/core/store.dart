@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'identity.dart';
 import 'memory.dart';
+import 'shared_settings.dart';
 
 /// Which key proved a control request the file link accepted.
 ///
@@ -76,7 +77,7 @@ class NexusStore {
 
   // --- Settings that are stored but unreachable ----------------------------
   //
-  // Eight fields in this file read like knobs and are not. Nothing in the
+  // Seven fields in this file read like knobs and are not. Nothing in the
   // shipped shell (`main.dart` → `lib/main_ui.dart`) can change any of them, so
   // a stored value is all any of them has ever held — and four of them are not
   // read by anything at all. They are listed together here so nobody builds on
@@ -90,13 +91,50 @@ class NexusStore {
   //   voiceInput          (ditto; the mic button does not consult it)
   //
   // Unreachable — consumed, but the only switch is in ui/settings_view.dart:
-  //   alwaysMerge         (read by the clipboard pacing in this file's peer)
   //   wakeWord            (read by ui/assistant_view.dart on launch)
   //   autoUpdate          (read only by the legacy ui/home_shell.dart)
   //   locationReminders   (read by the location tool gate in assistant_view)
   //
   // Giving any of them a live switch is a feature, not a fix: until then the
   // default in the getter below is the only value a real user ever has.
+
+  /// What the user said to do with changes to a shared setting, when they asked
+  /// not to be asked again: [SettingScope.local] or [SettingScope.all]. Null —
+  /// the default — means the sheet asks on every change.
+  String? settingScope(String key) {
+    final Map<String, dynamic>? all =
+        (_data['settings'] as Map<String, dynamic>?)?['settingScope']
+            as Map<String, dynamic>?;
+    final String? scope = all?[key] as String?;
+    return scope == SettingScope.local || scope == SettingScope.all
+        ? scope
+        : null;
+  }
+
+  void setSettingScope(String key, String scope) {
+    final Map<String, dynamic> all =
+        (_settings()['settingScope'] ??= <String, dynamic>{})
+            as Map<String, dynamic>;
+    all[key] = scope;
+  }
+
+  /// The wall clock (ms) of the newest value this device holds for [key] — its
+  /// own change or the last one it adopted. The receiver compares against this,
+  /// so a frame that arrives late loses to the value somebody actually chose
+  /// after it.
+  int settingStamp(String key) {
+    final Map<String, dynamic>? all =
+        (_data['settings'] as Map<String, dynamic>?)?['settingStamp']
+            as Map<String, dynamic>?;
+    return (all?[key] as num?)?.toInt() ?? 0;
+  }
+
+  void setSettingStamp(String key, int stamp) {
+    final Map<String, dynamic> all =
+        (_settings()['settingStamp'] ??= <String, dynamic>{})
+            as Map<String, dynamic>;
+    all[key] = stamp;
+  }
 
   int get port =>
       ((_data['settings'] as Map<String, dynamic>?)?['port'] as num?)

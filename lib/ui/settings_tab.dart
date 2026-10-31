@@ -30,6 +30,10 @@ const Key kNexusClipboardSyncToggle = Key('nexus-clipboard-sync-toggle');
 /// the next copy.
 const Key kNexusSendClipboard = Key('nexus-send-clipboard');
 
+/// The switch behind whether a clip is pushed immediately to every paired
+/// device, or after the delay and only to devices in use.
+const Key kNexusAlwaysMergeToggle = Key('nexus-always-merge-toggle');
+
 /// The row that opens the Server Agent — the only screen in the app that can
 /// change a machine other than this one.
 const Key kNexusServerAgentRow = Key('nexus-server-agent-row');
@@ -479,6 +483,59 @@ class _SettingsTabState extends State<SettingsTab> {
   /// one send per tap, and the row shows that it is working.
   bool _sendingClip = false;
 
+  /// Asks where a changed shared setting should go, then sends it if the answer
+  /// is "all devices" — or does whatever "remember my choice" already said.
+  ///
+  /// The local write has already happened by the time this is called: this is
+  /// only the question of who else should hear about it. A dismissed sheet
+  /// therefore means "this device only", and the stamp still moves, so a frame
+  /// a peer sent before the change cannot arrive later and beat it.
+  Future<void> _shareSetting(SharedSetting setting, Object? value) async {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null) return;
+    mesh.noteLocalSettingChange(setting);
+    String? scope = mesh.store.settingScope(setting.key);
+    if (scope == null) {
+      final SettingScopeChoice? choice = await showSettingScopeSheet(
+        context,
+        setting: setting,
+        online: mesh.onlineCount,
+      );
+      if (choice == null || !mounted) return;
+      scope = choice.scope;
+      if (choice.remember) {
+        mesh.store.setSettingScope(setting.key, scope);
+        unawaited(mesh.store.save());
+      }
+    }
+    if (scope != SettingScope.all) return;
+    final int sent = await mesh.broadcastSetting(setting, value);
+    if (!mounted) return;
+    _note(
+      sent == 0
+          ? 'No paired device took it. Check that one is online.'
+          : 'Sent to $sent ${sent == 1 ? 'device' : 'devices'}.',
+    );
+  }
+
+  /// One snack bar for this screen, replacing whatever it was saying.
+  void _note(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Turns immediate clipboard sending on or off, then asks who else should
+  /// know. The mesh reads the flag per copy, so the local write is the whole
+  /// change on this device.
+  Future<void> _setAlwaysMerge(bool value) async {
+    final MeshService? mesh = widget.mesh;
+    if (mesh == null || mesh.store.alwaysMerge == value) return;
+    setState(() => mesh.store.alwaysMerge = value);
+    unawaited(mesh.store.save());
+    await _shareSetting(SharedSetting.alwaysMerge, value);
+  }
+
   /// Turns clipboard sync on or off. The mesh reads the flag per copy, so this
   /// is the whole change — no restart, and the next copy is the one affected.
   Future<void> _setClipboardSync(bool value) async {
@@ -737,6 +794,20 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
             ),
             NexusRow(
+              key: kNexusAlwaysMergeToggle,
+              title: 'Send clips immediately',
+              subtitle:
+                  'Skip the pause and the in-use check — every paired device '
+                  'gets a copy the moment you make it',
+              leading: const NexusIconTile(Icons.bolt_rounded),
+              trailing: Switch.adaptive(
+                value: widget.mesh!.store.alwaysMerge,
+                onChanged: (bool value) => unawaited(_setAlwaysMerge(value)),
+              ),
+              onTap: () =>
+                  unawaited(_setAlwaysMerge(!widget.mesh!.store.alwaysMerge)),
+            ),
+            NexusRow(
               key: kNexusSendClipboard,
               title: 'Send this clipboard',
               subtitle: 'Copy text first, then send it to your paired devices',
@@ -966,7 +1037,11 @@ class _SettingsTabState extends State<SettingsTab> {
           // The one piece of the system turn the user owns. It is not a chat
           // message and it is not memory: a name or a language asked for here
           // applies to every answer, including the first one after a restart.
-          const _SystemPromptField(),
+          _SystemPromptField(
+            onSettled: (String text) async {
+              await _shareSetting(SharedSetting.systemPrompt, text);
+            },
+          ),
           const NexusSectionLabel('About'),
           NexusRow(
             title: kNexusCheckUpdatesRow,
@@ -1014,7 +1089,12 @@ class _SettingsTabState extends State<SettingsTab> {
 /// write is per keystroke and deliberately not awaited; a preference write must
 /// never make typing wait.
 class _SystemPromptField extends StatefulWidget {
-  const _SystemPromptField();
+  const _SystemPromptField({this.onSettled});
+
+  /// Called when the field loses focus with a value the user typed — the point
+  /// a keystroke stream becomes a setting. The sheet that asks where it goes is
+  /// the caller's, so this widget stays a field.
+  final Future<void> Function(String text)? onSettled;
 
   @override
   State<_SystemPromptField> createState() => _SystemPromptFieldState();
@@ -1026,9 +1106,20 @@ class _SystemPromptFieldState extends State<_SystemPromptField> {
     text: _prompt.text,
   );
 
+  /// True while the user is typing in this field. The store can also change
+  /// from underneath — a peer adopted a prompt, or Undo put one back — and the
+  /// field follows that only when nobody is typing, because rewriting a
+  /// controller mid-word moves the caret out from under the user.
+  bool _focused = false;
+
+  /// What this field last sent, so losing focus without an edit asks nothing.
+  String _lastSettled = '';
+
   @override
   void initState() {
     super.initState();
+    _lastSettled = _prompt.text;
+    _prompt.addListener(_onPromptChanged);
     unawaited(
       _prompt.attach().then((_) {
         if (!mounted) return;
@@ -1038,13 +1129,35 @@ class _SystemPromptFieldState extends State<_SystemPromptField> {
             offset: _controller.text.length,
           );
         }
+        _lastSettled = _prompt.text;
         setState(() {});
       }),
     );
   }
 
+  void _onPromptChanged() {
+    if (!mounted) return;
+    if (!_focused && _controller.text != _prompt.text) {
+      _controller.value = TextEditingValue(
+        text: _prompt.text,
+        selection: TextSelection.collapsed(offset: _prompt.text.length),
+      );
+    }
+    setState(() {});
+  }
+
+  void _onFocus(bool focused) {
+    setState(() => _focused = focused);
+    if (focused) return;
+    final String text = _controller.text.trim();
+    if (text == _lastSettled) return;
+    _lastSettled = text;
+    unawaited(widget.onSettled?.call(text) ?? Future<void>.value());
+  }
+
   @override
   void dispose() {
+    _prompt.removeListener(_onPromptChanged);
     _controller.dispose();
     super.dispose();
   }
@@ -1078,31 +1191,34 @@ class _SystemPromptFieldState extends State<_SystemPromptField> {
             ],
           ),
           const SizedBox(height: 8),
-          TextField(
-            key: const Key('nexus-system-prompt'),
-            controller: _controller,
-            minLines: 2,
-            maxLines: 5,
-            maxLength: kSystemPromptLimit,
-            textCapitalization: TextCapitalization.sentences,
-            style: NexusType.rowTitle(c)
-                .copyWith(fontSize: 14, fontWeight: FontWeight.w400),
-            decoration: InputDecoration(
-              hintText: 'Custom instructions for Nexus',
-              hintStyle: NexusType.hint(c).copyWith(fontSize: 14),
-              filled: true,
-              fillColor: c.surface,
-              counterStyle: NexusType.rowMeta(c).copyWith(fontSize: 10.5),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: const BorderRadius.all(NexusLayout.tile),
-                borderSide: BorderSide(color: c.hairline),
+          Focus(
+            onFocusChange: _onFocus,
+            child: TextField(
+              key: const Key('nexus-system-prompt'),
+              controller: _controller,
+              minLines: 2,
+              maxLines: 5,
+              maxLength: kSystemPromptLimit,
+              textCapitalization: TextCapitalization.sentences,
+              style: NexusType.rowTitle(c)
+                  .copyWith(fontSize: 14, fontWeight: FontWeight.w400),
+              decoration: InputDecoration(
+                hintText: 'Custom instructions for Nexus',
+                hintStyle: NexusType.hint(c).copyWith(fontSize: 14),
+                filled: true,
+                fillColor: c.surface,
+                counterStyle: NexusType.rowMeta(c).copyWith(fontSize: 10.5),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: const BorderRadius.all(NexusLayout.tile),
+                  borderSide: BorderSide(color: c.hairline),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: const BorderRadius.all(NexusLayout.tile),
+                  borderSide: BorderSide(color: c.accent),
+                ),
               ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: const BorderRadius.all(NexusLayout.tile),
-                borderSide: BorderSide(color: c.accent),
-              ),
+              onChanged: _prompt.setTextSoon,
             ),
-            onChanged: _prompt.setTextSoon,
           ),
           const SizedBox(height: 8),
           // Honest expectations. The 1B on the A25 followed a name but ignored
