@@ -4147,8 +4147,11 @@ class _HomeHeader extends StatelessWidget {
           const SizedBox(width: 8),
           // The chip sits against the wordmark because it is what Nexus *is*
           // right now, not a control on the other side of the header. It keeps
-          // its own intrinsic width and the speaker stays pinned right.
-          const _HiveChip(),
+          // its own intrinsic width and the speaker stays pinned right —
+          // until the text is large enough that "intrinsic" no longer fits.
+          // Flexible is what makes it give way at 200% instead of pushing the
+          // row past the window edge.
+          const Flexible(child: _HiveChip()),
           const Spacer(),
           const _SpeakRepliesButton(),
         ],
@@ -4198,15 +4201,17 @@ class _HiveChip extends StatelessWidget {
                   color: ink,
                 ),
                 const SizedBox(width: 5),
-                Text(
-                  pc ? 'PC Compute' : 'On-Device',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: NexusType.rowMeta(c).copyWith(
-                    fontSize: 11.5,
-                    height: 1.1,
-                    color: ink,
-                    fontWeight: pc ? FontWeight.w600 : FontWeight.w400,
+                Flexible(
+                  child: Text(
+                    pc ? 'Your PC' : 'This device',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: NexusType.rowMeta(c).copyWith(
+                      fontSize: 11.5,
+                      height: 1.1,
+                      color: ink,
+                      fontWeight: pc ? FontWeight.w600 : FontWeight.w400,
+                    ),
                   ),
                 ),
               ],
