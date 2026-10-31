@@ -21,7 +21,8 @@ import 'package:nexus/core/paired_devices.dart';
 import 'package:nexus/core/qr_pairing.dart' show QrPairingToken;
 import 'package:nexus/core/store.dart' show NexusStore;
 import 'package:nexus/mesh/file_transfer_service.dart' show kFileTransferPort;
-import 'package:nexus/mesh/mesh_service.dart' as mesh
+import 'package:nexus/mesh/mesh_service.dart'
+    as mesh
     show MeshService, PairResult, PairedDevice;
 import 'package:nexus/main_ui.dart'
     show
@@ -1013,6 +1014,18 @@ void main() {
       }
 
       expect(find.text('Ocean Phone is already paired.'), findsOneWidget);
+      // The sheet leaves the list scrolled down to the pairing row, and the
+      // card this test counts is above it: a lazy list has unmounted what is
+      // off the top, so scroll back before counting rows. One row is what is
+      // being asserted, not where on the page it happens to sit.
+      for (
+        int i = 0;
+        i < 6 && find.text('Ocean Phone').evaluate().isEmpty;
+        i++
+      ) {
+        await tester.drag(find.byType(Scrollable).first, const Offset(0, 400));
+        await tester.pumpAndSettle();
+      }
       expect(find.text('Ocean Phone'), findsOneWidget);
       expect(
         paired.devices.where((PairedDevice d) => d.id == _ocean.deviceId),
