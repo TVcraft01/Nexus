@@ -3331,7 +3331,7 @@ Future<bool> showNexusPermissionDialog(
 /// The About section's one update control. It asks GitHub for the latest
 /// release and, when there is one, offers its APK — it never sends the user to
 /// the releases page to find the file themselves.
-const String kNexusCheckUpdatesRow = 'Check for Updates';
+const String kNexusCheckUpdatesRow = 'Check for updates';
 
 /// Offers [info]'s APK in a dialog, and opens its download URL only on a yes.
 ///
@@ -3589,7 +3589,7 @@ class _AccentRow extends StatelessWidget {
       child: Semantics(
         container: true,
         button: true,
-        label: 'Accent colour. ${selected.label}. Opens the colour wheel.',
+        label: 'Accent color. ${selected.label}. Opens the color wheel.',
         child: Material(
           type: MaterialType.transparency,
           child: InkWell(
@@ -3623,7 +3623,7 @@ class _AccentRow extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: <Widget>[
                         Text(
-                          'Accent colour',
+                          'Accent color',
                           style: NexusType.rowTitle(c)
                               .copyWith(fontWeight: FontWeight.w600),
                         ),
@@ -8736,7 +8736,7 @@ class PairPhonePageState extends State<PairPhonePage> {
     final String payload = currentPayload;
     return Scaffold(
       backgroundColor: c.background,
-      appBar: AppBar(title: const Text('Pair Phone')),
+      appBar: AppBar(title: const Text('Pair a device')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
         children: <Widget>[
