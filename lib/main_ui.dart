@@ -8933,16 +8933,49 @@ class _PairScanPageState extends State<PairScanPage> {
       body: Stack(
         children: <Widget>[
           Positioned.fill(child: camera(context, _onCode)),
-          // The frame, so it is obvious where to point the camera.
-          Center(
-            child: Container(
-              width: 240,
-              height: 240,
-              decoration: BoxDecoration(
-                border: Border.all(color: context.ui.accent, width: 2.5),
-                borderRadius: BorderRadius.circular(24),
-              ),
-            ),
+          // The frame, so it is obvious where to point the camera, and the
+          // sentence that says what to do with it.
+          //
+          // One block, not two: with the frame centred and the sentence pinned
+          // to the bottom of the screen, a short window — a phone held
+          // sideways — draws the words across the frame's lower edge. The
+          // frame gives up height to the sentence rather than growing into it.
+          LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) {
+              final double side = math.min(
+                240,
+                math.max(120, constraints.maxHeight - 140),
+              );
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Container(
+                      width: side,
+                      height: side,
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: context.ui.accent,
+                          width: 2.5,
+                        ),
+                        borderRadius: BorderRadius.circular(24),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Text(
+                        'Point at the QR code on the other device',
+                        textAlign: TextAlign.center,
+                        style: NexusType.rowMeta(
+                          context.ui,
+                        ).copyWith(color: Colors.white70),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
           if (_notice != null)
             Positioned(
@@ -8969,16 +9002,6 @@ class _PairScanPageState extends State<PairScanPage> {
                 ),
               ),
             ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 44,
-            child: Text(
-              'Point at the QR code on the other device',
-              textAlign: TextAlign.center,
-              style: NexusType.rowMeta(c).copyWith(color: Colors.white70),
-            ),
-          ),
         ],
       ),
     );
