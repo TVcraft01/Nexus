@@ -8541,12 +8541,12 @@ class _PairingOffCard extends StatelessWidget {
               children: <Widget>[
                 Icon(Icons.link_off_rounded, size: 18, color: c.accent),
                 const SizedBox(width: 8),
-                Text('Mesh pairing is off', style: NexusType.rowTitle(c)),
+                Text('Pairing is off', style: NexusType.rowTitle(c)),
               ],
             ),
             const SizedBox(height: 8),
             Text(
-              'Another device can only pair with this one while mesh pairing is '
+              'Another device can only pair with this one while pairing is '
               'on. Turning it on does not pair anything by itself — it lets this '
               'page\u2019s code be accepted.',
               style: NexusType.rowMeta(c).copyWith(height: 1.5),
@@ -8555,7 +8555,7 @@ class _PairingOffCard extends StatelessWidget {
             OutlinedButton(
               key: kNexusPairingOffTurnOn,
               onPressed: onTurnOn,
-              child: const Text('Turn on mesh pairing'),
+              child: const Text('Turn on pairing'),
             ),
           ],
         ),
