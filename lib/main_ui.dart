@@ -5423,7 +5423,7 @@ class _FilesTabState extends State<FilesTab> {
           28,
         ),
         children: <Widget>[
-          const NexusSectionLabel('Connected Devices', first: true),
+          const NexusSectionLabel('Paired devices', first: true),
           for (final PairedDevice device in connected)
             _ConnectedDeviceRow(
               key: ValueKey<String>('files-device-${device.id}'),
@@ -6898,7 +6898,7 @@ class _DevicesTabState extends State<DevicesTab> {
             ),
             const SizedBox(height: 10),
           ],
-          const NexusSectionLabel('Connected Devices', first: true),
+          const NexusSectionLabel('Paired devices', first: true),
           for (final _DeviceRow row in rows) ...<Widget>[
             _ConnectedDeviceCard(
               key: ValueKey<String>('device-card-${row.device.id}'),
@@ -6919,7 +6919,7 @@ class _DevicesTabState extends State<DevicesTab> {
           // The mesh's memory, in one row: what the room could run if the
           // models were chosen by the strongest device rather than by the one
           // in the user's hand.
-          const NexusSectionLabel('Mesh'),
+          const NexusSectionLabel('Sharing'),
           // Off until the user says otherwise, and the switch is here rather
           // than buried in Settings because this is the screen that owns the
           // list it changes. Off is not a hidden default: the subtitle says
@@ -6960,7 +6960,7 @@ class _DevicesTabState extends State<DevicesTab> {
           ],
           NexusRow(
             key: const ValueKey<String>('mesh-total-ram'),
-            title: 'Mesh Total RAM',
+            title: 'Shared memory',
             subtitle: _meshRam == null
                 ? 'No device has shared its memory yet'
                 : 'Across $_meshRamDevices '
@@ -6992,7 +6992,7 @@ class _DevicesTabState extends State<DevicesTab> {
                   )
                 : const Icon(Icons.radar_rounded, size: NexusLayout.icon),
             label: Text(
-              _discovering ? 'Looking for devices…' : 'Discover Nearby Devices',
+              _discovering ? 'Looking for devices…' : 'Discover nearby devices',
             ),
           ),
           Padding(
@@ -7211,30 +7211,10 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
   bool _sending = false;
   double _progress = 0;
   bool _pinging = false;
-  bool _notificationSync = false;
-  bool _notificationTouched = false;
 
   PairedDevice get _device => widget.device;
 
   bool get _busy => _sending || _pinging;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_loadNotificationSync());
-  }
-
-  Future<void> _loadNotificationSync() async {
-    final bool on = await NotificationSync.isOn(_device.id);
-    if (!mounted || _notificationTouched) return;
-    setState(() => _notificationSync = on);
-  }
-
-  void _setNotificationSync(bool value) {
-    _notificationTouched = true;
-    setState(() => _notificationSync = value);
-    unawaited(NotificationSync.set(_device.id, value));
-  }
 
   void _notify(String message) {
     if (!mounted) return;
@@ -7437,7 +7417,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                       child: _DeviceCardAction(
                         key: ValueKey<String>('send-${_device.id}'),
                         icon: Icons.upload_file_rounded,
-                        label: 'Send File',
+                        label: 'Send file',
                         onTap: widget.online && !_busy ? _sendFile : null,
                       ),
                     ),
@@ -7446,7 +7426,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                       child: _DeviceCardAction(
                         key: ValueKey<String>('ping-${_device.id}'),
                         icon: Icons.wifi_tethering_rounded,
-                        label: _pinging ? 'Pinging…' : 'Ping',
+                        label: _pinging ? 'Checking…' : 'Check connection',
                         onTap: widget.online && !_busy ? _ping : null,
                       ),
                     ),
@@ -7456,7 +7436,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                         child: _DeviceCardAction(
                           key: ValueKey<String>('remote-${_device.id}'),
                           icon: Icons.mouse_outlined,
-                          label: 'Remote',
+                          label: 'Remote control',
                           onTap: widget.online && !_busy ? _openRemote : null,
                         ),
                       ),
@@ -7475,41 +7455,6 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.only(top: 8),
-                  decoration: BoxDecoration(
-                    border: Border(top: BorderSide(color: c.hairline)),
-                  ),
-                  child: Row(
-                    children: <Widget>[
-                      Icon(
-                        Icons.notifications_none_rounded,
-                        size: NexusLayout.icon,
-                        color: c.textMuted,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Notification Sync',
-                          style: NexusType.rowTitle(c).copyWith(fontSize: 13.5),
-                        ),
-                      ),
-                      Tooltip(
-                        message:
-                            'Saves the preference on this phone. Notification '
-                            'sync is not wired up yet.',
-                        child: Switch.adaptive(
-                          key: ValueKey<String>(
-                            'notification-sync-${_device.id}',
-                          ),
-                          value: _notificationSync,
-                          onChanged: _setNotificationSync,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ],
             ],
           ),

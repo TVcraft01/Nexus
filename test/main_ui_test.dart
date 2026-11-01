@@ -1838,7 +1838,7 @@ void main() {
 
     // The top half is who is here: this phone, and the example PC from the
     // paired seed — each with the state the store knows.
-    expect(find.text('CONNECTED DEVICES'), findsOneWidget);
+    expect(find.text('PAIRED DEVICES'), findsOneWidget);
     expect(find.text('This Phone'), findsOneWidget);
     expect(find.text('This phone'), findsOneWidget);
 
@@ -2066,7 +2066,7 @@ void main() {
     await pumpShell(tester);
     await openTab(tester, 'Devices', 2);
 
-    expect(find.text('CONNECTED DEVICES'), findsOneWidget);
+    expect(find.text('PAIRED DEVICES'), findsOneWidget);
     expect(find.text('Online'), findsNWidgets(2));
     expect(find.text('Offline'), findsOneWidget);
     expect(find.byType(NexusStatusDot), findsNWidgets(3));
@@ -2110,8 +2110,8 @@ void main() {
 
     // The default is the phone's own answer — and a widget test's platform is
     // (by default) a light one, so the light frame is what "follow" means here.
-    expect(find.text('Follow system'), findsOneWidget);
-    expect(switchOn(tester, 'Follow system').value, isTrue);
+    expect(find.text('Use your device’s light or dark setting'), findsOneWidget);
+    expect(switchOn(tester, 'Use your device’s light or dark setting').value, isTrue);
     expect(
       tester.widget<Scaffold>(find.byType(Scaffold).first).backgroundColor,
       NexusUiColors.light.background,
@@ -2121,7 +2121,7 @@ void main() {
     expect(switchOn(tester, 'Dark mode').value, isFalse);
     expect(switchOn(tester, 'Dark mode').onChanged, isNull);
     expect(
-      find.text('From your phone — turn off Follow system to choose'),
+      find.text('Chosen by your system — turn the row above off to pick it here.'),
       findsOneWidget,
     );
     // Disabled and visibly greyed, not merely inert: a Material switch with
@@ -2133,8 +2133,8 @@ void main() {
     );
 
     // Taking appearance back in hand, then darkening it.
-    await tapSwitchOn(tester, 'Follow system');
-    expect(switchOn(tester, 'Follow system').value, isFalse);
+    await tapSwitchOn(tester, 'Use your device’s light or dark setting');
+    expect(switchOn(tester, 'Use your device’s light or dark setting').value, isFalse);
     expect(switchOn(tester, 'Dark mode').onChanged, isNotNull);
     expect(
       tester.widget<Opacity>(find.byKey(kNexusDarkModeLocked)).opacity,
@@ -2155,7 +2155,7 @@ void main() {
     (tester) async {
       await pumpShell(tester);
       await openTab(tester, 'Settings', 3);
-      await tapSwitchOn(tester, 'Follow system');
+      await tapSwitchOn(tester, 'Use your device’s light or dark setting');
 
       await tester.tap(
         find.descendant(
@@ -2456,7 +2456,7 @@ void main() {
     await openTab(tester, 'Settings', 3);
 
     expect(controller.offset, 0);
-    expect(find.text('Follow system'), findsOneWidget);
+    expect(find.text('Use your device’s light or dark setting'), findsOneWidget);
   });
 
   testWidgets('the composer pill is the theme\'s surface in both themes', (
@@ -2482,7 +2482,7 @@ void main() {
     );
 
     await openTab(tester, 'Settings', 3);
-    await tapSwitchOn(tester, 'Follow system');
+    await tapSwitchOn(tester, 'Use your device’s light or dark setting');
     await tapSwitchOn(tester, 'Dark mode');
     await openTab(tester, 'Home', 0);
 
@@ -4745,7 +4745,7 @@ void main() {
     // the immersive ground it was designed around while light mode gets the
     // light one above.
     await openTab(tester, 'Settings', 3);
-    await tapSwitchOn(tester, 'Follow system');
+    await tapSwitchOn(tester, 'Use your device’s light or dark setting');
     await tapSwitchOn(tester, 'Dark mode');
     await openTab(tester, 'Home', 0);
 
@@ -4816,7 +4816,7 @@ void main() {
     // not buried at the bottom of the page. (The on-device model moved down to
     // its own Brain section, where its row is a real status rather than a fixed
     // word: see the Brain tests above.)
-    expect(find.text('Cloud sync'), findsOneWidget);
+    expect(find.text('Cloud sync'), findsNothing);
     await tester.tap(find.text('Privacy'));
     await tester.pumpAndSettle();
 
@@ -5998,7 +5998,7 @@ void main() {
     // is the raw pick (on a light page a pale seed is deepened into readable
     // ink first, so white is still correct there).
     await openTab(tester, 'Settings', 3);
-    await tapSwitchOn(tester, 'Follow system');
+    await tapSwitchOn(tester, 'Use your device’s light or dark setting');
     await tapSwitchOn(tester, 'Dark mode');
     await openTab(tester, 'Home', 0);
     await openLive(tester);
@@ -6744,7 +6744,7 @@ void main() {
 
     // The same fact on Devices, as the number the mesh adds up.
     await openTab(tester, 'Devices', 2);
-    expect(find.text('Mesh Total RAM'), findsOneWidget);
+    expect(find.text('Shared memory'), findsOneWidget);
     expect(find.text('16 GB'), findsWidgets);
   });
 
