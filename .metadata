@@ -25,6 +25,13 @@ migration:
     - platform: windows
       create_revision: 4cf24164269a5ebf0c16a028a00727d0e77bbb05
       base_revision: 4cf24164269a5ebf0c16a028a00727d0e77bbb05
+    # ios/ was added later than the other platforms, by
+    # `flutter create --platforms=ios .`, so its revision is the one that
+    # generated it rather than the project's original one. That is what the
+    # tool writes, and the migrate tool compares per platform.
+    - platform: ios
+      create_revision: 6a19cca56475dbfba1478ee68d7bd0c2ef891da1
+      base_revision: 6a19cca56475dbfba1478ee68d7bd0c2ef891da1
 
   # User provided section
 
