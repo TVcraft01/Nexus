@@ -56,5 +56,26 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+
+    # open_wake_word 0.3.0's podspec points its header search at
+    # `${PODS_ROOT}/onnxruntime-c/include`, which the onnxruntime-c pod does not
+    # create — that pod ships a framework, so the headers live inside it. The
+    # plugin's C++ then fails on `#include <onnxruntime_cxx_api.h>` and the whole
+    # iOS build stops there. Its iOS half has simply never been compiled: the
+    # plugin is only exercised on Android, where it is an FFI plugin with its
+    # own CMake.
+    #
+    # Adding the real path keeps the wake word on the platform that runs it. The
+    # alternative — removing open_wake_word from pubspec — is the only way to
+    # exclude it for iOS alone, and it would take the feature away from Android.
+    if target.name == 'open_wake_word'
+      target.build_configurations.each do |config|
+        config.build_settings['HEADER_SEARCH_PATHS'] = [
+          '$(inherited)',
+          '$(PODS_ROOT)/onnxruntime-c/onnxruntime.xcframework/ios-arm64/' \
+            'onnxruntime.framework/Headers',
+        ]
+      end
+    end
   end
 end
