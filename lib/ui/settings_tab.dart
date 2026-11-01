@@ -725,9 +725,13 @@ class _SettingsTabState extends State<SettingsTab> {
             NexusRow(
               key: kNexusClipboardSyncToggle,
               title: 'Clipboard sync',
-              subtitle:
-                  'Send what you copy to paired devices — off until you turn '
-                  'it on',
+              // The subtitle is the state, not a description that happens to
+              // mention it: a switch that reads "off" in words while it sits
+              // on is the one lie a settings row can tell.
+              subtitle: widget.mesh!.store.clipboardSync
+                  ? 'On — what you copy goes to your paired devices.'
+                  : 'Off — turn this on to send what you copy to your paired '
+                        'devices.',
               leading: const NexusIconTile(Icons.sync_rounded),
               trailing: Switch.adaptive(
                 value: widget.mesh!.store.clipboardSync,
