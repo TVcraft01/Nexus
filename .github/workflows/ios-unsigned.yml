@@ -16,21 +16,27 @@
 # entitlements that need a paid team (push, iCloud, App Groups).
 #
 # Inputs:
-#   deployment_target - the iOS floor baked into the generated project.
-#                       Defaults to 15.5 because google_mlkit_* declares
-#                       `s.ios.deployment_target = '15.5'`; CocoaPods refuses a
-#                       target below that. An iPhone 6s on iOS 15.0.2 therefore
-#                       needs those two MLKit packages removed first (which the
-#                       light-device plan does anyway), then this set to 15.0.
+#   deployment_target - the iOS floor baked into the project. Defaults to 15.0,
+#                       because the target device is an iPhone 6s on iOS 15.0.2
+#                       and 15.0 is the lowest floor this Flutter emits.
+#
+#                       It used to default to 15.5: the two google_mlkit_*
+#                       packages declared `s.ios.deployment_target = '15.5'` and
+#                       CocoaPods refuses to resolve below that. They are gone —
+#                       vision now goes through one method channel answered by
+#                       Apple's Vision on iOS — so nothing in the pod graph asks
+#                       for more than 15.0 any more. If a dependency ever raises
+#                       that floor again, pod install fails here with the name
+#                       of the pod rather than on the phone.
 name: ios unsigned ipa
 
 on:
   workflow_dispatch:
     inputs:
       deployment_target:
-        description: "iOS deployment target (15.5 for MLKit, 15.0 for a 6s on iOS 15)"
+        description: "iOS deployment target (15.0 for an iPhone 6s on iOS 15.0.2)"
         required: false
-        default: "15.5"
+        default: "15.0"
       flutter_version:
         description: "Flutter version (empty = stable)"
         required: false
@@ -44,7 +50,13 @@ jobs:
     name: Build unsigned IPA
     runs-on: macos-latest
     env:
-      TARGET: ${{ inputs.deployment_target }}
+      # `|| '15.0'` is load-bearing, not belt-and-braces. A workflow_dispatch that
+      # omits the input, or any other event that fires this file (a push to a
+      # branch that triggers it), leaves `inputs` empty — and the step below then
+      # writes `IPHONEOS_DEPLOYMENT_TARGET = ;` into the project file. Xcode's
+      # reply to that is "The project 'Runner' is damaged and cannot be opened
+      # due to a parse error", which names the project instead of the cause.
+      TARGET: ${{ inputs.deployment_target || '15.0' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,13 +68,17 @@ jobs:
       - name: Get packages
         run: flutter pub get
 
-      # This repository has android/, linux/ and windows/ only - there is no
-      # ios/ project to build. `flutter create` fills in just the missing
-      # platform folder and leaves lib/ and pubspec.yaml alone.
+      # ios/ is committed now, so this is normally a no-op. It stays for the
+      # case it was written for: a branch or a tag from before the iOS project
+      # existed, where `flutter create` fills in just the missing platform
+      # folder and leaves lib/ and pubspec.yaml alone.
       - name: Add the iOS project
         run: |
           if [ ! -d ios ]; then
+            echo "no ios/ in this checkout — generating it"
             flutter create --platforms=ios --org dev.nexus .
+          else
+            echo "ios/ is committed; not regenerating it"
           fi
           ls ios
 
@@ -71,12 +87,27 @@ jobs:
       # lifted here rather than left to fail obscurely at pod install.
       - name: Set the deployment target
         run: |
-          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = ${TARGET};/g" \
+          target="${TARGET:-15.0}"
+          # Refuse to write anything that is not a version number. The check is
+          # here rather than only in the default above because a malformed input
+          # would corrupt the project in exactly the same way an empty one did.
+          if ! printf '%s' "$target" | grep -Eq '^[0-9]+\.[0-9]+$'; then
+            echo "::error::deployment_target must look like 15.0, got '$target'"
+            exit 1
+          fi
+          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = ${target};/g" \
             ios/Runner.xcodeproj/project.pbxproj
           if [ -f ios/Podfile ]; then
-            sed -i '' "s/^platform :ios,.*/platform :ios, '${TARGET}'/" ios/Podfile
+            sed -i '' "s/^platform :ios,.*/platform :ios, '${target}'/" ios/Podfile
           fi
-          grep -h IPHONEOS_DEPLOYMENT_TARGET ios/Runner.xcodeproj/project.pbxproj | sort -u
+          # Prove what went in, and fail here rather than inside Xcode.
+          written=$(grep -h IPHONEOS_DEPLOYMENT_TARGET ios/Runner.xcodeproj/project.pbxproj | sort -u)
+          echo "$written"
+          if printf '%s' "$written" | grep -q '= *;'; then
+            echo "::error::the project still has an empty deployment target"
+            exit 1
+          fi
+          grep -n "platform :ios" ios/Podfile || true
 
       # --no-codesign: no Apple account and no certificates in CI. Entitlements
       # are therefore absent from the product; the sideloader decides those.
