@@ -181,7 +181,7 @@ class VisionModelPair {
 const VisionModelPair kVisionSmall = VisionModelPair(
   id: 'smolvlm-500m',
   label: kVisionSmallLabel,
-  blurb: 'Fast. Fits this phone.',
+  blurb: 'Fast. Runs on this device.',
   weights: LlmModel(
     name: 'smolvlm-500m-instruct-q8_0',
     url:

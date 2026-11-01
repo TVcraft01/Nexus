@@ -1268,8 +1268,15 @@ class AssistantViewState extends State<AssistantView> {
       if (mounted) setState(() => _reply = outcome);
     } catch (error) {
       // Same rule as [_runSelfAction]: a failure is reported, never silent.
+      // What the user gets is what failed and what to do — the exception text
+      // is a stack-shaped string that names no action and tells nobody which
+      // device to look at. It goes to the log instead.
+      debugPrint('ASSISTANT: action failed ($error)');
       if (mounted) {
-        setState(() => _reply = 'Something went wrong: $error');
+        setState(
+          () => _reply =
+              'That did not finish. The device may be offline — try again.',
+        );
       }
     } finally {
       // "working" may only outlive the await if the await never ended, which

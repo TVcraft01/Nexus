@@ -1363,9 +1363,11 @@ class _AttachmentFooterState extends State<_AttachmentFooter> {
                   key: kNexusVisionInfo,
                   tooltip: _open ? 'Hide image details' : 'Image details',
                   visualDensity: VisualDensity.compact,
+                  // 48 is the target, not the glyph: the icon stays 16 and
+                  // the box a thumb has to hit is the size the rules ask for.
                   constraints: const BoxConstraints(
-                    minWidth: 34,
-                    minHeight: 34,
+                    minWidth: 48,
+                    minHeight: 48,
                   ),
                   padding: EdgeInsets.zero,
                   onPressed: () => setState(() => _open = !_open),
@@ -1444,19 +1446,25 @@ class _AttachmentAction extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(10),
       onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Icon(icon, size: 14, color: c.accent),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: NexusType.rowMeta(c)
-                  .copyWith(fontSize: 12.5, color: c.accent),
-            ),
-          ],
+      // The ink stays small; the row it sits in is 48 tall underneath, so the
+      // target a thumb can hit is the size the rules ask for even though the
+      // label is 12.5 point.
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(icon, size: 14, color: c.accent),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: NexusType.rowMeta(c)
+                    .copyWith(fontSize: 12.5, color: c.accent),
+              ),
+            ],
+          ),
         ),
       ),
     );

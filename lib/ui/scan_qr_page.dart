@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart'
     show CupertinoButton, CupertinoNavigationBar, CupertinoPageScaffold;
@@ -165,26 +166,48 @@ class _ScanQrPageState extends State<ScanQrPage> {
                 ),
               ),
             ),
-          // A quiet frame so it is clear where to point the camera.
-          Center(
-            child: Container(
-              width: 240,
-              height: 240,
-              decoration: BoxDecoration(
-                border: Border.all(color: NexusColors.accent, width: 2.5),
-                borderRadius: BorderRadius.circular(NexusRadius.xl),
-              ),
-            ),
-          ),
-          Positioned(
-            bottom: NexusSpace.huge,
-            left: 0,
-            right: 0,
-            child: Text(
-              'Point at the QR code on the other device',
-              textAlign: TextAlign.center,
-              style: NexusType.body.copyWith(color: white),
-            ),
+          // A quiet frame so it is clear where to point the camera, with the
+          // sentence that says what to do with it directly underneath.
+          //
+          // One block, not two: a frame centred in the screen and a sentence
+          // pinned to its bottom edge meet in the middle on a short screen —
+          // a phone held sideways draws the words across the frame.
+          LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) {
+              final double side = math.min(
+                240,
+                math.max(120, constraints.maxHeight - 160),
+              );
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Container(
+                      width: side,
+                      height: side,
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: NexusColors.accent,
+                          width: 2.5,
+                        ),
+                        borderRadius: BorderRadius.circular(NexusRadius.xl),
+                      ),
+                    ),
+                    const SizedBox(height: NexusSpace.lg),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: NexusSpace.page,
+                      ),
+                      child: Text(
+                        'Point at the QR code on the other device',
+                        textAlign: TextAlign.center,
+                        style: NexusType.body.copyWith(color: white),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
         ],
       ),

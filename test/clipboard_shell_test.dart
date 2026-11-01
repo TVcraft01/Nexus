@@ -258,7 +258,7 @@ void main() {
       );
       expect(toggle, findsOneWidget);
       expect(
-        find.textContaining('off until you turn it on'),
+        find.textContaining('Off — turn this on to send what you copy'),
         findsOneWidget,
         reason: 'the row says what off means',
       );
@@ -273,6 +273,13 @@ void main() {
         reason: 'the flag the mesh reads',
       );
       expect(tester.widget<Switch>(toggle).value, isTrue);
+      // The row's words are the state, not a description of the default: a
+      // switch that reads "off" while it sits on is a settings lie.
+      expect(
+        find.textContaining('On — what you copy goes to your paired devices'),
+        findsOneWidget,
+        reason: 'the row says what on does',
+      );
     });
   });
 

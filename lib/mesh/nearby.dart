@@ -184,8 +184,8 @@ class NearbyDevices extends ChangeNotifier {
     if (_mesh != null) {
       final int count = _heard.length;
       if (count == 0) {
-        return 'Listening with the mesh; no other Nexus device has been heard '
-            'yet.';
+        return 'Listening on your network; no other Nexus device has been '
+            'heard yet.';
       }
       return 'Heard $count Nexus ${count == 1 ? 'device' : 'devices'} on this '
           'network.';

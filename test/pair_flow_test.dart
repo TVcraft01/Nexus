@@ -764,7 +764,7 @@ void main() {
       );
 
       expect(find.text('Study PC'), findsOneWidget);
-      expect(find.textContaining('Paired over the mesh'), findsOneWidget);
+      expect(find.textContaining('Paired over your own network'), findsOneWidget);
     });
   });
 
@@ -857,7 +857,7 @@ void main() {
       // A code on screen that the mesh will refuse is a scan that fails
       // silently on the other device, so there is no code on screen.
       expect(find.byType(QrImageView), findsNothing);
-      expect(find.text('Mesh pairing is off'), findsOneWidget);
+      expect(find.text('Pairing is off'), findsOneWidget);
 
       await tester.tap(find.byKey(kNexusPairingOffTurnOn));
       await tester.pumpAndSettle();

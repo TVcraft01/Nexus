@@ -1101,7 +1101,7 @@ void main() {
     // exactly what the status reports.
     expect(File('${dir.path}/$kOnDeviceModelFileName').existsSync(), isFalse);
     expect(find.text('On-Device AI: Qwen 2.5 (Loaded)'), findsNothing);
-    expect(find.text('No AI: Download a model in Settings.'), findsOneWidget);
+    expect(find.text('No AI yet. Download a model.'), findsOneWidget);
     expect(find.text('Download model'), findsOneWidget);
   });
 
@@ -2121,7 +2121,7 @@ void main() {
     expect(switchOn(tester, 'Dark mode').value, isFalse);
     expect(switchOn(tester, 'Dark mode').onChanged, isNull);
     expect(
-      find.text('From your phone — turn off Follow system to choose'),
+      find.text('From your device — turn off Follow system to choose'),
       findsOneWidget,
     );
     // Disabled and visibly greyed, not merely inert: a Material switch with
@@ -2320,7 +2320,7 @@ void main() {
     await pumpShell(tester);
     await openTab(tester, 'Settings', 3);
 
-    expect(find.text('Accent colour'), findsOneWidget);
+    expect(find.text('Accent color'), findsOneWidget);
     expect(find.textContaining('choose accent color'), findsOneWidget);
     expect(
       tabIconColor(tester, Icons.settings_rounded),
@@ -2601,14 +2601,9 @@ void main() {
     await tester.tap(find.text('Customization'));
     await tester.pumpAndSettle();
 
-    // The page the row promises: its own title, the App icon group, and the
-    // honest note about the options that are not here yet.
+    // The page the row promises: its own title and the App icon group.
     expect(find.text('LAUNCHER ICON'), findsOneWidget);
     expect(find.text('App icon'), findsOneWidget);
-    expect(
-      find.textContaining('Accent colour, type and motion join this page'),
-      findsOneWidget,
-    );
 
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
@@ -4816,7 +4811,7 @@ void main() {
     // not buried at the bottom of the page. (The on-device model moved down to
     // its own Brain section, where its row is a real status rather than a fixed
     // word: see the Brain tests above.)
-    expect(find.text('Cloud sync'), findsOneWidget);
+    expect(find.text('Cloud'), findsOneWidget);
     await tester.tap(find.text('Privacy'));
     await tester.pumpAndSettle();
 
@@ -6744,7 +6739,7 @@ void main() {
 
     // The same fact on Devices, as the number the mesh adds up.
     await openTab(tester, 'Devices', 2);
-    expect(find.text('Mesh Total RAM'), findsOneWidget);
+    expect(find.text('Total memory'), findsOneWidget);
     expect(find.text('16 GB'), findsWidgets);
   });
 

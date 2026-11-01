@@ -190,7 +190,8 @@ List<PairedDevice> meshOnlyRows(MeshService? mesh, PairedDevices paired) {
           id: peer.id,
           name: peer.name,
           publicKey: '',
-          detail: 'Paired over the mesh · scan its code to send files',
+          detail: 'Paired over your own network · scan its code to send '
+              'files',
           addresses: peer.addresses.isEmpty
               ? <String>[peer.address]
               : peer.addresses,

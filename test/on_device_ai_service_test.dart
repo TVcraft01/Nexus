@@ -768,7 +768,7 @@ void main() {
 
       expect(status.source, AiSource.none);
       // One sentence, and it ends with the thing the user can do about it.
-      expect(status.label, 'No AI: Download a model in Settings.');
+      expect(status.label, 'No AI yet. Download a model.');
     });
 
     test('no model, but the PC answers: PC (Ollama)', () async {
