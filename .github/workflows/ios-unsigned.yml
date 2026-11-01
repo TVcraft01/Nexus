@@ -65,6 +65,41 @@ jobs:
           channel: stable
           flutter-version: ${{ inputs.flutter_version }}
 
+      # The wake word is Android-only in this build, but its three ONNX models
+      # are declared in pubspec.yaml, and Flutter applies asset declarations to
+      # every platform — there is no per-platform `assets:` block. So the lines
+      # are dropped here, before `pub get`, which keeps both the model files
+      # and the asset-manifest entries that point at them out of the iOS
+      # bundle. The files stay in the repo and Android still builds with them,
+      # because the APK job checks out the same commit and runs this file's
+      # sibling workflow instead.
+      #
+      # The ONNX Runtime itself is *not* removed: it arrives through the
+      # `open_wake_word` pod and the shared `onnxruntime-c` dependency, and
+      # taking it out would mean dropping the dependency for Android too.
+      - name: Drop the Android-only wake-word models
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+          path = pathlib.Path("pubspec.yaml")
+          before = path.read_text()
+          pattern = re.compile(r"[ \t]*-[ \t]+assets/wake/[^/\s]+\.onnx[ \t]*\n")
+          after, removed = pattern.subn("", before)
+          if removed != 3:
+              raise SystemExit(
+                  f"expected 3 wake-word asset lines, removed {removed} — "
+                  "pubspec.yaml changed shape, fix this step rather than "
+                  "shipping the models to iOS"
+              )
+          path.write_text(after)
+          print(f"removed {removed} wake-word asset declarations")
+          PY
+          if grep -q "assets/wake" pubspec.yaml; then
+            echo "::error::wake-word assets are still declared for this build"
+            exit 1
+          fi
+          echo "no wake-word assets declared for this build"
+
       - name: Get packages
         run: flutter pub get
 
@@ -116,6 +151,18 @@ jobs:
 
       # The IPA is a zip with a Payload/ folder holding the .app. This is the
       # layout every sideloader expects.
+      # Check the product, not the intention: a strip step that silently
+      # stopped matching would otherwise ship the models to the phone again.
+      - name: Verify the bundle has no wake-word ONNX
+        run: |
+          app=build/ios/iphoneos/Runner.app
+          found=$(find "$app" -iname '*.onnx' | tee /dev/stderr | wc -l | tr -d ' ')
+          echo "wake-word ONNX files in the bundle: $found"
+          if [ "$found" != "0" ]; then
+            echo "::error::the iOS bundle still contains wake-word ONNX models"
+            exit 1
+          fi
+
       - name: Package the IPA
         run: |
           cd build/ios/iphoneos

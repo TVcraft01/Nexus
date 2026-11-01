@@ -27,6 +27,7 @@ import 'package:nexus/core/system_prompt.dart';
 import 'package:nexus/core/vision_ai.dart';
 import 'package:nexus/core/vision_engine.dart';
 import 'package:nexus/main_ui.dart';
+import 'package:nexus/mesh/wake_word.dart';
 
 /// An empty library, so the Files tab does not read this machine's folders.
 ///
@@ -114,6 +115,25 @@ void main() {
       // reached unguarded would be here instead.
       expect(tester.takeException(), isNull);
       expect(find.byType(MaterialApp), findsOneWidget);
+    });
+  });
+
+  testWidgets('booting on iOS never reaches the wake-word controller', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    addTearDown(WakeWord.resetForTest);
+
+    await asPlatform(TargetPlatform.iOS, () async {
+      await tester.pumpWidget(const NexusUiApp());
+      await tester.pumpAndSettle();
+
+      // Not "the channel refused": startup must not have built the controller
+      // at all. It would have loaded the ONNX engine, and those models are in
+      // the bundle, so reaching it is already the bug.
+      expect(WakeWord.isCreated, isFalse);
     });
   });
 

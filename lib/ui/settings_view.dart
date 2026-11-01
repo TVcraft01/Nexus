@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 
 import '../core/capabilities.dart';
+import '../core/device_actions.dart' show gapAnswer;
 import '../core/location_access.dart';
 import '../core/services/icon_service.dart';
 import '../mesh/wake_word.dart';
@@ -122,16 +123,29 @@ class _SettingsViewState extends State<SettingsView> {
       _setBool(() => mesh.store.wakeWord = false);
       return;
     }
-    final started = await WakeWord.ensure().start();
+    // The switch is a promise, so it goes through the one gate that knows
+    // whether this build can listen at all: on a platform with no wake word
+    // (iOS) nothing is constructed and the row says so instead of asking for a
+    // permission that would never be used.
+    final started = await WakeWord.startIfSupported();
     if (!mounted) return;
     if (started) {
       _setBool(() => mesh.store.wakeWord = true);
       return;
     }
+    final supported = WakeWord.supported;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
+      SnackBar(
         content: Text(
-          'Wake word needs microphone permission — allow it and try again.',
+          supported
+              ? 'Wake word needs microphone permission — allow it and try again.'
+              // The house rule for a gap: say what could not happen and where
+              // it does work. A bare verdict is the dead end
+              // `test/platform_gap_test.dart` exists to stop.
+              : gapAnswer(
+                  'listen for the wake word',
+                  'your Android phone',
+                ),
         ),
       ),
     );

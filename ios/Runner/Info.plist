@@ -23,6 +23,13 @@
 	<array>
 		<string>_nexus._tcp</string>
 	</array>
+	<!-- Voice input and the wake word open the microphone. iOS terminates
+	     the app the first time it does that without this key, so the sentence
+	     is the permission prompt the person actually reads. Both features are
+	     opt-in and off by default, and the audio is scored on the phone: it is
+	     never recorded, uploaded or kept. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Used for voice input and wake word when you turn them on</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
