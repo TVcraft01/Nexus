@@ -1,0 +1,81 @@
+# The iOS floor for Nexus. 15.0 because the target device is an iPhone 6s on
+# iOS 15.0.2, and 15.0 is also the lowest deployment target this Flutter
+# version emits (its templates write 15.0). CocoaPods refuses to resolve a pod
+# that needs more than this, which is exactly the check we want: a dependency
+# that silently raised the floor would fail here instead of on the phone.
+platform :ios, '15.0'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  # Static, not the template's plain `use_frameworks!`.
+  #
+  # open_wake_word is an FFI plugin that depends on the `onnxruntime-c` pod,
+  # which ships a *statically linked* binary (onnxruntime.xcframework). With
+  # dynamic frameworks CocoaPods refuses to install it:
+  #
+  #   [!] The 'Pods-Runner' target has transitive dependencies that include
+  #       statically linked binaries: (.../onnxruntime-c/onnxruntime.xcframework)
+  #
+  # and the whole iOS build stops at pod install. Linking statically is the
+  # documented answer to that error, and it keeps the wake word on Android —
+  # which is the platform that actually runs it — rather than deleting a
+  # dependency to satisfy a platform that cannot use it.
+  use_frameworks! :linkage => :static
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+
+    # open_wake_word 0.3.0's podspec points its header search at
+    # `${PODS_ROOT}/onnxruntime-c/include`, which the onnxruntime-c pod does not
+    # create — that pod ships a framework, so the headers live inside it. The
+    # plugin's C++ then fails on `#include <onnxruntime_cxx_api.h>` and the whole
+    # iOS build stops there. Its iOS half has simply never been compiled: the
+    # plugin is only exercised on Android, where it is an FFI plugin with its
+    # own CMake.
+    #
+    # Adding the real path keeps the wake word on the platform that runs it. The
+    # alternative — removing open_wake_word from pubspec — is the only way to
+    # exclude it for iOS alone, and it would take the feature away from Android.
+    if target.name == 'open_wake_word'
+      target.build_configurations.each do |config|
+        config.build_settings['HEADER_SEARCH_PATHS'] = [
+          '$(inherited)',
+          '$(PODS_ROOT)/onnxruntime-c/onnxruntime.xcframework/ios-arm64/' \
+            'onnxruntime.framework/Headers',
+        ]
+      end
+    end
+  end
+end

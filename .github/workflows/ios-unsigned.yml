@@ -1,0 +1,134 @@
+# Unsigned iOS build, for sideloading onto a personal iPhone.
+#
+# This is plan B: there is no Mac here, and xtool cannot build a Flutter app on
+# Linux (it builds Swift packages only - `xtool dev` on a Flutter project fails
+# with "Could not find Package.swift"). A GitHub macOS runner can run Xcode, so
+# it produces the .app; the signing and installing happens afterwards on the
+# Linux PC or in SideStore/AltStore.
+#
+# Deliberately manual-only (`workflow_dispatch`, no push or pull_request
+# trigger): adding this file must not start a build by itself, and it is not
+# meant to run on every commit.
+#
+# What comes out is an UNSIGNED .ipa. iOS will not install that as-is: a
+# sideloader (SideStore, AltStore, SideLoadly) re-signs it with your own Apple
+# ID. Free Apple IDs give a 7-day certificate and 3 apps per device, and no
+# entitlements that need a paid team (push, iCloud, App Groups).
+#
+# Inputs:
+#   deployment_target - the iOS floor baked into the project. Defaults to 15.0,
+#                       because the target device is an iPhone 6s on iOS 15.0.2
+#                       and 15.0 is the lowest floor this Flutter emits.
+#
+#                       It used to default to 15.5: the two google_mlkit_*
+#                       packages declared `s.ios.deployment_target = '15.5'` and
+#                       CocoaPods refuses to resolve below that. They are gone —
+#                       vision now goes through one method channel answered by
+#                       Apple's Vision on iOS — so nothing in the pod graph asks
+#                       for more than 15.0 any more. If a dependency ever raises
+#                       that floor again, pod install fails here with the name
+#                       of the pod rather than on the phone.
+name: ios unsigned ipa
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: "iOS deployment target (15.0 for an iPhone 6s on iOS 15.0.2)"
+        required: false
+        default: "15.0"
+      flutter_version:
+        description: "Flutter version (empty = stable)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+    env:
+      # `|| '15.0'` is load-bearing, not belt-and-braces. A workflow_dispatch that
+      # omits the input, or any other event that fires this file (a push to a
+      # branch that triggers it), leaves `inputs` empty — and the step below then
+      # writes `IPHONEOS_DEPLOYMENT_TARGET = ;` into the project file. Xcode's
+      # reply to that is "The project 'Runner' is damaged and cannot be opened
+      # due to a parse error", which names the project instead of the cause.
+      TARGET: ${{ inputs.deployment_target || '15.0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ inputs.flutter_version }}
+
+      - name: Get packages
+        run: flutter pub get
+
+      # ios/ is committed now, so this is normally a no-op. It stays for the
+      # case it was written for: a branch or a tag from before the iOS project
+      # existed, where `flutter create` fills in just the missing platform
+      # folder and leaves lib/ and pubspec.yaml alone.
+      - name: Add the iOS project
+        run: |
+          if [ ! -d ios ]; then
+            echo "no ios/ in this checkout — generating it"
+            flutter create --platforms=ios --org dev.nexus .
+          else
+            echo "ios/ is committed; not regenerating it"
+          fi
+          ls ios
+
+      # Flutter generates the Podfile with `platform :ios, '15.0'`. CocoaPods
+      # refuses to resolve a pod that needs more than that, so the floor is
+      # lifted here rather than left to fail obscurely at pod install.
+      - name: Set the deployment target
+        run: |
+          target="${TARGET:-15.0}"
+          # Refuse to write anything that is not a version number. The check is
+          # here rather than only in the default above because a malformed input
+          # would corrupt the project in exactly the same way an empty one did.
+          if ! printf '%s' "$target" | grep -Eq '^[0-9]+\.[0-9]+$'; then
+            echo "::error::deployment_target must look like 15.0, got '$target'"
+            exit 1
+          fi
+          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = ${target};/g" \
+            ios/Runner.xcodeproj/project.pbxproj
+          if [ -f ios/Podfile ]; then
+            sed -i '' "s/^platform :ios,.*/platform :ios, '${target}'/" ios/Podfile
+          fi
+          # Prove what went in, and fail here rather than inside Xcode.
+          written=$(grep -h IPHONEOS_DEPLOYMENT_TARGET ios/Runner.xcodeproj/project.pbxproj | sort -u)
+          echo "$written"
+          if printf '%s' "$written" | grep -q '= *;'; then
+            echo "::error::the project still has an empty deployment target"
+            exit 1
+          fi
+          grep -n "platform :ios" ios/Podfile || true
+
+      # --no-codesign: no Apple account and no certificates in CI. Entitlements
+      # are therefore absent from the product; the sideloader decides those.
+      - name: Build
+        run: flutter build ios --release --no-codesign
+
+      # The IPA is a zip with a Payload/ folder holding the .app. This is the
+      # layout every sideloader expects.
+      - name: Package the IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -R Runner.app Payload/
+          zip -qry "$GITHUB_WORKSPACE/nexus-unsigned.ipa" Payload
+          cd "$GITHUB_WORKSPACE"
+          ls -lh nexus-unsigned.ipa
+          unzip -l nexus-unsigned.ipa | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-unsigned-ipa
+          path: nexus-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7

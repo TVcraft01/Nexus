@@ -675,6 +675,32 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
             ),
           ),
+          // This phone, on a phone that has to leave work to the PC.
+          //
+          // iOS keeps no socket alive in the background, this build bundles no
+          // wake word for it, and an app may not drive the device — so the two
+          // facts a person needs are here, on the first screen, rather than in
+          // a document nobody opens. The rules ask for the working half to be
+          // named in the same breath (§1 honest, §7 a setting that cannot work
+          // is not shown), which is why this is a statement of what does work
+          // and not an apology for what does not.
+          if (DeviceCapabilities.current.isIOS) ...<Widget>[
+            const NexusSectionLabel('This phone'),
+            const NexusRow(
+              title: 'Light device',
+              subtitle:
+                  'Pairing, files, and clipboard work here. Your PC runs the '
+                  'heavy AI.',
+              leading: NexusIconTile(Icons.phone_iphone_rounded),
+            ),
+            const NexusRow(
+              title: 'Not on this phone',
+              subtitle:
+                  'Wake word, background sync, and remote control are not '
+                  'available.',
+              leading: NexusIconTile(Icons.info_outline_rounded),
+            ),
+          ],
           if (_voiceSupported) ...<Widget>[
             const NexusSectionLabel('Voice'),
             NexusRow(
@@ -921,48 +947,63 @@ class _SettingsTabState extends State<SettingsTab> {
           // and needs memory this one does not have. Both are optional — the
           // service picks the best installed model that fits, and without
           // either ML Kit still reads the picture.
+          // Gated on the same question as the brain above, and for the same
+          // reason: these are GGUF files loaded by the on-device engine. A
+          // platform without that engine used to be offered 545 MB and
+          // 1.6 GB it could never load — a control that could not work, which
+          // rules section 1 says never to show. It gets a sentence instead.
           const NexusSectionLabel('Vision'),
-          for (final VisionModelPair pair in kVisionPairs)
-            _VisionChoiceRow(
-              pair: pair,
-              present: _visionPresent[pair.id] ?? false,
-              onTap:
-                  _visionDownloading == null &&
-                      !(_visionPresent[pair.id] ?? false)
-                  ? () => _downloadVision(pair)
-                  : null,
-            ),
-          if (_visionDownloading != null)
-            _BrainProgress(
-              barKey: kNexusVisionProgress,
-              progress: _visionProgress,
-              label: _visionDownloading!.label,
-              megabytes: _visionDownloading!.megabytes,
-            ),
-          for (final VisionModelPair pair in kVisionPairs)
-            if (_visionPresent[pair.id] ?? false)
-              NexusRow(
-                title: 'Delete ${pair.label}',
-                subtitle:
-                    'Frees ${_megabytes(_visionBytes[pair.id] ?? 0)} MB. Photos '
-                    'use the other vision model, or text and objects',
-                leading: const NexusIconTile(Icons.delete_outline_rounded),
-                // Red, and it asks first: these are the largest things this
-                // app ever asks a phone to carry.
-                dangerTitle: true,
-                onTap: () => _confirmDeleteVision(pair),
-              ),
-          if (_visionError != null)
+          if (!_onDeviceSupported)
             NexusRow(
-              title: 'Vision download failed',
-              subtitle: _visionError,
-              leading: const NexusIconTile(Icons.warning_amber_rounded),
-              // The row that reports the failure is also the retry, for the
-              // model that failed.
-              onTap: _visionFailed == null
-                  ? null
-                  : () => _downloadVision(_visionFailed!),
-            ),
+              title: 'Vision model',
+              subtitle: VisionEngine.isSupported
+                  ? kVisionModelOnSystemText
+                  : kVisionModelMissingText,
+              leading: const NexusIconTile(Icons.visibility_outlined),
+            )
+          else ...<Widget>[
+            for (final VisionModelPair pair in kVisionPairs)
+              _VisionChoiceRow(
+                pair: pair,
+                present: _visionPresent[pair.id] ?? false,
+                onTap:
+                    _visionDownloading == null &&
+                        !(_visionPresent[pair.id] ?? false)
+                    ? () => _downloadVision(pair)
+                    : null,
+              ),
+            if (_visionDownloading != null)
+              _BrainProgress(
+                barKey: kNexusVisionProgress,
+                progress: _visionProgress,
+                label: _visionDownloading!.label,
+                megabytes: _visionDownloading!.megabytes,
+              ),
+            for (final VisionModelPair pair in kVisionPairs)
+              if (_visionPresent[pair.id] ?? false)
+                NexusRow(
+                  title: 'Delete ${pair.label}',
+                  subtitle:
+                      'Frees ${_megabytes(_visionBytes[pair.id] ?? 0)} MB. Photos '
+                      'use the other vision model, or text and objects',
+                  leading: const NexusIconTile(Icons.delete_outline_rounded),
+                  // Red, and it asks first: these are the largest things this
+                  // app ever asks a phone to carry.
+                  dangerTitle: true,
+                  onTap: () => _confirmDeleteVision(pair),
+                ),
+            if (_visionError != null)
+              NexusRow(
+                title: 'Vision download failed',
+                subtitle: _visionError,
+                leading: const NexusIconTile(Icons.warning_amber_rounded),
+                // The row that reports the failure is also the retry, for the
+                // model that failed.
+                onTap: _visionFailed == null
+                    ? null
+                    : () => _downloadVision(_visionFailed!),
+              ),
+          ],
           // The one piece of the system turn the user owns. It is not a chat
           // message and it is not memory: a name or a language asked for here
           // applies to every answer, including the first one after a restart.

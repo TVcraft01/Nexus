@@ -1,9 +1,15 @@
-// The eyes: Google's ML Kit, on this phone, with no network in the loop.
+// The eyes: on-device OCR and object labeling, with no network in the loop.
 //
 // Two models run over the attached picture, one after the other:
 //
 //   * text recognition (OCR) reads the words in it — a sign, a page, a label;
 //   * image labeling names what is in it — "Dog", "Outdoor", "Car".
+//
+// Which model, and which framework, is not this file's business: both calls go
+// through [VisionEngine], which is ML Kit on Android and Apple's Vision
+// framework on iOS. See vision_engine.dart for why that split exists — in short,
+// the ML Kit pods require iOS 15.5 and the target device here is an iPhone 6s on
+// 15.0.2.
 //
 // Their answers are folded into one bracketed sentence, and that sentence is
 // what the local brain is asked. The model never receives the picture itself:
@@ -13,25 +19,23 @@
 // a sighting and a guess.
 //
 // Everything is behind [VisionAiService], so the thread, the live page and the
-// attachment flow do not change. The two model calls and the brain are
-// constructor seams: a test drives the formatting and the fallback without a
-// camera, a lens, or a platform channel.
+// attachment flow do not change. The two readers and the brain are constructor
+// seams: a test drives the formatting and the fallback without a camera, a
+// lens, or a platform channel.
 //
 // A failure is a sentence, never a throw. The service is answering a bubble:
-// a missing model file, a refused permission, or a brain that is not running
-// all have to leave something readable on screen.
+// a missing model file, a refused permission, a platform with no engine, or a
+// brain that is not running all have to leave something readable on screen.
 import 'dart:convert' show jsonDecode;
 
-import 'package:flutter/foundation.dart'
-    show TargetPlatform, debugPrint, defaultTargetPlatform, kIsWeb;
-import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'attachments.dart' show kPhotoPrompt, kScreenshotPrompt;
 import 'local_ai_service.dart';
 import 'ollama_service.dart' show OllamaException, OllamaService;
 import 'on_device_ai_service.dart' show OnDeviceAiService;
 import 'vision_ai.dart';
+import 'vision_engine.dart';
 
 /// How many labels are handed to the brain. The top few are the ones a person
 /// would name first; a list of twenty is noise the model has to filter itself.
@@ -73,32 +77,39 @@ const String kNexusVisionSystem =
     "say 'The user has uploaded'. Answer directly: describe the picture, and "
     'never call it an upload. Never output JSON, actions, or key-value records.';
 
-/// ML Kit's on-device text recognition and image labeling, plus the local brain.
+/// On-device text recognition and image labeling, plus the local brain.
+///
+/// Still named for ML Kit because that is what it is called everywhere in this
+/// project and what it runs on Android; on iOS the same two calls land on
+/// Vision. The name is the only thing that did not move.
 class MlVisionService implements VisionAiService {
   MlVisionService({
+    VisionEngine? engine,
     ImageTextReader? readText,
     ImageLabelReader? readLabels,
     Future<String> Function(String prompt)? answer,
   }) {
+    _engine = engine;
     _readText = readText;
     _readLabels = readLabels;
     _answer = answer;
   }
 
-  /// Test seams. Null runs the real ML Kit model / the app's local brain.
+  /// Test seams. Null runs the platform engine / the app's local brain.
+  late final VisionEngine? _engine;
   late final ImageTextReader? _readText;
   late final ImageLabelReader? _readLabels;
   late final Future<String> Function(String prompt)? _answer;
 
-  /// ML Kit's models ship for Android and iOS. A desktop build has no eyes, and
-  /// says so through the same [available] the rest of the app already reads.
+  /// The engine that answers when no reader was injected.
+  VisionEngine? get _defaultEngine => _engine ?? VisionEngine.current;
+
+  /// Both engines ship for Android and iOS only. A desktop build has none, and
+  /// says so through the same [available] the rest of the app already reads —
+  /// which is also what keeps the composer from offering a picture it cannot
+  /// describe.
   @override
-  bool get available =>
-      _readText != null ||
-      _readLabels != null ||
-      (!kIsWeb &&
-          (defaultTargetPlatform == TargetPlatform.android ||
-              defaultTargetPlatform == TargetPlatform.iOS));
+  bool get available => _readText != null || _readLabels != null || VisionEngine.isSupported;
 
   /// Looks at [imagePath] and answers [question] with what was found.
   ///
@@ -411,42 +422,24 @@ class MlVisionService implements VisionAiService {
     }
   }
 
-  /// The real OCR pass. The recognizer is closed even when the image cannot be
-  /// read, because an open one holds a model file until the app is killed.
-  static Future<String> _recognizeText(String path) async {
-    // Latin is the default script; a phone in another script still gets the
-    // base recognizer, which is the one this package ships on Android.
-    final TextRecognizer recognizer = TextRecognizer();
-    try {
-      final RecognizedText recognized = await recognizer.processImage(
-        InputImage.fromFilePath(path),
-      );
-      return recognized.text;
-    } finally {
-      await recognizer.close();
-    }
+  /// The real OCR pass, through whichever engine this build has.
+  ///
+  /// A platform with no engine throws from the engine, and the caller turns
+  /// that into "nothing found" — the labeler may still describe the picture,
+  /// and a bubble is owed a sentence either way.
+  Future<String> _recognizeText(String path) async {
+    final VisionEngine? engine = _defaultEngine;
+    if (engine == null) throw const VisionUnavailable('recognizeText: no engine');
+    return engine.recognizeText(path);
   }
 
-  /// The real labeling pass, best label first and cut to
-  /// [kMlVisionLabelLimit].
-  static Future<List<String>> _labelImage(String path) async {
-    // The default 0.5 confidence floor: below it ML Kit is guessing, and a
-    // guess in the prompt is worse than one fewer object.
-    final ImageLabeler labeler = ImageLabeler(options: ImageLabelerOptions());
-    try {
-      final List<ImageLabel> found = await labeler.processImage(
-        InputImage.fromFilePath(path),
-      );
-      found.sort(
-        (ImageLabel a, ImageLabel b) => b.confidence.compareTo(a.confidence),
-      );
-      return found
-          .take(kMlVisionLabelLimit)
-          .map((ImageLabel label) => label.label)
-          .toList();
-    } finally {
-      await labeler.close();
-    }
+  /// The real labeling pass, best label first. The engines already sort by their
+  /// own confidence scale; the cut to [kMlVisionLabelLimit] happens in
+  /// [_labelsOrEmpty], together with the de-duplication the two sides share.
+  Future<List<String>> _labelImage(String path) async {
+    final VisionEngine? engine = _defaultEngine;
+    if (engine == null) throw const VisionUnavailable('labelObjects: no engine');
+    return engine.labelObjects(path);
   }
 }
 

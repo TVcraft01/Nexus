@@ -242,6 +242,19 @@ const List<VisionModelPair> kVisionPairs = <VisionModelPair>[
   kVisionLarge,
 ];
 
+/// What Settings says where the vision-model rows would be, on a device that
+/// cannot run them.
+///
+/// Two sentences rather than one, because the two devices differ in a way the
+/// user would notice: iOS reads the photo itself (Apple's Vision) and only the
+/// *description* goes to the PC, while a desktop reads nothing at all. Saying
+/// "no vision" on iOS would be false — the OCR and the labels work there.
+const String kVisionModelOnSystemText =
+    'Photos are read by this phone. Descriptions come from your PC.';
+
+const String kVisionModelMissingText =
+    'No vision model on this device. Connect to a PC to describe photos.';
+
 String _smolVlmPrompt(String question) =>
     '<|im_start|>User:<image>$question<end_of_utterance>\nAssistant:';
 

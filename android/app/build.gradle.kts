@@ -40,7 +40,9 @@ android {
             signingConfig = signingConfigs.getByName("release")
             // The default Flutter release rules, plus the project's own: R8
             // fails the build on ML Kit's references to text-recognizer
-            // scripts this app never asks for — see proguard-rules.pro.
+            // scripts this app never asks for — see proguard-rules.pro. The
+            // rule is unchanged now that ML Kit is called from VisionBridge.kt
+            // rather than through a Dart package; the artifact is the same.
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -60,6 +62,17 @@ flutter {
 }
 
 dependencies {
+    // On-device vision, called directly from VisionBridge.kt. These are the
+    // exact artifacts and versions the google_mlkit_* Dart packages pinned, so
+    // the phone's OCR and labeling behaviour does not change; the packages
+    // themselves are gone because they required iOS 15.5 and the iOS build now
+    // targets 15.0 for an iPhone 6s.
+    //
+    // `text-recognition` bundles the Latin model only, which is the one this
+    // app has always asked for. The other scripts stay out of the APK.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:image-labeling:17.0.9")
+
     // USB serial for ESP32/Arduino boards plugged into the phone (USB-OTG).
     implementation("com.github.mik3y:usb-serial-for-android:3.7.0")
 
