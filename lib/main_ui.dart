@@ -114,6 +114,9 @@ import 'core/memory_service.dart';
 import 'core/math_helper.dart';
 import 'core/mic_access.dart';
 import 'core/vision_ai_service.dart';
+// Settings asks whether this build has an engine for the vision rows, which is
+// a different question from whether it can run the downloaded models.
+import 'core/vision_engine.dart';
 import 'core/model_capabilities.dart';
 import 'core/ollama_service.dart';
 import 'core/on_device_ai_service.dart';
