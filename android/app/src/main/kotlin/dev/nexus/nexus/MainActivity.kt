@@ -394,10 +394,18 @@ class MainActivity : FlutterActivity() {
             tts?.shutdown()
             tts = null
         }
+        // Release the ML Kit models. They hold native weights for as long as
+        // they are open, and a closed app should not keep them resident.
+        vision?.close()
+        vision = null
         super.onDestroy()
     }
 
     private lateinit var usbSerial: UsbSerialBridge
+
+    // The ML Kit recognisers. Late because they are built when the engine
+    // attaches, and nullable-checked in onDestroy because that can run first.
+    private var vision: VisionBridge? = null
 
     // Forwards one-time nexus://pair provisioning intents to Dart while the
     // app is already running, so automatic cable pairing completes on warm
@@ -735,6 +743,14 @@ class MainActivity : FlutterActivity() {
                 "dev.nexus.nexus/location",
             ),
         )
+
+        // The eyes: ML Kit's text recogniser and image labeler, called here
+        // rather than from two Dart packages, because those packages require
+        // iOS 15.5 and the iOS side of Nexus now answers the same channel with
+        // Apple's Vision framework. See VisionBridge.kt.
+        vision = VisionBridge(this).also {
+            it.attach(flutterEngine.dartExecutor.binaryMessenger)
+        }
 
         // USB-OTG serial: microcontrollers (ESP32, …) plugged into the phone.
         usbSerial = UsbSerialBridge(this)

@@ -6,9 +6,9 @@
 #
 # `-dontwarn` is the correct answer rather than bundling five extra script
 # models for a phone that will never ask for them: the missing branches are
-# unreachable from the Latin path the plugin actually calls. The `-keep` holds
-# the recogniser and its options against being stripped, because the plugin
-# reaches them through ML Kit's own entry points rather than through Nexus's
-# code, which R8 cannot see.
+# unreachable from the Latin path VisionBridge.kt actually calls. The `-keep`
+# holds the recogniser and its options against being stripped, because ML Kit
+# reaches them through its own entry points rather than through Nexus's code,
+# which R8 cannot see.
 -dontwarn com.google.mlkit.vision.text.**
 -keep class com.google.mlkit.vision.text.** { *; }

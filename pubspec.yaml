@@ -34,8 +34,15 @@ dependencies:
   flutter_colorpicker: ^1.1.0
   image_picker: ^1.2.4
   file_picker: ^13.1.0
-  google_mlkit_image_labeling: ^0.16.1
-  google_mlkit_text_recognition: ^0.17.1
+  # Vision (OCR and object labeling) is no longer a pub dependency. The Dart
+  # packages google_mlkit_* declared an iOS floor of 15.5, and the target device
+  # is an iPhone 6s on iOS 15.0.2. Both calls now go through one method channel
+  # (`dev.nexus.nexus/vision`, see lib/core/vision_engine.dart) answered by ML
+  # Kit natively on Android and by Apple's Vision framework on iOS.
+  #
+  # The Android side keeps ML Kit at exactly the versions those packages pinned
+  # (text-recognition 16.0.1, image-labeling 17.0.9) — declared in
+  # android/app/build.gradle.kts, not here.
   package_info_plus: ^10.2.2
   flutter_localizations:
     sdk: flutter
