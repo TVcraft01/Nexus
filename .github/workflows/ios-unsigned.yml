@@ -1,0 +1,103 @@
+# Unsigned iOS build, for sideloading onto a personal iPhone.
+#
+# This is plan B: there is no Mac here, and xtool cannot build a Flutter app on
+# Linux (it builds Swift packages only - `xtool dev` on a Flutter project fails
+# with "Could not find Package.swift"). A GitHub macOS runner can run Xcode, so
+# it produces the .app; the signing and installing happens afterwards on the
+# Linux PC or in SideStore/AltStore.
+#
+# Deliberately manual-only (`workflow_dispatch`, no push or pull_request
+# trigger): adding this file must not start a build by itself, and it is not
+# meant to run on every commit.
+#
+# What comes out is an UNSIGNED .ipa. iOS will not install that as-is: a
+# sideloader (SideStore, AltStore, SideLoadly) re-signs it with your own Apple
+# ID. Free Apple IDs give a 7-day certificate and 3 apps per device, and no
+# entitlements that need a paid team (push, iCloud, App Groups).
+#
+# Inputs:
+#   deployment_target - the iOS floor baked into the generated project.
+#                       Defaults to 15.5 because google_mlkit_* declares
+#                       `s.ios.deployment_target = '15.5'`; CocoaPods refuses a
+#                       target below that. An iPhone 6s on iOS 15.0.2 therefore
+#                       needs those two MLKit packages removed first (which the
+#                       light-device plan does anyway), then this set to 15.0.
+name: ios unsigned ipa
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: "iOS deployment target (15.5 for MLKit, 15.0 for a 6s on iOS 15)"
+        required: false
+        default: "15.5"
+      flutter_version:
+        description: "Flutter version (empty = stable)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+    env:
+      TARGET: ${{ inputs.deployment_target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ inputs.flutter_version }}
+
+      - name: Get packages
+        run: flutter pub get
+
+      # This repository has android/, linux/ and windows/ only - there is no
+      # ios/ project to build. `flutter create` fills in just the missing
+      # platform folder and leaves lib/ and pubspec.yaml alone.
+      - name: Add the iOS project
+        run: |
+          if [ ! -d ios ]; then
+            flutter create --platforms=ios --org dev.nexus .
+          fi
+          ls ios
+
+      # Flutter generates the Podfile with `platform :ios, '15.0'`. CocoaPods
+      # refuses to resolve a pod that needs more than that, so the floor is
+      # lifted here rather than left to fail obscurely at pod install.
+      - name: Set the deployment target
+        run: |
+          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = ${TARGET};/g" \
+            ios/Runner.xcodeproj/project.pbxproj
+          if [ -f ios/Podfile ]; then
+            sed -i '' "s/^platform :ios,.*/platform :ios, '${TARGET}'/" ios/Podfile
+          fi
+          grep -h IPHONEOS_DEPLOYMENT_TARGET ios/Runner.xcodeproj/project.pbxproj | sort -u
+
+      # --no-codesign: no Apple account and no certificates in CI. Entitlements
+      # are therefore absent from the product; the sideloader decides those.
+      - name: Build
+        run: flutter build ios --release --no-codesign
+
+      # The IPA is a zip with a Payload/ folder holding the .app. This is the
+      # layout every sideloader expects.
+      - name: Package the IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -R Runner.app Payload/
+          zip -qry "$GITHUB_WORKSPACE/nexus-unsigned.ipa" Payload
+          cd "$GITHUB_WORKSPACE"
+          ls -lh nexus-unsigned.ipa
+          unzip -l nexus-unsigned.ipa | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-unsigned-ipa
+          path: nexus-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
