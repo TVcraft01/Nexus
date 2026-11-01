@@ -764,7 +764,7 @@ void main() {
       );
 
       expect(find.text('Study PC'), findsOneWidget);
-      expect(find.textContaining('Paired over the mesh'), findsOneWidget);
+      expect(find.textContaining('Paired over your own network'), findsOneWidget);
     });
   });
 
