@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter/services.dart' show EventChannel, MethodChannel;
 import 'package:open_wake_word/open_wake_word.dart';
 
+import '../core/device_capabilities.dart' show DeviceCapabilities;
+
 /// The wake word ("Hey Jarvis" placeholder; a trained `nexus.onnx` later).
 ///
 /// Fully offline: audio is captured on the phone, scored on the phone by the
@@ -226,6 +228,44 @@ class WakeWord {
   static WakeWordController? _current;
 
   static WakeWordController ensure() => _current ??= WakeWordController();
+
+  /// The controller, if one has been built. Never builds one — for callers
+  /// that only speak to a loop that is already running (unbinding the
+  /// callbacks at dispose, reporting that speech arrived).
+  static WakeWordController? get current => _current;
+
+  /// Starts detection — but only on a build that can actually listen.
+  ///
+  /// The wake word is openWakeWord over ONNX Runtime, wired up for Android
+  /// only ([DeviceCapabilities.supportsWakeWord]). Everywhere else this
+  /// returns false *before* [ensure]: no controller, no engine init, no native
+  /// audio loop, no microphone. That ordering is the whole point. A stored
+  /// `wakeWord: true` can arrive on a phone that never had the feature (the
+  /// setting syncs between devices), and a controller built first would have
+  /// loaded the ONNX engine before the missing platform channel was ever
+  /// reached — "it failed later" is not the same as "it never started".
+  /// Whether this build can listen at all on this device — the same answer
+  /// [startIfSupported] gates on, exposed so a boot path can skip building the
+  /// controller without importing the capability object itself.
+  static bool get supported => DeviceCapabilities.current.supportsWakeWord;
+
+  static Future<bool> startIfSupported() async {
+    if (!supported) {
+      debugPrint('NEXUS wake: no wake word on this platform, not starting');
+      return false;
+    }
+    return ensure().start();
+  }
+
+  /// Whether a controller exists. The gate above only means something if
+  /// nothing was constructed, so the tests assert this stays false.
+  @visibleForTesting
+  static bool get isCreated => _current != null;
+
+  @visibleForTesting
+  static void debugSetCurrent(WakeWordController? controller) {
+    _current = controller;
+  }
 
   @visibleForTesting
   static void resetForTest() {

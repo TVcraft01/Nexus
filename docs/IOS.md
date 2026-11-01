@@ -30,6 +30,11 @@ build happens on a GitHub macOS runner and the installing happens on the Linux P
 
 Settings says all of this in the app, on iOS, under **This phone**.
 
+`Info.plist` also declares `NSMicrophoneUsageDescription` — *"Used for voice input and
+wake word when you turn them on"*. Neither feature runs on iOS today, but the key is
+there because iOS **terminates** an app that opens the microphone without it: the risk
+was a crash on the first mic access, not a missing dialog.
+
 ---
 
 ## Vision
@@ -81,7 +86,25 @@ One verified run of this build produced:
 - `nexus-unsigned.ipa`, 23 MB
 - `Payload/Runner.app` → `Runner`, a `Mach-O 64-bit arm64` executable
 - `MinimumOSVersion = 15.0`, `UIDeviceFamily = [1, 2]`, `UIRequiredDeviceCapabilities = [arm64]`
-- no ML Kit and no ONNX Runtime anywhere in the app bundle
+- no ML Kit anywhere in the bundle, and no wake-word `.onnx` models either — see below
+
+### The wake-word models are left out of the iOS bundle
+
+`pubspec.yaml` declares the three openWakeWord models (`assets/wake/*.onnx`) for every
+platform, because Flutter has no per-platform `assets:` block. The wake word is
+Android-only (`supportsWakeWord`), so `.github/workflows/ios-unsigned.yml` drops those
+three declaration lines before `pub get`, then fails the build if any `.onnx` file
+survives in `Runner.app`. Android is untouched: the APK job checks out the same commit
+and builds the manifest as written.
+
+What stays is the **ONNX Runtime itself**. It arrives through the `open_wake_word` pod
+(`onnxruntime-c`) and is linked *statically* into the `Runner` executable, so there is no
+`.framework` or `.dylib` to delete — only symbols inside the binary. Removing it would
+mean removing the dependency, which would take the wake word away from Android. So the
+honest statement is: the models are gone from the iOS bundle, the runtime's code is still
+compiled in, and nothing on iOS ever reaches it — `WakeWord.startIfSupported` refuses
+before it builds a controller (`lib/mesh/wake_word.dart`), which is what
+`test/wake_word_platform_gating_test.dart` asserts.
 
 ### What comes out is not installable as-is
 
@@ -155,7 +178,9 @@ switch, so removing either would also remove it from Android, where both are use
   `kOnDeviceAiPlatforms` is `{android, linux}`, so the on-device model is never offered
   and never loaded on iOS.
 - **`open_wake_word`** needed two Podfile changes to build at all (see below). It is not
-  used on iOS; `supportsWakeWord` is Android-only.
+  used on iOS; `supportsWakeWord` is Android-only, and its three models are stripped from
+  the iOS bundle at build time (the Podfile changes, and why the runtime still comes
+  along, are above).
 
 ### The two Podfile changes, and why
 

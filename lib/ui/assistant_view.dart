@@ -553,10 +553,16 @@ class AssistantViewState extends State<AssistantView> {
     // here and arm the same mic the button owns. Nothing here records or
     // uploads — the controller scores audio on-device and only reports
     // that the name was heard.
-    final wake = WakeWord.ensure();
-    wake.onWake = _onWakeWord;
-    wake.onSilenceTimeout = _onWakeSilence;
-    if (widget.mesh.store.wakeWord) unawaited(wake.start());
+    // Only where this build can listen. Building the controller elsewhere
+    // would construct an engine for a platform with no audio loop behind the
+    // channel — and the setting syncs, so `wakeWord` can be true on a phone
+    // that never had the feature.
+    if (WakeWord.supported) {
+      final wake = WakeWord.ensure();
+      wake.onWake = _onWakeWord;
+      wake.onSilenceTimeout = _onWakeSilence;
+      if (widget.mesh.store.wakeWord) unawaited(WakeWord.startIfSupported());
+    }
   }
 
   /// The wake word fired: bring the app forward so the Listening state is
@@ -578,8 +584,8 @@ class AssistantViewState extends State<AssistantView> {
     // The wake controller is app-wide (Settings owns the toggle); this
     // view only unbinds its callbacks, never stops someone else's loop —
     // cleared unconditionally, like the mesh callbacks below.
-    WakeWord.ensure()
-      ..onWake = null
+    WakeWord.current
+      ?..onWake = null
       ..onSilenceTimeout = null;
     widget.mesh.onLearnedPhraseReceived = null;
     widget.mesh.onFactReceived = null;
@@ -1028,7 +1034,7 @@ class AssistantViewState extends State<AssistantView> {
     if (text.isEmpty) return;
     // Speech arrived: a wake window waiting on this utterance served its
     // purpose (a mic-button tap has no window, so this is a no-op there).
-    WakeWord.ensure().heardSpeech();
+    WakeWord.current?.heardSpeech();
     _controller.text = text;
     _onSubmit(voice: true);
   }
