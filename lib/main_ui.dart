@@ -611,7 +611,9 @@ class NexusUiColors extends ThemeExtension<NexusUiColors> {
     raised: Color(0xFFF1F1EE),
     hairline: Color(0xFFE6E6E1),
     textStrong: Color(0xFF1A1A1A),
-    textMuted: Color(0xFF77776F),
+    // Darkened from #77776F: 4.32:1 on the page and 3.99:1 on a raised row were
+    // under the 4.5:1 the rules require. This is 4.92:1 and 4.54:1.
+    textMuted: Color(0xFF6E6E66),
     bubbleMine: Color(0xFFF4F4F4),
     bubbleTheirs: Color(0xFFFFFFFF),
     online: Color(0xFF2F9E63),
