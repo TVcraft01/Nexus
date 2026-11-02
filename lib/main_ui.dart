@@ -2364,7 +2364,11 @@ class _NexusShellState extends State<NexusShell> {
     // app was given rather than by a device category.
     final Size window = MediaQuery.sizeOf(context);
     final double width = window.width;
-    final bool wide = nexusIsDesktopApp || width >= kNexusWideBreakpoint;
+    // Width alone decides, on every platform: a desktop window dragged
+    // narrower than the breakpoint has the same problem a phone does — a
+    // sidebar 260 px wide on a 360 px window leaves 100 px for the page,
+    // which is where words start breaking one letter per line.
+    final bool wide = width >= kNexusWideBreakpoint;
     // A landscape phone with the keyboard up has about 140dp of body left, and
     // a sidebar that wants twice that. The keys are the edge the user is using,
     // so the sidebar steps aside until they are put away — the same rule the
@@ -2810,7 +2814,15 @@ class NexusTabBar extends StatelessWidget {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: NexusLayout.content),
               child: SizedBox(
-                height: NexusLayout.tabBar,
+                // The bar grows with the text inside it: at 200 % the icon and
+                // its label no longer fit the phone-height bar, and a fixed
+                // height would clip the label instead of moving the row.
+                height:
+                    NexusLayout.tabBar +
+                    (MediaQuery.textScalerOf(context).scale(12) - 12).clamp(
+                      0.0,
+                      12.0,
+                    ),
                 child: Row(
                   children: <Widget>[
                     for (int i = 0; i < tabs.length; i++)
@@ -2873,7 +2885,13 @@ class _TabButton extends StatelessWidget {
             AnimatedDefaultTextStyle(
               style: NexusType.tab(c).copyWith(color: color),
               duration: fade,
-              child: Text(spec.label),
+              child: Text(
+                spec.label,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+              ),
             ),
           ],
         ),
