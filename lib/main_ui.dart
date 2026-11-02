@@ -3514,7 +3514,7 @@ Future<bool> showNexusConfirm(
 ///
 /// Constants because all four are read by tests as well as by users: the
 /// confirmation is the only thing between a mis-tap and a broken pairing.
-const String kNexusForgetTitle = 'Forget this device?';
+const String kNexusForgetTitle = 'Unpair this device?';
 const Key kNexusDiscoverNearby = Key('nexus-discover-nearby');
 
 /// How long the Discover button listens before it reports what it heard.
@@ -7092,7 +7092,7 @@ class _DevicesTabState extends State<DevicesTab> {
       message:
           '${device.name} will have to pair with this device again before it '
           'can send or receive anything.',
-      confirmLabel: 'Forget',
+      confirmLabel: 'Unpair',
     );
     if (!confirmed || !mounted) return;
     // Both lists, and the mesh too: a shell row that outlived its pairing
@@ -7400,21 +7400,36 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                         ],
                       ),
                       if (!self)
-                        IconButton(
-                          key: ValueKey<String>('forget-${_device.id}'),
-                          tooltip: 'Forget ${_device.name}',
-                          onPressed: widget.onForget,
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.only(top: 4),
-                          constraints: const BoxConstraints(
-                            minWidth: 30,
-                            minHeight: 30,
+                        // A word, not just a bin: an icon alone has to be
+                        // guessed at, and this one removes a pairing. The
+                        // semantics name the device so a screen reader says
+                        // which one, and the tap still asks before it acts.
+                        Semantics(
+                          button: true,
+                          label: 'Unpair ${_device.name}',
+                          child: TextButton.icon(
+                            key: ValueKey<String>('forget-${_device.id}'),
+                            onPressed: widget.onForget,
+                            style: TextButton.styleFrom(
+                              foregroundColor: c.danger,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              minimumSize: const Size(48, 40),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              textStyle: NexusType.rowMeta(c),
+                            ),
+                            icon: const Icon(
+                              Icons.link_off_rounded,
+                              size: 16,
+                            ),
+                            label: const Text(
+                              'Unpair',
+                              maxLines: 1,
+                              softWrap: false,
+                            ),
                           ),
-                          icon: const Icon(
-                            Icons.delete_outline_rounded,
-                            size: NexusLayout.icon,
-                          ),
-                          color: c.danger,
                         ),
                     ],
                   ),
