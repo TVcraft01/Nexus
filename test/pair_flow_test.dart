@@ -291,7 +291,7 @@ void main() {
     // A fresh store per test: the list is persisted, so a shared one would let
     // one test's pairing show up in the next.
     store = MemoryPairedDevicesStore();
-    paired = PairedDevices(store: store);
+    paired = PairedDevices(store: store, seed: kSeedPairedDevices);
     PairIdentity.override = () => _me;
     // The mesh's own store: pairing is a preference the mesh reads live, and a
     // test that flips the switch has to see the same value the mesh will.

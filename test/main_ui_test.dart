@@ -1839,8 +1839,11 @@ void main() {
     // The top half is who is here: this phone, and the example PC from the
     // paired seed — each with the state the store knows.
     expect(find.text('PAIRED DEVICES'), findsOneWidget);
-    expect(find.text('This Phone'), findsOneWidget);
-    expect(find.text('This phone'), findsOneWidget);
+    // This machine, named by the platform it is running on rather than by a
+    // demo label: the row says what it is, and the example name is gone.
+    expect(find.text('This device'), findsWidgets);
+    expect(find.text('This Phone'), findsNothing);
+    expect(find.text('This phone'), findsWidgets);
 
     // The bottom half is the disk: both folders, and the real file the temp
     // directory holds. Sizes and dates are the file's own, not a mock row's.

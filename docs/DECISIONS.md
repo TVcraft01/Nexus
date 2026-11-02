@@ -25,3 +25,13 @@ Removed from the device card. The `NotificationSync` store itself is left in
 place so an existing user's stored preference is not destroyed, and so a real
 implementation can pick it up later — but nothing in the UI claims it works
 until it does.
+
+## Demo devices only when asked for
+
+`kSeedPairedDevices` — This Phone, My PC, Studio Mac, and the 16 GB on the
+example PC — used to be what a fresh install showed, so a real run presented
+three devices that were not there. The first row is now this machine, built
+from the platform the build runs on and the name the mesh knows it by, and the
+examples only appear when `NEXUS_DEMO_DEVICES=1` is set (the screenshot harness
+does) or inside a widget test. A release build never asks; a paired list with
+nothing in it shows the empty state instead.
