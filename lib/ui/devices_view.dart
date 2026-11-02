@@ -304,7 +304,7 @@ class _Reachability extends StatelessWidget {
     final (NexusStatusLevel level, String text) = switch ((total, online)) {
       (0, _) => (
         NexusStatusLevel.offline,
-        'No paired devices yet. Pair your first device to begin.',
+        'No paired devices yet. Pair a device to share files.',
       ),
       (1, 1) => (
         NexusStatusLevel.online,

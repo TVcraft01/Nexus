@@ -37,7 +37,7 @@ void main() {
 
   group('the list', () {
     test('seeds with this device and two examples, in that order', () {
-      final PairedDevices paired = PairedDevices();
+      final PairedDevices paired = PairedDevices(seed: kSeedPairedDevices);
       expect(paired.devices.map((PairedDevice d) => d.name), <String>[
         'This Phone',
         'My PC',
@@ -50,6 +50,7 @@ void main() {
     test('adds a scanned device as online, because somebody is holding it', () {
       final PairedDevices paired = PairedDevices(
         store: MemoryPairedDevicesStore(),
+        seed: kSeedPairedDevices,
       );
       expect(paired.add(invite), isTrue);
       final PairedDevice added = paired.devices.last;
@@ -64,6 +65,7 @@ void main() {
     test('the same device scanned twice is one row, and says so', () {
       final PairedDevices paired = PairedDevices(
         store: MemoryPairedDevicesStore(),
+        seed: kSeedPairedDevices,
       );
       expect(paired.add(invite), isTrue);
       expect(paired.add(invite), isFalse);
@@ -77,6 +79,7 @@ void main() {
     test('forgets a peer, and keeps its hands off this device', () {
       final PairedDevices paired = PairedDevices(
         store: MemoryPairedDevicesStore(),
+        seed: kSeedPairedDevices,
       );
       expect(paired.forget('example-mac'), isTrue);
       expect(paired.devices.map((PairedDevice d) => d.name), <String>[
@@ -93,6 +96,7 @@ void main() {
     test('tells its listeners, so the screen can follow', () {
       final PairedDevices paired = PairedDevices(
         store: MemoryPairedDevicesStore(),
+        seed: kSeedPairedDevices,
       );
       int notified = 0;
       paired.addListener(() => notified++);
@@ -108,13 +112,13 @@ void main() {
   group('surviving a restart', () {
     test('reads back what the last session wrote', () async {
       final MemoryPairedDevicesStore store = MemoryPairedDevicesStore();
-      final PairedDevices first = PairedDevices(store: store);
+      final PairedDevices first = PairedDevices(store: store, seed: kSeedPairedDevices);
       first.add(invite);
       // The write is deliberately not awaited by the caller (the screen has
       // already changed); the memory store lands it in a microtask.
       await Future<void>.delayed(Duration.zero);
 
-      final PairedDevices second = PairedDevices(store: store);
+      final PairedDevices second = PairedDevices(store: store, seed: kSeedPairedDevices);
       await second.attach();
       // The seed rows are part of the list, so they come back too — and the
       // device this phone is stays first, because it is the list saying whose
@@ -130,6 +134,7 @@ void main() {
     test('keeps the seed when there is nothing stored', () async {
       final PairedDevices paired = PairedDevices(
         store: MemoryPairedDevicesStore(),
+        seed: kSeedPairedDevices,
       );
       await paired.attach();
       expect(paired.devices.length, 3);
@@ -143,7 +148,7 @@ void main() {
           const PairedDevice(id: 'peer', name: 'Peer', publicKey: 'k'),
         ],
       );
-      final PairedDevices paired = PairedDevices(store: store);
+      final PairedDevices paired = PairedDevices(store: store, seed: kSeedPairedDevices);
       await paired.attach();
       expect(paired.devices.first.isThisDevice, isTrue);
       expect(paired.devices.last.name, 'Peer');
@@ -156,7 +161,7 @@ void main() {
       final Completer<List<PairedDevice>?> read =
           Completer<List<PairedDevice>?>();
       final _DelayedStore store = _DelayedStore(read.future);
-      final PairedDevices paired = PairedDevices(store: store);
+      final PairedDevices paired = PairedDevices(store: store, seed: kSeedPairedDevices);
 
       final Future<void> attaching = paired.attach();
       expect(paired.forget('example-mac'), isTrue);

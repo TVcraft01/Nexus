@@ -611,7 +611,9 @@ class NexusUiColors extends ThemeExtension<NexusUiColors> {
     raised: Color(0xFFF1F1EE),
     hairline: Color(0xFFE6E6E1),
     textStrong: Color(0xFF1A1A1A),
-    textMuted: Color(0xFF77776F),
+    // Darkened from #77776F: 4.32:1 on the page and 3.99:1 on a raised row were
+    // under the 4.5:1 the rules require. This is 4.92:1 and 4.54:1.
+    textMuted: Color(0xFF6E6E66),
     bubbleMine: Color(0xFFF4F4F4),
     bubbleTheirs: Color(0xFFFFFFFF),
     online: Color(0xFF2F9E63),
@@ -2364,7 +2366,11 @@ class _NexusShellState extends State<NexusShell> {
     // app was given rather than by a device category.
     final Size window = MediaQuery.sizeOf(context);
     final double width = window.width;
-    final bool wide = nexusIsDesktopApp || width >= kNexusWideBreakpoint;
+    // Width alone decides, on every platform: a desktop window dragged
+    // narrower than the breakpoint has the same problem a phone does — a
+    // sidebar 260 px wide on a 360 px window leaves 100 px for the page,
+    // which is where words start breaking one letter per line.
+    final bool wide = width >= kNexusWideBreakpoint;
     // A landscape phone with the keyboard up has about 140dp of body left, and
     // a sidebar that wants twice that. The keys are the edge the user is using,
     // so the sidebar steps aside until they are put away — the same rule the
@@ -2810,7 +2816,15 @@ class NexusTabBar extends StatelessWidget {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: NexusLayout.content),
               child: SizedBox(
-                height: NexusLayout.tabBar,
+                // The bar grows with the text inside it: at 200 % the icon and
+                // its label no longer fit the phone-height bar, and a fixed
+                // height would clip the label instead of moving the row.
+                height:
+                    NexusLayout.tabBar +
+                    (MediaQuery.textScalerOf(context).scale(12) - 12).clamp(
+                      0.0,
+                      12.0,
+                    ),
                 child: Row(
                   children: <Widget>[
                     for (int i = 0; i < tabs.length; i++)
@@ -2873,7 +2887,13 @@ class _TabButton extends StatelessWidget {
             AnimatedDefaultTextStyle(
               style: NexusType.tab(c).copyWith(color: color),
               duration: fade,
-              child: Text(spec.label),
+              child: Text(
+                spec.label,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+              ),
             ),
           ],
         ),
@@ -3496,7 +3516,7 @@ Future<bool> showNexusConfirm(
 ///
 /// Constants because all four are read by tests as well as by users: the
 /// confirmation is the only thing between a mis-tap and a broken pairing.
-const String kNexusForgetTitle = 'Forget this device?';
+const String kNexusForgetTitle = 'Unpair this device?';
 const Key kNexusDiscoverNearby = Key('nexus-discover-nearby');
 
 /// How long the Discover button listens before it reports what it heard.
@@ -5423,7 +5443,7 @@ class _FilesTabState extends State<FilesTab> {
           28,
         ),
         children: <Widget>[
-          const NexusSectionLabel('Connected Devices', first: true),
+          const NexusSectionLabel('Paired devices', first: true),
           for (final PairedDevice device in connected)
             _ConnectedDeviceRow(
               key: ValueKey<String>('files-device-${device.id}'),
@@ -6898,7 +6918,7 @@ class _DevicesTabState extends State<DevicesTab> {
             ),
             const SizedBox(height: 10),
           ],
-          const NexusSectionLabel('Connected Devices', first: true),
+          const NexusSectionLabel('Paired devices', first: true),
           for (final _DeviceRow row in rows) ...<Widget>[
             _ConnectedDeviceCard(
               key: ValueKey<String>('device-card-${row.device.id}'),
@@ -6919,7 +6939,7 @@ class _DevicesTabState extends State<DevicesTab> {
           // The mesh's memory, in one row: what the room could run if the
           // models were chosen by the strongest device rather than by the one
           // in the user's hand.
-          const NexusSectionLabel('Mesh'),
+          const NexusSectionLabel('Sharing'),
           // Off until the user says otherwise, and the switch is here rather
           // than buried in Settings because this is the screen that owns the
           // list it changes. Off is not a hidden default: the subtitle says
@@ -6960,7 +6980,7 @@ class _DevicesTabState extends State<DevicesTab> {
           ],
           NexusRow(
             key: const ValueKey<String>('mesh-total-ram'),
-            title: 'Mesh Total RAM',
+            title: 'Shared memory',
             subtitle: _meshRam == null
                 ? 'No device has shared its memory yet'
                 : 'Across $_meshRamDevices '
@@ -6992,7 +7012,7 @@ class _DevicesTabState extends State<DevicesTab> {
                   )
                 : const Icon(Icons.radar_rounded, size: NexusLayout.icon),
             label: Text(
-              _discovering ? 'Looking for devices…' : 'Discover Nearby Devices',
+              _discovering ? 'Looking for devices…' : 'Discover nearby devices',
             ),
           ),
           Padding(
@@ -7074,7 +7094,7 @@ class _DevicesTabState extends State<DevicesTab> {
       message:
           '${device.name} will have to pair with this device again before it '
           'can send or receive anything.',
-      confirmLabel: 'Forget',
+      confirmLabel: 'Unpair',
     );
     if (!confirmed || !mounted) return;
     // Both lists, and the mesh too: a shell row that outlived its pairing
@@ -7211,30 +7231,10 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
   bool _sending = false;
   double _progress = 0;
   bool _pinging = false;
-  bool _notificationSync = false;
-  bool _notificationTouched = false;
 
   PairedDevice get _device => widget.device;
 
   bool get _busy => _sending || _pinging;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_loadNotificationSync());
-  }
-
-  Future<void> _loadNotificationSync() async {
-    final bool on = await NotificationSync.isOn(_device.id);
-    if (!mounted || _notificationTouched) return;
-    setState(() => _notificationSync = on);
-  }
-
-  void _setNotificationSync(bool value) {
-    _notificationTouched = true;
-    setState(() => _notificationSync = value);
-    unawaited(NotificationSync.set(_device.id, value));
-  }
 
   void _notify(String message) {
     if (!mounted) return;
@@ -7402,21 +7402,36 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                         ],
                       ),
                       if (!self)
-                        IconButton(
-                          key: ValueKey<String>('forget-${_device.id}'),
-                          tooltip: 'Forget ${_device.name}',
-                          onPressed: widget.onForget,
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.only(top: 4),
-                          constraints: const BoxConstraints(
-                            minWidth: 30,
-                            minHeight: 30,
+                        // A word, not just a bin: an icon alone has to be
+                        // guessed at, and this one removes a pairing. The
+                        // semantics name the device so a screen reader says
+                        // which one, and the tap still asks before it acts.
+                        Semantics(
+                          button: true,
+                          label: 'Unpair ${_device.name}',
+                          child: TextButton.icon(
+                            key: ValueKey<String>('forget-${_device.id}'),
+                            onPressed: widget.onForget,
+                            style: TextButton.styleFrom(
+                              foregroundColor: c.danger,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              minimumSize: const Size(48, 40),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              textStyle: NexusType.rowMeta(c),
+                            ),
+                            icon: const Icon(
+                              Icons.link_off_rounded,
+                              size: 16,
+                            ),
+                            label: const Text(
+                              'Unpair',
+                              maxLines: 1,
+                              softWrap: false,
+                            ),
                           ),
-                          icon: const Icon(
-                            Icons.delete_outline_rounded,
-                            size: NexusLayout.icon,
-                          ),
-                          color: c.danger,
                         ),
                     ],
                   ),
@@ -7437,7 +7452,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                       child: _DeviceCardAction(
                         key: ValueKey<String>('send-${_device.id}'),
                         icon: Icons.upload_file_rounded,
-                        label: 'Send File',
+                        label: 'Send file',
                         onTap: widget.online && !_busy ? _sendFile : null,
                       ),
                     ),
@@ -7446,7 +7461,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                       child: _DeviceCardAction(
                         key: ValueKey<String>('ping-${_device.id}'),
                         icon: Icons.wifi_tethering_rounded,
-                        label: _pinging ? 'Pinging…' : 'Ping',
+                        label: _pinging ? 'Checking…' : 'Check connection',
                         onTap: widget.online && !_busy ? _ping : null,
                       ),
                     ),
@@ -7456,7 +7471,7 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                         child: _DeviceCardAction(
                           key: ValueKey<String>('remote-${_device.id}'),
                           icon: Icons.mouse_outlined,
-                          label: 'Remote',
+                          label: 'Remote control',
                           onTap: widget.online && !_busy ? _openRemote : null,
                         ),
                       ),
@@ -7475,41 +7490,6 @@ class _ConnectedDeviceCardState extends State<_ConnectedDeviceCard> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.only(top: 8),
-                  decoration: BoxDecoration(
-                    border: Border(top: BorderSide(color: c.hairline)),
-                  ),
-                  child: Row(
-                    children: <Widget>[
-                      Icon(
-                        Icons.notifications_none_rounded,
-                        size: NexusLayout.icon,
-                        color: c.textMuted,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Notification Sync',
-                          style: NexusType.rowTitle(c).copyWith(fontSize: 13.5),
-                        ),
-                      ),
-                      Tooltip(
-                        message:
-                            'Saves the preference on this phone. Notification '
-                            'sync is not wired up yet.',
-                        child: Switch.adaptive(
-                          key: ValueKey<String>(
-                            'notification-sync-${_device.id}',
-                          ),
-                          value: _notificationSync,
-                          onChanged: _setNotificationSync,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ],
             ],
           ),

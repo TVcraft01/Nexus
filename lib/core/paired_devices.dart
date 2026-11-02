@@ -14,11 +14,13 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart'
-    show ChangeNotifier, debugPrint, visibleForTesting;
+    show ChangeNotifier, debugPrint, kReleaseMode, visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'identity.dart';
 import 'pair_invite.dart';
 
 /// One device in the paired list.
@@ -279,11 +281,83 @@ class SharedPrefsPairedDevicesStore implements PairedDevicesStore {
   }
 }
 
+/// The name of this machine's own platform, as a pairing code spells it.
+String _platformName() {
+  try {
+    switch (Platform.operatingSystem) {
+      case 'android':
+        return 'android';
+      case 'ios':
+        return 'ios';
+      case 'linux':
+        return 'linux';
+      case 'macos':
+        return 'macos';
+      case 'windows':
+        return 'windows';
+    }
+  } catch (_) {
+    // No dart:io (a hypothetical web build): the row still exists, it just
+    // cannot say which platform it is.
+  }
+  return 'other';
+}
+
+/// This machine as the first row of the list: the platform this build is
+/// running on, and the name the mesh knows it by.
+PairedDevice thisDeviceRow() {
+  final String platform = _platformName();
+  return PairedDevice(
+    id: 'this-device',
+    name: defaultDeviceName(platform),
+    publicKey: '',
+    detail: 'This device',
+    online: true,
+    isThisDevice: true,
+    platform: platform,
+  );
+}
+
+/// Whether the example devices are drawn.
+///
+/// Off unless someone asks: `NEXUS_DEMO_DEVICES=1` in the environment (the
+/// screenshot harness sets it so the paired list is never empty in a sheet), or
+/// a widget test, where the platform is a fake and there is no machine to
+/// describe. A release build never asks.
+bool get nexusDemoDevices {
+  final bool? forced = _demoDevicesOverride;
+  if (forced != null) return forced;
+  if (kReleaseMode) return false;
+  if (Platform.environment['NEXUS_DEMO_DEVICES'] == '1') return true;
+  return Platform.environment['FLUTTER_TEST'] == 'true';
+}
+
+bool? _demoDevicesOverride;
+
+/// Turns the example rows on or off for one test, and back off with `null`.
+@visibleForTesting
+set debugDemoDevices(bool? value) => _demoDevicesOverride = value;
+
 /// The shell's paired list, as one object the Devices tab listens to.
 class PairedDevices extends ChangeNotifier {
   PairedDevices({PairedDevicesStore? store, List<PairedDevice>? seed})
     : _store = store ?? SharedPrefsPairedDevicesStore(),
-      _devices = List<PairedDevice>.of(seed ?? kSeedPairedDevices);
+      _devices = List<PairedDevice>.of(seed ?? _initialRows());
+
+  /// The list a fresh install starts with: this machine, and nothing else.
+  ///
+  /// The example rows in [kSeedPairedDevices] are for screenshots and widget
+  /// tests. An ordinary run shows a real row for this machine and an empty list
+  /// until the user pairs something, because a demo PC presented as a paired
+  /// device is exactly the dishonesty the rules forbid.
+  static List<PairedDevice> _initialRows() {
+    final PairedDevice self = thisDeviceRow();
+    if (!nexusDemoDevices) return <PairedDevice>[self];
+    return <PairedDevice>[
+      self,
+      ...kSeedPairedDevices.where((PairedDevice d) => !d.isThisDevice),
+    ];
+  }
 
   /// Test seam, in the same shape as [SpeechInput.override]: a widget test
   /// states what is paired instead of touching the preferences plugin. The app

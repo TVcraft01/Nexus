@@ -291,7 +291,7 @@ void main() {
     // A fresh store per test: the list is persisted, so a shared one would let
     // one test's pairing show up in the next.
     store = MemoryPairedDevicesStore();
-    paired = PairedDevices(store: store);
+    paired = PairedDevices(store: store, seed: kSeedPairedDevices);
     PairIdentity.override = () => _me;
     // The mesh's own store: pairing is a preference the mesh reads live, and a
     // test that flips the switch has to see the same value the mesh will.
@@ -437,7 +437,7 @@ void main() {
       );
     });
 
-    testWidgets('Discover Nearby Devices listens, and lists what answered', (
+    testWidgets('Discover nearby devices listens, and lists what answered', (
       tester,
     ) async {
       final _FakeNearby nearby = _FakeNearby(<DiscoveredDevice>[_kettle]);
@@ -461,7 +461,7 @@ void main() {
       await tester.pump(kNexusDiscoverWindow);
       await tester.pumpAndSettle();
 
-      expect(find.text('Discover Nearby Devices'), findsOneWidget);
+      expect(find.text('Discover nearby devices'), findsOneWidget);
       expect(nearby.startCalls, greaterThan(0));
       // What answered is a row, not a notice that scrolls away: the name, what
       // kind of machine it is, and the address the announcement came from.

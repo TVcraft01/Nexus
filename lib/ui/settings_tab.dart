@@ -535,22 +535,6 @@ class _SettingsTabState extends State<SettingsTab> {
   /// second request or stack two dialogs.
   bool _checkingUpdate = false;
 
-  /// The Cloud sync row has nothing to switch — there is no cloud — but it is
-  /// still a row, and a tap anywhere on it is answered by the promise it makes.
-  void _showCloudOffNote() {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        const SnackBar(
-          content: Text(
-            'No account, no server copy — your chats and memory stay on this '
-            'device.',
-          ),
-          duration: Duration(seconds: 3),
-        ),
-      );
-  }
-
   /// Asks GitHub for the latest release, compares it with the installed
   /// package's version, and then says one of three things: install it, you are
   /// up to date, or the check itself could not be made.
@@ -606,8 +590,8 @@ class _SettingsTabState extends State<SettingsTab> {
         children: <Widget>[
           const NexusSectionLabel('Theme', first: true),
           NexusRow(
-            title: 'Follow system',
-            subtitle: 'Use your phone’s light and dark setting',
+            title: 'Use your device’s light or dark setting',
+            subtitle: 'On, Nexus matches your system. Off, you choose below.',
             leading: const NexusIconTile(Icons.brightness_auto_outlined),
             trailing: Switch(
               value: widget.followSystem,
@@ -624,8 +608,9 @@ class _SettingsTabState extends State<SettingsTab> {
           NexusRow(
             title: 'Dark mode',
             subtitle: widget.followSystem
-                ? 'From your phone — turn off Follow system to choose'
-                : 'Neutral greys either way — your accent stays for actions',
+                ? 'Chosen by your system — turn the row above off to pick it '
+                      'here.'
+                : 'Dark pages and light text. Your accent stays for actions.',
             leading: const NexusIconTile(Icons.dark_mode_outlined),
             key: kNexusDarkModeRow,
             // The switch becomes a spinner for the frame or two the new theme
@@ -729,13 +714,6 @@ class _SettingsTabState extends State<SettingsTab> {
                 builder: (routeContext) => const PrivacyPage(),
               ),
             ),
-          ),
-          NexusRow(
-            title: 'Cloud sync',
-            subtitle: 'No account, no server copy',
-            leading: const NexusIconTile(Icons.cloud_off_outlined),
-            trailing: Text('Off', style: NexusType.rowMeta(c)),
-            onTap: _showCloudOffNote,
           ),
           // Copy and paste across devices is the one capability here that acts
           // on its own the moment it is switched on, so what it does is said in
