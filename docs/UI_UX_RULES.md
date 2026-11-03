@@ -81,3 +81,31 @@ Loading, empty, error, offline, and "no permission". A screen missing one of the
 - [ ] Light and dark checked.
 - [ ] Semantic labels on every control.
 - [ ] Phone and PC show the same words and order.
+
+## 9. UX laws as rules
+Sources: lawsofux.com (Jon Yablonski) and uilaws.com. Each law becomes a rule a reviewer can check.
+
+| Law | Nexus rule |
+|---|---|
+| **Paradox of the Active User** (people never read manuals) | First run needs zero reading. One goal, one primary action, and a result within 60 seconds. No tutorial walls: explain at the moment of need, in one line. |
+| **Hick's Law, Choice Overload, Miller's Law** | At most 5 choices per decision. One primary action per screen. Settings: 7 rows per group at most, advanced items behind "Advanced". Suggestion chips: 3 at most. |
+| **Jakob's Law** | Behave like the platform. Android: system back, edge-to-edge with safe areas, share sheet. iOS: swipe-back, safe areas, native sheets. Never draw under the status bar or home indicator. |
+| **Mental model** | Nexus is a helper that knows the device. It never offers what this device cannot do (no flashlight on a PC). Say "I" and name the device: "On your PC I can...". |
+| **Doherty Threshold** (respond under 400 ms) | Every tap shows a response within 400 ms. Over 1 second: progress with words. Pairing, scanning and sending always show what is happening and a way to cancel. A black or frozen screen is a P0 bug. |
+| **Goal-Gradient, Zeigarnik** | Multi-step flows (pairing, first run) show steps ("Step 2 of 3"). An unfinished step is remembered and resumable. |
+| **Peak-End Rule** | Design the peak and the end: the first successful action, and the end of pairing, must be clear, fast and rewarding. Errors never end a flow: always offer a way forward. |
+| **Fitts's Law** | Primary actions are large and near the thumb on phones (bottom third), 48 dp minimum. Destructive actions are small, far from the primary one, and confirmed. |
+| **Law of Proximity, Common Region, Uniform Connectedness** | Group related items in one card with a clear boundary. A label sits next to the thing it labels. Space between groups is larger than inside groups. |
+| **Tesler's Law** | Complexity does not disappear: move it from the person to Nexus. Nexus detects device types, ports and settings itself and asks only for a decision. |
+| **Postel's Law** | Be liberal in what is accepted: pairing codes ignore case, dashes and spaces; commands accept loose wording. Be strict in what is shown. |
+| **Occam's Razor** | If a feature does not serve the headline promise, hide or remove it (file manager, inert switches). |
+| **Selective Attention, Von Restorff Effect** | One thing stands out per screen: the primary button. Accent colour is for actions only, never for decoration. |
+| **Aesthetic-Usability Effect** | Polish earns trust, but never replaces function. A pretty screen with a dead control is a bug. |
+| **Consistency, Contrast, Typography hierarchy, White space** (uilaws.com) | Same pattern for the same job on every screen. 4.5:1 text contrast. At most 3 type sizes per screen, title larger than body. Generous spacing on the 8 dp grid. |
+
+### Law check (add to the review checklist)
+- [ ] First run: can a stranger get a first result without reading anything?
+- [ ] Fewer than 6 choices per decision?
+- [ ] Every action answers within 400 ms?
+- [ ] Does it respect platform conventions and system bars?
+- [ ] Does it offer only what this device can do?
