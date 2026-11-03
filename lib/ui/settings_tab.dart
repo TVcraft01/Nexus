@@ -608,8 +608,11 @@ class _SettingsTabState extends State<SettingsTab> {
           NexusRow(
             title: 'Dark mode',
             subtitle: widget.followSystem
-                ? 'Chosen by your system — turn the row above off to pick it '
-                      'here.'
+                // One line, in the imperative, under the switch it is about:
+                // the row is disabled while the system setting is in charge, so
+                // the sentence has to say what unlocks it. The old wording put
+                // the instruction third, after the explanation.
+                ? 'Turn off the row above to choose.'
                 : 'Dark pages and light text. Your accent stays for actions.',
             leading: const NexusIconTile(Icons.dark_mode_outlined),
             key: kNexusDarkModeRow,

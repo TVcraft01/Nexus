@@ -385,9 +385,22 @@ class _PairSheetState extends State<_PairSheet> {
                   icon: const Icon(Icons.arrow_back_rounded),
                 ),
               Expanded(
-                child: Text(
-                  _tab < 0 ? 'Add device' : 'Finish pairing',
-                  style: Theme.of(context).textTheme.titleLarge,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _tab < 0 ? 'Add device' : 'Finish pairing',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    // Where the user is in the flow, so the second screen is not
+                    // an unexplained jump from the chooser (§9 Goal-Gradient).
+                    if (_tab >= 0)
+                      Text(
+                        'Step 2 of 2',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                  ],
                 ),
               ),
               IconButton(
@@ -424,8 +437,8 @@ class _PairSheetState extends State<_PairSheet> {
       children: [
         Text(
           nearby.isEmpty
-              ? 'No devices nearby yet. Turn Nexus on and open Devices → Add '
-                  'device on the other one, or use a QR code below.'
+              ? 'No devices nearby yet. Open Devices → Add device on the other '
+                  'one, or use a QR code below.'
               : 'Pick a device you can see. Pairing asks for a code on the '
                   'other side.',
           style: Theme.of(context).textTheme.bodySmall,
@@ -596,8 +609,8 @@ class _PairSheetState extends State<_PairSheet> {
           ),
           const SizedBox(height: NexusSpace.sm),
           Text(
-            'On the other device: add this one, enter the code above, and the two '
-            'devices pair directly — no cloud, no account.',
+            'On the other device: add this one, then enter the code above. The '
+            'two devices pair directly — no cloud, no account.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodySmall,
           ),

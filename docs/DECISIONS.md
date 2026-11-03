@@ -35,3 +35,36 @@ from the platform the build runs on and the name the mesh knows it by, and the
 examples only appear when `NEXUS_DEMO_DEVICES=1` is set (the screenshot harness
 does) or inside a widget test. A release build never asks; a paired list with
 nothing in it shows the empty state instead.
+
+## No cancel while a pairing request is in flight
+
+The pairing sheet disables its button and says "Pairing…" while it waits, which
+satisfies the response half of §9's Doherty rule. The cancel half is not
+there: `MeshService.pairWith` and `pairWithQrCandidates` return when the other
+device answers or the socket times out, and no handle comes back to abandon
+that wait. Adding a Cancel button without that handle would be a control that
+does nothing, so it is a product decision first: give the mesh an abortable
+pairing, then draw the button. Until then the request ends on its own and the
+sheet stays open with the error, so the flow can be retried.
+
+## No cancel once a send to another device has started
+
+The "Send to <device>" control shows "Sending…" and the file arrives or the
+error arrives, but a transfer in flight cannot be stopped from the UI. Same
+reason as pairing: the transfer is a `Future` with no abort path. The button
+is not drawn until the transfer layer can abandon one.
+
+## First run has no step counter
+
+Section 9 asks multi-step flows for "Step 2 of 3". First run asks exactly one
+question — how Nexus should answer — so a counter there would invent steps. It
+stays a single screen. Pairing, which really has two stages, now says
+"Step 2 of 2" on its second screen.
+
+## The Dark mode switch stays disabled while the system setting is in charge
+
+Two ways to remove the dead control were available: draw a hint line under it,
+or make a tap release the system setting and set dark in one gesture. The hint
+line is what shipped, because the second option silently changes a preference
+the user set elsewhere. If that trade is revisited, the change belongs in
+`SettingsTab` next to `onFollowSystemChanged`, not in the switch itself.

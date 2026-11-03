@@ -57,6 +57,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:convert' show jsonDecode;
 import 'dart:io' show File, Platform, Process, ProcessResult;
 import 'dart:math' as math;
@@ -1252,6 +1253,17 @@ class _NexusUiAppState extends State<NexusUiApp> {
   @override
   void initState() {
     super.initState();
+    // A screenshot harness has to be able to choose the half of the day without
+    // hunting for a switch, and without the harness being able to lie about what
+    // a user would see: debug and profile builds honour NEXUS_THEME, and a
+    // release build never reads it.
+    if (!kReleaseMode) {
+      final String wanted = Platform.environment['NEXUS_THEME'] ?? '';
+      if (wanted == 'light' || wanted == 'dark') {
+        _followSystem = false;
+        _dark = wanted == 'dark';
+      }
+    }
     final AppServices? services = widget.services;
     if (services != null) {
       // The mesh belongs to the app, not to a tab: its discovery, its pairing
