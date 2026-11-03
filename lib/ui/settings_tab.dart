@@ -34,6 +34,9 @@ const Key kNexusSendClipboard = Key('nexus-send-clipboard');
 /// change a machine other than this one.
 const Key kNexusServerAgentRow = Key('nexus-server-agent-row');
 
+/// The switch that offers the File manager tab. Off on a fresh install.
+const Key kNexusAdvancedRow = Key('nexus-advanced-row');
+
 /// The settings screen: appearance, voice, the brain, privacy, and what this
 /// build is.
 class SettingsTab extends StatefulWidget {
@@ -764,6 +767,36 @@ class _SettingsTabState extends State<SettingsTab> {
           // What Nexus may touch, and the record of what it has. The one screen
           // in the app that can take a capability away, so it sits beside the
           // privacy promise rather than inside the developer log.
+          // One switch, not a section of settings: exactly one screen lives
+          // behind it here, and the row says which. The Files tab is a second
+          // view of the devices the Devices tab already lists — a tree, which
+          // is the right shape for someone who knows the path and the wrong
+          // one for someone who does not. Sending a file never needed it:
+          // "send this to my PC" stays in the chat, on the file itself.
+          const NexusSectionLabel('Advanced'),
+          AnimatedBuilder(
+            animation: AdvancedMode.instance,
+            builder: (BuildContext context, Widget? _) {
+              final bool on = AdvancedMode.instance.enabled;
+              return NexusRow(
+                key: kNexusAdvancedRow,
+                title: 'File manager',
+                subtitle: on
+                    ? 'On — Files is in the bar at the bottom'
+                    : 'Off — send files from the chat instead',
+                leading: const NexusIconTile(Icons.folder_outlined),
+                trailing: Switch(
+                  value: on,
+                  onChanged: (bool value) =>
+                      unawaited(AdvancedMode.instance.setEnabled(value)),
+                ),
+                // The whole row is the control, as it is for every other
+                // switch on this screen.
+                onTap: () =>
+                    unawaited(AdvancedMode.instance.setEnabled(!on)),
+              );
+            },
+          ),
           const NexusSectionLabel('Connections'),
           NexusRow(
             key: kNexusConnectionsRow,

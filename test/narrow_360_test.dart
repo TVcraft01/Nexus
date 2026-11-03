@@ -79,7 +79,9 @@ void main() {
               ),
             )
             .toList();
-        expect(labels.length, 4, reason: 'four destinations, no more');
+        // Three on a fresh install: the file manager sits behind Settings →
+        // Advanced now, so the bar holds Home, Devices and Settings.
+        expect(labels.length, 3, reason: 'three destinations, no more');
         for (final Text label in labels) {
           expect(label.maxLines, 1, reason: '${label.data} must stay one line');
           expect(label.softWrap, isFalse, reason: '${label.data} must not wrap');
