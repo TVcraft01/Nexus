@@ -13,6 +13,7 @@ import 'package:flutter/services.dart'
     show MethodCall, MethodChannel, SystemChannels;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:nexus/core/advanced_mode.dart';
 import 'package:nexus/core/agent_contract.dart' show AgentActions;
 import 'package:nexus/core/ai_status.dart';
 import 'package:nexus/core/attachments.dart';
@@ -598,6 +599,11 @@ void main() {
     // precondition — and the seam rather than a preference, so nothing here
     // touches the preferences store for it.
     Onboarding.debugOverride = true;
+    // These tests are about the shell's screens, and most of them open the
+    // file manager: the shell is exercised with Advanced on, as a user who
+    // asked for it would see it. The hidden-by-default case is owned by
+    // advanced_mode_test.dart, which resets this flag itself.
+    AdvancedMode.instance.resetForTest(enabled: true);
     HomeTab.updateCheckOverride = null;
     SystemPrompt.override = null;
     SystemPrompt.debugReset();
@@ -606,6 +612,7 @@ void main() {
     LocalLibrary.override = () => _TempLibrary(filesRoot, notes);
   });
   tearDown(() {
+    AdvancedMode.instance.resetForTest();
     LocalAiService.override = null;
     DeviceCapabilities.override = null;
     ChatLog.override = null;
