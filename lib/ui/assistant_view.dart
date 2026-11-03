@@ -1372,7 +1372,7 @@ class AssistantViewState extends State<AssistantView> {
   /// as they need; the default is one scrollable row above the composer.
   /// [limit] caps how many are offered where the next line costs more than
   /// one more suggestion is worth.
-  Widget _suggestionChips({bool wrapped = false, int limit = 6}) {
+  Widget _suggestionChips({bool wrapped = false, int limit = 3}) {
     // The skill loop's visible payoff: skills the user genuinely reaches
     // for lead the chips, shown by a canonical example that always parses —
     // even when no single phrase repeats often enough to be a habit. A
@@ -1525,7 +1525,7 @@ class AssistantViewState extends State<AssistantView> {
           style: NexusType.body.copyWith(color: NexusColors.muted),
         ),
         const SizedBox(height: NexusSpace.xxl),
-        _suggestionChips(wrapped: true, limit: 4),
+        _suggestionChips(wrapped: true),
         const SizedBox(height: NexusSpace.xxl),
         Container(
           padding: const EdgeInsets.all(16),
@@ -1591,7 +1591,7 @@ class AssistantViewState extends State<AssistantView> {
           style: NexusType.body.copyWith(color: NexusColors.muted),
         ),
         const SizedBox(height: NexusSpace.xxl),
-        _suggestionChips(wrapped: true, limit: 4),
+        _suggestionChips(wrapped: true),
         const SizedBox(height: NexusSpace.xxl),
         Container(
           padding: const EdgeInsets.all(16),
@@ -2970,7 +2970,7 @@ class AssistantViewState extends State<AssistantView> {
                     style: NexusType.body.copyWith(color: NexusColors.muted),
                   ),
                   const SizedBox(height: NexusSpace.xxl),
-                  _suggestionChips(wrapped: true, limit: 4),
+                  _suggestionChips(wrapped: true),
                 ],
               ),
             ),

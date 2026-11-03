@@ -2124,7 +2124,7 @@ void main() {
     expect(switchOn(tester, 'Dark mode').value, isFalse);
     expect(switchOn(tester, 'Dark mode').onChanged, isNull);
     expect(
-      find.text('Chosen by your system — turn the row above off to pick it here.'),
+      find.text('Turn off the row above to choose.'),
       findsOneWidget,
     );
     // Disabled and visibly greyed, not merely inert: a Material switch with
