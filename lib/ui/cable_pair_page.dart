@@ -170,7 +170,15 @@ class _CablePairPageState extends State<CablePairPage> {
         title: const Text('Connect device'),
       ),
       body: ListView(
-        padding: const EdgeInsets.all(20),
+        // 20 on three sides, and the gesture bar's height on the fourth: this
+        // page ends in the button that finishes pairing, so the bar covering
+        // it is the difference between a finished setup and a stuck one.
+        padding: EdgeInsets.fromLTRB(
+          20,
+          20,
+          20,
+          20 + MediaQuery.paddingOf(context).bottom,
+        ),
         children: [
           if (_checking)
             const Padding(
