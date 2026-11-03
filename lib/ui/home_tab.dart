@@ -193,7 +193,19 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   /// The three chips this screen offers. Chosen once, when the tab is built,
   /// so a rebuild (a keystroke, a theme change) cannot reshuffle them under the
   /// user's thumb.
-  late final List<(String, String)> _suggestions = pickHomeSuggestions();
+  late final List<(String, String)> _suggestions = pickHomeSuggestions(
+    platform: _platformName,
+  );
+
+  /// The platform string the capability registry speaks, so a chip is filtered
+  /// by the same rule the mesh uses to advertise what this device can do.
+  String get _platformName => switch (defaultTargetPlatform) {
+    TargetPlatform.android => 'android',
+    TargetPlatform.iOS => 'ios',
+    TargetPlatform.windows => 'windows',
+    TargetPlatform.macOS => 'macos',
+    _ => 'linux',
+  };
 
   /// The pictures or document chosen but not sent yet. The composer draws one
   /// thumbnail with its own X for each; nothing reaches the thread or the vision
@@ -4234,23 +4246,60 @@ class _HiveChip extends StatelessWidget {
 /// The screen draws three, chosen at random, rather than the same three every
 /// launch — a first screen that never changes stops being a suggestion and
 /// becomes furniture. Tapping one fills the field; it never sends.
-const List<(String, String)> kNexusSuggestionPool = <(String, String)>[
-  ('Turn on the flashlight', 'Turn on the flashlight'),
-  ('Set a timer for 5 minutes', 'Set a timer for 5 minutes'),
-  ('What is 144 divided by 12?', 'What is 144 divided by 12?'),
-  ('Play some music', 'Play some music'),
-  ('Who are you?', 'Who are you?'),
-];
+/// The commands the empty screen may offer, each tied to the registry id it
+/// needs. The id is what makes the list platform-correct: `flashlight` is
+/// Android-only in `capability.dart`, so this one list drops it on a computer
+/// instead of offering a torch that is not in the machine. A null id means the
+/// app answers it itself, so every platform keeps it.
+const List<({String label, String prompt, String? id})> kHomeSuggestionWishes =
+    <({String label, String prompt, String? id})>[
+      (
+        label: 'Turn on the flashlight',
+        prompt: 'Turn on the flashlight',
+        id: AgentActions.flashlightToggle,
+      ),
+      (
+        label: 'Set a timer for 5 minutes',
+        prompt: 'Set a timer for 5 minutes',
+        id: AgentActions.timerSet,
+      ),
+      (
+        label: 'What is 144 divided by 12?',
+        prompt: 'What is 144 divided by 12?',
+        id: AgentActions.mathCalc,
+      ),
+      (
+        label: 'Play some music',
+        prompt: 'Play some music',
+        id: AgentActions.mediaPlay,
+      ),
+      (label: 'Who are you?', prompt: 'Who are you?', id: null),
+      // Ungated on purpose, and the reason is the screen's promise of three
+      // chips: on a desktop the registry removes the device actions above, so
+      // without these the empty screen had two things to offer and drew two.
+      // Both are answered on every platform — the clock locally, the other from
+      // the assistant's own description of itself.
+      (label: 'What time is it?', prompt: 'What time is it?', id: null),
+      (label: 'What can you do?', prompt: 'What can you do?', id: null),
+    ];
 
-/// The old name, kept so a caller written before the pool existed still
-/// compiles. New code should use [kNexusSuggestionPool] and the picker below.
-const List<(String, String)> kNexusHomeSuggestions = kNexusSuggestionPool;
+/// Every wish this device can really run, in declaration order. This is the
+/// only pool the screen offers, so a chip cannot name something the registry
+/// says this platform cannot do.
+List<(String, String)> homeSuggestionPoolFor(String platform) => [
+  for (final wish in kHomeSuggestionWishes)
+    if (wish.id == null || capabilityAvailableOn(wish.id!, platform))
+      (wish.label, wish.prompt),
+];
 
 /// Three suggestions, in random order. A test can pass a seeded [math.Random]
 /// to pin which ones; the app passes none and gets a fresh set each launch.
-List<(String, String)> pickHomeSuggestions({math.Random? random}) {
+List<(String, String)> pickHomeSuggestions({
+  math.Random? random,
+  String platform = 'linux',
+}) {
   final List<(String, String)> shuffled = List<(String, String)>.of(
-    kNexusSuggestionPool,
+    homeSuggestionPoolFor(platform),
   )..shuffle(random ?? math.Random(DateTime.now().microsecondsSinceEpoch));
   return shuffled.take(3).toList();
 }
@@ -4265,7 +4314,7 @@ List<(String, String)> pickHomeSuggestions({math.Random? random}) {
 class _Welcome extends StatelessWidget {
   const _Welcome({
     required this.onSuggestion,
-    this.suggestions = kNexusSuggestionPool,
+    this.suggestions = const <(String, String)>[],
   });
 
   /// Called with the sentence a chip stands for: the screen puts it in the

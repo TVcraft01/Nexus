@@ -181,6 +181,7 @@ import 'ui/trackpad_page.dart';
 import 'core/speech.dart';
 import 'core/system_actions.dart';
 import 'mesh/updater.dart';
+import 'core/capability.dart';
 
 // The shell's screens, split into part files: one library (so the private
 // helpers stay private) with a file per screen for editing and review.

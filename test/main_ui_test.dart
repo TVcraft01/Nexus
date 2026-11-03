@@ -788,24 +788,39 @@ void main() {
   ) async {
     await pumpShell(tester);
 
-    // Three, not a wall: three of the five commands this build can actually
-    // run, chosen fresh on each launch. A blank screen asks the user to invent
-    // a request; a chip shows them the vocabulary.
-    expect(kNexusSuggestionPool.length, 5);
-    int shown = 0;
-    for (final (String label, String prompt) in kNexusSuggestionPool) {
-      if (find.text(label).evaluate().isEmpty) continue;
-      shown++;
-      await tester.tap(find.text(label));
+    // Three, not a wall: three of the commands this build can actually run,
+    // chosen fresh on each launch. A blank screen asks the user to invent a
+    // request; a chip shows them the vocabulary.
+    // Three chips, read off the screen rather than looked for in a pool the
+    // test built itself. The pool depends on the platform the app is running
+    // as, and the test platform is not the one a hardcoded 'linux' describes:
+    // a chip only that platform offers used to go uncounted, so a screen
+    // honestly drawing three could count two. The per-platform pools are held
+    // by suggestion_platform_test.dart; what this test owns is that the screen
+    // draws three chips and that each one fills the field.
+    final Finder chips = find.byWidgetPredicate(
+      (Widget w) =>
+          w is ActionChip &&
+          w.key is ValueKey<String> &&
+          (w.key! as ValueKey<String>).value.startsWith('nexus-suggestion-'),
+    );
+    expect(chips, findsNWidgets(3));
+
+    final List<String> labels = <String>[
+      for (final Widget chip in tester.widgetList(chips))
+        ((chip as ActionChip).label as Text).data!,
+    ];
+    for (final String label in labels) {
+      await tester.tap(find.byKey(ValueKey<String>('nexus-suggestion-$label')));
       await tester.pumpAndSettle();
-      // Filled, not sent: the suggestion is a draft the user can finish.
+      // Filled, not sent: the suggestion is a draft the user can finish, and
+      // every wish's prompt is the sentence on its chip.
       expect(
         tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        prompt,
+        label,
       );
       expect(ollama.prompts, isEmpty, reason: 'a chip is a draft, not a send');
     }
-    expect(shown, 3);
   });
 
   testWidgets('the composer turns the mic into send, and posts the message', (
