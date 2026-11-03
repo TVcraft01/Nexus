@@ -140,9 +140,14 @@ class _ScanQrPageState extends State<ScanQrPage> {
               );
             },
           ),
+          // Both overlays sit clear of the system bars: the notice under the
+          // status bar is unreadable on a notched phone, and the instruction
+          // under the home indicator is exactly where Android and iOS put the
+          // gesture bar. The camera itself still fills the screen — only the
+          // text moves.
           if (_notice != null)
             Positioned(
-              top: NexusSpace.xxl,
+              top: MediaQuery.paddingOf(context).top + NexusSpace.lg,
               left: NexusSpace.page,
               right: NexusSpace.page,
               child: Center(
@@ -177,7 +182,7 @@ class _ScanQrPageState extends State<ScanQrPage> {
             ),
           ),
           Positioned(
-            bottom: NexusSpace.huge,
+            bottom: MediaQuery.paddingOf(context).bottom + NexusSpace.huge,
             left: 0,
             right: 0,
             child: Text(
