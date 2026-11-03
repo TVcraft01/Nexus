@@ -788,14 +788,14 @@ void main() {
   ) async {
     await pumpShell(tester);
 
-    // Three, not a wall: three of the five commands this build can actually
-    // run, chosen fresh on each launch. A blank screen asks the user to invent
-    // a request; a chip shows them the vocabulary.
+    // Three, not a wall: three of the commands this build can actually run,
+    // chosen fresh on each launch. A blank screen asks the user to invent a
+    // request; a chip shows them the vocabulary.
     final pool = homeSuggestionPoolFor('linux');
     expect(
       pool,
-      hasLength(4),
-      reason: 'the flashlight is Android-only, so a desktop pool is four',
+      hasLength(6),
+      reason: 'the flashlight is Android-only, so a desktop pool is six',
     );
     int shown = 0;
     for (final (String label, String prompt) in pool) {

@@ -4274,6 +4274,13 @@ const List<({String label, String prompt, String? id})> kHomeSuggestionWishes =
         id: AgentActions.mediaPlay,
       ),
       (label: 'Who are you?', prompt: 'Who are you?', id: null),
+      // Ungated on purpose, and the reason is the screen's promise of three
+      // chips: on a desktop the registry removes the device actions above, so
+      // without these the empty screen had two things to offer and drew two.
+      // Both are answered on every platform — the clock locally, the other from
+      // the assistant's own description of itself.
+      (label: 'What time is it?', prompt: 'What time is it?', id: null),
+      (label: 'What can you do?', prompt: 'What can you do?', id: null),
     ];
 
 /// Every wish this device can really run, in declaration order. This is the

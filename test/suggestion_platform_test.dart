@@ -7,9 +7,12 @@
 // capability registry, and these tests hold that derivation per platform
 // rather than for the one platform the test happens to run on.
 
+import 'dart:math' as math;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/capability.dart';
-import 'package:nexus/main_ui.dart' show homeSuggestionPoolFor;
+import 'package:nexus/main_ui.dart'
+    show homeSuggestionPoolFor, pickHomeSuggestions;
 import 'package:nexus/core/agent_contract.dart';
 
 void main() {
@@ -51,8 +54,24 @@ void main() {
       // own answers, which every platform keeps.
       expect(
         pool.length,
-        platform == 'android' ? 5 : (platform == 'ios' ? 2 : 4),
+        platform == 'android' ? 7 : (platform == 'ios' ? 4 : 6),
         reason: 'pool for $platform changed shape',
+      );
+    }
+  });
+
+  // The screen draws three chips. A pool that filters down to two makes the
+  // empty screen quietly offer less than it promises — which is exactly what
+  // happened on a desktop before the two ungated wishes were added.
+  test('every platform can fill the three chips the empty screen draws', () {
+    for (final String platform in platforms) {
+      expect(
+        pickHomeSuggestions(
+          platform: platform,
+          random: math.Random(7),
+        ).length,
+        3,
+        reason: '$platform cannot fill three chips',
       );
     }
   });
