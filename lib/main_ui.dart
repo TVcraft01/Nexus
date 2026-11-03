@@ -2436,10 +2436,14 @@ class _NexusShellState extends State<NexusShell> {
         pageIndex: 3,
       ),
       if (_developerMode)
+        // Page 4, whatever position it holds in the bar: with Files hidden it
+        // is the fourth tab and the fifth page, and reading the position as the
+        // page would open Settings instead of the logs.
         const NexusTabSpec(
           'Logs',
           Icons.terminal_outlined,
           Icons.terminal_rounded,
+          pageIndex: 4,
         ),
     ];
     // One breakpoint, measured once: above it the conversation list is a
