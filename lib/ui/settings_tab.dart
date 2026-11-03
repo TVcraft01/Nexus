@@ -1432,11 +1432,14 @@ class _CustomizationPageState extends State<CustomizationPage> {
       backgroundColor: c.background,
       appBar: AppBar(title: const Text('Customization')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(
+        // The gesture bar is drawn over the screen, not below it. A list that
+        // ends at a fixed 28 leaves its last row under that bar on every phone
+        // with no navigation buttons — which is now most of them.
+        padding: EdgeInsets.fromLTRB(
           NexusLayout.gutter,
           8,
           NexusLayout.gutter,
-          28,
+          28 + MediaQuery.paddingOf(context).bottom,
         ),
         children: <Widget>[
           for (final section in _sections()) ...<Widget>[
@@ -1579,11 +1582,13 @@ class _VoiceSettingsPageState extends State<_VoiceSettingsPage> {
       backgroundColor: c.background,
       appBar: AppBar(title: const Text('Voice & speech')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(
+        // Same rule as Customization: the list clears the gesture bar rather
+        // than ending where the buttons used to be.
+        padding: EdgeInsets.fromLTRB(
           NexusLayout.gutter,
           8,
           NexusLayout.gutter,
-          28,
+          28 + MediaQuery.paddingOf(context).bottom,
         ),
         children: <Widget>[
           // No wake-word row at all: the engine needs a foreground service
@@ -1940,7 +1945,7 @@ class _NexusMemoryVaultPageState extends State<NexusMemoryVaultPage> {
           20 + MediaQuery.paddingOf(context).left,
           12,
           20 + MediaQuery.paddingOf(context).right,
-          28,
+          28 + MediaQuery.paddingOf(context).bottom,
         ),
         children: <Widget>[
           Text(
@@ -2028,7 +2033,14 @@ class PrivacyPolicyPage extends StatelessWidget {
       backgroundColor: c.background,
       appBar: AppBar(title: const Text('Privacy Policy')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        // The last paragraph is the point of the page, so it must not be the
+        // line the gesture bar covers.
+        padding: EdgeInsets.fromLTRB(
+          20,
+          16,
+          20,
+          28 + MediaQuery.paddingOf(context).bottom,
+        ),
         children: <Widget>[
           Text(
             'What Nexus does with your data — and what it never does.',
@@ -2175,7 +2187,7 @@ class _PrivacyPageState extends State<PrivacyPage> {
           20 + MediaQuery.paddingOf(context).left,
           12,
           20 + MediaQuery.paddingOf(context).right,
-          28,
+          28 + MediaQuery.paddingOf(context).bottom,
         ),
         children: <Widget>[
           Text(
