@@ -90,6 +90,7 @@ import 'package:share_plus/share_plus.dart' show ShareParams, SharePlus, XFile;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'core/action_audit.dart';
+import 'core/advanced_mode.dart';
 import 'core/ai_status.dart';
 import 'core/appearance.dart';
 import 'core/connections.dart';
@@ -2279,6 +2280,11 @@ class _NexusShellState extends State<NexusShell> {
   /// preference store on launch, so unlocking it is not a per-session trick.
   bool _developerMode = false;
 
+  /// True once Settings → Advanced has been switched on. Also read from the
+  /// preference store on launch: a screen a user went and enabled has to stay
+  /// enabled, or the setting teaches people not to trust settings.
+  bool _advanced = false;
+
   /// The Settings screen's own scroll position, owned here rather than there
   /// for one reason: coming back to the screen has to start at the top, and the
   /// tab that was left halfway down a long section would otherwise return the
@@ -2307,6 +2313,27 @@ class _NexusShellState extends State<NexusShell> {
         setState(() => _developerMode = LogService.instance.developerUnlocked);
       }),
     );
+    AdvancedMode.instance.addListener(_onAdvancedModeChanged);
+    unawaited(
+      AdvancedMode.instance.attach().then((_) {
+        if (!mounted) return;
+        setState(() => _advanced = AdvancedMode.instance.enabled);
+      }),
+    );
+  }
+
+  /// Follows the Advanced switch: the Files tab appears and vanishes with it.
+  void _onAdvancedModeChanged() {
+    if (!mounted) return;
+    final bool on = AdvancedMode.instance.enabled;
+    if (on == _advanced) return;
+    setState(() {
+      _advanced = on;
+      // The page indices never move — the Files page keeps its slot whether or
+      // not its tab is offered — so the only thing to fix up is a user who is
+      // looking at the page whose tab just vanished.
+      if (!on && _tab == 1) _tab = _settingsIndex;
+    });
   }
 
   void _onLogServiceChanged() {
@@ -2318,7 +2345,7 @@ class _NexusShellState extends State<NexusShell> {
       // Locking the tab while the user is looking at it would leave the
       // IndexedStack on an index that no longer exists — Settings is the tab
       // they came from, so that is where they land.
-      if (!unlocked && _tab >= NexusTabBar.defaultTabs.length) {
+      if (!unlocked && _tab >= _pageCount) {
         _tab = _settingsIndex;
       }
     });
@@ -2327,6 +2354,7 @@ class _NexusShellState extends State<NexusShell> {
   @override
   void dispose() {
     LogService.instance.removeListener(_onLogServiceChanged);
+    AdvancedMode.instance.removeListener(_onAdvancedModeChanged);
     _settingsScroll.dispose();
     super.dispose();
   }
@@ -2349,9 +2377,16 @@ class _NexusShellState extends State<NexusShell> {
     });
   }
 
-  /// Where Settings lives in the tab bar, named once so [_select] and the body
+  /// Where Settings lives in the stack, named once so [_select] and the body
   /// cannot disagree about which tab gets the treatment above.
+  ///
+  /// A page index, not a bar position: the bar offers a subset of the stack
+  /// (Files only once Advanced says so), so the two are not the same number.
   static const int _settingsIndex = 3;
+
+  /// How many pages the stack holds right now: the Logs tab has to be able to
+  /// check that the tab it is locking still exists.
+  int get _pageCount => 4 + (_developerMode ? 1 : 0);
 
   /// Where Home lives, for the same reason.
   static const int _homeIndex = 0;
@@ -2362,8 +2397,44 @@ class _NexusShellState extends State<NexusShell> {
     // What the switch reports, which is not always what the user chose: while
     // the app follows the phone, the phone has the last word.
     final bool dark = Theme.of(context).brightness == Brightness.dark;
+    // The file manager has a tab only once Settings → Advanced says so: it is
+    // the devices the Devices tab already lists, seen as a tree, and it was the
+    // least obvious destination in the app on a first run. Files are still sent
+    // from the chat — "send this to my PC" is an action where the file already
+    // is, not somewhere to go and find it.
+    //
+    // Each spec carries its *page* index, because the bar is a filter over a
+    // stack that does not change shape. Dropping the page instead would
+    // renumber every slot after it, and Flutter reconciles children by
+    // position: Devices and Settings would be thrown away and rebuilt from
+    // nothing every time the switch moved, taking a half-typed message with
+    // them.
     final List<NexusTabSpec> tabs = <NexusTabSpec>[
-      ...NexusTabBar.defaultTabs,
+      const NexusTabSpec(
+        'Home',
+        Icons.home_outlined,
+        Icons.home_rounded,
+        pageIndex: 0,
+      ),
+      if (_advanced)
+        const NexusTabSpec(
+          'Files',
+          Icons.folder_outlined,
+          Icons.folder_rounded,
+          pageIndex: 1,
+        ),
+      const NexusTabSpec(
+        'Devices',
+        Icons.devices_outlined,
+        Icons.devices_rounded,
+        pageIndex: 2,
+      ),
+      const NexusTabSpec(
+        'Settings',
+        Icons.settings_outlined,
+        Icons.settings_rounded,
+        pageIndex: 3,
+      ),
       if (_developerMode)
         const NexusTabSpec(
           'Logs',
@@ -2415,7 +2486,8 @@ class _NexusShellState extends State<NexusShell> {
         ),
         // The index in this stack is the design: 0 is Home, 1 is Files, and
         // only the page whose index matches the selected tab does work on
-        // launch.
+        // launch. The Files page keeps its slot even when its tab is hidden,
+        // so turning Advanced on and off never renumbers the pages around it.
         FilesTab(active: _tab == 1, mesh: widget.mesh),
         DevicesTab(
           mesh: widget.mesh,
@@ -2581,8 +2653,10 @@ class _NexusWideSidebarState extends State<_NexusWideSidebar> {
             for (int i = 0; i < widget.tabs.length; i++)
               _WideNavRow(
                 spec: widget.tabs[i],
-                selected: i == widget.index,
-                onTap: () => widget.onSelected(i),
+                // The sidebar offers the same subset of pages as the bar, so
+                // it maps a row's position to its page the same way.
+                selected: widget.tabs[i].stackIndex(i) == widget.index,
+                onTap: () => widget.onSelected(widget.tabs[i].stackIndex(i)),
               ),
             const SizedBox(height: 10),
             Divider(height: 1, thickness: 1, color: c.hairline),
@@ -2774,11 +2848,25 @@ class _WideNavRow extends StatelessWidget {
 
 /// One entry in the tab bar.
 class NexusTabSpec {
-  const NexusTabSpec(this.label, this.icon, this.activeIcon);
+  const NexusTabSpec(
+    this.label,
+    this.icon,
+    this.activeIcon, {
+    this.pageIndex = -1,
+  });
 
   final String label;
   final IconData icon;
   final IconData activeIcon;
+
+  /// Where this destination's page sits in the shell's stack. The bar offers a
+  /// subset of the pages, so a tab's position in the bar is not its page's
+  /// position; the shell writes the real one down here. -1 means "the same as
+  /// my position", which is what a standalone bar wants.
+  final int pageIndex;
+
+  /// The stack index to show when this tab is at [position] in the bar.
+  int stackIndex(int position) => pageIndex >= 0 ? pageIndex : position;
 }
 
 /// The Instagram-shaped bar: hairline on top, no indicator pill, icon over a
@@ -2843,8 +2931,8 @@ class NexusTabBar extends StatelessWidget {
                       Expanded(
                         child: _TabButton(
                           spec: tabs[i],
-                          selected: i == index,
-                          onTap: () => onSelected(i),
+                          selected: tabs[i].stackIndex(i) == index,
+                          onTap: () => onSelected(tabs[i].stackIndex(i)),
                         ),
                       ),
                   ],
