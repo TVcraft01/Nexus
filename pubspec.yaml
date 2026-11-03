@@ -131,6 +131,16 @@ flutter:
     - assets/wake/embedding_model.onnx
     - assets/wake/hey_jarvis_v0.1.onnx
 
+    # Inter, bundled for the offline case. `google_fonts` looks for these names
+    # in the asset manifest and only falls back to the network when a file is
+    # missing, so listing the folder here is what makes the app's type work with
+    # no connection — and what lets a test render it at all.
+    #
+    # Static weights, not the variable file: the package matches on
+    # `Inter-Regular.ttf` and friends, and a variable font registers under one
+    # family name with no weight-specific key to find.
+    - assets/google_fonts/
+
 # What the llamadart build hook fetches for the native inference runtime: the
 # llama.cpp runtime alone. The package can also carry LiteRT-LM (for
 # `.litertlm` models), which Nexus never loads — leaving it out keeps the APK

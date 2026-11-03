@@ -181,6 +181,7 @@ import 'ui/trackpad_page.dart';
 import 'core/speech.dart';
 import 'core/system_actions.dart';
 import 'mesh/updater.dart';
+import 'core/capability.dart';
 
 // The shell's screens, split into part files: one library (so the private
 // helpers stay private) with a file per screen for editing and review.
@@ -980,6 +981,10 @@ String nexusMemoryContext() => ComposerSettings.instance.memoryEnabled
     : '';
 
 void main() async {
+  // Never fetch a font: the built app carries Inter in `assets/google_fonts/`,
+  // and a fetch on a phone with no signal is a font swap at best and a thrown
+  // exception at worst. Offline is the app's normal case, not its edge case.
+  GoogleFonts.config.allowRuntimeFetching = false;
   // Preferences are read before the first frame: the model, so the first
   // question after a restart loads the file the user picked, and the accent, so
   // a custom colour does not open as the shipped purple and then swap under the

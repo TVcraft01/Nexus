@@ -791,9 +791,14 @@ void main() {
     // Three, not a wall: three of the five commands this build can actually
     // run, chosen fresh on each launch. A blank screen asks the user to invent
     // a request; a chip shows them the vocabulary.
-    expect(kNexusSuggestionPool.length, 5);
+    final pool = homeSuggestionPoolFor('linux');
+    expect(
+      pool,
+      hasLength(4),
+      reason: 'the flashlight is Android-only, so a desktop pool is four',
+    );
     int shown = 0;
-    for (final (String label, String prompt) in kNexusSuggestionPool) {
+    for (final (String label, String prompt) in pool) {
       if (find.text(label).evaluate().isEmpty) continue;
       shown++;
       await tester.tap(find.text(label));
