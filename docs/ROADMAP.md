@@ -14,7 +14,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | # | Item | Status | PR |
 |---|------|--------|-----|
 | 1 | Agent core contract (`docs/AGENT_CORE.md`) | done | #123 |
-| 2 | `lib/core/agent/` — tools, registry, planner, executor + the two scripted conversations | todo | — |
+| 2 | `lib/core/agent/` — tools, registry, planner, executor + the two scripted conversations | done | #124 |
 | 3 | Real Linux tools: network status and Wi-Fi settings via `nmcli`, measured, with rollback | todo | — |
 | 4 | Agent definitions as data + background service + local dashboard | todo | — |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
