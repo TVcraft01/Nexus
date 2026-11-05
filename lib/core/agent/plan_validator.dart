@@ -110,12 +110,11 @@ class PlanValidator {
     }
 
     var sound = true;
+    final missing = <String>[];
     for (final entry in tool.args.entries) {
       final Object? value = proposed.args[entry.key];
       if (value == null) {
-        if (entry.value.required) {
-          questions.add(_questionFor(tool, entry.key));
-        }
+        if (entry.value.required) missing.add(entry.key);
         continue;
       }
       final String? fault = _typeFault(entry.value.type, value);
@@ -123,6 +122,11 @@ class PlanValidator {
         faults.add('${tool.name}: “${entry.key}” $fault.');
         sound = false;
       }
+    }
+    if (missing.isNotEmpty) {
+      // One question per step, not one per argument: the user should not have
+      // to answer the same step three times because three values were absent.
+      questions.add(_questionFor(tool, missing));
     }
     for (final key in proposed.args.keys) {
       if (!tool.args.containsKey(key)) {
@@ -164,9 +168,12 @@ class PlanValidator {
     );
   }
 
-  static String _questionFor(Tool tool, String arg) =>
-      'What should ${tool.name} use for '
-      '“${arg.replaceAll('_', ' ')}”?';
+  static String _questionFor(Tool tool, List<String> args) {
+    final named = args
+        .map((arg) => '“${arg.replaceAll('_', ' ')}”')
+        .join(' and ');
+    return 'What should ${tool.name} use for $named?';
+  }
 
   static String? _typeFault(ArgType type, Object? value) => switch (type) {
     ArgType.text =>
@@ -174,4 +181,16 @@ class PlanValidator {
     ArgType.flag => value is bool ? null : 'has to be true or false',
     ArgType.whole => value is int ? null : 'has to be a whole number',
   };
+}
+
+/// Whether [validation] counts as a usable answer from the planner.
+///
+/// Item 3b's target is "a plan the validator accepts, or one clear question".
+/// A rejection whose only problem is something the plan has to ask about is a
+/// good answer — counting it as a failure would push the planner toward
+/// guessing an argument, which is the one thing that must never happen.
+bool isAnswerable(PlanValidation validation) {
+  if (validation is PlanAccepted) return true;
+  final rejected = validation as PlanRejected;
+  return rejected.faults.isEmpty && rejected.questions.isNotEmpty;
 }
