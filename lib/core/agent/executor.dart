@@ -17,6 +17,7 @@ import 'plan.dart';
 import 'registry.dart';
 import 'risk.dart';
 import 'rollback.dart';
+import 'tool.dart';
 import 'verification.dart';
 
 enum ExecutionStatus {
@@ -139,6 +140,15 @@ class Executor {
       try {
         said = await tool.run(step.args);
         verification = await tool.verify(step.args);
+      } on ToolRefused catch (refused) {
+        // Nothing was written, so there is nothing to put back — only the rule
+        // that refused it, said as itself rather than as an error.
+        return _unwind(
+          plan,
+          verified,
+          const <PlanStep>[],
+          'refused: ${refused.message}',
+        );
       } catch (error) {
         return _unwind(plan, verified, <PlanStep>[
           step,

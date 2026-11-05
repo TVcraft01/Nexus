@@ -94,3 +94,18 @@ abstract class Tool {
     ArgType.whole => arg.example.isEmpty ? '0' : arg.example,
   };
 }
+
+/// A tool saying no before it touched anything.
+///
+/// Distinct from an error on purpose: nothing was changed, so there is nothing
+/// to unwind, and the reason is a rule the user can read (a hotspot this PC
+/// must not reconfigure, a CI run in progress, a value that is not one this
+/// setting accepts) rather than a failure of the work itself.
+class ToolRefused implements Exception {
+  const ToolRefused(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'ToolRefused($message)';
+}
