@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/agent/agent_session.dart';
 import 'package:nexus/core/agent/approval.dart';
 import 'package:nexus/core/agent/executor.dart';
+import 'package:nexus/core/agent/fast_path.dart';
 import 'package:nexus/core/agent/fake_device.dart';
 import 'package:nexus/core/agent/planner.dart';
 import 'package:nexus/core/agent/plan.dart';
@@ -247,10 +248,10 @@ void main() {
         takesChanges: false,
       );
       final tool = WifiBandTool(
-      runner: nmcli,
-      guard: guard(),
-      ciRunning: () => false,
-    );
+        runner: nmcli,
+        guard: guard(),
+        ciRunning: () => false,
+      );
       final registry = ToolRegistry(<Tool>[tool]);
       final plan = _plan(
         registry,
@@ -359,10 +360,10 @@ void main() {
         properties: <String, String>{'802-11-wireless.band': ''},
       );
       final tool = WifiBandTool(
-      runner: nmcli,
-      guard: guard(),
-      ciRunning: () => false,
-    );
+        runner: nmcli,
+        guard: guard(),
+        ciRunning: () => false,
+      );
       final registry = ToolRegistry(<Tool>[
         ...networkReadTools(_Canned(const <String, String>{})),
         tool,
@@ -375,7 +376,13 @@ void main() {
             '"description":"Switch the band to 2.4 GHz only"}],"questions":[]}',
       });
       final session = AgentSession(
-        planner: Planner(backend: backend, registry: registry),
+        planner: Planner(
+          backend: backend,
+          registry: registry,
+          // This goal is a known one, so the fast path would plan it without
+          // the model; this test is about the session's timer sentence.
+          fastPath: const PlanFastPath.off(),
+        ),
         validator: PlanValidator(registry),
         executor: Executor(registry: registry),
         records: FakeDevice(),

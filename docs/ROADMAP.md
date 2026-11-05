@@ -16,6 +16,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | 1 | Agent core contract (`docs/AGENT_CORE.md`) | done | #123 |
 | 2 | `lib/core/agent/` — tools, registry, planner, executor + the two scripted conversations | done | #124 |
 | 3 | Real Linux tools: network status and Wi-Fi settings via `nmcli`, measured, with rollback | done | #125 |
+| 3b | Planner reliability: fast path, registry schema, repair loop, questions over guesses | done | #126 |
 | 4 | Agent definitions as data + background service + local dashboard | todo | — |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
 | 6 | Earned trust: offer to automate after N approvals of the same action | todo | — |
@@ -98,6 +99,44 @@ question. That rate is the first thing to fix next.
 profile — because this PC's only link is that Wi-Fi, and a self-inflicted drop is not worth the measurement; a
 throughput test (the speed tool reports the negotiated link rate and measured gateway latency, not Mbit/s through
 the internet); and none of it is wired to the UI yet.
+
+## 3b. Planner reliability
+
+Target: 9 of 10 messy requests give a plan the validator accepts, or one clear question, measured by a test that
+runs against a local model.
+
+What was built, in the order it saves a model call:
+
+- **a deterministic fast path** (`lib/core/agent/fast_path.dart`) for known Wi-Fi goals — status, signal, speed,
+  band, power save, DNS. With the connection in use injected it plans a change without a model; when a value is
+  genuinely missing (which DNS servers, which connection) it asks instead of guessing. Unknown asks go to the model.
+- **structured output**: Ollama's `format` field takes a JSON schema as well as the string `"json"`, on
+  `/api/generate` and `/api/chat` — structured outputs, documented since 0.5.0 (this PC runs 0.40.6, so it is
+  available). `planJsonSchema` builds the schema from the registered tools: one branch per tool, each carrying
+  only that tool's arguments. The schema is also put in the prompt, which is what Ollama's own docs recommend.
+  `args` deliberately does not mark anything required: a decoder forced to fill a value the user never said would
+  invent one, and a question is the rule.
+- **a repair loop** (`Planner.maxRepairs = 2`): a plan the validator rejects is sent back with the validator's own
+  fault sentences, up to twice, and the model is told a step may only carry its own tool's arguments.
+- **one question, not one per argument**: a step missing several required values asks a single plain-words question
+  naming them all, and the session offers that instead of running a guessed plan.
+
+**Measured on this PC (2026-11-05, `TVcraft01's Wi-Fi`, 5 GHz, signal 81–88%, `test/planner_live_smoke.dart`, 10
+asks: clean, vague, wrong-tool traps, and missing arguments):**
+
+- `llama3.2:latest` (2.0 GB — the only model installed, so it is also the largest installed): **10/10 answerable**,
+  10/10 readable JSON, 8/10 planned with no model call, 2 model calls in total. Both model asks (“my wifi is slow
+  can you fix it”, “why does my internet keep dropping”) came back as questions rather than plans, which is the
+  right answer for a vague ask that names no setting.
+- the same 10 asks without the per-tool schema and the repair rule: 8/10. Both failures were the model putting
+  `connection`/`value` on `wifi_status`/`wifi_speed` and repeating it through both repairs, because the shared
+  `args` object allowed any tool's argument on any step.
+- the fast path also fixes the three item-3 failures: the DNS ask is `wifi_dns_set` (never a band change), and the
+  5 GHz ask uses the connection in use instead of leaving `connection` to a question.
+
+**Not tested:** a second real model (only `llama3.2` is installed, so “largest installed” is the same model); the
+phone's on-device backend, which does not implement structured output and would take the prompt-only path; and no
+UI wiring, which the freeze still holds.
 
 ## 4. Agent definitions as data
 
