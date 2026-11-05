@@ -19,6 +19,7 @@ import 'plan.dart';
 import 'plan_validator.dart';
 import 'planner.dart';
 import 'risk.dart';
+import 'tools/revert_guard.dart';
 import 'working_hours.dart';
 
 enum SessionState {
@@ -75,6 +76,9 @@ final RegExp _yes = RegExp(
   r'^(yes|yeah|yep|sure|ok|okay|do it|go ahead|please do|y)\b',
 );
 
+/// What keeps a guarded change: the word that stops its revert timer.
+final RegExp _keepAsk = RegExp(r'^(keep|keep it|keep that|yes,? keep)\b');
+
 class AgentSession {
   AgentSession({
     required this.planner,
@@ -96,6 +100,9 @@ class AgentSession {
   String? _lastAgent;
   String? _openQuestion;
 
+  /// Tools whose last change is inside its keep-or-revert window.
+  final List<PendingRevert> _keep = <PendingRevert>[];
+
   SessionState get state => _state;
 
   /// Handles whatever the user said next, according to what the session is
@@ -104,6 +111,17 @@ class AgentSession {
     final ask = text.trim();
     if (ask.isEmpty) {
       return const AgentTurn(say: 'What would you like me to do?');
+    }
+    if (_keep.isNotEmpty && _keepAsk.hasMatch(ask.toLowerCase())) {
+      // Answered before anything else: a timer is running, and the word that
+      // stops it must not be read as a new ask.
+      for (final tool in _keep) {
+        tool.keep();
+      }
+      _keep.clear();
+      return const AgentTurn(
+        say: 'Kept — the change stays and the timer is off.',
+      );
     }
     if (_state == SessionState.awaitingApproval) return _answerApproval(ask);
     if (_state == SessionState.awaitingChoice) return _choose(ask);
@@ -203,8 +221,13 @@ class AgentSession {
       final where = created.isEmpty
           ? ''
           : ' Ask me “what agents do I have” to see it.';
+      final keep = _pendingReverts(plan);
+      final timer = keep.isEmpty
+          ? ''
+          : ' Say “keep it” to keep this; otherwise I put it back in '
+                '${_secondsLeft(keep)} seconds.';
       return AgentTurn(
-        say: '${_report(report)}$where',
+        say: '${_report(report)}$where$timer',
         progress: progress,
         plan: plan,
         approval: approval,
@@ -218,6 +241,33 @@ class AgentSession {
         approval: approval,
       );
     }
+  }
+
+  /// The tools whose change is still inside its keep-or-revert window.
+  ///
+  /// The session asks its own tools rather than tracking tickets itself: the
+  /// tool armed the timer, so the tool is what knows whether one is running.
+  List<PendingRevert> _pendingReverts(Plan plan) {
+    final pending = <PendingRevert>[];
+    for (final step in plan.steps) {
+      // Typed Object? on purpose: `PendingRevert` is not a subtype of `Tool`,
+      // so Dart only promotes it from a variable it could have been.
+      final Object? candidate = executor.registry.lookup(step.tool);
+      if (candidate is PendingRevert && candidate.pendingRevert != null) {
+        pending.add(candidate);
+      }
+    }
+    _keep
+      ..clear()
+      ..addAll(pending);
+    return pending;
+  }
+
+  int _secondsLeft(List<PendingRevert> pending) {
+    final deadline = pending.first.pendingRevert?.deadline;
+    if (deadline == null) return 0;
+    final left = deadline.difference(_now()).inSeconds;
+    return left < 0 ? 0 : left;
   }
 
   String _report(ExecutionReport report) => switch (report.status) {

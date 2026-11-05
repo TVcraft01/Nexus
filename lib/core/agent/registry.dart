@@ -40,7 +40,8 @@ class ToolRegistry {
 
   List<Tool> get tools => List<Tool>.unmodifiable(_tools.values);
 
-  List<String> get names => _tools.keys.toList(growable: false);
+  /// Every registered name, sorted — a stable order for prompts and tests.
+  List<String> get names => _tools.keys.toList(growable: false)..sort();
 
   /// The tool list the planner is shown, sorted so the prompt is stable.
   String catalogue() {

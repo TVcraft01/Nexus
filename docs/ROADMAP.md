@@ -15,7 +15,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 |---|------|--------|-----|
 | 1 | Agent core contract (`docs/AGENT_CORE.md`) | done | #123 |
 | 2 | `lib/core/agent/` — tools, registry, planner, executor + the two scripted conversations | done | #124 |
-| 3 | Real Linux tools: network status and Wi-Fi settings via `nmcli`, measured, with rollback | todo | — |
+| 3 | Real Linux tools: network status and Wi-Fi settings via `nmcli`, measured, with rollback | done | #125 |
 | 4 | Agent definitions as data + background service + local dashboard | todo | — |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
 | 6 | Earned trust: offer to automate after N approvals of the same action | todo | — |
@@ -70,10 +70,34 @@ failing verification triggers rollback in a test.
 
 ## 3. Real tools on Linux: network status and Wi-Fi settings
 
-`nmcli` on this PC: band, power save, DNS. Each tool ships with a measured before/after — `ping` and throughput —
-and a real rollback. Run on the actual PC with the approval prompt visible.
+`nmcli` on this PC: band, power save, DNS. Read-only tools first (status, signal, speed); every change arms a
+detached confirm-or-revert timer before it writes, never touches an access point's own settings, and refuses to
+run while CI is going.
 
-**Report:** the numbers, before and after. Not tested on this PC = say so.
+**Rules that ship with the tools:** one change at a time (a lock file, not a promise); a change that could cut the
+connection is applied, then has 60 seconds to be confirmed or a process that outlives Nexus puts it back; the
+revert is proven by actually rolling a change back, never by reading code. The approval prompt is the session's
+plan question in the chat — this build has no terminal UI, and the freeze holds until the core is trusted.
+
+**Measured on this PC (2026-11-04, `Freebox-CA82DC` on `wlp0s20f3`):**
+
+- read-only: 5 GHz (5180 MHz), signal 71–80%, link rate 270 Mbit/s, 2.3–2.7 ms average to the gateway
+  (192.168.1.254), 0% loss over 4 packets;
+- change path, on a throwaway profile (`nexus-temp-…`, autoconnect off, never activated): band `""` (automatic)
+  → `bg`, verified as `802-11-wireless.band=bg`, then rolled back to `""` and the profile deleted; the connection
+  in use was untouched (`Freebox-CA82DC, tailscale0, lo` before and after);
+- the detached timer: a timer armed by a process that is then SIGKILLed still reverts —
+  `test/revert_survival_smoke.dart` proves it, and `tool/arm_timer.dart` reproduces it by hand.
+
+**Real model, five messy asks** (`llama3.2:latest` on this PC, `test/planner_live_smoke.dart`): 4/5 replies were
+readable JSON, 1/5 survived the validator. The failures are the planner prompt's, not the validator's: two plans
+had steps with no `description`, the DNS ask planned `wifi_band_set`, and the 5 GHz ask left `connection` to a
+question. That rate is the first thing to fix next.
+
+**Not tested on this PC:** a real band / DNS / power-save change on the connection in use — only on a throwaway
+profile — because this PC's only link is that Wi-Fi, and a self-inflicted drop is not worth the measurement; a
+throughput test (the speed tool reports the negotiated link rate and measured gateway latency, not Mbit/s through
+the internet); and none of it is wired to the UI yet.
 
 ## 4. Agent definitions as data
 
