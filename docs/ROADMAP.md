@@ -17,7 +17,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | 2 | `lib/core/agent/` — tools, registry, planner, executor + the two scripted conversations | done | #124 |
 | 3 | Real Linux tools: network status and Wi-Fi settings via `nmcli`, measured, with rollback | done | #125 |
 | 3b | Planner reliability: fast path, registry schema, repair loop, questions over guesses | done | #126 |
-| 4 | Agent definitions as data + background service + local dashboard | todo | — |
+| 4 | Agent definitions as data + background service + local dashboard | in-progress | — |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
 | 6 | Earned trust: offer to automate after N approvals of the same action | todo | — |
 | 7 | Local user profile with source and a forget button | todo | — |
@@ -143,6 +143,41 @@ UI wiring, which the freeze still holds.
 Goal, tools, schedule, approval policy, status — stored as data, run by a background service on the PC with
 start / pause / stop and a **local-only** dashboard URL. An opt-in local usage log so Nexus can propose working
 hours.
+
+**What is built:**
+
+- **the definition is data** (`agent_records.dart`, `agent_store.dart`): name, goal, tools, schedule, approval
+  policy, status, last run and what that run said — one JSON file in the app's private directory, written to a
+  temporary path and renamed, read at launch. A value a newer build wrote that this one cannot read falls back to
+  the safe default (`ask me before every change`, `stopped`) instead of dropping the user's agent.
+- **an approval policy the user chose**, stored with the agent: ask before every change, ask only for destructive
+  steps (reading and reversible changes run), or read only. It cannot lift `destructive` above asking — the
+  executor still enforces every tier, at the same place it always did.
+- **a background service** (`agent_service.dart`): `start` / `pause` / `stop`, a `tick` that runs each agent whose
+  stored hours cover now and whose status is `running` — at most once per agent per minute, so a timer that fires
+  twice is harmless — and a `runNow` for the button. A schedule is read from the words already in use
+  ("9:00-18:00 on weekdays", either dash); one it cannot parse never runs.
+- **a local-only dashboard** (`agent_dashboard.dart`): bound to `127.0.0.1` on an OS-chosen port, its path carrying
+  a random key made at launch — a web page in the user's browser cannot guess it and drive the agents. The page
+  lists every agent (goal, tools, hours, policy, status, last run) with start / pause / stop / run-now forms and the
+  usage-log switch; every write is a POST. A request from a non-loopback address is refused even though the socket
+  is loopback-only. The URL is printed to the developer log at launch on desktop builds, and the server is skipped
+  on phones and under `flutter test`.
+- **an opt-in usage log**: off on a fresh install. `recordUsage` does nothing and `mailUsage` is empty until the
+  user turns it on, and turning it off forgets the entries. While it is on, the session's working-hours offer counts
+  real runs.
+
+Tested offline in `test/agent_service_test.dart` (9 tests): a definition survives save and load with every field, an
+unreadable value falls back, start / pause / stop persist and a stopped agent cannot be paused, schedule parsing and
+its boundaries, the once-a-minute guard with a paused agent skipped, a failing run written down as failed, the usage
+log off until opted in and forgetting on opt-out, the dashboard's key (404 without it), POST-only actions, escaped
+names, the usage switch, and the session listing a stored agent with no model call. `test/app_services_test.dart`
+still passes with the service started at launch.
+
+**Not tested / not wired:** the runner the service calls is a seam. This build's default runner says plainly that it
+had nothing to do — there is no mail tool yet (item 9) and the planner is not wired to run an agent's goal by
+itself, so a scheduled run records that refusal instead of pretending. No UI button opens the dashboard; its URL is
+in the developer log. No UI was added (freeze).
 
 ## 5. "Curious" explore tool
 

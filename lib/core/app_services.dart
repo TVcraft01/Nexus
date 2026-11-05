@@ -21,9 +21,13 @@ library;
 import 'dart:io' show File, Platform;
 
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform;
+    show TargetPlatform, debugPrint, defaultTargetPlatform;
 
 import '../mesh/mesh_service.dart';
+import 'agent/agent_dashboard.dart';
+import 'agent/agent_records.dart' show AgentDefinition;
+import 'agent/agent_service.dart';
+import 'agent/agent_store.dart';
 import 'capability_probe.dart' show CapabilityProbe;
 import 'identity.dart';
 import 'pair_invite.dart' show PairIdentity;
@@ -40,11 +44,23 @@ class AppServices {
     required this.store,
     required this.identity,
     required this.mesh,
+    this.agents,
+    this.agentService,
+    this.dashboard,
   });
 
   final NexusStore store;
   final DeviceInfo identity;
   final MeshService mesh;
+
+  /// Agent definitions and the opt-in usage log, on this device's disk.
+  final AgentStore? agents;
+
+  /// The background service that starts, pauses and runs agents on schedule.
+  final AgentService? agentService;
+
+  /// The local-only dashboard for those agents, when this platform serves one.
+  final AgentDashboard? dashboard;
 }
 
 /// This platform, spelled the way [DeviceInfo] and the mesh spell it.
@@ -72,6 +88,8 @@ Future<AppServices> startAppServices({
   String? dataDir,
   ClipboardBackend? clipboard,
   CapabilityProbe? capabilityProbe,
+  AgentRunner? agentRunner,
+  bool? startAgentDashboard,
 }) async {
   final NexusStore store = NexusStore(
     explicitPath: dataDir == null
@@ -103,12 +121,75 @@ Future<AppServices> startAppServices({
     capabilityProbe: capabilityProbe,
   );
   await mesh.start();
-  return AppServices(store: store, identity: identity, mesh: mesh);
+
+  // Agent definitions are data, so they are read before anything can run: a
+  // launch that restored no agents would show an empty dashboard and quietly
+  // forget everything the user already made.
+  final AgentStore agents = AgentStore(
+    explicitPath: dataDir == null
+        ? null
+        : '$dataDir${Platform.pathSeparator}agents.json',
+  );
+  await agents.load();
+  final AgentService agentService = AgentService(
+    store: agents,
+    runner: agentRunner ?? _nothingToRunYet,
+  );
+
+  AgentDashboard? dashboard;
+  if (startAgentDashboard ?? _servesDashboard()) {
+    final AgentDashboard candidate = AgentDashboard(service: agentService);
+    try {
+      final String url = await candidate.start();
+      dashboard = candidate;
+      // The URL carries a per-launch key, so it can only be read here; the
+      // developer log is where the user finds it.
+      debugPrint('NEXUS agents dashboard: $url');
+    } catch (error) {
+      // A port that is taken is not worth the launch: the agents still run.
+      debugPrint('NEXUS agents: dashboard not started: $error');
+    }
+  }
+  agentService.startTicking();
+
+  return AppServices(
+    store: store,
+    identity: identity,
+    mesh: mesh,
+    agents: agents,
+    agentService: agentService,
+    dashboard: dashboard,
+  );
 }
 
-/// Stops the mesh — and with it the Android foreground service and the
-/// listening socket on 51820 — and leaves the process able to start again.
-Future<void> stopAppServices(AppServices services) => services.mesh.stop();
+/// Whether this launch serves the agents dashboard. A desktop, never a phone —
+/// the dashboard is a page for the PC Nexus runs on — and never a test run.
+bool _servesDashboard() {
+  if ((Platform.environment['FLUTTER_TEST'] ?? 'false') != 'false') {
+    return false;
+  }
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.linux ||
+    TargetPlatform.macOS ||
+    TargetPlatform.windows => true,
+    _ => false,
+  };
+}
+
+/// What a run does until a planner-backed runner is wired in: it says plainly
+/// that it had nothing to do, rather than reporting work it did not do.
+Future<String> _nothingToRunYet(AgentDefinition agent) async =>
+    'nothing ran: this build has no tool for “${agent.goal}” yet, so the run '
+    'had nothing it was allowed to do';
+
+/// Stops the dashboard, the agents' timer, and the mesh — and with it the
+/// Android foreground service and the listening socket on 51820 — and leaves
+/// the process able to start again.
+Future<void> stopAppServices(AppServices services) async {
+  await services.dashboard?.stop();
+  await services.agentService?.dispose();
+  await services.mesh.stop();
+}
 
 /// A clipboard kept in a file, turned on only by `NEXUS_CLIPBOARD_FILE=<path>`.
 ///
