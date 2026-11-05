@@ -104,8 +104,15 @@ class RevertGuard {
       );
     }
 
-    final id = '${_now().millisecondsSinceEpoch}';
-    final dir = Directory('${stateDir.path}/$id')..createSync(recursive: true);
+    // Two changes can arm inside the same millisecond on a fast machine, and a
+    // shared directory would make one change's timer stand in for the other's.
+    var id = '${_now().millisecondsSinceEpoch}';
+    var dir = Directory('${stateDir.path}/$id');
+    for (var n = 1; dir.existsSync(); n++) {
+      id = '${_now().millisecondsSinceEpoch}-$n';
+      dir = Directory('${stateDir.path}/$id');
+    }
+    dir.createSync(recursive: true);
     final revert = File('${dir.path}/revert.sh')
       ..writeAsStringSync('#!/bin/sh\nset -u\n$revertScript\n');
     final ack = File('${dir.path}/keep');

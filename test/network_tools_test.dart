@@ -8,6 +8,10 @@
 //     timer;
 //   * a hotspot profile and a CI run are refused, before any write;
 //   * a change that does not verify is unwound by the executor.
+//
+// The change tools are built with `ciRunning: () => false` except in the test
+// that pins the refusal: the default reads this process's environment, and CI
+// really does run these tests with `CI=true`.
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -168,7 +172,11 @@ void main() {
       properties: <String, String>{'802-11-wireless.band': ''},
     );
     final timer = guard();
-    final tool = WifiBandTool(runner: nmcli, guard: timer);
+    final tool = WifiBandTool(
+      runner: nmcli,
+      guard: timer,
+      ciRunning: () => false,
+    );
     final registry = ToolRegistry(<Tool>[tool]);
     final plan = _plan(
       registry,
@@ -207,7 +215,11 @@ void main() {
     final nmcli = _FakeNmcli(
       properties: <String, String>{'802-11-wireless.powersave': '0'},
     );
-    final tool = WifiPowerSaveTool(runner: nmcli, guard: guard());
+    final tool = WifiPowerSaveTool(
+      runner: nmcli,
+      guard: guard(),
+      ciRunning: () => false,
+    );
     final registry = ToolRegistry(<Tool>[tool]);
     final plan = _plan(
       registry,
@@ -234,7 +246,11 @@ void main() {
         properties: <String, String>{'802-11-wireless.band': ''},
         takesChanges: false,
       );
-      final tool = WifiBandTool(runner: nmcli, guard: guard());
+      final tool = WifiBandTool(
+      runner: nmcli,
+      guard: guard(),
+      ciRunning: () => false,
+    );
       final registry = ToolRegistry(<Tool>[tool]);
       final plan = _plan(
         registry,
@@ -266,7 +282,11 @@ void main() {
       properties: <String, String>{'802-11-wireless.band': ''},
       mode: 'ap',
     );
-    final tool = WifiBandTool(runner: nmcli, guard: guard());
+    final tool = WifiBandTool(
+      runner: nmcli,
+      guard: guard(),
+      ciRunning: () => false,
+    );
     final registry = ToolRegistry(<Tool>[tool]);
     final plan = _plan(
       registry,
@@ -338,7 +358,11 @@ void main() {
       final nmcli = _FakeNmcli(
         properties: <String, String>{'802-11-wireless.band': ''},
       );
-      final tool = WifiBandTool(runner: nmcli, guard: guard());
+      final tool = WifiBandTool(
+      runner: nmcli,
+      guard: guard(),
+      ciRunning: () => false,
+    );
       final registry = ToolRegistry(<Tool>[
         ...networkReadTools(_Canned(const <String, String>{})),
         tool,
