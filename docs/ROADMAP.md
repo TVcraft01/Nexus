@@ -18,7 +18,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | 3 | Real Linux tools: network status and Wi-Fi settings via `nmcli`, measured, with rollback | done | #125 |
 | 3b | Planner reliability: fast path, registry schema, repair loop, questions over guesses | done | #126 |
 | 4 | Agent definitions as data + background service + local dashboard | done | #127 |
-| 4a | Execution path: runner → planner → executor, risk gate, durable action log, halt all | in-progress | — |
+| 4a | Execution path: runner → planner → executor, risk gate, durable action log, halt all | done | #128 |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
 | 6 | Earned trust: offer to automate after N approvals of the same action | todo | — |
 | 7 | Local user profile with source and a forget button | todo | — |
