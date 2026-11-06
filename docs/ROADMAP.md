@@ -18,6 +18,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | 3 | Real Linux tools: network status and Wi-Fi settings via `nmcli`, measured, with rollback | done | #125 |
 | 3b | Planner reliability: fast path, registry schema, repair loop, questions over guesses | done | #126 |
 | 4 | Agent definitions as data + background service + local dashboard | done | #127 |
+| 4a | Execution path: runner → planner → executor, risk gate, durable action log, halt all | in-progress | — |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
 | 6 | Earned trust: offer to automate after N approvals of the same action | todo | — |
 | 7 | Local user profile with source and a forget button | todo | — |
@@ -178,6 +179,48 @@ still passes with the service started at launch.
 had nothing to do — there is no mail tool yet (item 9) and the planner is not wired to run an agent's goal by
 itself, so a scheduled run records that refusal instead of pretending. No UI button opens the dashboard; its URL is
 in the developer log. No UI was added (freeze).
+
+## 4a. Execution path — runner, gate, action log, halt
+
+Step 1 of 2 after item 4. Item 4 left the service's runner saying it had nothing to run; this replaces that sentence
+with the real path — a stored agent's goal becomes a plan, and the plan becomes steps that are gated one at a time.
+Verify/undo is **not** here: that is step 2, and the existing executor behaviour is reused, not rebuilt.
+
+**What is built:**
+
+- **the approval gate** (`approval_gate.dart`) is one function, `ApprovalGate.check(policy, step, attended,
+  oneShot)`, and it is the only place a step's permission is decided. The risk comes off the registered tool; the
+  policy off the stored agent; `attended` says whether this run can ask. Decisions: `run`, `needsApproval`,
+  `blocked`.
+- **risk levels** are the existing tiers, spelled plainly: `read` = low, `change` = medium, `destructive` = high.
+  A tool that declares no risk is **high** (`Tool.risk` now defaults to `destructive`), so an unclassified tool is
+  asked about, never run automatically. Existing tools keep their classification: status/signal/speed are low;
+  `wifi_set`, `wifi_band_set`, `wifi_dns_set` and the agent tools are medium; a new delete/install/command/credential
+  tool would be high.
+- **the policy matrix**: low runs unless the policy asks before everything; medium runs only under "ask me only for
+  destructive steps"; high is never a standing permission — it needs a yes for that one action in that one run. A new
+  `askEverything` policy makes "ask about reading too" expressible.
+- **the runner** (`agent_runner.dart`) plans through the item 3b planner, validates, and calls the executor with the
+  agent's own tool list, a step cap and a **time limit**. The tool list is a limit, not a suggestion: a plan naming a
+  tool the user did not give it is refused whole before anything runs.
+- **unattended runs cannot ask**: a scheduled run skips a step that needs approval, records `needs approval`, carries
+  on, and the run's last result says so. Nothing is approved by waiting.
+- **the durable run log** (`run_log.dart`) is append-only on this device: time, agent, tool, redacted arguments,
+  risk, gate decision and why, outcome, error. It rotates at 2 000 lines (previous generation kept as `.1`).
+- **the halt** is one flag shared by the service and the executor: the dashboard has Halt all / Clear, and the service
+  has `haltAll()`, `resumeAgents()`, `halted`. Halting blocks new runs and stops a run in progress at its next step.
+
+Tested offline in `test/agent_runner_test.dart` (13 tests, no model): the full gate matrix (4 policies × 3 risks ×
+attended/unattended), a per-action yes that does not survive into the next run, the allow-list refusal, an
+unclassified tool treated as high, a skipped high-risk step in a scheduled run with its log line, a medium step
+allowed by policy versus refused under `askEveryChange`, halt blocking tick and `runNow`, halt stopping a run at the
+next step, the step cap, the time limit, redaction of secret-looking arguments (in memory and on disk), rotation and
+reload, and a failing tool recorded as `failed` with `ok: false`.
+
+**Not wired:** the product still has no language model or tool registry to hand `PlannedAgentRunner` (those are
+wired in when the app chooses a backend), so `startAppServices` keeps its honest refusal and accepts `agentBackend`
++ `agentTools` for the day it does. The attended per-action question has the `ApprovalPrompter` seam but no UI yet
+(freeze); the typed-ask session path is unchanged.
 
 ## 5. "Curious" explore tool
 

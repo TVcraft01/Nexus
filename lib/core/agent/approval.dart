@@ -40,6 +40,16 @@ class Approval {
         at: at ?? DateTime.now(),
       );
 
+  /// No plan-level approval at all, because nobody was shown the plan — a
+  /// background run. Nothing is covered: its steps are gated one by one.
+  Approval.none({required Plan plan, DateTime? at})
+    : this._(
+        granted: false,
+        steps: const <PlanStep>[],
+        words: '',
+        at: at ?? DateTime.now(),
+      );
+
   /// The user said no. Nothing is granted, and nothing runs.
   Approval.denied({required Plan plan, required String words, DateTime? at})
     : this._(

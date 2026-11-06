@@ -47,20 +47,32 @@ Validation, in `PlanValidator`, before anything is shown or run:
 
 ## Risk tiers, enforced in code
 
-| Tier | Meaning | Behaviour |
-|---|---|---|
-| `read` | Reading status; no state changes. | Runs automatically. |
-| `change` | Changes a setting; reversible by its rollback. | Asks the user first. |
-| `destructive` | Loses data, or removes access. | Asks, and the question names the device ("Turn off Wi-Fi on **this PC**?"). |
+The three levels, spelled plainly:
 
-The enforcement point is `Executor.run`, not the planner and not the prompt:
+| Level | Tier | Meaning | Behaviour |
+|---|---|---|---|
+| low | `read` | Reading status; no state changes. | Runs automatically, unless the policy asks about everything. |
+| medium | `change` | Changes a setting; reversible by its rollback. | Runs only if the stored policy allows it; otherwise asks. |
+| high | `destructive` | Loses data, or removes access. | Never standing: a yes for that one action in that one run. A scheduled run skips it. |
+
+`Tool.risk` defaults to `destructive`: a tool that declares nothing is high, so forgetting to classify one asks
+instead of granting execution. A removal/install/command/credential tool is always high.
+
+The enforcement point is `Executor.run`, through a single choke point — `ApprovalGate.check` — not the planner and
+not the prompt:
 
 ```dart
-// lib/core/agent/executor.dart
-if (step.risk != RiskTier.read && !approval.covers(step)) {
-  throw TierNotApproved(step);          // nothing runs, plan reported as blocked
-}
+// lib/core/agent/executor.dart — every step, before any tool is looked up
+final verdict = ApprovalGate().check(
+  policy: agent.approval,   // the policy stored on the agent
+  step: step,               // risk read off the registered tool
+  attended: !unattended,    // a schedule cannot ask anybody
+  oneShot: approval,        // a yes for this run; never stored
+);
 ```
+
+`run` executes, `needsApproval` asks (attended) or skips (unattended), `blocked` skips and says why. A run that
+cannot ask never waits and never assumes yes, and the step it skipped is named in the run's summary.
 
 Consequences that follow from this rule and are therefore non-negotiable:
 
@@ -84,13 +96,38 @@ On a failed verify (or a thrown `run`), the executor unwinds the completed steps
 best-effort and its own failures are reported loudly; nothing is silently left half-applied, and a tool whose
 rollback is not implemented may not be registered at a tier above `read`.
 
-## Action log and kill switch
+## Security notes: the gate, the logs, and the halt
 
-- **Action log:** one line per executed step — time, tool, argument digest, tier, approval, outcome, verification.
-  In memory for the session, like `lib/core/action_audit.dart`; a durable log needs the user's opt-in (item 4).
-- **Kill switch:** checked by the executor before *every* step, not only at plan start. Tripped means: stop before
-  the next step, report where it stopped, refuse new plans until the user resets it. It never claims to undo work
-  by itself — that is the rollback path, and the user is told which of the two happened.
+**The gate is the only door.** A tool can be reached from exactly one place, `Executor.run`, and every step passes
+`ApprovalGate.check` before the tool is even looked up. Consequences, all non-negotiable:
+
+- the risk is the registered tool's, so a prompt injection can propose a plan but cannot lower a tier;
+- a `destructive` (high) step is never a standing permission: the yes is per action, per run, and is not written
+  to the agent, the store or the export path;
+- a scheduled run is unattended by definition, so it can never acquire an approval it did not have — it skips the
+  step and the last-run summary names it;
+- the stored tool list is enforced as a limit, so a plan naming any other tool is refused whole before anything runs.
+
+**Two local logs, two different promises.**
+
+| | Opt-in usage log (`agents.json`) | Audit run log (`agent-runs.jsonl`) |
+|---|---|---|
+| Records | when the user did the thing | what an agent did, and why it was allowed |
+| Default | **off** until the user says yes; turning it off forgets it | on, because a safety record must not depend on remembering a switch |
+| Used for | suggesting working hours | checking a run's claims after the fact |
+| Cap | 5 000 timestamps | 2 000 lines, rotated to `.1` |
+
+The session's in-memory action log (`action_log.dart`) is a third thing: the "what has it done just now" view in a
+chat, with argument digests rather than values.
+
+**The audit log redacts before it writes** — a key that names a secret, a value that looks like a token, and nested
+maps — so an audit line never becomes a copy of a credential. It is append-only; a capping rotation keeps one
+previous generation so the current file cannot grow without bound.
+
+**The halt is one flag.** The service and the executor share it, so tripping it stops an in-flight run before its
+next step and prevents new ones; the dashboard's *Halt all agents* trips it, *Clear the halt* resets it, and nothing
+resumes automatically. It never claims to undo work — that is the rollback path, and the report says which of the two
+happened.
 
 ## What the model may decide
 

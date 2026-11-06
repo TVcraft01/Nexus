@@ -133,6 +133,10 @@ class AgentDashboard {
           await service.stop(name);
         case 'run':
           await service.runNow(name);
+        case 'halt':
+          service.haltAll();
+        case 'resume':
+          service.resumeAgents();
         case 'usage':
           await store.setUsageOptIn(fields['on'] == 'yes');
         default:
@@ -181,6 +185,13 @@ class AgentDashboard {
         ? 'On — ${store.recordedUsage.length} entries kept on this PC. '
               'Nexus uses them to suggest working hours.'
         : 'Off. Nothing is recorded, so Nexus cannot suggest working hours.';
+    final String haltBox = service.halted
+        ? '<p class="halt">Halted. No agent starts, and a run in progress '
+              'stops before its next step.</p>'
+              '<form method="post" action="$_base/resume">'
+              '<button>Clear the halt</button></form>'
+        : '<form method="post" action="$_base/halt">'
+              '<button>Halt all agents</button></form>';
     return '''<!doctype html>
 <html lang="en">
 <head>
@@ -207,6 +218,7 @@ button { font: inherit; padding: .22rem .55rem; margin: 0 .25rem .25rem 0;
   background: transparent; color: inherit; cursor: pointer; }
 button:hover { border-color: currentColor; }
 .status { font-variant: small-caps; letter-spacing: .03em; }
+.halt { color: #b23c17; font-weight: 600; margin: 0 0 .5rem; }
 </style>
 </head>
 <body>
@@ -219,6 +231,10 @@ stops. Nothing on it leaves this computer.</p>
 <th>Approval</th><th>Status</th><th></th></tr></thead>
 <tbody>$rows</tbody>
 </table>
+<h2>Halt</h2>
+$haltBox
+<h2>Halt</h2>
+$haltBox
 <h2>Usage log</h2>
 <p class="meta">$usage</p>
 <form method="post" action="$_base/usage">

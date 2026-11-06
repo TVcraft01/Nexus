@@ -16,6 +16,14 @@ enum RiskTier {
 }
 
 extension RiskTierWording on RiskTier {
+  /// The three levels this tier answers to, spelled plainly: reading is low, a
+  /// change is medium, destructive is high.
+  String get level => switch (this) {
+    RiskTier.read => 'low',
+    RiskTier.change => 'medium',
+    RiskTier.destructive => 'high',
+  };
+
   /// The tier as a plan line says it, in words a person reads.
   String get label => switch (this) {
     RiskTier.read => 'reading',
