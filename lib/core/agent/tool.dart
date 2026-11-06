@@ -38,7 +38,11 @@ abstract class Tool {
   String get description;
 
   /// The tier this tool's steps are. Never supplied by the model.
-  RiskTier get risk;
+  ///
+  /// A tool that declares nothing is high on purpose: forgetting to classify
+  /// a tool has to fail safe — asked for, never run automatically — instead of
+  /// granting execution because a field was left out.
+  RiskTier get risk => RiskTier.destructive;
 
   /// Every argument it takes, with its type and whether it is required.
   Map<String, ToolArg> get args;

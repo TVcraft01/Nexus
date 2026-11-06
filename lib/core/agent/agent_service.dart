@@ -9,9 +9,9 @@
 // - it does not approve anything above the stored policy. The policy travels
 //   with the run and the executor still enforces every tier; `destructive`
 //   always asks, whatever the policy says.
-// - it does not run an agent that is paused or stopped, or outside its hours.
-//   A schedule that is not being met is a bug the user can see in the stored
-//   status, not a run that happens quietly anyway.
+// - it does not run an agent that is paused or stopped, outside its hours, or
+//   while the halt is on. A schedule that is not being met is a bug the user
+//   can see in the stored status, not a run that happens quietly anyway.
 //
 // A tick is idempotent within the minute: the same minute never runs the same
 // agent twice, so a timer that fires late or twice is harmless.
@@ -19,6 +19,21 @@ import 'dart:async';
 
 import 'agent_records.dart';
 import 'agent_store.dart';
+import 'kill_switch.dart';
+
+/// What one run of an agent came back with: the sentence the user reads, and
+/// whether the run actually did what it set out to do.
+///
+/// [ok] is not "the process did not crash" — it is false for a run that was
+/// refused, blocked, skipped a step for want of approval, or failed a
+/// verification. The service stores it, so a dashboard cannot show a green run
+/// that did nothing.
+class AgentOutcome {
+  const AgentOutcome(this.said, {this.ok = true});
+
+  final String said;
+  final bool ok;
+}
 
 /// What running one agent did, kept newest-first for the dashboard.
 class AgentRun {
@@ -36,10 +51,9 @@ class AgentRun {
 }
 
 /// The thing the service calls to actually do an agent's work. Injected so a
-/// test states it and the product can wire planning later without moving the
-/// service; returning a sentence is deliberate, because that sentence is what
-/// the user reads as this agent's last result.
-typedef AgentRunner = Future<String> Function(AgentDefinition agent);
+/// test states it and the product wires planning without moving the service;
+/// the sentence it returns is what the user reads as this agent's last result.
+typedef AgentRunner = Future<AgentOutcome> Function(AgentDefinition agent);
 
 /// The service said no, with a sentence for the dashboard or the session.
 class AgentServiceError implements Exception {
@@ -114,12 +128,18 @@ class AgentService {
   AgentService({
     required this.store,
     required this.runner,
+    KillSwitch? halt,
     DateTime Function()? now,
     this.tickEvery = const Duration(minutes: 1),
-  }) : _now = now ?? DateTime.now;
+  }) : halt = halt ?? KillSwitch(),
+       _now = now ?? DateTime.now;
 
   final AgentStore store;
   final AgentRunner runner;
+
+  /// The one global stop. Shared with the executor that runs the steps, so
+  /// halting reaches a run that is already walking them, not only the next one.
+  final KillSwitch halt;
   final Duration tickEvery;
   final DateTime Function() _now;
 
@@ -134,6 +154,17 @@ class AgentService {
   List<AgentRun> get runs => List<AgentRun>.unmodifiable(_runs);
 
   bool get ticking => _timer != null;
+
+  /// Whether all agents are halted.
+  bool get halted => halt.tripped;
+
+  /// The one global stop. Nothing new starts; a run in progress stops before
+  /// its next step, because the same switch is checked there.
+  void haltAll() => halt.trip();
+
+  /// Clears the halt. Nothing is resumed automatically: each agent's stored
+  /// status still decides whether it runs.
+  void resumeAgents() => halt.reset();
 
   /// Starts the periodic tick. The timer only calls [tick]; a process that is
   /// asleep simply misses ticks, which the minute guard makes harmless.
@@ -191,6 +222,7 @@ class AgentService {
   /// Runs every agent that is due, at most once per agent per minute.
   Future<List<AgentRun>> tick({DateTime? at}) async {
     final DateTime now = at ?? _now();
+    if (halt.tripped) return const <AgentRun>[];
     if (_ticking) return const <AgentRun>[];
     _ticking = true;
     final List<AgentRun> ran = <AgentRun>[];
@@ -211,6 +243,11 @@ class AgentService {
   /// status is unchanged: a manual run of a stopped agent does not switch it
   /// on.
   Future<AgentRun> runNow(String name, {DateTime? at}) async {
+    if (halt.tripped) {
+      throw const AgentServiceError(
+        'all agents are halted; clear the halt before running one',
+      );
+    }
     final AgentDefinition agent = _required(name);
     final AgentRun run = await _run(agent, at ?? _now()) ??
         (throw const AgentServiceError('that agent is already starting'));
@@ -231,7 +268,9 @@ class AgentService {
     String result;
     bool ok = true;
     try {
-      result = await runner(agent);
+      final AgentOutcome outcome = await runner(agent);
+      result = outcome.said;
+      ok = outcome.ok;
     } catch (error) {
       result = 'it failed: $error';
       ok = false;

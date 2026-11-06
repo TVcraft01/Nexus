@@ -33,7 +33,7 @@ AgentService _service(
   DateTime Function()? now,
 }) => AgentService(
   store: store,
-  runner: runner ?? (agent) async => 'drafted a reply',
+  runner: runner ?? (agent) async => const AgentOutcome('drafted a reply'),
   now: now ?? () => _wednesday,
 );
 
@@ -210,7 +210,7 @@ void main() {
       store,
       runner: (agent) async {
         calls++;
-        return 'ran ${agent.name}';
+        return AgentOutcome('ran ${agent.name}');
       },
       now: () => now,
     );

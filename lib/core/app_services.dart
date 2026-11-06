@@ -26,8 +26,16 @@ import 'package:flutter/foundation.dart'
 import '../mesh/mesh_service.dart';
 import 'agent/agent_dashboard.dart';
 import 'agent/agent_records.dart' show AgentDefinition;
+import 'agent/agent_runner.dart';
 import 'agent/agent_service.dart';
 import 'agent/agent_store.dart';
+import 'agent/executor.dart';
+import 'agent/kill_switch.dart';
+import 'agent/plan_validator.dart';
+import 'agent/planner.dart';
+import 'agent/registry.dart';
+import 'agent/run_log.dart';
+import 'text_generation_backend.dart';
 import 'capability_probe.dart' show CapabilityProbe;
 import 'identity.dart';
 import 'pair_invite.dart' show PairIdentity;
@@ -89,6 +97,8 @@ Future<AppServices> startAppServices({
   ClipboardBackend? clipboard,
   CapabilityProbe? capabilityProbe,
   AgentRunner? agentRunner,
+  TextGenerationBackend? agentBackend,
+  ToolRegistry? agentTools,
   bool? startAgentDashboard,
 }) async {
   final NexusStore store = NexusStore(
@@ -131,9 +141,41 @@ Future<AppServices> startAppServices({
         : '$dataDir${Platform.pathSeparator}agents.json',
   );
   await agents.load();
+
+  // The audit log is not the usage log: it records what agents did and why,
+  // on by default, and it never feeds the working-hours offer.
+  final RunLog runLog = RunLog(
+    explicitPath: dataDir == null
+        ? null
+        : '$dataDir${Platform.pathSeparator}agent-runs.jsonl',
+  );
+  await runLog.load();
+
+  // One switch, shared by the service and the executor, so "halt all" reaches
+  // a run that is already walking its steps.
+  final KillSwitch halt = KillSwitch();
+
+  AgentRunner runner;
+  if (agentRunner != null) {
+    runner = agentRunner;
+  } else if (agentBackend != null && agentTools != null) {
+    final ToolRegistry tools = agentTools;
+    runner = PlannedAgentRunner(
+      planner: Planner(backend: agentBackend, registry: tools),
+      validator: PlanValidator(tools),
+      executor: Executor(registry: tools, killSwitch: halt),
+      runLog: runLog,
+      killSwitch: halt,
+    ).call;
+  } else {
+    // No model and no tool set are wired into this build, so the honest answer
+    // is that nothing ran — not a run that pretends to have planned.
+    runner = _nothingToRunYet;
+  }
   final AgentService agentService = AgentService(
     store: agents,
-    runner: agentRunner ?? _nothingToRunYet,
+    runner: runner,
+    halt: halt,
   );
 
   AgentDashboard? dashboard;
@@ -176,11 +218,14 @@ bool _servesDashboard() {
   };
 }
 
-/// What a run does until a planner-backed runner is wired in: it says plainly
+/// What a run does until a model and a tool set are wired in: it says plainly
 /// that it had nothing to do, rather than reporting work it did not do.
-Future<String> _nothingToRunYet(AgentDefinition agent) async =>
-    'nothing ran: this build has no tool for “${agent.goal}” yet, so the run '
-    'had nothing it was allowed to do';
+Future<AgentOutcome> _nothingToRunYet(AgentDefinition agent) async =>
+    AgentOutcome(
+      'nothing ran: no language model and tool set are wired into this build '
+      'yet, so the run for “${agent.goal}” had nothing it could plan with',
+      ok: false,
+    );
 
 /// Stops the dashboard, the agents' timer, and the mesh — and with it the
 /// Android foreground service and the listening socket on 51820 — and leaves

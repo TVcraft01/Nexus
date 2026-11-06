@@ -27,18 +27,26 @@ enum AgentApprovalPolicy {
 
   /// Only reading. A change is never run, so "read only" cannot quietly mean
   /// something else.
-  readOnly('read only, never change anything');
+  readOnly('read only, never change anything'),
+
+  /// Asks before every step, reading included. The strictest policy: a
+  /// background run can do nothing at all under it, because a scheduled run
+  /// has nobody to ask.
+  askEverything('ask me before every step, reading included');
 
   const AgentApprovalPolicy(this.label);
 
   /// The policy in the words the dashboard and the session show.
   final String label;
 
-  /// Whether a step of [tier] may run in a run the user started.
+  /// Whether a step of [tier] may run without being asked about. Destructive
+  /// is false for every policy: high risk always needs a yes for that action,
+  /// and a yes is never stored as a standing permission.
   bool allows(RiskTier tier) => switch (this) {
     AgentApprovalPolicy.askEveryChange => tier == RiskTier.read,
     AgentApprovalPolicy.askDestructive => tier != RiskTier.destructive,
     AgentApprovalPolicy.readOnly => tier == RiskTier.read,
+    AgentApprovalPolicy.askEverything => false,
   };
 }
 
