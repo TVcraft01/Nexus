@@ -19,7 +19,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | 3b | Planner reliability: fast path, registry schema, repair loop, questions over guesses | done | #126 |
 | 4 | Agent definitions as data + background service + local dashboard | done | #127 |
 | 4a | Execution path: runner → planner → executor, risk gate, durable action log, halt all | done | #128 |
-| 4b | Real runs on this PC: Ollama backend, real tool registry, verify/undo, model failure | done | #— |
+| 4b | Real runs on this PC: Ollama backend, real tool registry, verify/undo, model failure | done | #129 |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
 | 6 | Earned trust: offer to automate after N approvals of the same action | todo | — |
 | 7 | Local user profile with source and a forget button | todo | — |
