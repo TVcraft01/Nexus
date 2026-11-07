@@ -51,6 +51,15 @@ abstract class Tool {
   /// [RiskTier.read] that is not reversible is refused at registration.
   bool get reversible => false;
 
+  /// Whether [verify] can read the result back off the device.
+  ///
+  /// True is the norm. A tool that changes state and cannot check it must say
+  /// so here: its run is then reported as **unverified** rather than as
+  /// verified success, and the run summary names the step. Claiming a change
+  /// was measured when nothing measured it is the one thing this core must
+  /// never do.
+  bool get verifiable => true;
+
   /// What would change, in plain words, before anything is touched.
   ///
   /// Defaults to the description: a tool that has nothing to preview says what

@@ -144,7 +144,9 @@ class RunLogEntry {
     final String clock =
         '${two(at.hour)}:${two(at.minute)}:${two(at.second)}';
     final String who = agent.isEmpty ? '' : ' $agent';
-    final String why = this.why.isEmpty ? '' : ' ($this.why)';
+    // `$this.why` would interpolate `this` and leave a literal ".why" behind;
+    // the braces are what make the field itself the thing that is printed.
+    final String why = this.why.isEmpty ? '' : ' (${this.why})';
     final String failed = error.isEmpty ? '' : ' — $error';
     return '$clock$who $tool [${risk.level}] ${decision.name}$why: '
         '$outcome$failed';

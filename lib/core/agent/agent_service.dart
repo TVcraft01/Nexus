@@ -19,7 +19,12 @@ import 'dart:async';
 
 import 'agent_records.dart';
 import 'agent_store.dart';
+import 'approval_gate.dart' show GateDecision;
 import 'kill_switch.dart';
+import 'risk.dart' show RiskTier;
+import 'rollback.dart';
+import 'run_log.dart';
+import 'undo.dart';
 
 /// What one run of an agent came back with: the sentence the user reads, and
 /// whether the run actually did what it set out to do.
@@ -129,9 +134,12 @@ class AgentService {
     required this.store,
     required this.runner,
     KillSwitch? halt,
+    UndoJournal? undo,
+    this.runLog,
     DateTime Function()? now,
     this.tickEvery = const Duration(minutes: 1),
   }) : halt = halt ?? KillSwitch(),
+       undo = undo ?? UndoJournal(),
        _now = now ?? DateTime.now;
 
   final AgentStore store;
@@ -140,6 +148,13 @@ class AgentService {
   /// The one global stop. Shared with the executor that runs the steps, so
   /// halting reaches a run that is already walking them, not only the next one.
   final KillSwitch halt;
+
+  /// The undo entries of each agent's last run. The runner must be given the
+  /// same journal, or a manual run will have nothing to undo.
+  final UndoJournal undo;
+
+  /// The durable audit log. Null keeps the undo in memory only.
+  final RunLog? runLog;
   final Duration tickEvery;
   final DateTime Function() _now;
 
@@ -165,6 +180,67 @@ class AgentService {
   /// Clears the halt. Nothing is resumed automatically: each agent's stored
   /// status still decides whether it runs.
   void resumeAgents() => halt.reset();
+
+  /// Whether [name]'s last run left anything that can be put back.
+  bool canUndoLastRun(String name) {
+    final AgentDefinition? agent = store.agent(name);
+    return agent != null && undo.canUndo(agent.name);
+  }
+
+  /// Puts back what [name]'s last run changed, newest first, one log line per
+  /// step. One run can be undone once.
+  ///
+  /// A rollback that fails is reported as failed, not swallowed: the returned
+  /// results say what was put back and what was not, and the agent's stored
+  /// last result says the same thing.
+  Future<List<RollbackResult>> undoLastRun(
+    String name, {
+    DateTime? at,
+  }) async {
+    final AgentDefinition agent = _required(name);
+    final List<UndoEntry> entries = undo.takeLastRun(agent.name);
+    if (entries.isEmpty) {
+      throw AgentServiceError(
+        '“${agent.name}” has nothing to undo on this PC.',
+      );
+    }
+
+    final List<RollbackResult> results = <RollbackResult>[];
+    final List<String> failed = <String>[];
+    for (final UndoEntry entry in entries.reversed) {
+      RollbackResult result;
+      try {
+        result = await entry.rollback();
+      } catch (error) {
+        result = RollbackResult.failed('$error');
+      }
+      results.add(result);
+      if (!result.ok) {
+        failed.add('${entry.description} (${result.what})');
+      }
+      await runLog?.record(
+        RunLogEntry(
+          at: at ?? _now(),
+          agent: agent.name,
+          tool: entry.tool,
+          risk: RiskTier.change,
+          decision: GateDecision.run,
+          why: 'you asked to undo the last run',
+          outcome: result.ok ? 'undone' : 'undo failed',
+          error: result.ok ? '' : result.what,
+        ),
+      );
+    }
+
+    final String said = failed.isEmpty
+        ? 'undid ${results.length} step(s) from the last run: '
+              '${results.map((result) => result.what).join('; ')}'
+        : 'undid ${results.length - failed.length} of ${results.length} '
+              'step(s); could not put back: ${failed.join('; ')}';
+    agent.lastResult = said;
+    await store.put(agent);
+    return List<RollbackResult>.unmodifiable(results);
+  }
 
   /// Starts the periodic tick. The timer only calls [tick]; a process that is
   /// asleep simply misses ticks, which the minute guard makes harmless.

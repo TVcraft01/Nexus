@@ -29,12 +29,17 @@ import 'agent/agent_records.dart' show AgentDefinition;
 import 'agent/agent_runner.dart';
 import 'agent/agent_service.dart';
 import 'agent/agent_store.dart';
+import 'agent/agent_tools.dart';
 import 'agent/executor.dart';
 import 'agent/kill_switch.dart';
+import 'agent/ollama_backend.dart';
 import 'agent/plan_validator.dart';
 import 'agent/planner.dart';
 import 'agent/registry.dart';
 import 'agent/run_log.dart';
+import 'agent/tools/detached_runner.dart';
+import 'agent/tools/revert_guard.dart';
+import 'agent/undo.dart';
 import 'text_generation_backend.dart';
 import 'capability_probe.dart' show CapabilityProbe;
 import 'identity.dart';
@@ -155,18 +160,38 @@ Future<AppServices> startAppServices({
   // a run that is already walking its steps.
   final KillSwitch halt = KillSwitch();
 
+  final UndoJournal undo = UndoJournal();
+
   AgentRunner runner;
   if (agentRunner != null) {
     runner = agentRunner;
-  } else if (agentBackend != null && agentTools != null) {
-    final ToolRegistry tools = agentTools;
+  } else if (agentBackend != null ||
+      agentTools != null ||
+      _wiresRealAgents()) {
+    // The desktop path: the installed Ollama model plans and the real network
+    // tools run. On a phone neither is built unless a caller states one — a
+    // phone has no Ollama here, and its honest answer is that it has no model
+    // rather than a run that fails on every tick.
+    final ToolRegistry tools =
+        agentTools ??
+        realAgentTools(
+          guard: RevertGuard(
+            runner: const SystemDetachedRunner(),
+            stateDir: await agentRevertStateDir(dataDir),
+          ),
+        );
+    final TextGenerationBackend backend = agentBackend ?? OllamaBackend();
     runner = PlannedAgentRunner(
-      planner: Planner(backend: agentBackend, registry: tools),
+      planner: Planner(backend: backend, registry: tools),
       validator: PlanValidator(tools),
       executor: Executor(registry: tools, killSwitch: halt),
       runLog: runLog,
       killSwitch: halt,
+      undo: undo,
     ).call;
+    debugPrint(
+      'NEXUS agents: real runs via the planner, ${tools.names.length} tools',
+    );
   } else {
     // No model and no tool set are wired into this build, so the honest answer
     // is that nothing ran — not a run that pretends to have planned.
@@ -176,6 +201,8 @@ Future<AppServices> startAppServices({
     store: agents,
     runner: runner,
     halt: halt,
+    undo: undo,
+    runLog: runLog,
   );
 
   AgentDashboard? dashboard;
@@ -202,6 +229,20 @@ Future<AppServices> startAppServices({
     agentService: agentService,
     dashboard: dashboard,
   );
+}
+
+/// Whether this launch plans agent runs for real: a desktop, never a phone (no
+/// Ollama there), and never a test run.
+bool _wiresRealAgents() {
+  if ((Platform.environment['FLUTTER_TEST'] ?? 'false') != 'false') {
+    return false;
+  }
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.linux ||
+    TargetPlatform.macOS ||
+    TargetPlatform.windows => true,
+    _ => false,
+  };
 }
 
 /// Whether this launch serves the agents dashboard. A desktop, never a phone —

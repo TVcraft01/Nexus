@@ -96,6 +96,24 @@ On a failed verify (or a thrown `run`), the executor unwinds the completed steps
 best-effort and its own failures are reported loudly; nothing is silently left half-applied, and a tool whose
 rollback is not implemented may not be registered at a tier above `read`.
 
+**Not verifying is a stated result, not a silent pass.** `Tool.verifiable` (default `true`) is the tool saying it can
+read its own result back. The executor calls `verify()` only when it is true; a change that cannot be verified is
+reported as **unverified** in the run report and in the agent's stored last result. The user is never told a change
+was confirmed when nothing looked at it.
+
+**Undo is a replay, once.** A verified `change` step records an `UndoEntry` in the run's `UndoJournal`. The service's
+`undoLastRun(name)` replays the last run's entries **newest-first**, logs one `undone` or `undo failed` line per
+step, and stores the outcome in `lastResult`; a second call says there is nothing to undo. A change with no rollback
+closure is named in the summary as **cannot be put back**. The journal is in memory on purpose: undo is for the run
+that just happened, and durable reversal across a restart remains the change tools' own revert timer.
+
+**The time limit and the halt act between steps.** Both are checked at the boundary before a step, never inside one.
+A tool that is already running is awaited: `SystemCommandRunner` uses `Process.run` with no timeout, so a command
+that wedges (a `ping` to a dead gateway, a stuck `nmcli`) holds the run until it returns. The 2-minute limit and
+*Halt all* therefore stop a run at its next step boundary — they cannot cancel work in flight. Closing that gap
+needs a cancellation token threaded through `Tool.run` plus a timeout in the command runner; until then this is a
+known limit, and neither the halt nor the limit claims otherwise.
+
 ## Security notes: the gate, the logs, and the halt
 
 **The gate is the only door.** A tool can be reached from exactly one place, `Executor.run`, and every step passes
@@ -126,8 +144,14 @@ previous generation so the current file cannot grow without bound.
 
 **The halt is one flag.** The service and the executor share it, so tripping it stops an in-flight run before its
 next step and prevents new ones; the dashboard's *Halt all agents* trips it, *Clear the halt* resets it, and nothing
-resumes automatically. It never claims to undo work — that is the rollback path, and the report says which of the two
-happened.
+resumes automatically. It never claims to undo work — that is the rollback path (or `undoLastRun`), and the report
+says which of the two happened.
+
+**Where the real runs come from.** `startAppServices` wires `PlannedAgentRunner` to `OllamaBackend` (the installed
+model, resolved from `/api/tags`) and `realAgentTools()` on Linux, macOS and Windows — and not under `flutter test`.
+Android keeps the honest refusal: a phone has no Ollama here, and a scheduled run that fails on every tick is worse
+than one that says why it cannot run. A model that is missing, unreachable or too slow produces a `failed:` run with
+the reason and a `planner` audit line — never a hang, never a success.
 
 ## What the model may decide
 
