@@ -68,3 +68,21 @@ or make a tap release the system setting and set dark in one gesture. The hint
 line is what shipped, because the second option silently changes a preference
 the user set elsewhere. If that trade is revisited, the change belongs in
 `SettingsTab` next to `onFollowSystemChanged`, not in the switch itself.
+
+## Android's local-network permission is not why discovery went deaf
+
+Android 16 gates local-network access behind a permission, but it is opt-in for
+apps and an app targeting API 36 receives an implicit grant through `INTERNET`;
+enforcement proper starts at API 37 with `ACCESS_LOCAL_NETWORK`. The test phone
+runs Android 16 with `targetSdk=36` and holds no `ACCESS_LOCAL_NETWORK` grant, and
+the same process accepts inbound TCP from another device over the LAN, which that
+policy would have to block as well. So the policy is not the cause here.
+
+What the phone does is bind 51822, log `listening on 0.0.0.0:51822`, announce to
+three targets every three seconds, and answer ICMP port-unreachable from the
+network: a socket that sends and never receives. A bound socket that hears
+nothing looked exactly like a healthy one in the status line, so the status now
+carries `selfCheck`, the answer to one loopback datagram sent through the same
+receive path, and `canReceive` is false when that packet never comes back. When
+the probe cannot even be sent the answer stays unknown rather than accusing a
+socket that may be fine.

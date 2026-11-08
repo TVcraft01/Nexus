@@ -1006,6 +1006,7 @@ abstract class _MeshBase extends ChangeNotifier
   /// it is healthy. An empty Nearby list should never be unexplained: a
   /// socket on a fallback port, or one that cannot send at all, is invisible
   /// to every other device while looking perfectly fine in the UI.
+  @override
   String? get discoveryNotice {
     final status = _discovery?.status;
     if (status == null || status.canReceive) return null;
