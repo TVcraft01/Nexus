@@ -18,12 +18,15 @@
 import 'agent_records.dart';
 import 'agent_service.dart' show AgentOutcome;
 import 'approval.dart';
+import 'approval_gate.dart' show GateDecision;
 import 'executor.dart';
 import 'kill_switch.dart';
 import 'plan.dart';
 import 'plan_validator.dart';
 import 'planner.dart';
+import 'risk.dart';
 import 'run_log.dart';
+import 'undo.dart';
 
 class PlannedAgentRunner {
   PlannedAgentRunner({
@@ -32,6 +35,7 @@ class PlannedAgentRunner {
     required this.executor,
     required this.runLog,
     required this.killSwitch,
+    this.undo,
     this.timeLimit = const Duration(minutes: 2),
     this.maxSteps = kMaxPlanSteps,
   });
@@ -40,6 +44,10 @@ class PlannedAgentRunner {
   final PlanValidator validator;
   final Executor executor;
   final RunLog runLog;
+
+  /// Where a successful run's undo entries go, so `undoLastRun` can replay
+  /// them. The service must be given the same journal.
+  final UndoJournal? undo;
 
   /// The same switch the service halts, so "halt all" reaches a run that is
   /// already walking its steps.
@@ -63,9 +71,28 @@ class PlannedAgentRunner {
       );
     }
 
-    final PlanValidation validation = validator.validate(
-      await planner.propose(goal: agent.goal),
-    );
+    final ProposedPlan proposal;
+    try {
+      proposal = await planner.propose(goal: agent.goal);
+    } catch (error) {
+      // A model that is not running, or answered nothing usable, is a failed
+      // run with a reason — never a hang, never a success.
+      final String reason = error.toString().split('\n').first;
+      await runLog.record(
+        RunLogEntry(
+          at: DateTime.now(),
+          agent: agent.name,
+          tool: 'planner',
+          risk: RiskTier.read,
+          decision: GateDecision.blocked,
+          why: 'the plan could not be made',
+          outcome: 'failed',
+          error: reason,
+        ),
+      );
+      return AgentOutcome('failed: $reason', ok: false);
+    }
+    final PlanValidation validation = validator.validate(proposal);
     if (validation is PlanRejected) {
       final String said = <String>[
         ...validation.faults,
@@ -99,6 +126,7 @@ class PlannedAgentRunner {
       ),
       agent: agent.name,
       runLog: runLog,
+      undo: undo,
     );
     return AgentOutcome(
       report.summary,

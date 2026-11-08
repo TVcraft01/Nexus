@@ -34,6 +34,7 @@ import 'risk.dart';
 import 'rollback.dart';
 import 'run_log.dart';
 import 'tool.dart';
+import 'undo.dart';
 import 'verification.dart';
 
 enum ExecutionStatus {
@@ -98,6 +99,8 @@ class ExecutionReport {
     required this.goal,
     this.verified = const <VerifiedStep>[],
     this.skipped = const <SkippedStep>[],
+    this.unverified = const <String>[],
+    this.irreversible = const <String>[],
     this.undone = const <RollbackResult>[],
     this.couldNotUndo = const <String>[],
     this.failure = '',
@@ -112,6 +115,13 @@ class ExecutionReport {
 
   /// Every step the gate held back, in order, with the gate's reason.
   final List<SkippedStep> skipped;
+
+  /// Steps that ran but whose tool has no read-back, so "done" is all the code
+  /// can honestly say about them.
+  final List<String> unverified;
+
+  /// Change steps whose tool offered no way to put them back.
+  final List<String> irreversible;
 
   /// What the unwind put back, and what it could not.
   final List<RollbackResult> undone;
@@ -187,6 +197,15 @@ class ExecutionReport {
     if (blocked.isNotEmpty) {
       parts.add('blocked ${blocked.length} step(s): ${blocked.join('; ')}');
     }
+    if (unverified.isNotEmpty) {
+      parts.add(
+        'could not verify ${unverified.length} step(s), the tool has no '
+        'read-back: ${unverified.join('; ')}',
+      );
+    }
+    if (irreversible.isNotEmpty) {
+      parts.add('cannot be put back: ${irreversible.join('; ')}');
+    }
     return parts.map(_plain).join('. ');
   }
 
@@ -227,6 +246,7 @@ class Executor {
     RunLimits limits = const RunLimits(),
     String agent = '',
     RunLog? runLog,
+    UndoJournal? undo,
   }) async {
     if (plan.steps.length > limits.maxSteps) {
       return ExecutionReport(
@@ -268,9 +288,15 @@ class Executor {
       );
     }
 
+    // A successful run's undo entries replace the previous run's; a typed ask
+    // has no agent and records none.
+    undo?.beginRun(agent);
+
     final DateTime startedAt = _now();
     final verified = <VerifiedStep>[];
     final skipped = <SkippedStep>[];
+    final unverified = <String>[];
+    final irreversible = <String>[];
 
     for (final step in plan.steps) {
       if (killSwitch.tripped) {
@@ -279,6 +305,8 @@ class Executor {
           goal: plan.goal,
           verified: List<VerifiedStep>.unmodifiable(verified),
           skipped: List<SkippedStep>.unmodifiable(skipped),
+          unverified: List<String>.unmodifiable(unverified),
+          irreversible: List<String>.unmodifiable(irreversible),
           stoppedAt: step,
           failure: 'the stop switch is on',
         );
@@ -290,6 +318,8 @@ class Executor {
           goal: plan.goal,
           verified: List<VerifiedStep>.unmodifiable(verified),
           skipped: List<SkippedStep>.unmodifiable(skipped),
+          unverified: List<String>.unmodifiable(unverified),
+          irreversible: List<String>.unmodifiable(irreversible),
           failure:
               'the run passed its ${limits.timeLimit.inSeconds}s time limit '
               'before “${step.description}”',
@@ -356,9 +386,14 @@ class Executor {
 
       final String said;
       final VerificationResult verification;
+      final bool verifiable = tool.verifiable;
       try {
         said = await tool.run(step.args);
-        verification = await tool.verify(step.args);
+        // A tool that cannot read its result back says so; the step is
+        // reported as unverified, never as measured success.
+        verification = verifiable
+            ? await tool.verify(step.args)
+            : const VerificationResult.ok('no read-back for this tool');
       } on ToolRefused catch (refused) {
         // Nothing was written, so there is nothing to put back — only the rule
         // that refused it, said as itself rather than as an error.
@@ -375,6 +410,8 @@ class Executor {
           const <PlanStep>[],
           'refused: ${refused.message}',
           skipped: skipped,
+          unverified: unverified,
+          irreversible: irreversible,
         );
       } catch (error) {
         await _record(
@@ -391,6 +428,8 @@ class Executor {
           <PlanStep>[step],
           'it stopped with an error: $error',
           skipped: skipped,
+          unverified: unverified,
+          irreversible: irreversible,
         );
       }
 
@@ -423,6 +462,24 @@ class Executor {
           <PlanStep>[step],
           verification.reason,
           skipped: skipped,
+          unverified: unverified,
+          irreversible: irreversible,
+        );
+      }
+      if (!verifiable) unverified.add(step.description);
+      if (step.risk != RiskTier.read && step.rollback == null) {
+        irreversible.add(step.description);
+      }
+      final Future<RollbackResult> Function()? rollback = step.rollback;
+      if (rollback != null && step.risk != RiskTier.read) {
+        undo?.record(
+          UndoEntry(
+            agent: agent,
+            at: _now(),
+            description: step.description,
+            tool: step.tool,
+            rollback: rollback,
+          ),
         );
       }
       verified.add(
@@ -434,6 +491,8 @@ class Executor {
       goal: plan.goal,
       verified: List<VerifiedStep>.unmodifiable(verified),
       skipped: List<SkippedStep>.unmodifiable(skipped),
+      unverified: List<String>.unmodifiable(unverified),
+      irreversible: List<String>.unmodifiable(irreversible),
     );
   }
 
@@ -475,6 +534,8 @@ class Executor {
     List<PlanStep> newest,
     String failure, {
     List<SkippedStep> skipped = const <SkippedStep>[],
+    List<String> unverified = const <String>[],
+    List<String> irreversible = const <String>[],
   }) async {
     final undone = <RollbackResult>[];
     final couldNotUndo = <String>[];
@@ -500,6 +561,8 @@ class Executor {
       goal: plan.goal,
       verified: List<VerifiedStep>.unmodifiable(verified),
       skipped: List<SkippedStep>.unmodifiable(skipped),
+      unverified: List<String>.unmodifiable(unverified),
+      irreversible: List<String>.unmodifiable(irreversible),
       undone: List<RollbackResult>.unmodifiable(undone),
       couldNotUndo: List<String>.unmodifiable(couldNotUndo),
       failure: failure,

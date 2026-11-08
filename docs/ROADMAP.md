@@ -19,6 +19,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | 3b | Planner reliability: fast path, registry schema, repair loop, questions over guesses | done | #126 |
 | 4 | Agent definitions as data + background service + local dashboard | done | #127 |
 | 4a | Execution path: runner → planner → executor, risk gate, durable action log, halt all | done | #128 |
+| 4b | Real runs on this PC: Ollama backend, real tool registry, verify/undo, model failure | done | #129 |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
 | 6 | Earned trust: offer to automate after N approvals of the same action | todo | — |
 | 7 | Local user profile with source and a forget button | todo | — |
@@ -221,6 +222,61 @@ reload, and a failing tool recorded as `failed` with `ok: false`.
 wired in when the app chooses a backend), so `startAppServices` keeps its honest refusal and accepts `agentBackend`
 + `agentTools` for the day it does. The attended per-action question has the `ApprovalPrompter` seam but no UI yet
 (freeze); the typed-ask session path is unchanged.
+
+## 4b. Real agent runs on this PC — Ollama, real tools, verify/undo
+
+Step 2 of 2. 4a could plan, gate and log, but `startAppServices` had no model and no tools, so every scheduled run
+said it had nothing to run. This wires the desktop build to the installed Ollama model and the existing network
+tools, and closes the verify/undo gaps the audit found.
+
+**The audit, before any code.** Every real tool already had `verify()`, and every change tool already had a
+`rollback` closure; no tool lacked verification and nothing was marked unverifiable, but **"undo last run" did not
+exist**. The per-run time limit and the halt were checked **between steps only**: a tool already running was awaited
+with no cancellation, and `SystemCommandRunner` calls `Process.run` with no timeout. The decisive finding was that
+**no real tool was registered anywhere in the app** — the only `ToolRegistry` lived in `test/`. Nothing contradicted
+the plan; the missing piece was the wiring itself.
+
+**What is built:**
+
+- **`OllamaBackend`** (`ollama_backend.dart`) — the existing `TextGenerationBackend` + `StructuredGeneration` seam
+  over `127.0.0.1:11434`. The model is the installed one, resolved once from `/api/tags` (the largest installed),
+  with a 5 s tag timeout and a measured 150 s reply timeout. A missing Ollama, a missing model or an unreadable
+  reply throws `OllamaUnavailable` with a sentence the user can act on. Nothing is ever downloaded.
+- **`realAgentTools()`** (`agent_tools.dart`) — the six existing tools (3 read, 3 change) over the real
+  `SystemCommandRunner`, with the change tools' `RevertGuard` writing to a per-user state directory.
+- **the desktop wiring** in `startAppServices`: Linux/macOS/Windows get the Ollama planner and the real registry;
+  `flutter test` and Android keep the honest refusal, because a phone has no Ollama and a test must not touch the
+  network. `agentBackend`/`agentTools` still override, for a test or a future phone backend. Per-agent allow-lists
+  are unchanged and nothing is auto-allowed.
+- **verify/undo**: `Tool.verifiable` (default true) lets a change say it cannot read its result back; the run report
+  and summary name every **unverified** step and every change that **cannot be put back**; a verified change records
+  an `UndoJournal` entry, and `AgentService.undoLastRun(name)` replays the last run newest-first, logs `undone` or
+  `undo failed` per step, and stores what happened in `lastResult`.
+- **a model failure is a failed run**, not a hang and not a success: the runner catches the planner's error, writes a
+  `planner` line to the audit log and returns `ok: false` with a `failed: …` summary.
+- **a log-line bug found by the real run**: `RunLogEntry.line` interpolated `$this.why`, which prints
+  `Instance of 'RunLogEntry'.why` in Dart. Every action-log line had that in it; it is now `${this.why}`.
+
+**Real evidence**, from `test/agent_live_smoke.dart` run by hand on this PC against `llama3.2:latest`:
+
+- agent *Wi-Fi check*, goal "check my wifi signal and speed", scheduled, `runNow` →
+  `ok=true`, stored `ran 1 reading step(s), nothing changed`, log line
+  `Wi-Fi check wifi_signal [low] run (reading only, and your policy allows that): done`;
+- a high-risk stand-in tool in an unattended run → `ok=false`, `skipped 1 step(s) that need your approval: …`,
+  log `needsApproval (a scheduled run cannot ask, so this high-risk step was skipped): skipped: needs approval`,
+  and the tool's call counter stayed at `0`;
+- a backend pointed at a dead port → `ok=false`, stored
+  `failed: Ollama is not answering at http://127.0.0.1:9 (… Connection refused …). Start it, or install it, and try
+  again.`, with a `planner [low] blocked … failed` log line.
+
+**Measured limit, stated plainly:** the installed 2 GB model plans a Wi-Fi read correctly on one attempt (two steps
+in 56 s) and asks a clarifying question on another; the fast path is what makes the standard Wi-Fi asks reliable,
+and a model question is reported as `not run`, never as success. The time limit and the halt still act **between
+steps only** — see `docs/AGENT_CORE.md`, which now says so instead of implying otherwise.
+
+**Still a seam:** the planner is shown the whole registry while an agent's allow-list is enforced at execution, so a
+model can propose a tool the agent may not use (the run refuses it, nothing executes). Persistent, cross-restart undo
+remains the tools' own revert timer; `UndoJournal` is in-memory by design.
 
 ## 5. "Curious" explore tool
 
