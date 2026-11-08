@@ -86,3 +86,30 @@ carries `selfCheck`, the answer to one loopback datagram sent through the same
 receive path, and `canReceive` is false when that packet never comes back. When
 the probe cannot even be sent the answer stays unknown rather than accusing a
 socket that may be fine.
+
+## The Samsung test phone cannot receive UDP discovery, cause unproven
+
+Observed on the SM-A256E (Android 16, `targetSdk=36`, package `dev.nexus.nexus`):
+the discovery socket binds 51822 and announces, but no datagram ever reaches it.
+The details, so a future investigation does not repeat them:
+
+- its own loopback test packet never arrives (zero read events), while a socket
+  bound a moment later in the same process — including one bound to 51822 —
+  hears its own packet, so the port and the receive path are fine;
+- replacing the launch socket heals it once (`selfCheck` becomes true), which is
+  why the app now rebinds before declaring UDP unavailable;
+- packets sent from this PC to `192.168.1.8:51822` never reach the app: the
+  phone's UDP `NoPorts` counter rises by exactly the number sent, while a plain
+  `nc -u -l` listener on the same port from `adb shell` does receive them;
+- inbound TCP 51820 from the PC works, and the phone's active default network is
+  Wi-Fi (103), so the app's sockets are on the right interface;
+- no VPN, the multicast lock is held, and granting `NEARBY_WIFI_DEVICES` (runtime
+  and appop) plus the allowed `ACCESS_LOCAL_NETWORK` appop changed nothing, so
+  the local-network permission policy is not the cause;
+- `/proc/net` is masked for `adb shell` and denied to the app, so the socket
+  table could not be read from either side.
+
+The cause is therefore recorded as **unknown and device-specific**. What the app
+does about it is in the code, not in a guess: UDP stays best-effort, a deaf
+socket is rebound up to three times, and discovery falls back to a TCP pass that
+proves each peer with its pairing key.

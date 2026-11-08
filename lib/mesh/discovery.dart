@@ -61,6 +61,68 @@ class DiscoveredDevice {
       lastSeen: seen);
 }
 
+/// The UDP operations discovery needs, and nothing else.
+///
+/// A seam rather than a `RawDatagramSocket` so the repair path can be tested
+/// with a socket that never hears its own probe: a real deaf socket cannot be
+/// made on a healthy machine, and a phone that has one is not a unit test.
+abstract class DiscoverySocket {
+  int get port;
+  InternetAddress get address;
+  int send(List<int> data, InternetAddress target, int targetPort);
+  void close();
+  void joinMulticast(InternetAddress group, [NetworkInterface? iface]);
+  void listen(
+    void Function(List<int> data, InternetAddress from, int fromPort) onData,
+  );
+}
+
+/// Opens a [DiscoverySocket]. Injected by a test; the app uses [_openUdp].
+typedef DiscoverySocketFactory =
+    Future<DiscoverySocket> Function(InternetAddress bindAddress, int port);
+
+Future<DiscoverySocket> _openUdp(
+  InternetAddress bindAddress,
+  int port,
+) async => _UdpDiscoverySocket(await RawDatagramSocket.bind(bindAddress, port));
+
+class _UdpDiscoverySocket implements DiscoverySocket {
+  _UdpDiscoverySocket(this._socket);
+
+  final RawDatagramSocket _socket;
+
+  @override
+  int get port => _socket.port;
+
+  @override
+  InternetAddress get address => _socket.address;
+
+  @override
+  int send(List<int> data, InternetAddress target, int targetPort) =>
+      _socket.send(data, target, targetPort);
+
+  @override
+  void close() => _socket.close();
+
+  @override
+  void joinMulticast(InternetAddress group, [NetworkInterface? iface]) =>
+      _socket.joinMulticast(group, iface);
+
+  @override
+  void listen(
+    void Function(List<int> data, InternetAddress from, int fromPort) onData,
+  ) {
+    // onError is swallowed: a best-effort discovery socket must never take
+    // the app down (e.g. a broadcast send refused on some platforms).
+    _socket.listen((RawSocketEvent event) {
+      if (event != RawSocketEvent.read) return;
+      final datagram = _socket.receive();
+      if (datagram == null) return;
+      onData(datagram.data, datagram.address, datagram.port);
+    }, onError: (_) {});
+  }
+}
+
 /// Finds other Nexus devices on the same network.
 ///
 /// How it works: every device joins the Nexus multicast group and announces
@@ -68,7 +130,7 @@ class DiscoveredDevice {
 /// so discovery works even when multicast is filtered. Hearing an announcement
 /// only makes a device *visible* — it is NOT proof it is reachable. Presence
 /// is verified separately with a direct TCP ping (see [MeshService]), and the
-/// UI is honest about the difference.
+/// TCP pass is the guaranteed path when this UDP socket cannot receive.
 ///
 /// Multicast is used instead of broadcast because it needs no special socket
 /// flag (Linux refuses broadcast sends without SO_BROADCAST, which dart:io
@@ -102,6 +164,11 @@ class DiscoveryStatus {
   /// from the network. Only a packet coming back proves the receive half works.
   final bool? selfCheck;
 
+  /// True when the socket failed its own receive test and rebinding it did not
+  /// heal it: UDP discovery cannot work on this device, and peers can only be
+  /// found over TCP. This is the app-level flag the UI reports.
+  final bool udpUnavailable;
+
   /// The port this service should have been on — [DiscoveryService.discoveryPort]
   /// unless a caller deliberately runs somewhere else.
   final int expectedPort;
@@ -114,13 +181,18 @@ class DiscoveryStatus {
     this.lastSendError,
     this.expectedPort = DiscoveryService.discoveryPort,
     this.selfCheck,
+    this.udpUnavailable = false,
   });
 
-  /// A socket on the expected port that has not failed to send, and that has
-  /// not failed its own receive test: the only state in which another device's
-  /// announcement can actually reach us.
+  /// A socket on the expected port that has not failed to send, that has not
+  /// failed its own receive test, and that is not known to be unable to
+  /// receive at all: the only state in which another device's announcement can
+  /// actually reach us.
   bool get canReceive =>
-      boundPort == expectedPort && failedSends == 0 && selfCheck != false;
+      boundPort == expectedPort &&
+      failedSends == 0 &&
+      selfCheck != false &&
+      !udpUnavailable;
 
   /// Whether this device is at least announcing (true even while degraded).
   bool get announcing => announced > 0;
@@ -139,6 +211,11 @@ class DiscoveryStatus {
       return 'Discovery could not announce on the network '
           '(${lastSendError ?? "unknown error"}) — check this device\'s Wi-Fi '
           'and firewall.';
+    }
+    if (udpUnavailable) {
+      return 'This device cannot receive UDP discovery — its own test packet '
+          'never came back on port $expectedPort, even after rebinding the '
+          'socket. Devices are still found over TCP.';
     }
     if (selfCheck == false) {
       return 'Discovery is not receiving on this device — its own test packet '
@@ -164,6 +241,16 @@ class DiscoveryService {
   /// this retry the process stays deaf for its whole lifetime.
   static const Duration reboundInterval = Duration(seconds: 20);
 
+  /// How many rebinds a socket that fails its own receive test gets before UDP
+  /// discovery is declared unavailable. One rebind heals the phone that
+  /// prompted this (its launch socket was deaf while a fresh one heard the
+  /// probe), so the bound is small and the wait between tries grows.
+  static const int repairAttempts = 3;
+
+  /// The wait before repair attempt `n` is [repairBackoff] times `n`. A field
+  /// so a test does not spend seconds proving a three-step loop.
+  final Duration repairBackoff;
+
   final DeviceInfo identity;
   final FutureOr<void> Function(DiscoveredDevice device) onDiscovered;
 
@@ -183,14 +270,48 @@ class DiscoveryService {
   /// that survives flaky multicast.
   final bool canBroadcast;
 
-  RawDatagramSocket? _socket;
+  /// Opens the UDP socket. Injected by a test that needs a socket which never
+  /// hears its own probe; the app uses the platform one.
+  final DiscoverySocketFactory socketFactory;
+
+  /// How long the receive probe waits: [probeTries] steps of [probeWait].
+  /// Parameters so a test does not spend a second on every attempt.
+  final Duration probeWait;
+  final int probeTries;
+
+  /// How often the interface list is sampled for a Wi-Fi reconnect or an IP
+  /// change, after which the receive test runs again. Zero disables the watch.
+  final Duration networkWatchInterval;
+
+  /// This device's non-loopback IPv4 addresses. Injectable so a test can
+  /// stage a network change without replugging a cable: the watch compares
+  /// two readings and a real machine's interfaces do not move on command.
+  final Future<Set<String>> Function()? interfaceAddresses;
+
+  DiscoverySocket? _socket;
   Timer? _broadcastTimer;
   Timer? _reboundTimer;
+  Timer? _networkTimer;
   bool _started = false;
 
   /// The answer to "did my own test packet come back?", or null while it is
   /// still being waited for.
   bool? _selfCheck;
+
+  /// Set when a repair attempt was needed and failed to heal the socket.
+  bool _udpUnavailable = false;
+
+  /// One repair at a time: the probe can fail again inside a repair, and a
+  /// second loop would fight the first for the port.
+  bool _repairing = false;
+
+  /// How many rebinds have been made, and how many of those healed the socket.
+  /// Counters rather than flags so a log line can say which path recovered.
+  int _repairs = 0;
+  int _repairSuccesses = 0;
+
+  /// The non-loopback IPv4 addresses last seen, for the network-change watch.
+  Set<String> _ifaceIps = const <String>{};
 
   /// The RAM every announcement carries, in bytes. Set once by the front end
   /// before [start]; null keeps the field out of the payload entirely, so an
@@ -209,7 +330,14 @@ class DiscoveryService {
     required this.onDiscovered,
     this.canBroadcast = false,
     int? port,
-  }) : port = port ?? discoveryPort;
+    DiscoverySocketFactory? socketFactory,
+    this.probeWait = const Duration(milliseconds: 40),
+    this.probeTries = 25,
+    this.repairBackoff = const Duration(milliseconds: 400),
+    this.networkWatchInterval = const Duration(seconds: 15),
+    this.interfaceAddresses,
+  }) : port = port ?? discoveryPort,
+       socketFactory = socketFactory ?? _openUdp;
 
   Future<void> start() async {
     if (_started) return;
@@ -223,6 +351,13 @@ class DiscoveryService {
 
     await _bind();
     _broadcastTimer = Timer.periodic(const Duration(seconds: 3), (_) => unawaited(_announce()));
+    if (networkWatchInterval > Duration.zero) {
+      _ifaceIps = await _localIPv4s();
+      _networkTimer = Timer.periodic(
+        networkWatchInterval,
+        (_) => unawaited(_watchNetwork()),
+      );
+    }
     unawaited(_announce());
   }
 
@@ -231,15 +366,12 @@ class DiscoveryService {
   /// retried in the background rather than lived with silently.
   Future<void> _bind() async {
     try {
-      _socket = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        port,
-      );
+      _socket = await socketFactory(InternetAddress.anyIPv4, port);
     } catch (e) {
       // Port busy (usually a second Nexus instance on this machine, e.g. an
       // update restarting over the old process). Announce from an ephemeral
       // port and keep trying to get the real one back.
-      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      _socket = await socketFactory(InternetAddress.anyIPv4, 0);
       debugPrint('NEXUS discovery: port $port was busy ($e) — '
           'announcing from ${_socket!.port}, but this device cannot hear '
           'other devices until the port is free.');
@@ -247,9 +379,7 @@ class DiscoveryService {
     }
 
     await _joinGroups();
-    // onError is swallowed: a best-effort discovery socket must never take
-    // the app down (e.g. a broadcast send refused on some platforms).
-    _socket!.listen(_onDatagram, onError: (_) {});
+    _socket!.listen(_onDatagram);
     debugPrint('NEXUS discovery: listening on ${_socket!.address.address}:${_socket!.port}');
     unawaited(_probeReceive());
   }
@@ -265,8 +395,12 @@ class DiscoveryService {
   /// Without it a socket that binds the right port and never receives a byte
   /// looks exactly like a healthy one — which is the failure this class is
   /// supposed to name rather than hide.
-  Future<void> _probeReceive() async {
-    final RawDatagramSocket? socket = _socket;
+  ///
+  /// A failed test triggers [_repairSocket] unless [repairIfDeaf] is false,
+  /// which the repair loop itself passes so one failure does not start a
+  /// second loop.
+  Future<void> _probeReceive({bool repairIfDeaf = true}) async {
+    final DiscoverySocket? socket = _socket;
     if (socket == null) return;
     _selfCheck = null;
     final List<int> payload = utf8.encode(jsonEncode({
@@ -291,8 +425,8 @@ class DiscoveryService {
       );
       return;
     }
-    for (int i = 0; i < 25 && _selfCheck == null; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 40));
+    for (int i = 0; i < probeTries && _selfCheck == null; i++) {
+      await Future<void>.delayed(probeWait);
     }
     if (_selfCheck == null) {
       _selfCheck = false;
@@ -300,6 +434,60 @@ class DiscoveryService {
         'NEXUS discovery: this socket never received its own test packet on '
         'port ${socket.port} (sent $sent bytes) — it cannot hear other devices.',
       );
+      if (repairIfDeaf) unawaited(_repairSocket());
+    }
+  }
+
+  /// A socket that cannot hear its own probe is replaced, bounded and with
+  /// backoff, because a rebind heals the failure this was written for.
+  ///
+  /// The phone that reported it bound 51822 at launch and never received a
+  /// byte, while a socket bound a second later in the same process heard its
+  /// probe. Replacing the socket is therefore the first thing to try, not a
+  /// restart instruction for the user. Only when every attempt fails is UDP
+  /// reported unavailable — the TCP pass is then the path that finds devices.
+  Future<void> _repairSocket() async {
+    if (_repairing || !_started) return;
+    _repairing = true;
+    try {
+      for (var attempt = 1; attempt <= repairAttempts; attempt++) {
+        if (!_started) return;
+        await Future<void>.delayed(repairBackoff * attempt);
+        if (!_started) return;
+        _repairs++;
+        final DiscoverySocket? previous = _socket;
+        try {
+          _socket = await socketFactory(InternetAddress.anyIPv4, port);
+        } catch (e) {
+          debugPrint('NEXUS discovery: rebind attempt $attempt could not open '
+              'port $port ($e)');
+          continue;
+        }
+        await _joinGroups();
+        _socket!.listen(_onDatagram);
+        previous?.close();
+        await _probeReceive(repairIfDeaf: false);
+        if (_selfCheck == true) {
+          _repairSuccesses++;
+          _udpUnavailable = false;
+          debugPrint(
+            'NEXUS discovery: rebinding the socket (attempt $attempt) fixed '
+            'the receive path — this device hears the network again.',
+          );
+          // The port is the same but the socket is new, so tell the network
+          // now rather than waiting for the next timer tick.
+          unawaited(_announce());
+          return;
+        }
+        debugPrint('NEXUS discovery: rebind attempt $attempt is still deaf.');
+      }
+      _udpUnavailable = true;
+      debugPrint(
+        'NEXUS discovery: UDP discovery unavailable — $repairAttempts rebinds '
+        'never received the test packet; devices are found over TCP instead.',
+      );
+    } finally {
+      _repairing = false;
     }
   }
 
@@ -310,14 +498,14 @@ class DiscoveryService {
       _reboundTimer = null;
       return;
     }
-    final previous = _socket;
+    final DiscoverySocket? previous = _socket;
     try {
-      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
+      _socket = await socketFactory(InternetAddress.anyIPv4, port);
     } catch (_) {
       return; // still busy — try again next tick
     }
     await _joinGroups();
-    _socket!.listen(_onDatagram, onError: (_) {});
+    _socket!.listen(_onDatagram);
     previous?.close();
     _reboundTimer?.cancel();
     _reboundTimer = null;
@@ -326,6 +514,46 @@ class DiscoveryService {
     unawaited(_announce());
     debugPrint('NEXUS discovery: rebound to ${_socket!.address.address}:${_socket!.port}');
     unawaited(_probeReceive());
+  }
+
+  /// The interface list this device had, non-loopback IPv4 only.
+  Future<Set<String>> _localIPv4s() async {
+    final Future<Set<String>> Function()? provider = interfaceAddresses;
+    if (provider != null) return provider();
+    try {
+      final Set<String> out = <String>{};
+      for (final NetworkInterface iface
+          in await NetworkInterface.list(type: InternetAddressType.IPv4)) {
+        for (final InternetAddress address in iface.addresses) {
+          if (!address.isLoopback) out.add(address.address);
+        }
+      }
+      return out;
+    } catch (_) {
+      return const <String>{};
+    }
+  }
+
+  /// A Wi-Fi reconnect or a new IP voids what the last receive test measured:
+  /// the socket is still bound, but the interface it lived on is not the one
+  /// the device is using now. Test again, and repair if the test fails.
+  Future<void> _watchNetwork() async {
+    if (!_started) return;
+    final Set<String> now = await _localIPv4s();
+    final Set<String> before = _ifaceIps;
+    if (now.isEmpty) return;
+    _ifaceIps = now;
+    if (before.isEmpty || (before.length == now.length && before.containsAll(now))) {
+      return;
+    }
+    debugPrint(
+      'NEXUS discovery: network changed (${before.join(", ")} → '
+      '${now.join(", ")}); re-testing the receive path.',
+    );
+    _selfCheck = null;
+    _udpUnavailable = false;
+    await _joinGroups();
+    await _probeReceive();
   }
 
   Future<void> _joinGroups() async {
@@ -404,15 +632,23 @@ class DiscoveryService {
         lastSendError: _lastSendError,
         expectedPort: port,
         selfCheck: _selfCheck,
+        udpUnavailable: _udpUnavailable,
       );
 
-  Future<void> _onDatagram(RawSocketEvent event) async {
+  /// How many rebinds were made, and how many of them healed the socket. Read
+  /// by tests and by the one log line that says which path recovered.
+  int get repairs => _repairs;
+  int get repairSuccesses => _repairSuccesses;
+
+  Future<void> _onDatagram(
+    List<int> data,
+    InternetAddress from,
+    int fromPort,
+  ) async {
     final socket = _socket;
-    if (socket == null || event != RawSocketEvent.read) return;
-    final datagram = socket.receive();
-    if (datagram == null) return;
+    if (socket == null) return;
     try {
-      final json = jsonDecode(utf8.decode(datagram.data));
+      final json = jsonDecode(utf8.decode(data));
       if (json is! Map<String, dynamic>) return;
       final id = json['id'];
       if (id is! String) return;
@@ -428,7 +664,7 @@ class DiscoveryService {
         id: id,
         name: (json['name'] as String?) ?? 'Unknown device',
         platform: (json['platform'] as String?) ?? 'other',
-        address: datagram.address.address,
+        address: from.address,
         port: port,
         ramBytes: (json['ram'] as num?)?.toInt(),
         lastSeen: DateTime.now(),
@@ -447,7 +683,7 @@ class DiscoveryService {
         'port': _tcpPort,
         if (ramBytes != null) 'ram': ramBytes,
       }));
-      socket.send(reply, datagram.address, datagram.port);
+      socket.send(reply, from, fromPort);
     } catch (_) {
       // Garbage on the wire (or another app using this port) — ignore.
     }
@@ -464,9 +700,12 @@ class DiscoveryService {
     _broadcastTimer = null;
     _reboundTimer?.cancel();
     _reboundTimer = null;
+    _networkTimer?.cancel();
+    _networkTimer = null;
     _socket?.close();
     _socket = null;
     _selfCheck = null;
+    _udpUnavailable = false;
     // The multicast lock is released by the foreground service when the mesh
     // stops, not here (see start()).
   }

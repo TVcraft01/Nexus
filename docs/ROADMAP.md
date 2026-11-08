@@ -26,6 +26,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | 8 | Signals, not audio: notice when the user is stuck | todo | — |
 | 9 | Email style learning, explicit opt-in, drafts only | todo | — |
 | 10 | Research only: `docs/LISTENING.md` (always-on listening is NOT built) | todo | — |
+| 11 | Discovery via Android `NsdManager` (notes below) | prototype | — |
 
 ---
 
@@ -307,3 +308,23 @@ Explicit opt-in. Replies stay drafts until the user enables auto-send.
 Write `docs/LISTENING.md`: what Android and iOS actually allow, the privacy and consent law issues (other people
 recorded), and a design for short, visible, user-started "listen sessions" on the PC. **Build nothing.** Always-on
 listening is not built.
+
+## 11. Discovery via Android `NsdManager` — Prototype
+
+App-owned UDP discovery is what this phone cannot receive, and it is also a
+socket, a port and a multicast lock the app has to keep alive itself. Android's
+`NsdManager` (system mDNS/DNS-SD) would move that into the OS: register one
+`_nexus._tcp` service, discover peers by type, and get a host and port back —
+no port to defend, no multicast lock in our own foreground service, and the
+system's own service cache instead of our announce loop.
+
+What it needs: `INTERNET` plus `CHANGE_WIFI_MULTICAST_STATE` (already declared);
+on Android 16 the local-network permission path (`NEARBY_WIFI_DEVICES`, already
+declared) and, from API 37, `ACCESS_LOCAL_NETWORK`. Resolution is asynchronous
+and callback-based, so discovery would gain a platform channel and a lifecycle.
+
+The risk is honesty: `NsdManager` reports services, not reachability, and it has
+a long history of flaky resolve callbacks on some vendors — so the TCP
+pairing-key proof has to stay the thing that calls a peer found, exactly as it
+does now. Prototype only: out of scope for this PR, and it does not replace the
+TCP fallback either.

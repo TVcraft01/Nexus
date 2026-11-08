@@ -38,6 +38,7 @@ import 'connectivity_monitor.dart';
 import 'discovery.dart';
 import 'mesh_transport.dart';
 import 'serial_bridge.dart';
+import 'tcp_discovery.dart';
 import 'sync_service.dart';
 
 part 'mesh_pairing.dart';
@@ -1000,6 +1001,7 @@ abstract class _MeshBase extends ChangeNotifier
             debugPrint('NEXUS mesh: discovery could not start ($e)');
           }),
     );
+    _startTcpFallback();
   }
 
   /// A human-readable warning when discovery cannot do its job, or null when
@@ -1011,6 +1013,201 @@ abstract class _MeshBase extends ChangeNotifier
     final status = _discovery?.status;
     if (status == null || status.canReceive) return null;
     return status.describe();
+  }
+
+  // ---------------------------------------------------------------------
+  // Reachability: how each paired device is actually being found
+  // ---------------------------------------------------------------------
+
+  /// The app-level flag: this device's UDP discovery socket failed its own
+  /// receive test even after rebinding, so announcements cannot arrive and
+  /// peers can only be found over TCP.
+  bool get udpDiscoveryUnavailable =>
+      _discovery?.status.udpUnavailable ?? false;
+
+  /// How [id] was last found: an announcement heard over UDP, a proof of the
+  /// pairing key over TCP, or nothing yet. "Visible nearby" is not proof of
+  /// reachability, so UDP is claimed only while the device is still being
+  /// heard — the same window the Nearby list uses.
+  PeerReach reachabilityOf(String id) {
+    if (isVisible(id)) return PeerReach.udp;
+    return _reachability[id] ?? PeerReach.unreachable;
+  }
+
+  /// Plain text for Settings: the UDP flag, then one line per paired device.
+  /// Nothing here is a guess — each word comes from the pass that proved it.
+  String get discoveryStatusLine {
+    final String head = udpDiscoveryUnavailable
+        ? 'UDP discovery unavailable — devices are found over TCP.'
+        : 'UDP discovery is working.';
+    if (_paired.isEmpty) return head;
+    final List<String> rows = <String>[
+      for (final PairedDevice peer in _paired.values)
+        '${peer.name}: ${switch (reachabilityOf(peer.id)) {
+          PeerReach.udp => 'found via UDP',
+          PeerReach.tcp => 'found via TCP',
+          PeerReach.unreachable => 'not reachable',
+        }}',
+    ];
+    return '$head ${rows.join('; ')}.';
+  }
+
+  /// The TCP pass's own answer about each peer, by id.
+  final Map<String, PeerReach> _reachability = <String, PeerReach>{};
+  TcpDiscovery? _tcpDiscovery;
+  Timer? _tcpFallbackTimer;
+  bool _tcpPassRunning = false;
+
+  /// UDP is best-effort, so a TCP pass runs alongside it: the stored addresses
+  /// once at start, and the own-subnet sweep only while UDP is known to be
+  /// unavailable (the sweep costs 254 dials and there is no reason to spend
+  /// them on a device that already hears the network).
+  void _startTcpFallback() {
+    _tcpDiscovery ??= TcpDiscovery(
+      peers: () => <TcpPeer>[
+        for (final PairedDevice peer in _paired.values)
+          TcpPeer(
+            id: peer.id,
+            name: peer.name,
+            addresses: <String>[
+              if (peer.address.isNotEmpty) peer.address,
+              ...peer.addresses,
+            ],
+            port: peer.port,
+          ),
+      ],
+      verify: _probePeerOverTcp,
+      ownAddresses: _myIps,
+    );
+    unawaited(_runTcpPass(sweep: false));
+    _tcpFallbackTimer ??= Timer.periodic(const Duration(seconds: 20), (_) {
+      // The stored-address pass runs whether or not UDP looks healthy: it costs
+      // one connection per paired device, and it is the only path that proves a
+      // peer when the sockets bound for discovery are deaf to the network (a
+      // phone whose loopback self-check still passes). The 254-host sweep is
+      // gated on UDP being known unavailable, because that is what it costs.
+      unawaited(_runTcpPass(sweep: udpDiscoveryUnavailable));
+    });
+  }
+
+  /// One TCP pass. Cheap by default; [sweep] walks this device's own private
+  /// /24 for a peer whose stored address is stale.
+  Future<void> _runTcpPass({required bool sweep}) async {
+    final TcpDiscovery? discovery = _tcpDiscovery;
+    if (discovery == null || _tcpPassRunning || _paired.isEmpty) return;
+    _tcpPassRunning = true;
+    try {
+      final Map<String, TcpFoundPeer> found = await discovery.find(
+        sweep: sweep,
+      );
+      for (final MapEntry<String, TcpFoundPeer> entry in found.entries) {
+        _reachability[entry.key] = PeerReach.tcp;
+        debugPrint(
+          'NEXUS discovery: found ${entry.value.id} over TCP at '
+          '${entry.value.address}:${entry.value.port}',
+        );
+      }
+      for (final PairedDevice peer in _paired.values) {
+        if (!found.containsKey(peer.id) && !isVisible(peer.id)) {
+          _reachability[peer.id] = PeerReach.unreachable;
+        }
+      }
+      notifyListeners();
+      // The same sentence Settings shows, in the log, so a device report can
+      // be checked against what the app actually said instead of guessed at.
+      debugPrint('NEXUS discovery: $discoveryStatusLine');
+    } finally {
+      _tcpPassRunning = false;
+    }
+  }
+
+  /// Proves that [address]:[port] is [peerId], using the pairing key.
+  ///
+  /// It dials through the mesh's own ladder (`_outboundSocket`, which already
+  /// tries every stored address and both the canonical and stored port) and
+  /// sends the mesh's own signed presence ping, so the handshake is not
+  /// reimplemented here. The peer answers a ping with a signed pong; only a
+  /// frame we can attribute to that pairing key counts, so a bare open port is
+  /// never a find.
+  Future<bool> _probePeerOverTcp(
+    String peerId,
+    String address,
+    int port,
+  ) async {
+    final PairedDevice? peer = _paired[peerId];
+    if (peer == null) return false;
+    final List<String> own = await _myIps();
+    if (_isLoopback(address) || own.contains(address)) return false;
+
+    final DateTime? before = _verified[peerId];
+    final String savedAddress = peer.address;
+    final int savedPort = peer.port;
+    final bool added = !peer.addresses.contains(address);
+    final Socket? cached = _outbound.remove(peer.id);
+    if (cached != null) _dropSocket(cached);
+    peer.address = address;
+    peer.port = port;
+    if (added) peer.addresses.add(address);
+
+    var reachable = false;
+    try {
+      final Socket? socket = await _outboundSocket(peer);
+      if (socket != null) {
+        await _sendPlain(
+          socket,
+          await _signedPresence(
+            NexusMessage(
+              type: NexusMessage.ping,
+              from: identity.id,
+              to: peer.id,
+              payload: <String, dynamic>{
+                'name': identity.name,
+                'platform': identity.platform,
+                'appVersion': appVersion,
+                'port': store.port,
+                'ips': own,
+              },
+              id: _newId(),
+              ts: DateTime.now().millisecondsSinceEpoch,
+            ),
+          ),
+        );
+        reachable = await _heardAfter(peer.id, before, connectTimeout);
+      }
+    } catch (_) {
+      reachable = false;
+    } finally {
+      if (!reachable) {
+        peer.address = savedAddress;
+        peer.port = savedPort;
+        if (added) peer.addresses.remove(address);
+      }
+    }
+    if (reachable) {
+      _reachability[peer.id] = PeerReach.tcp;
+      // The route that worked is worth keeping: a DHCP move is exactly what
+      // the sweep exists to survive, and the next start should dial the new
+      // address first.
+      _queueSave();
+    }
+    return reachable;
+  }
+
+  /// Waits for a frame attributable to [peerId] after [before].
+  Future<bool> _heardAfter(
+    String peerId,
+    DateTime? before,
+    Duration limit,
+  ) async {
+    final DateTime deadline = DateTime.now().add(limit);
+    while (DateTime.now().isBefore(deadline)) {
+      final DateTime? heard = _verified[peerId];
+      if (heard != null && (before == null || heard.isAfter(before))) {
+        return true;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+    return false;
   }
 
   // ---------------------------------------------------------------------
@@ -1843,6 +2040,10 @@ abstract class _MeshBase extends ChangeNotifier
     _clipboardDelayTimer?.cancel();
     _neighborSaveTimer?.cancel();
     _neighborSaveTimer = null;
+    _tcpFallbackTimer?.cancel();
+    _tcpFallbackTimer = null;
+    _tcpDiscovery?.cancel();
+    _tcpDiscovery = null;
     await _discovery?.stop();
     // With the mesh gone the foreground service has nothing left to keep
     // alive; stopping it releases the multicast lock and the notification.
@@ -1984,3 +2185,10 @@ class MeshService extends _MeshBase
     super.capabilityProbe,
   });
 }
+
+/// How a paired device was last found, in the words Settings uses.
+///
+/// [udp] means an announcement is still arriving over the discovery socket;
+/// [tcp] means the pairing key was proved over a direct connection, which is
+/// the path that still works when UDP discovery cannot receive.
+enum PeerReach { udp, tcp, unreachable }
