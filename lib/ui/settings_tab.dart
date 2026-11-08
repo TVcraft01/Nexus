@@ -39,6 +39,9 @@ const Key kNexusAdvancedRow = Key('nexus-advanced-row');
 
 /// The settings screen: appearance, voice, the brain, privacy, and what this
 /// build is.
+/// The plain-text discovery status under Settings → Devices.
+const Key kNexusDiscoveryStatusLine = Key('nexus-discovery-status-line');
+
 class SettingsTab extends StatefulWidget {
   const SettingsTab({
     super.key,
@@ -817,6 +820,22 @@ class _SettingsTabState extends State<SettingsTab> {
           // is why it is filed under an advanced row rather than offered in the
           // chat.
           const NexusSectionLabel('Devices'),
+          // Discovery is a status, not a switch: whether a device is found by
+          // an announcement or by a TCP proof is the app's problem to solve,
+          // and this is the one place the user can see which happened. Plain
+          // text, because "found via TCP" is information, not a control.
+          if (widget.mesh != null)
+            AnimatedBuilder(
+              animation: widget.mesh!,
+              builder: (BuildContext context, Widget? _) => Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+                child: Text(
+                  widget.mesh!.discoveryStatusLine,
+                  key: kNexusDiscoveryStatusLine,
+                  style: NexusType.rowMeta(context.ui).copyWith(height: 1.5),
+                ),
+              ),
+            ),
           // What a paired device may ask this one to do. Here rather than on the
           // Devices list: a permission table is a setting, and the two dozen
           // rows it needs would push the devices that list exists for off the

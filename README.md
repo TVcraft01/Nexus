@@ -29,6 +29,28 @@ and stay connected over a direct socket. Files move between them without an
 upload: `get report.pdf from my pc` on the phone is enough. Paired devices can
 also share compute — the phone can run a request on the PC's larger model.
 
+#### Discovery
+
+Nearby devices are found by UDP multicast and broadcast on port 51822, with a
+unicast hello to every address this device has seen before. That socket is
+best-effort: a unicast reply lets two Nexus devices find each other on a router
+that drops multicast, and the app says when it cannot receive instead of
+claiming to listen.
+
+TCP is the guaranteed path. Every paired device is probed on its last-known
+address and port, and — only on this device's own private `/24` — the subnet is
+swept when that address is stale. A device counts as found only after the
+pairing key is proved, so an open port with the wrong key is never a peer. The
+Settings → Devices section says, per device, whether it was found via UDP, found
+via TCP, or not reachable, and whether UDP discovery is unavailable at all.
+
+On the Samsung Android 16 test phone the socket bound at launch never receives a
+datagram from the network: its own loopback probe does not arrive, the kernel
+answers `NoPorts` for packets sent to it, a `nc` listener on the same port does
+receive them, and inbound TCP works. Rebinding heals a deaf launch socket on
+that phone once, but not the network path itself. That is recorded in
+`docs/DECISIONS.md` as an unexplained, device-specific observation.
+
 ### Server Agent
 A deliberately narrow SSH client for Linux servers you own. It explores a
 machine read-only (CPU, memory, disks, Docker, GPU), has the local model write a
