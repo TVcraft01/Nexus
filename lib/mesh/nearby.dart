@@ -182,6 +182,8 @@ class NearbyDevices extends ChangeNotifier {
     if (!_running) return 'Not looking for devices.';
     if (_problem != null) return _problem!;
     if (_mesh != null) {
+      final String? notice = _mesh!.discoveryNotice;
+      if (notice != null) return notice;
       final int count = _heard.length;
       if (count == 0) {
         return 'Listening with the mesh; no other Nexus device has been heard '

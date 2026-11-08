@@ -95,6 +95,20 @@ void main() {
       expect(status.describe(), contains('no network socket'));
     });
 
+    test('a socket that never heard its own probe is not called listening',
+        () {
+      const status = DiscoveryStatus(
+        boundPort: DiscoveryService.discoveryPort,
+        announced: 4,
+        failedSends: 0,
+        received: 0,
+        selfCheck: false,
+      );
+      expect(status.canReceive, isFalse);
+      expect(status.describe(), contains('not receiving'));
+      expect(status.describe(), isNot(contains('no other Nexus device')));
+    });
+
     test('hearing someone is reported with the counts', () {
       const status = DiscoveryStatus(
         boundPort: DiscoveryService.discoveryPort,
@@ -122,6 +136,21 @@ void main() {
       if (status.boundPort != DiscoveryService.discoveryPort) {
         expect(status.canReceive, isFalse);
       }
+    });
+
+    test('a started service proves it can receive its own probe', () async {
+      final service = DiscoveryService(
+        identity: _identity,
+        onDiscovered: (_) {},
+        port: await _ownPort(),
+      );
+      await service.start();
+      addTearDown(service.stop);
+
+      await _waitFor(() => service.status.selfCheck != null);
+      expect(service.status.selfCheck, isTrue,
+          reason: 'loopback delivery on a bound socket is the receive path');
+      expect(service.status.canReceive, isTrue);
     });
 
     test('an announcement sent to the bound port is heard', () async {

@@ -84,6 +84,12 @@ class _FakeMesh extends ChangeNotifier implements MeshNearbySource {
   @override
   List<DiscoveredDevice> get nearbyDevices => _peers;
 
+  /// The mesh's discovery problem, when the test says there is one.
+  String? notice;
+
+  @override
+  String? get discoveryNotice => notice;
+
   @override
   void addListener(VoidCallback listener) {
     attached++;
@@ -228,6 +234,27 @@ void main() {
       nearby.dispose();
       expect(mesh.attached, 0);
       expect(nearby.boundToMesh, isFalse);
+    });
+
+    test('a mesh whose discovery is deaf says so instead of listening',
+        () async {
+      final _FakeMesh mesh = _FakeMesh(<DiscoveredDevice>[])
+        ..notice =
+            'Discovery is running on port 45123 instead of 51822, so it '
+            'cannot hear other devices.';
+      final NearbyDevices nearby = NearbyDevices(
+        discovery: (void Function(DiscoveredDevice) _) =>
+            throw StateError('a bound list must not open a socket'),
+      );
+      addTearDown(nearby.dispose);
+
+      nearby.bindTo(mesh);
+      await nearby.start();
+
+      // The mesh reports the problem; this screen must repeat it rather than
+      // claim that it is listening with nothing to show for it.
+      expect(nearby.status, contains('cannot hear other devices'));
+      expect(nearby.status, isNot(contains('Listening with the mesh')));
     });
 
     test('follows the mesh, and keeps a forgotten device out', () async {

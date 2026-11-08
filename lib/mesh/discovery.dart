@@ -16,6 +16,15 @@ import '../core/identity.dart';
 abstract class MeshNearbySource implements Listenable {
   /// Devices heard recently, most recently seen first.
   List<DiscoveredDevice> get nearbyDevices;
+
+  /// What the mesh's own discovery says is wrong with it, or null when it is
+  /// healthy.
+  ///
+  /// A list bound to the mesh reads the mesh's socket, so the mesh's problem is
+  /// this list's problem too: without this, a deaf socket on the mesh side still
+  /// shows "listening" here, which is the one sentence a discovery status exists
+  /// not to say when it is not true.
+  String? get discoveryNotice;
 }
 
 /// A device seen on the local network via [DiscoveryService].
@@ -86,6 +95,13 @@ class DiscoveryStatus {
   /// The last send error, verbatim, so a failure can be diagnosed from a log.
   final String? lastSendError;
 
+  /// Whether this socket heard the test packet it sent itself, or null before
+  /// the test has run. A socket can bind the right port, announce happily and
+  /// still hear nothing — the phone that sent this class home bound 51822,
+  /// logged it, announced every three seconds and answered ICMP port-unreachable
+  /// from the network. Only a packet coming back proves the receive half works.
+  final bool? selfCheck;
+
   /// The port this service should have been on — [DiscoveryService.discoveryPort]
   /// unless a caller deliberately runs somewhere else.
   final int expectedPort;
@@ -97,11 +113,14 @@ class DiscoveryStatus {
     required this.received,
     this.lastSendError,
     this.expectedPort = DiscoveryService.discoveryPort,
+    this.selfCheck,
   });
 
-  /// A socket on the expected port that has not failed to send: the only
-  /// state in which another device's announcement can actually reach us.
-  bool get canReceive => boundPort == expectedPort && failedSends == 0;
+  /// A socket on the expected port that has not failed to send, and that has
+  /// not failed its own receive test: the only state in which another device's
+  /// announcement can actually reach us.
+  bool get canReceive =>
+      boundPort == expectedPort && failedSends == 0 && selfCheck != false;
 
   /// Whether this device is at least announcing (true even while degraded).
   bool get announcing => announced > 0;
@@ -120,6 +139,12 @@ class DiscoveryStatus {
       return 'Discovery could not announce on the network '
           '(${lastSendError ?? "unknown error"}) — check this device\'s Wi-Fi '
           'and firewall.';
+    }
+    if (selfCheck == false) {
+      return 'Discovery is not receiving on this device — its own test packet '
+          'never came back on port $expectedPort, so nothing else can arrive '
+          'either. Restart Nexus; if it stays like this, another app is holding '
+          'the port.';
     }
     if (received == 0) {
       return 'Discovery is listening; no other Nexus device has been heard '
@@ -162,6 +187,10 @@ class DiscoveryService {
   Timer? _broadcastTimer;
   Timer? _reboundTimer;
   bool _started = false;
+
+  /// The answer to "did my own test packet come back?", or null while it is
+  /// still being waited for.
+  bool? _selfCheck;
 
   /// The RAM every announcement carries, in bytes. Set once by the front end
   /// before [start]; null keeps the field out of the payload entirely, so an
@@ -222,6 +251,56 @@ class DiscoveryService {
     // the app down (e.g. a broadcast send refused on some platforms).
     _socket!.listen(_onDatagram, onError: (_) {});
     debugPrint('NEXUS discovery: listening on ${_socket!.address.address}:${_socket!.port}');
+    unawaited(_probeReceive());
+  }
+
+  /// The id of the packet this service sends itself. Deliberately not the
+  /// device's own id: that one is filtered as "me", and the whole point here is
+  /// to hear something through the same receive path a peer's announce uses.
+  String get _probeId => '${identity.id}#receive-probe';
+
+  /// Sends one datagram to our own bound port and waits about a second for it.
+  ///
+  /// This is the only receive test that can be made from inside the process.
+  /// Without it a socket that binds the right port and never receives a byte
+  /// looks exactly like a healthy one — which is the failure this class is
+  /// supposed to name rather than hide.
+  Future<void> _probeReceive() async {
+    final RawDatagramSocket? socket = _socket;
+    if (socket == null) return;
+    _selfCheck = null;
+    final List<int> payload = utf8.encode(jsonEncode({
+      'v': 1,
+      'id': _probeId,
+      'name': identity.name,
+      'platform': identity.platform,
+      'port': _tcpPort,
+    }));
+    int sent;
+    try {
+      sent = socket.send(payload, InternetAddress.loopbackIPv4, socket.port);
+    } catch (_) {
+      sent = 0;
+    }
+    if (sent == 0) {
+      // The test never left, so it says nothing about the receive half either
+      // way: leave the answer unknown rather than call a healthy socket deaf.
+      debugPrint(
+        'NEXUS discovery: could not send its own test packet on port '
+        '${socket.port} — receive state unknown.',
+      );
+      return;
+    }
+    for (int i = 0; i < 25 && _selfCheck == null; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    if (_selfCheck == null) {
+      _selfCheck = false;
+      debugPrint(
+        'NEXUS discovery: this socket never received its own test packet on '
+        'port ${socket.port} (sent $sent bytes) — it cannot hear other devices.',
+      );
+    }
   }
 
   /// Replaces a fallback socket with the canonical one once the port frees up.
@@ -246,6 +325,7 @@ class DiscoveryService {
     // immediately instead of waiting for the next timer tick.
     unawaited(_announce());
     debugPrint('NEXUS discovery: rebound to ${_socket!.address.address}:${_socket!.port}');
+    unawaited(_probeReceive());
   }
 
   Future<void> _joinGroups() async {
@@ -323,6 +403,7 @@ class DiscoveryService {
         received: _received,
         lastSendError: _lastSendError,
         expectedPort: port,
+        selfCheck: _selfCheck,
       );
 
   Future<void> _onDatagram(RawSocketEvent event) async {
@@ -334,7 +415,13 @@ class DiscoveryService {
       final json = jsonDecode(utf8.decode(datagram.data));
       if (json is! Map<String, dynamic>) return;
       final id = json['id'];
-      if (id is! String || id == identity.id) return;
+      if (id is! String) return;
+      if (id == _probeId) {
+        // The receive test answered: this socket can hear. Not a device.
+        _selfCheck = true;
+        return;
+      }
+      if (id == identity.id) return;
       final port = (json['port'] as num?)?.toInt();
       if (port == null || port <= 0) return;
       final device = DiscoveredDevice(
@@ -379,6 +466,7 @@ class DiscoveryService {
     _reboundTimer = null;
     _socket?.close();
     _socket = null;
+    _selfCheck = null;
     // The multicast lock is released by the foreground service when the mesh
     // stops, not here (see start()).
   }
