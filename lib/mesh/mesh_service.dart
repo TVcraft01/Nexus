@@ -1140,18 +1140,18 @@ abstract class _MeshBase extends ChangeNotifier
     if (_isLoopback(address) || own.contains(address)) return false;
 
     final DateTime? before = _verified[peerId];
-    final String savedAddress = peer.address;
-    final int savedPort = peer.port;
-    final bool added = !peer.addresses.contains(address);
-    final Socket? cached = _outbound.remove(peer.id);
-    if (cached != null) _dropSocket(cached);
-    peer.address = address;
-    peer.port = port;
-    if (added) peer.addresses.add(address);
-
+    Socket? socket;
     var reachable = false;
     try {
-      final Socket? socket = await _outboundSocket(peer);
+      // A probe connection belongs to this attempt: the sweep can be proving
+      // several hosts of this peer at once, and a cached socket would hand
+      // them one connection and one address.
+      socket = await _outboundSocket(
+        peer,
+        addressOverride: address,
+        storedPort: port,
+        cache: false,
+      );
       if (socket != null) {
         await _sendPlain(
           socket,
@@ -1177,13 +1177,17 @@ abstract class _MeshBase extends ChangeNotifier
     } catch (_) {
       reachable = false;
     } finally {
-      if (!reachable) {
-        peer.address = savedAddress;
-        peer.port = savedPort;
-        if (added) peer.addresses.remove(address);
-      }
+      // Also clears the attribution entry, so a closed probe socket can never
+      // be mistaken for the peer's live connection.
+      if (socket != null) _dropSocket(socket);
     }
     if (reachable) {
+      // Only now, after the pairing key proved it, does this address become the
+      // peer's. Writing it before the dial let two lanes put each other's stale
+      // values back, leaving the pairing dialling a host that answered nothing.
+      peer.address = address;
+      peer.port = port;
+      if (!peer.addresses.contains(address)) peer.addresses.add(address);
       _reachability[peer.id] = PeerReach.tcp;
       // The route that worked is worth keeping: a DHCP move is exactly what
       // the sweep exists to survive, and the next start should dial the new
@@ -1405,8 +1409,21 @@ abstract class _MeshBase extends ChangeNotifier
     } catch (_) {}
   }
 
-  Future<Socket?> _outboundSocket(PairedDevice peer) async {
-    final existing = _outbound[peer.id];
+  /// Opens a connection to [peer], trying every address it has.
+  ///
+  /// [addressOverride] and [storedPort] dial one specific route without writing
+  /// it onto the peer first: the TCP sweep probes several hosts of the same
+  /// peer at once, and a shared mutable "current address" made those lanes
+  /// restore each other's stale values. [cache] false keeps the socket out of
+  /// [_outbound], because a probe connection belongs to one attempt and must
+  /// not become the peer's shared connection.
+  Future<Socket?> _outboundSocket(
+    PairedDevice peer, {
+    String? addressOverride,
+    int? storedPort,
+    bool cache = true,
+  }) async {
+    final existing = cache ? _outbound[peer.id] : null;
     // If the socket died, _dropSocket will have removed it from _outbound;
     // anything still registered is usable (a send that races a close is
     // caught and dropped below).
@@ -1419,6 +1436,7 @@ abstract class _MeshBase extends ChangeNotifier
       if (a.isNotEmpty && !candidates.contains(a)) candidates.add(a);
     }
 
+    add(addressOverride ?? '');
     add(peer.address);
     peer.addresses.forEach(add);
     // Our own addresses, so we never dial ourselves: a peer's address list
@@ -1429,7 +1447,7 @@ abstract class _MeshBase extends ChangeNotifier
     final ownIps = await _myIps();
     for (final address in candidates) {
       for (final port in MeshService.dialPortsFor(
-        storedPort: peer.port,
+        storedPort: storedPort ?? peer.port,
         loopback: _isLoopback(address),
       )) {
         // A candidate on our own mesh port is a self-connection, not a route
@@ -1448,7 +1466,7 @@ abstract class _MeshBase extends ChangeNotifier
             port,
             timeout: connectTimeout,
           );
-          _outbound[peer.id] = socket;
+          if (cache) _outbound[peer.id] = socket;
           _inboundPeer[socket] =
               peer.id; // so replies on this socket are attributed
           _onClientSocket(socket);

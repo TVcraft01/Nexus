@@ -585,10 +585,20 @@ class DiscoveryService {
     final socket = _socket;
     if (socket == null) return;
 
+    // A stored neighbour is parsed, not trusted. One unparseable entry (a
+    // half-written store, an address from a newer version) used to throw while
+    // this set was being built — before a single send — which silenced every
+    // announcement the device made from then on. Skipping the bad entry costs
+    // one target; throwing costs the device its whole discovery.
+    final List<InternetAddress> knownTargets = <InternetAddress>[];
+    for (final known in knownAddresses) {
+      final InternetAddress? parsed = InternetAddress.tryParse(known.address);
+      if (parsed != null) knownTargets.add(parsed);
+    }
     final targets = <InternetAddress>{
       group,
       InternetAddress('127.0.0.1'), // two instances on one machine can find each other
-      for (final known in knownAddresses) InternetAddress(known.address),
+      ...knownTargets,
       if (canBroadcast) broadcast,
     };
     var sent = 0;
