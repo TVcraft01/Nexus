@@ -51,6 +51,40 @@ receive them, and inbound TCP works. Rebinding heals a deaf launch socket on
 that phone once, but not the network path itself. That is recorded in
 `docs/DECISIONS.md` as an unexplained, device-specific observation.
 
+#### Bridge
+
+Nexus serves a small HTTP API on `127.0.0.1` so the automation you already run
+can ask it things and make it act. It speaks three shapes, because those are the
+ones already installed:
+
+- **Tailscale's status document.** `GET /status` returns `Self` and `Peer` with
+  `Online`, `TailscaleIPs`, `CurAddr` and `LastSeen`, plus a `Nexus` block with
+  this device's mesh port, how many peers are online, and whether UDP discovery
+  can receive. Every route is direct, so `Relay` is empty and the byte counters
+  Tailscale reports are left out rather than invented. (`LastSeen` is the zero
+time for a peer that is not answering — the same thing Tailscale writes for a
+peer it has never seen.)
+- **Home Assistant's REST API.** `GET /api/`, `GET /api/states`,
+  `GET /api/states/<entity_id>`, and `POST /api/services/nexus/run_agent` with
+  `{"agent": "..."}`. Each paired device is a `device_tracker`: `home` while it
+  answers, `not_home` while it does not. `sensor.nexus_udp_discovery` is the same
+  "can this socket receive" fact Settings shows. There is no state history, so a
+  state's timestamps are the time of the reading.
+- **A Shortcut's intent.** `POST /intent` with `{"name": ..., "agent": ...}`,
+  or `GET /intent?name=status` for a one-step Shortcut. The intents are `status`
+  (a sentence to show or speak) and `run_agent` (the same run the dashboard's
+  button does).
+
+Every route needs the bearer token, is answered on loopback only, and refuses a
+request that carries a web page's `Origin`. The token is made once at first
+launch and kept, so an automation's configuration survives a restart; the URL and
+the token are printed to the developer log at launch.
+
+The bridge does not pretend to be the products it borrows from: there is no
+WireGuard tunnel, no relay, no App Intents (an Apple-only API) and no Home
+Assistant state machine. It is the calling surface over this device's real mesh
+and its real agent runs.
+
 ### Server Agent
 A deliberately narrow SSH client for Linux servers you own. It explores a
 machine read-only (CPU, memory, disks, Docker, GPU), has the local model write a
