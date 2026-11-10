@@ -19,10 +19,12 @@
 library;
 
 import 'dart:io' show File, Platform;
+import 'dart:math' show Random;
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, debugPrint, defaultTargetPlatform;
 
+import '../mesh/bridge.dart';
 import '../mesh/mesh_service.dart';
 import 'agent/agent_dashboard.dart';
 import 'agent/agent_records.dart' show AgentDefinition;
@@ -60,6 +62,7 @@ class AppServices {
     this.agents,
     this.agentService,
     this.dashboard,
+    this.bridge,
   });
 
   final NexusStore store;
@@ -74,6 +77,10 @@ class AppServices {
 
   /// The local-only dashboard for those agents, when this platform serves one.
   final AgentDashboard? dashboard;
+
+  /// The loopback HTTP bridge: Tailscale-shaped status, Home Assistant-shaped
+  /// states and service calls, and the named intent a Shortcut calls.
+  final NexusBridge? bridge;
 }
 
 /// This platform, spelled the way [DeviceInfo] and the mesh spell it.
@@ -105,6 +112,7 @@ Future<AppServices> startAppServices({
   TextGenerationBackend? agentBackend,
   ToolRegistry? agentTools,
   bool? startAgentDashboard,
+  bool? startBridge,
 }) async {
   final NexusStore store = NexusStore(
     explicitPath: dataDir == null
@@ -219,6 +227,66 @@ Future<AppServices> startAppServices({
       debugPrint('NEXUS agents: dashboard not started: $error');
     }
   }
+  // The bridge answers on loopback only, so nothing outside this machine can
+  // reach it; the token is what keeps a web page in the user's own browser
+  // from driving it. It is started after the agents because its one action is
+  // an agent run.
+  NexusBridge? bridge;
+  if (startBridge ?? _servesBridge()) {
+    String token = store.bridgeToken;
+    if (token.isEmpty) {
+      token = NexusBridge.newToken(Random.secure());
+      store.bridgeToken = token;
+      await store.save();
+    }
+    final NexusBridge candidate = NexusBridge(
+      deviceId: identity.id,
+      deviceName: identity.name,
+      platform: identity.platform,
+      meshPort: mesh.port,
+      port: store.bridgePort,
+      token: token,
+      peers: () => <BridgePeer>[
+        for (final PairedDevice peer in mesh.pairedDevices)
+          BridgePeer(
+            id: peer.id,
+            name: peer.name,
+            platform: peer.platform,
+            address: peer.address,
+            port: peer.port,
+            online: mesh.isOnline(peer.id),
+            reach: mesh.reachabilityOf(peer.id),
+            addresses: peer.addresses,
+          ),
+      ],
+      udpUnavailable: () => mesh.udpDiscoveryUnavailable,
+      runAgent: (String name) async {
+        final AgentRun run = await agentService.runNow(name);
+        return BridgeRun(
+          agent: run.agent,
+          ok: run.ok,
+          result: run.result,
+          at: run.at,
+        );
+      },
+    );
+    try {
+      await candidate.start();
+      bridge = candidate;
+      if (store.bridgePort != candidate.boundPort) {
+        store.bridgePort = candidate.boundPort;
+        await store.save();
+      }
+      // The URL and the token are only knowable here, and an automation needs
+      // both: the developer log is where they are found, as with the dashboard.
+      debugPrint('NEXUS bridge: ${candidate.baseUrl} token ${candidate.token}');
+    } catch (error) {
+      // A bridge that could not bind is worth a log line, not a failed launch:
+      // the assistant, the mesh and the agents all still work.
+      debugPrint('NEXUS bridge: not started: $error');
+    }
+  }
+
   agentService.startTicking();
 
   return AppServices(
@@ -228,6 +296,7 @@ Future<AppServices> startAppServices({
     agents: agents,
     agentService: agentService,
     dashboard: dashboard,
+    bridge: bridge,
   );
 }
 
@@ -243,6 +312,14 @@ bool _wiresRealAgents() {
     TargetPlatform.windows => true,
     _ => false,
   };
+}
+
+/// Whether this launch serves the bridge. Every platform, because the caller
+/// is always on the same machine: a phone's Shortcut and a desktop's Home
+/// Assistant both reach `127.0.0.1`. Never under `flutter test`, where a test
+/// states the bridge it wants.
+bool _servesBridge() {
+  return (Platform.environment['FLUTTER_TEST'] ?? 'false') == 'false';
 }
 
 /// Whether this launch serves the agents dashboard. A desktop, never a phone —
@@ -272,6 +349,7 @@ Future<AgentOutcome> _nothingToRunYet(AgentDefinition agent) async =>
 /// Android foreground service and the listening socket on 51820 — and leaves
 /// the process able to start again.
 Future<void> stopAppServices(AppServices services) async {
+  await services.bridge?.stop();
   await services.dashboard?.stop();
   await services.agentService?.dispose();
   await services.mesh.stop();

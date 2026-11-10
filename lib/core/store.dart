@@ -85,6 +85,25 @@ class NexusStore {
 
   set port(int value) => _settings()['port'] = value;
 
+  /// The bridge's bearer token. Made once, at the first launch that serves a
+  /// bridge, and kept: an automation's configuration holds it, so a new token
+  /// every launch would silently break the automation.
+  String get bridgeToken =>
+      ((_data['settings'] as Map<String, dynamic>?)?['bridgeToken'] as String?) ??
+      '';
+
+  set bridgeToken(String value) => _settings()['bridgeToken'] = value;
+
+  /// The bridge's loopback port, remembered so the URL a Shortcut or Home
+  /// Assistant was given keeps working. 0 means "the OS picks", which is what
+  /// a fresh install asks for.
+  int get bridgePort =>
+      ((_data['settings'] as Map<String, dynamic>?)?['bridgePort'] as num?)
+          ?.toInt() ??
+      0;
+
+  set bridgePort(int value) => _settings()['bridgePort'] = value;
+
   /// Whether clipboard text is pushed to paired devices. Off on a fresh
   /// install — copying is private until the user chooses otherwise in
   /// Settings › Capabilities. A stored value always wins: an existing user
