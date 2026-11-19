@@ -20,6 +20,7 @@ Status values: `todo` · `in-progress` · `done` · `blocked`.
 | 4 | Agent definitions as data + background service + local dashboard | done | #127 |
 | 4a | Execution path: runner → planner → executor, risk gate, durable action log, halt all | done | #128 |
 | 4b | Real runs on this PC: Ollama backend, real tool registry, verify/undo, model failure | done | #129 |
+| 4c | On-device planner: the phone's own weights plan, no Ollama, no key, no network | todo | — |
 | 5 | "Curious" explore tool for an unknown device | todo | — |
 | 6 | Earned trust: offer to automate after N approvals of the same action | todo | — |
 | 7 | Local user profile with source and a forget button | todo | — |
@@ -278,6 +279,51 @@ steps only** — see `docs/AGENT_CORE.md`, which now says so instead of implying
 **Still a seam:** the planner is shown the whole registry while an agent's allow-list is enforced at execution, so a
 model can propose a tool the agent may not use (the run refuses it, nothing executes). Persistent, cross-restart undo
 remains the tools' own revert timer; `UndoJournal` is in-memory by design.
+
+## 4c. On-device planner — the phone's own weights plan
+
+Todo. This is the item that would make Nexus's agent unlike every other phone agent: the planner runs on weights
+that never leave the device, with no Ollama, no API key, no account and no network.
+
+**The gap, as evidence.** Nexus has two halves that have never been wired together.
+
+- **the local brain** (`lib/core/llm.dart`) runs llama.cpp in-process through `llamadart`: Qwen2.5 0.5B on a phone,
+  Llama 3.2 1B as the step up, Qwen2.5 1.5B on a desktop that has the memory. Hash-pinned download, lazy load, idle
+  unload, a serial queue.
+- **the agent** reaches a model only through `TextGenerationBackend` + `StructuredGeneration`, and the one
+  implementation is `OllamaBackend` (item 4b) — a desktop at `127.0.0.1:11434`.
+
+So `startAppServices` wires the planner to Ollama on desktop and keeps the honest refusal on Android, and item 3b's
+report already named the consequence: the phone's on-device backend "does not implement structured output and would
+take the prompt-only path". A phone can answer a question with its own model today. It cannot plan with it.
+
+**What it takes.**
+
+- **`StructuredGeneration` on `Llm`.** The schema already exists — `planJsonSchema` builds it from the registry — but
+  Ollama enforces it in the sampler and a GGUF under llama.cpp will not. A phone plan is therefore a *candidate* the
+  validator must accept, with a JSON-repair pass, never a shape the decoder guaranteed.
+- **a phone planner backend that fails the way `OllamaBackend` fails.** No weight downloaded, no runtime on this
+  platform, or an unreadable reply is a `failed: …` run with a sentence the user can act on — never a hang, never a
+  success. Nothing is downloaded behind the user's back to make a scheduled run work.
+- **the wiring in `startAppServices`:** on-device where `kOnDeviceAiPlatforms` allows it, Ollama when a paired PC
+  answers and the device has no weights, the honest refusal when neither exists. `agentBackend` still overrides, for
+  tests.
+
+**Done when** a stored agent's goal is planned by the phone's own model, offline, with no key: the plan passes the
+validator or comes back as one plain-words question, and the run's report says which model planned it.
+
+**The gate is a measured number, not an opinion.** Item 3b measured `llama3.2:latest` (2.0 GB) at 10/10 answerable. The
+phone model is roughly a quarter of that. Before this ships, `test/planner_live_smoke.dart` runs the same ten messy
+asks against the on-device model on the real phone, and the result is written here: pass rate, model calls, and every
+failure. A 0.5B model answering "set up my wifi" with a question may well be the honest outcome — `fast_path.dart`
+and `PlanValidator` already carry the standard asks. The target is not a high pass rate; it is that the standard asks
+keep working, the rest become questions, and nothing the validator did not accept is ever executed.
+
+**Not this item:** operating other apps' screens. That needs an unbounded actuator (tap and type on any UI), and a
+risk tier for "tap this coordinate" cannot be declared at tool registration — it would replace the static tiers this
+queue is built on with a dynamic model. It is a separate product, not a later row here.
+
+**Not changed:** the tiers, the policy matrix, the gate and the halt stay exactly as 4a and 4b left them.
 
 ## 5. "Curious" explore tool
 
