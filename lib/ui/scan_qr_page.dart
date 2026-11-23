@@ -7,6 +7,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../core/pair_payload.dart';
 import '../core/qr_pairing.dart';
+import '../mesh/offline_pairing.dart' show offlineQr1Prefix;
 import 'theme.dart';
 
 /// Full-screen camera view that scans a Nexus pairing QR and pops with the
@@ -18,7 +19,11 @@ import 'theme.dart';
 /// snackbar is drawn by a Scaffold and this page — being a pushed page with no
 /// Scaffold above it — would have shown it on the screen *behind* this one.
 class ScanQrPage extends StatefulWidget {
-  const ScanQrPage({super.key});
+  /// When true, the page looks for an offline pairing code (QR1) and pops with
+  /// it as the raw string, instead of parsing a network pairing token.
+  final bool offline;
+
+  const ScanQrPage({super.key, this.offline = false});
 
   @override
   State<ScanQrPage> createState() => _ScanQrPageState();
@@ -57,6 +62,15 @@ class _ScanQrPageState extends State<ScanQrPage> {
         'format=${barcode.format} type=${barcode.type}',
       );
       if (raw == null) continue;
+      if (widget.offline) {
+        // The offline handshake is a string in and a string out; nothing to
+        // parse here, and nothing read from the code.
+        if (raw.startsWith(offlineQr1Prefix)) {
+          Navigator.pop(context, raw);
+          return;
+        }
+        continue;
+      }
       final qr = QrPairingToken.parse(raw);
       if (qr != null) {
         debugPrint(
@@ -94,7 +108,9 @@ class _ScanQrPageState extends State<ScanQrPage> {
             width: 0.5,
           ),
         ),
-        middle: const Text('Scan a Nexus code'),
+        middle: Text(
+          widget.offline ? 'Scan their pairing code' : 'Scan a Nexus code',
+        ),
       ),
       child: Stack(
         children: [

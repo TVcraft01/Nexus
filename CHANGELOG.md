@@ -9,6 +9,15 @@ sprint and earlier work is not listed. The format follows
 
 ### Added
 
+- **Two devices can pair with no network at all.** Add device → More ways →
+  Pair without a network. Each device keeps a long-term X25519 identity and
+  mints a fresh ephemeral key for every pairing; one shows a code, the other
+  answers it, and both screens end up showing the same six digits. Nothing is
+  stored until both people say the digits match, and neither code carries an
+  address, so it works in airplane mode. A copied code is always accepted as
+  well as a scan, because a pairing flow that dead-ends on a missing camera is
+  not a flow. Devices paired the old way keep their existing keys and the
+  scheme that made them; the record says which one it was.
 - **Automations has a screen.** Settings → Automations lists every agent on
   this PC with what it does, when it runs, how it stands and what its last run
   said. From there you can start, pause, run one now, put back its last run,

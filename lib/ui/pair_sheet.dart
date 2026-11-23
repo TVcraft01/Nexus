@@ -16,6 +16,7 @@ import '../mesh/discovery.dart';
 import '../mesh/mesh_service.dart';
 import 'cable_pair_page.dart';
 import 'components/nexus_ui.dart';
+import 'offline_pair_page.dart';
 import 'scan_qr_page.dart';
 import 'theme.dart';
 
@@ -517,6 +518,21 @@ class _PairSheetState extends State<_PairSheet> {
                 ),
                 chevron: true,
                 onTap: () => setState(() => _tab = 0),
+              ),
+              NexusRow(
+                title: 'Pair without a network',
+                subtitle:
+                    'Two codes, no Wi-Fi. Works in airplane mode.',
+                minHeight: NexusSize.rowCompact,
+                leading: Icon(
+                  Icons.wifi_off_rounded,
+                  size: 20,
+                  color: palette.textSecondary,
+                ),
+                chevron: true,
+                onTap: () => unawaited(
+                  OfflinePairPage.show(context, widget.mesh),
+                ),
               ),
               if (_canCable)
                 NexusRow(

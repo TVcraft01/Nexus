@@ -535,6 +535,20 @@ class NexusStore {
           .whereType<Map<String, dynamic>>()
           .toList();
 
+  /// This device's long-term X25519 identity for offline pairing, as
+  /// `{v, seed}` (see `lib/mesh/offline_pairing.dart`). Null until the first
+  /// offline pairing. It is a secret: never logged, never shown.
+  Map<String, dynamic>? get offlinePairingIdentity =>
+      (_data['offlinePairingIdentity'] as Map?)?.cast<String, dynamic>();
+
+  set offlinePairingIdentity(Map<String, dynamic>? identity) {
+    if (identity == null) {
+      _data.remove('offlinePairingIdentity');
+    } else {
+      _data['offlinePairingIdentity'] = identity;
+    }
+  }
+
   void upsertPaired(Map<String, dynamic> device) {
     final list =
         _data.putIfAbsent('paired', () => <Map<String, dynamic>>[]) as List;
