@@ -180,8 +180,9 @@ still passes with the service started at launch.
 
 **Not tested / not wired:** the runner the service calls is a seam. This build's default runner says plainly that it
 had nothing to do — there is no mail tool yet (item 9) and the planner is not wired to run an agent's goal by
-itself, so a scheduled run records that refusal instead of pretending. No UI button opens the dashboard; its URL is
-in the developer log. No UI was added (freeze).
+itself, so a scheduled run records that refusal instead of pretending. ~~No UI button opens the dashboard; its URL is in the developer log. No UI was added (freeze).~~ **Superseded:**
+Settings → Automations lists every agent, controls it (start, pause, run now, undo, delete, halt all)
+and opens the dashboard; a new automation is made there (`lib/ui/agents_page.dart`, `test/agents_page_test.dart`).
 
 ## 4a. Execution path — runner, gate, action log, halt
 

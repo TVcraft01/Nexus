@@ -132,6 +132,15 @@ import 'core/onboarding.dart';
 // keeps the other import unambiguous.
 import 'core/agent_contract.dart' hide DeviceCapabilities;
 import 'core/app_services.dart';
+import 'core/answers.dart' show AnswerContext, helpText;
+import 'core/memory.dart' show MemoryFact;
+import 'core/agent/agent_dashboard.dart';
+import 'core/agent/agent_records.dart';
+import 'core/agent/agent_service.dart';
+import 'core/agent/agent_store.dart';
+import 'core/agent/risk.dart';
+import 'core/agent/rollback.dart';
+import 'core/agent/tool.dart';
 import 'core/device_actions.dart' show ActionResult, DeviceActionBackend;
 import 'core/phone_actions.dart' show PhoneActionBackend;
 import 'core/store.dart' show AgentPolicy, ControlPath;
@@ -186,6 +195,7 @@ import 'core/capability.dart';
 
 // The shell's screens, split into part files: one library (so the private
 // helpers stay private) with a file per screen for editing and review.
+part 'ui/agents_page.dart';
 part 'ui/chat_bubbles.dart';
 part 'ui/clipboard_banner.dart';
 part 'ui/composer.dart';
@@ -1575,6 +1585,7 @@ class _NexusUiAppState extends State<NexusUiApp> {
             darkMode: _dark,
             accent: _accent,
             mesh: widget.services?.mesh,
+            services: widget.services,
             executor: _executor,
             peerRequest: _peerRequest,
             onPeerRequestAnswered: _answerPeerRequest,
@@ -2223,6 +2234,7 @@ class NexusShell extends StatefulWidget {
     this.onFollowSystemChanged,
     this.onAccentChanged,
     this.mesh,
+    this.services,
     this.executor,
     this.peerRequest,
     this.onPeerRequestAnswered,
@@ -2237,6 +2249,11 @@ class NexusShell extends StatefulWidget {
   /// — a shell list with no presence and no capability line — rather than
   /// pretending a mesh is there.
   final MeshService? mesh;
+
+  /// Everything the launch started: the store, the mesh, the agents and the
+  /// bridge. Settings needs it for the one screen that is not about this
+  /// device's own settings — Automations, which runs on this PC.
+  final AppServices? services;
 
   /// Runs an action on this device ([launchedExecutor]), handed to the Devices
   /// tab because that is the tab that owns peers. Null in a widget test.
@@ -2510,6 +2527,7 @@ class _NexusShellState extends State<NexusShell> {
           scrollController: _settingsScroll,
           refreshEpoch: _settingsEpoch,
           mesh: widget.mesh,
+          services: widget.services,
         ),
         if (_developerMode) const DeveloperLogsTab(),
       ],

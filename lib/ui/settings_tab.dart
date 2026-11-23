@@ -39,6 +39,9 @@ const Key kNexusAdvancedRow = Key('nexus-advanced-row');
 
 /// The settings screen: appearance, voice, the brain, privacy, and what this
 /// build is.
+/// The row that opens Automations, on a build that can run them.
+const Key kNexusAutomationsRow = Key('nexus-automations-row');
+
 /// The plain-text discovery status under Settings → Devices.
 const Key kNexusDiscoveryStatusLine = Key('nexus-discovery-status-line');
 
@@ -56,7 +59,16 @@ class SettingsTab extends StatefulWidget {
     this.vision,
     this.refreshEpoch = 0,
     this.mesh,
+    this.services,
   });
+
+  /// Everything the launch started, when there was a launch.
+  ///
+  /// It reaches exactly one row here: Automations, which is the only screen on
+  /// this page about something that is not this device's own setting. Null is a
+  /// widget test that pumped the tab on its own, which is also why the row is
+  /// absent rather than disabled.
+  final AppServices? services;
 
   /// The running mesh, when the shell started one.
   ///
@@ -851,6 +863,37 @@ class _SettingsTabState extends State<SettingsTab> {
                 showPeerRequestPolicySheet(context, mesh: widget.mesh!),
               ),
             ),
+          // The agent core, given a face. Only where it can really run: a
+          // phone has no Ollama and no tool set, and a control that could
+          // only refuse is not a control.
+          if (widget.services?.agentsRunHere ?? false) ...<Widget>[
+            const NexusSectionLabel('Automations'),
+            NexusRow(
+              key: kNexusAutomationsRow,
+              title: 'Automations',
+              subtitle: nexusAgentsSubtitle(widget.services!),
+              leading: const NexusIconTile(Icons.smart_toy_outlined),
+              trailing: const NexusChevron(),
+              onTap: () {
+                final AppServices services = widget.services!;
+                final AgentStore? store = services.agents;
+                final AgentService? service = services.agentService;
+                if (store == null || service == null) return;
+                unawaited(
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (BuildContext routeContext) => AgentsPage(
+                        store: store,
+                        service: service,
+                        dashboard: services.dashboard,
+                        tools: services.agentTools?.tools ?? const <Tool>[],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
           NexusRow(
             key: kNexusServerAgentRow,
             title: 'Server Agent (Advanced)',

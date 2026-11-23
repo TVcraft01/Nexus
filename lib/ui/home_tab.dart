@@ -923,6 +923,22 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       _sayLocally(sum, _thread.length - 1, spoken: spoken);
       return;
     }
+    // A fact the user told Nexus is the shell's to answer, not the model's.
+    // Asked "what is my bike code" a moment after saying 4482, the 1B model
+    // answered "I don't know that yet" while the vault held it. Only when the
+    // vault really has the fact: a question with no note behind it still goes
+    // to the model, so this can add an answer and never take one away.
+    final MemoryNote? remembered = MemoryService.instance.noteForQuestion(
+      read,
+    );
+    if (remembered != null) {
+      _sayLocally(
+        memoryAnswerSentence(remembered),
+        _thread.length - 1,
+        spoken: spoken,
+      );
+      return;
+    }
     // A question about a picture goes to the vision layer, never to a text
     // brain: a model that cannot see answers "what is this?" with an invented
     // description, and the user has no way to tell one from a sighting. There
@@ -953,6 +969,23 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     // prose that asks nothing. The answer arrives on the next send and is read
     // as the other half of this sentence.
     final InterpretResult half = _commands.interpret(read);
+    // What Nexus can do is the capability registry's answer, not the model's.
+    // Asked on this PC, the 1B listed a flashlight, Bluetooth and a volume
+    // control — things a Linux desktop has no executor for — because the
+    // answer is a catalogue and the model was guessing at it. The catalogue
+    // already knows which entries this platform runs, and says which ones need
+    // a phone, so it answers here.
+    if (half.command?.action == AgentActions.helpGet) {
+      _sayLocally(
+        helpText(
+          nexusHelpContext(),
+          topic: half.command!.arguments['topic'] as String?,
+        ),
+        _thread.length - 1,
+        spoken: spoken,
+      );
+      return;
+    }
     // A question that quotes something ("How long is \"five\"?") is the
     // interpreter admitting it could not read a word the user did give. That
     // one goes to the model, which usually can read it — "five" is five
@@ -1201,6 +1234,20 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     }
     return '${asked.original} $answer';
   }
+
+  /// The context the capability answer reads: this device, and nothing it
+  /// cannot see. The answer uses the platform to say what this device offers
+  /// and what needs another one, so the platform has to be the real one.
+  AnswerContext nexusHelpContext() => AnswerContext(
+    facts: const <MemoryFact>[],
+    devices: () => const <AgentDeviceSnapshot>[],
+    local: AgentDeviceSnapshot(
+      id: 'this-device',
+      name: 'this device',
+      online: true,
+      platform: appPlatformToken(),
+    ),
+  );
 
   void _sayLocally(String answer, int index, {required bool spoken}) {
     if (!mounted || index >= _thread.length) return;

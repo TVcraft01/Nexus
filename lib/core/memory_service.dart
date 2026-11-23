@@ -586,6 +586,46 @@ class MemoryService extends ChangeNotifier {
     return buffer.toString().trimRight();
   }
 
+  /// The note that answers [question], when it is a question about something
+  /// the user told Nexus and the vault still holds it.
+  ///
+  /// Null means the vault has nothing to say, and the caller carries on to the
+  /// model. That asymmetry is deliberate: this may add an answer the model
+  /// would have got wrong, and it can never take a question away from the
+  /// model, so a device question ("what is my battery") is untouched.
+  MemoryNote? noteForQuestion(String question) {
+    final String? asked = memoryQuestionTopic(question);
+    if (asked == null) return null;
+    return noteAbout(asked);
+  }
+
+  /// The note about [topic], newest first: the same spelling and label, then
+  /// the same words, then — for a note with no topic of its own — a sentence
+  /// that contains the words asked about.
+  MemoryNote? noteAbout(String topic) {
+    final String key = _topicKey(topic);
+    if (key.isEmpty) return null;
+    for (final MemoryNote note in _notes.reversed) {
+      if (note.topic == kMemoryNoteTopic) continue;
+      if (_topicKey(note.topic) == key ||
+          _topicKey(note.topicLabel) == key ||
+          _topicKey(memoryCanonicalTopic(note.topic)) == key) {
+        return note;
+      }
+    }
+    final List<String> words = key.split(' ');
+    for (final MemoryNote note in _notes.reversed) {
+      if (note.topic == kMemoryNoteTopic) continue;
+      final String label = _topicKey('${note.topic} ${note.topicLabel}');
+      if (words.every(label.contains)) return note;
+    }
+    for (final MemoryNote note in _notes.reversed) {
+      if (note.topic != kMemoryNoteTopic) continue;
+      if (_key(note.fact).contains(key)) return note;
+    }
+    return null;
+  }
+
   Future<void> _persist() async {
     final String json = jsonEncode(<String, Object?>{
       'version': kMemoryFileVersion,
@@ -609,6 +649,7 @@ class MemoryService extends ChangeNotifier {
   static String _clean(String text) {
     String value = text.trim().replaceAll(RegExp(r'\s+'), ' ');
     value = value.replaceFirst(RegExp(r'[.!?]+$'), '');
+    value = _withoutStrayWrapping(value);
     if (value.length > kMemoryTextLimit) {
       value = '${value.substring(0, kMemoryTextLimit - 1)}…';
     }
@@ -715,6 +756,102 @@ String memoryTopicLabel(String topic) {
   if (topic.startsWith('mine:')) return topic.substring('mine:'.length);
   if (topic == kMemoryNoteTopic || topic.isEmpty) return 'note';
   return topic;
+}
+
+/// The topic a sentence asks the vault about, or null when [said] is not one
+/// of the shapes that asks about a remembered fact.
+///
+/// Deliberately narrow: it names the user's own fact ("my …"), or asks what
+/// Nexus knows or remembers. A question about the world ("what is the capital
+/// of France") has no owner here, and a device question ("what is my battery")
+/// is answered by the vault only when the vault really holds it.
+String? memoryQuestionTopic(String said) {
+  final String text = said
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .replaceAll(RegExp(r'[?!.\s]+$'), '');
+  if (text.isEmpty) return null;
+  const List<String> shapes = <String>[
+    r"^(?:what|what's|whats) (?:is |are )?my (.+)$",
+    r"^(?:what|what's|whats) (?:is |are )?our (.+)$",
+    r"^(?:where|where's|wheres) (?:is |are )?my (.+)$",
+    r"^(?:do you remember|do you know|did i tell you) (.+)$",
+    r"^(?:what do you (?:know|remember) about|tell me about) (.+)$",
+  ];
+  for (final String shape in shapes) {
+    final RegExpMatch? match = RegExp(shape).firstMatch(text);
+    if (match == null) continue;
+    final String topic = match
+        .group(1)!
+        .replaceFirst(RegExp(r'^(?:my|our) '), '')
+        .trim();
+    // "What do you know about me" is a question about the whole vault, not a
+    // topic in it.
+    const Set<String> whole = <String>{'me', 'us', 'myself', 'ourselves'};
+    if (topic.isNotEmpty && !whole.contains(topic)) return topic;
+  }
+  return null;
+}
+
+/// What Nexus says when the vault can answer [note] — one sentence, in the
+/// same voice as everything else it says.
+///
+/// A topic and its value become "Your bike code is 4482."; a note that is a
+/// whole sentence of its own is that sentence, with a capital and a stop.
+String memoryAnswerSentence(MemoryNote note) {
+  final String said = note.topic == kMemoryNoteTopic
+      ? _sentenceCase(note.fact)
+      : 'Your ${note.topicLabel} is ${note.fact}';
+  return RegExp(r'[.!?]$').hasMatch(said) ? said : '$said.';
+}
+
+/// A value with the first letter capitalised, for a sentence that starts with
+/// the user's own words ("my bike code is 4482" → "My bike code is 4482").
+String _sentenceCase(String text) {
+  if (text.isEmpty) return text;
+  final String first = text.substring(0, 1);
+  final String upper = first.toUpperCase();
+  return upper == first ? text : '$upper${text.substring(1)}';
+}
+
+/// Drops the quote and closing bracket a model-written tag can leave around a
+/// value: `[remember: 'bike code' = '4482')]` used to store `4482')`, and both
+/// the pill and the vault row showed the leftovers.
+///
+/// Only an *unbalanced* closer is dropped, so a phone number written
+/// `(555) 123-4567` survives.
+String _withoutStrayWrapping(String value) {
+  String out = value.trim();
+  // A value the model wrote inside quotes: the quotes are the tag's, not the
+  // fact's.
+  for (final String quote in const <String>["'", '"']) {
+    if (out.length >= 2 && out.startsWith(quote) && out.endsWith(quote)) {
+      out = out.substring(1, out.length - 1).trim();
+    }
+  }
+  bool changed = true;
+  while (changed && out.isNotEmpty) {
+    changed = false;
+    final String last = out[out.length - 1];
+    final String? open = switch (last) {
+      ')' => '(',
+      ']' => '[',
+      '}' => '{',
+      _ => null,
+    };
+    if (open != null &&
+        open.allMatches(out).length < last.allMatches(out).length) {
+      out = out.substring(0, out.length - 1).trimRight();
+      changed = true;
+      continue;
+    }
+    if ((last == "'" || last == '"') && last.allMatches(out).length.isOdd) {
+      out = out.substring(0, out.length - 1).trimRight();
+      changed = true;
+    }
+  }
+  return out;
 }
 
 String _topicKey(String topic) => topic
