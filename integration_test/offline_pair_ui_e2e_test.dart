@@ -200,6 +200,13 @@ void main() {
 
       final codeOnLaptop = _codeOn(tester, laptop);
       final codeOnPhone = _codeOn(tester, phone);
+      // DELIBERATELY BROKEN for one commit: the e2e job must fail on this and
+      // the revert immediately after must be green. Do not keep.
+      expect(
+        codeOnLaptop,
+        '000000',
+        reason: 'deliberate failure to prove the e2e gate',
+      );
       expect(
         codeOnLaptop,
         codeOnPhone,
