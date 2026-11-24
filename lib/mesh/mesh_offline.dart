@@ -11,25 +11,32 @@ part of 'mesh_service.dart';
 /// control requests work unchanged once it is confirmed.
 mixin _MeshOffline on _MeshBase {
   PairingIdentity? _offlineIdentity;
-  OfflineIdentityStore? _offlineStoreOverride;
+  IdentitySeedStore? _seedStoreOverride;
   final OfflineNonceGuard _offlineNonces = OfflineNonceGuard();
 
-  /// Test seam: keep the identity in memory instead of the app store.
+  /// Test seam: keep the identity in a store the test controls instead of the
+  /// platform keystore. Production never calls this.
   @visibleForTesting
-  void useOfflineIdentityStoreForTest(OfflineIdentityStore store) {
-    _offlineStoreOverride = store;
+  void useIdentitySeedStoreForTest(IdentitySeedStore seeds) {
+    _seedStoreOverride = seeds;
     _offlineIdentity = null;
   }
 
-  OfflineIdentityStore get _offlineStore =>
-      _offlineStoreOverride ?? _StoreOfflineIdentity(store);
+  /// Built once so a platform store that has already failed is not retried on
+  /// every pairing, and so the migration runs against this device's own store.
+  late final IdentitySeedStore _builtSeedStore = MigratingIdentitySeedStore(
+    legacy: store,
+    secure: identitySeedStoreForThisPlatform(),
+  );
+
+  IdentitySeedStore get _seedStore => _seedStoreOverride ?? _builtSeedStore;
 
   /// This device's long-term identity for offline pairing: generated the first
   /// time it is asked for, kept for every pairing after that.
   Future<PairingIdentity> offlineIdentity() async {
     final cached = _offlineIdentity;
     if (cached != null) return cached;
-    final loaded = await loadOrCreateIdentity(_offlineStore);
+    final loaded = await loadOrCreateIdentity(_AppIdentitySeed(_seedStore));
     _offlineIdentity = loaded;
     return loaded;
   }
@@ -102,26 +109,20 @@ mixin _MeshOffline on _MeshBase {
       _paired[offer.peerDeviceId]?.pairingProtocol == offlinePairingVersion;
 }
 
-/// The app's own store as an [OfflineIdentityStore].
+/// The protocol's narrow store interface over an [IdentitySeedStore].
 ///
-/// Honest note: this is the same store every other pairing secret already uses
-/// in this build. There is no OS-keystore dependency in the tree, and adding
-/// one changes every platform build; moving this key to Keystore/libsecret is a
-/// separate change and is not claimed by the pairing work.
-class _StoreOfflineIdentity implements OfflineIdentityStore {
-  final NexusStore store;
+/// The seed lives in the platform secret store (Keystore / Keychain / libsecret,
+/// or a 0600 file on Linux with no keyring) — never in the app's plain JSON. A
+/// seed written there by the first build of this feature is moved out on the
+/// first read, and the plain copy is deleted; see [MigratingIdentitySeedStore].
+class _AppIdentitySeed implements OfflineIdentityStore {
+  final IdentitySeedStore seeds;
 
-  _StoreOfflineIdentity(this.store);
-
-  @override
-  Future<Map<String, dynamic>?> read() async {
-    final saved = store.offlinePairingIdentity;
-    return saved == null ? null : Map<String, dynamic>.of(saved);
-  }
+  _AppIdentitySeed(this.seeds);
 
   @override
-  Future<void> write(Map<String, dynamic> identity) async {
-    store.offlinePairingIdentity = identity;
-    await store.save();
-  }
+  Future<Map<String, dynamic>?> read() => seeds.read();
+
+  @override
+  Future<void> write(Map<String, dynamic> identity) => seeds.write(identity);
 }

@@ -33,6 +33,22 @@ sprint and earlier work is not listed. The format follows
   answers a question about a fact it really holds, and leaves every other
   question to the model — so a device question is untouched.
 
+### Security
+
+- **The offline-pairing identity lives in the platform secret store, not in the
+  app's JSON file.** Android Keystore (through a `nexus`-namespaced secure
+  store), the Keychain on iOS and macOS, libsecret on Linux, and a 0600 file in
+  the app's private config directory when a Linux machine has no keyring
+  service — that last one is weaker than Keystore, protects the seed from other
+  users rather than from root, and is not claimed to be equivalent. A seed
+  already written to `state.json` by the first build of the feature is moved on
+  the first read and the plain copy is deleted and the file rewritten. The
+  Android backup rules are new too: `state.json`, the secure store's preference
+  file and its wrapped key file are excluded from Auto Backup and device
+  transfer on both the pre-31 and 31+ rule formats. `state.json` was being
+  backed up before this change, so this closes an existing exposure, not just a
+  new one.
+
 ### Fixed
 
 - **"What can you do" is answered by the app's own catalogue.** Asked on this

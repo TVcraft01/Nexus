@@ -11,11 +11,31 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/crypto.dart'
     show deriveControlKey, deriveSessionKey, decryptFromB64, encryptToB64;
 import 'package:nexus/core/identity.dart';
+import 'package:nexus/core/identity_seed_store.dart';
 import 'package:nexus/core/store.dart';
 import 'package:nexus/mesh/mesh_service.dart';
 import 'package:nexus/mesh/offline_pairing.dart';
 
 import 'mesh_test.dart' show FakeClipboard;
+
+/// The platform store, as a map: the mesh tests care where the seed is kept,
+/// not how the plugin keeps it.
+class _MemorySeedStore implements IdentitySeedStore {
+  final Map<String, Map<String, dynamic>> values = {};
+
+  @override
+  Future<Map<String, dynamic>?> read() async => values['seed'] == null
+      ? null
+      : Map<String, dynamic>.of(values['seed']!);
+
+  @override
+  Future<void> write(Map<String, dynamic> identity) async {
+    values['seed'] = Map<String, dynamic>.of(identity);
+  }
+
+  @override
+  Future<void> delete() async => values.remove('seed');
+}
 
 typedef _Pair = ({
   PairingIdentity a,
@@ -508,6 +528,7 @@ void main() {
     late Directory tmp;
     late NexusStore store;
     late MeshService mesh;
+    late _MemorySeedStore seeds;
 
     setUp(() async {
       tmp = await Directory.systemTemp.createTemp('nexus_offline_pair');
@@ -517,20 +538,24 @@ void main() {
         } catch (_) {}
       });
       store = NexusStore(explicitPath: '${tmp.path}/a.json')..port = 51999;
+      seeds = _MemorySeedStore();
       mesh = MeshService(
         identity: DeviceInfo(id: 'mesh-a', name: 'Laptop', platform: 'linux'),
         store: store,
         clipboard: FakeClipboard(),
         heartbeatInterval: const Duration(seconds: 30),
-      );
+      )..useIdentitySeedStoreForTest(seeds);
     });
 
-    test('the identity is created once and kept in the store', () async {
+    test('the identity is created once and kept in the secure store', () async {
       final first = await mesh.offlineIdentity();
       final second = await mesh.offlineIdentity();
       expect(base64UrlEncode(second.publicKey),
           base64UrlEncode(first.publicKey));
-      expect(store.offlinePairingIdentity, isNotNull);
+
+      // The seed is in the platform store, never in the plain JSON store.
+      expect(seeds.values['seed'], isNotNull);
+      expect(store.offlinePairingIdentity, isNull);
 
       // A second service on the same store is the same device.
       final other = MeshService(
@@ -538,7 +563,7 @@ void main() {
         store: store,
         clipboard: FakeClipboard(),
         heartbeatInterval: const Duration(seconds: 30),
-      );
+      )..useIdentitySeedStoreForTest(seeds);
       final reloaded = await other.offlineIdentity();
       expect(base64UrlEncode(reloaded.publicKey),
           base64UrlEncode(first.publicKey));
@@ -552,7 +577,7 @@ void main() {
         store: otherStore,
         clipboard: FakeClipboard(),
         heartbeatInterval: const Duration(seconds: 30),
-      );
+      )..useIdentitySeedStoreForTest(_MemorySeedStore());
 
       final host = await mesh.beginOfflinePairing();
       final guest = await otherMesh.answerOfflinePairing(host.qr1);

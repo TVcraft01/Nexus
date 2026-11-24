@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (API 31) replaces fullBackupContent with data-extraction rules.
+  Both files exist on purpose: the older attribute is what Android 11 and
+  below read, and this one is what Android 12 and above read. The excludes are
+  the same in both, and `test/android_backup_rules_test.dart` fails if either
+  file stops listing them or the manifest stops pointing at the pair.
+
+    file        nexus/state.json                  the app's plain JSON store
+    sharedpref  nexus.xml                         secure store data (namespace `nexus`)
+    sharedpref  FlutterSecureKeyStorage:nexus.xml  the namespace's wrapped key
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="nexus/state.json" />
+        <exclude domain="sharedpref" path="nexus.xml" />
+        <exclude domain="sharedpref" path="FlutterSecureKeyStorage:nexus.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="nexus/state.json" />
+        <exclude domain="sharedpref" path="nexus.xml" />
+        <exclude domain="sharedpref" path="FlutterSecureKeyStorage:nexus.xml" />
+    </device-transfer>
+</data-extraction-rules>

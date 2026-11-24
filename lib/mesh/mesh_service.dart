@@ -41,6 +41,7 @@ import 'serial_bridge.dart';
 import 'tcp_discovery.dart';
 import 'sync_service.dart';
 
+import '../core/identity_seed_store.dart';
 import 'offline_pairing.dart';
 
 part 'mesh_offline.dart';
