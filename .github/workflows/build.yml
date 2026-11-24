@@ -51,6 +51,24 @@ jobs:
           name: nexus-linux
           path: nexus-linux-x64.tar.gz
 
+  e2e-linux:
+    name: e2e pairing + transfer (xvfb)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install Linux desktop and headless display dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev libayatana-appindicator3-dev libsecret-1-dev xvfb
+      - name: Pair, compare codes, confirm, transfer a file — on the real screens
+        run: |
+          flutter pub get
+          xvfb-run -a flutter test integration_test/offline_pair_ui_e2e_test.dart -d linux
+
   android:
     name: Android APK
     needs: test
@@ -60,16 +78,98 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+      # Caches ~/.gradle (the Gradle distribution and every Maven artifact) so
+      # a rate-limited Maven Central is asked for less, and a retry has
+      # everything it already fetched.
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: false
       - name: Build
         run: |
           flutter pub get
-          flutter build apk --release
+          # One automatic retry: Maven Central answered 429 during an empty
+          # cache and took the whole PR down with it. A second attempt with
+          # the cache warm is the fix; a second failure still fails.
+          if ! flutter build apk --release; then
+            echo "first attempt failed; retrying once"
+            sleep 30
+            flutter build apk --release
+          fi
       - name: Rename APK
         run: cp build/app/outputs/flutter-apk/app-release.apk nexus.apk
       - uses: actions/upload-artifact@v4
         with:
           name: nexus-android
           path: nexus.apk
+
+  android-emulator:
+    name: Android emulator (cold launch + pairing)
+    needs: test
+    runs-on: ubuntu-latest
+    # The runner has /dev/kvm; without it the emulator falls back to software
+    # and this job would take an hour, so a missing KVM is a hard failure
+    # rather than a silent slow pass.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger
+          ls -l /dev/kvm
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: false
+      - name: Build the debug APK
+        run: |
+          flutter pub get
+          if ! flutter build apk --debug; then
+            echo "first attempt failed; retrying once"
+            sleep 30
+            flutter build apk --debug
+          fi
+      - name: Cold launch, then drive the pair screens on the device
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -e
+            adb install -r build/app/outputs/flutter-apk/app-debug.apk
+            # The launcher alias is the exported entry point (the activity has
+            # no MAIN filter on purpose), so it is what a person's tap runs.
+            adb shell am start -W -n dev.nexus.nexus/.IconLight
+            sleep 25
+            PID=$(adb shell pidof dev.nexus.nexus | tr -d '\r')
+            if [ -z "$PID" ]; then
+              echo "COLD LAUNCH FAILED: the process is gone 25s after launch"
+              adb logcat -d -t 400
+              exit 1
+            fi
+            echo "COLD LAUNCH OK: dev.nexus.nexus pid $PID alive 25s after start"
+            if adb logcat -d | grep -q "FATAL EXCEPTION"; then
+              echo "COLD LAUNCH FAILED: FATAL EXCEPTION in logcat"
+              adb logcat -d -t 400
+              exit 1
+            fi
+            # A fresh process must also be able to read the seed it wrote.
+            adb shell am force-stop dev.nexus.nexus
+            adb shell am start -W -n dev.nexus.nexus/.IconLight
+            sleep 15
+            if [ -z "$(adb shell pidof dev.nexus.nexus | tr -d '\r')" ]; then
+              echo "SECOND COLD LAUNCH FAILED"
+              adb logcat -d -t 400
+              exit 1
+            fi
+            echo "SECOND COLD LAUNCH OK (secure storage survived a restart)"
+            flutter test integration_test/offline_pair_ui_e2e_test.dart -d emulator-5554
 
   windows:
     name: Windows bundle
@@ -96,7 +196,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [linux, android, windows]
+    needs: [linux, android, windows, e2e-linux, android-emulator]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:

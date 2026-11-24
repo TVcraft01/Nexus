@@ -48,6 +48,12 @@ class _OfflinePairPageState extends State<OfflinePairPage> {
 
   bool _busy = false;
   bool _paired = false;
+
+  /// True once this device (the host) has taken the other side's answer and
+  /// has nothing left to show. The guest keeps its screen — its QR2 and its
+  /// six digits are exactly what the host needs — and only gets the match
+  /// buttons underneath them.
+  bool _awaitingConfirm = false;
   String? _error;
 
   /// Camera scanning exists on the platforms the scanner supports; everywhere
@@ -62,11 +68,25 @@ class _OfflinePairPageState extends State<OfflinePairPage> {
   @override
   void initState() {
     super.initState();
+    // The submit buttons are enabled only once their field has a code in it,
+    // and a TextField rebuilding itself does not rebuild this page. Without
+    // these listeners the button is decided when the page is built (empty) and
+    // stays disabled while you type — the flow could be followed but never
+    // finished. The e2e test types into the field and taps the button, which
+    // is how this was caught.
+    _answer.addListener(_onFieldChanged);
+    _code.addListener(_onFieldChanged);
     unawaited(_newHost());
+  }
+
+  void _onFieldChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _answer.removeListener(_onFieldChanged);
+    _code.removeListener(_onFieldChanged);
     _answer.dispose();
     _code.dispose();
     super.dispose();
@@ -108,6 +128,7 @@ class _OfflinePairPageState extends State<OfflinePairPage> {
       if (!mounted) return;
       setState(() {
         _offer = offer;
+        _awaitingConfirm = true;
         _busy = false;
       });
     } on OfflinePairingException catch (e) {
@@ -159,6 +180,7 @@ class _OfflinePairPageState extends State<OfflinePairPage> {
     setState(() {
       _offer = null;
       _guest = null;
+      _awaitingConfirm = false;
       _answer.clear();
       _code.clear();
       _error = 'Nothing was paired. Show a fresh code when you are ready.';
@@ -195,7 +217,7 @@ class _OfflinePairPageState extends State<OfflinePairPage> {
           const SizedBox(height: NexusSpace.lg),
           if (_paired)
             _doneCard()
-          else if (_offer != null)
+          else if (_offer != null && _awaitingConfirm)
             _confirmCard()
           else ...[
             SegmentedButton<int>(
@@ -357,6 +379,8 @@ class _OfflinePairPageState extends State<OfflinePairPage> {
             'Compare this with the other device. Only tap “they match” if the '
                 'two screens agree.',
           ),
+          const SizedBox(height: NexusSpace.lg),
+          _matchButtons(),
         ],
       ],
     );
@@ -379,6 +403,20 @@ class _OfflinePairPageState extends State<OfflinePairPage> {
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: NexusSpace.xl),
+        _matchButtons(),
+      ],
+    );
+  }
+
+  /// The two buttons a person uses to accept or reject the pairing. Shared,
+  /// because both sides of the handshake end on the same decision at different
+  /// points in the flow.
+  Widget _matchButtons() {
+    final offer = _offer;
+    if (offer == null) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         FilledButton(
           onPressed: _busy ? null : _confirm,
           child: Text('They match — pair with ${offer.peerName}'),
