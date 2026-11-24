@@ -140,36 +140,10 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: |
-            set -e
-            adb install -r build/app/outputs/flutter-apk/app-debug.apk
-            # The launcher alias is the exported entry point (the activity has
-            # no MAIN filter on purpose), so it is what a person's tap runs.
-            adb shell am start -W -n dev.nexus.nexus/.IconLight
-            sleep 25
-            PID=$(adb shell pidof dev.nexus.nexus | tr -d '\r')
-            if [ -z "$PID" ]; then
-              echo "COLD LAUNCH FAILED: the process is gone 25s after launch"
-              adb logcat -d -t 400
-              exit 1
-            fi
-            echo "COLD LAUNCH OK: dev.nexus.nexus pid $PID alive 25s after start"
-            if adb logcat -d | grep -q "FATAL EXCEPTION"; then
-              echo "COLD LAUNCH FAILED: FATAL EXCEPTION in logcat"
-              adb logcat -d -t 400
-              exit 1
-            fi
-            # A fresh process must also be able to read the seed it wrote.
-            adb shell am force-stop dev.nexus.nexus
-            adb shell am start -W -n dev.nexus.nexus/.IconLight
-            sleep 15
-            if [ -z "$(adb shell pidof dev.nexus.nexus | tr -d '\r')" ]; then
-              echo "SECOND COLD LAUNCH FAILED"
-              adb logcat -d -t 400
-              exit 1
-            fi
-            echo "SECOND COLD LAUNCH OK (secure storage survived a restart)"
-            flutter test integration_test/offline_pair_ui_e2e_test.dart -d emulator-5554
+          # One line, deliberately: this action runs every line of `script:`
+          # as its own `sh -c`, so the checks live in a file where a
+          # multi-line `if` is not a syntax error.
+          script: bash .github/scripts/emulator_e2e.sh
 
   windows:
     name: Windows bundle
