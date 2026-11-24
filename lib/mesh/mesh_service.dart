@@ -41,6 +41,10 @@ import 'serial_bridge.dart';
 import 'tcp_discovery.dart';
 import 'sync_service.dart';
 
+import '../core/identity_seed_store.dart';
+import 'offline_pairing.dart';
+
+part 'mesh_offline.dart';
 part 'mesh_pairing.dart';
 part 'mesh_relay.dart';
 part 'mesh_sync.dart';
@@ -65,6 +69,14 @@ class PairedDevice {
   List<String> addresses;
   int port;
   final String pairingSecret;
+
+  /// Which scheme produced [pairingSecret]: 0 is the one-time code this app
+  /// has always used, 1 is the offline identity handshake
+  /// (`offline_pairing.dart`). Recorded per pairing so both can coexist — a
+  /// device paired last month keeps deriving keys the way it always did, and
+  /// nothing new ever falls back to the old scheme.
+  final int pairingProtocol;
+
   DateTime? lastVerified;
 
   /// Hardware and service claims received through mesh presence. Empty plus
@@ -82,6 +94,7 @@ class PairedDevice {
     required this.address,
     required this.port,
     required this.pairingSecret,
+    this.pairingProtocol = 0,
     List<String>? addresses,
     this.lastVerified,
     Set<String>? announcedCaps,
@@ -99,6 +112,7 @@ class PairedDevice {
     'addresses': addresses,
     'port': port,
     'pairingSecret': pairingSecret,
+    'pairingProtocol': pairingProtocol,
     'lastVerified': lastVerified?.toIso8601String(),
     'announcedCaps': announcedCaps.toList()..sort(),
     'capabilitiesAnnounced': capabilitiesAnnounced,
@@ -113,6 +127,7 @@ class PairedDevice {
     address: json['address'] as String,
     port: (json['port'] as num).toInt(),
     pairingSecret: json['pairingSecret'] as String,
+    pairingProtocol: (json['pairingProtocol'] as num?)?.toInt() ?? 0,
     addresses: (json['addresses'] as List?)
         ?.whereType<String>()
         .where((a) => a.isNotEmpty)
@@ -2143,7 +2158,7 @@ abstract class _MeshBase extends ChangeNotifier
 /// it was before the split; each concern lives in its own part file as a mixin
 /// over the one state object above.
 class MeshService extends _MeshBase
-    with _MeshPairing, _MeshRelay, _MeshSync, _MeshFiles {
+    with _MeshPairing, _MeshRelay, _MeshSync, _MeshFiles, _MeshOffline {
   /// The canonical mesh port.
   static const int defaultPort = 51820;
 

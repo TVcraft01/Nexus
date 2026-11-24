@@ -7,7 +7,59 @@ sprint and earlier work is not listed. The format follows
 
 ## [Unreleased]
 
-Nothing yet. Pass A (translation) is the next pass.
+### Added
+
+- **Two devices can pair with no network at all.** Add device → More ways →
+  Pair without a network. Each device keeps a long-term X25519 identity and
+  mints a fresh ephemeral key for every pairing; one shows a code, the other
+  answers it, and both screens end up showing the same six digits. Nothing is
+  stored until both people say the digits match, and neither code carries an
+  address, so it works in airplane mode. A copied code is always accepted as
+  well as a scan, because a pairing flow that dead-ends on a missing camera is
+  not a flow. Devices paired the old way keep their existing keys and the
+  scheme that made them; the record says which one it was.
+- **Automations has a screen.** Settings → Automations lists every agent on
+  this PC with what it does, when it runs, how it stands and what its last run
+  said. From there you can start, pause, run one now, put back its last run,
+  delete it, halt everything, or open the same controls in your browser. A new
+  automation is made in the app — a name, the job, the hours, the approval
+  policy and the tools it may use — and only the tools this build registers
+  can be ticked, so an automation cannot be given a promise nothing can keep.
+  The screen appears only where an agent can really run: a phone has no model
+  to plan with (roadmap 4c), so it is not offered there.
+- **Remembered facts are answered by the vault.** "What is my bike code" a
+  moment after "remember my bike code is 4482" used to reach the model, which
+  answered "I don't know that yet" while the vault held it. The shell now
+  answers a question about a fact it really holds, and leaves every other
+  question to the model — so a device question is untouched.
+
+### Security
+
+- **The offline-pairing identity lives in the platform secret store, not in the
+  app's JSON file.** Android Keystore (through a `nexus`-namespaced secure
+  store), the Keychain on iOS and macOS, libsecret on Linux, and a 0600 file in
+  the app's private config directory when a Linux machine has no keyring
+  service — that last one is weaker than Keystore, protects the seed from other
+  users rather than from root, and is not claimed to be equivalent. A seed
+  already written to `state.json` by the first build of the feature is moved on
+  the first read and the plain copy is deleted and the file rewritten. The
+  Android backup rules are new too: `state.json`, the secure store's preference
+  file and its wrapped key file are excluded from Auto Backup and device
+  transfer on both the pre-31 and 31+ rule formats. `state.json` was being
+  backed up before this change, so this closes an existing exposure, not just a
+  new one.
+
+### Fixed
+
+- **"What can you do" is answered by the app's own catalogue.** Asked on this
+  PC, the 1B model listed a flashlight, Bluetooth and a volume control — none
+  of which a Linux desktop has an executor for. The answer now comes from the
+  capability registry, which knows what this platform can really run and which
+  entries need a phone, and the model is not asked at all.
+- **A model-written memory tag leaves no punctuation in the vault.**
+  `[remember: 'bike code' = '4482')]` stored `4482')`, which the pill and the
+  Privacy vault both showed. A stray quote or an unbalanced closing bracket is
+  now dropped; a phone number's own bracket is kept.
 
 ## [1.0.1] — 2026-10-29
 

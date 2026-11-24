@@ -6618,6 +6618,10 @@ void main() {
     // user's. A tag is a transcription of what the user said, so one that is
     // not in their words is dropped, and the reply that was only that tag gets
     // the shell's sentence instead of an empty bubble.
+    //
+    // The question is one the vault has no answer for on purpose: a name
+    // question is answered from the vault now (`memory_recall_test`), so it
+    // would never reach the model that writes the bad tag.
     final MemoryService memory = MemoryService(store: MemoryMemoryStore());
     MemoryService.override = () => memory;
     addTearDown(() {
@@ -6628,7 +6632,7 @@ void main() {
     await pumpShell(tester);
     ollama.reply = "[remember: 'name' = 'Nexus']";
 
-    await tester.enterText(find.byType(TextField), 'what is my name');
+    await tester.enterText(find.byType(TextField), 'tell me about yourself');
     await tester.pump();
     await tapTheButton(tester, sendButton());
     await tester.pumpAndSettle();
@@ -6636,6 +6640,68 @@ void main() {
     expect(find.textContaining('Memory updated'), findsNothing);
     expect(find.text("I don't have an answer for that."), findsOneWidget);
     expect(memory.notes.single.fact, 'TVCraft');
+  });
+
+  testWidgets('a fact the vault holds answers the question about it', (
+    tester,
+  ) async {
+    // The bug this pins: "remember my bike code is 4482", then "what is my
+    // bike code" — the 1B answered "I don't know that yet" while the vault
+    // held it. The shell answers from the vault now, and the model is not
+    // asked at all.
+    final MemoryService memory = MemoryService(store: MemoryMemoryStore());
+    MemoryService.override = () => memory;
+    addTearDown(() {
+      MemoryService.override = null;
+      MemoryService.debugReset();
+    });
+    await pumpShell(tester);
+
+    ollama.reply = "Noted. [remember: 'bike code' = '4482']";
+    await tester.enterText(
+      find.byType(TextField),
+      'remember my bike code is 4482',
+    );
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+    expect(
+      memory.notes
+          .where((MemoryNote note) => note.topic == 'bike code')
+          .single
+          .fact,
+      '4482',
+    );
+
+    ollama.reply = "I don't know that yet — what is your bike code?";
+    await tester.enterText(find.byType(TextField), 'what is my bike code');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text("I don't know that yet — what is your bike code?"),
+      findsNothing,
+    );
+    expect(find.text('Your bike code is 4482.'), findsOneWidget);
+  });
+
+  testWidgets('what can you do is the catalogue, not the model', (
+    tester,
+  ) async {
+    // Asked on this PC, the 1B listed a flashlight, Bluetooth and a volume
+    // control. The registry knows which entries this platform has an executor
+    // for and which need another device, so the shell answers from it.
+    await pumpShell(tester);
+    ollama.reply = 'I can control your flashlight and Bluetooth.';
+
+    await tester.enterText(find.byType(TextField), 'what can you do');
+    await tester.pump();
+    await tapTheButton(tester, sendButton());
+    await tester.pumpAndSettle();
+
+    expect(find.text(ollama.reply), findsNothing);
+    expect(find.textContaining('Here is what I can do'), findsOneWidget);
   });
 
   testWidgets('the vault lists what Nexus knows and deletes one fact', (

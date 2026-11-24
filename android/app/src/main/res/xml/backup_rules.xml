@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android Auto Backup rules for API < 31 (android:fullBackupContent).
+
+  Two things must never leave this phone in a backup:
+
+    file      nexus/state.json
+      The app's own JSON store, which holds pairing secrets, remembered facts
+      (including anything a person described as a password), history and the
+      device identity. It was already being backed up before the offline
+      pairing work; that exposure ends here.
+
+    sharedpref  nexus.xml
+      flutter_secure_storage's data file for this app's `nexus` namespace.
+      The values are wrapped by a Keystore key that does not exist on another
+      device, but a backup is a copy of the ciphertext at best and a transfer
+      of a broken store at worst; neither belongs in a cloud backup.
+
+    sharedpref  FlutterSecureKeyStorage:nexus.xml
+      The namespace's wrapped key file (see flutter_secure_storage's
+      FlutterSecureStorageConfig.getEffectiveKeyStoragePrefsName).
+
+  data_extraction_rules.xml carries the same excludes for API 31+.
+-->
+<full-backup-content>
+    <exclude domain="file" path="nexus/state.json" />
+    <exclude domain="sharedpref" path="nexus.xml" />
+    <exclude domain="sharedpref" path="FlutterSecureKeyStorage:nexus.xml" />
+</full-backup-content>

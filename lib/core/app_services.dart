@@ -63,6 +63,8 @@ class AppServices {
     this.agentService,
     this.dashboard,
     this.bridge,
+    this.agentsRunHere = false,
+    this.agentTools,
   });
 
   final NexusStore store;
@@ -81,6 +83,17 @@ class AppServices {
   /// The loopback HTTP bridge: Tailscale-shaped status, Home Assistant-shaped
   /// states and service calls, and the named intent a Shortcut calls.
   final NexusBridge? bridge;
+
+  /// Whether this launch can really plan and run an agent: a desktop with a
+  /// model, or a runner somebody injected. False on a phone, where the honest
+  /// answer is that there is nothing here to plan with — Settings hides the
+  /// Automations screen there instead of offering a control that cannot work.
+  final bool agentsRunHere;
+
+  /// The tools an agent may be given here, when this build registered any.
+  /// The Automations screen lists them so a new agent's allow-list is chosen
+  /// from what this device can actually run, not from a guess.
+  final ToolRegistry? agentTools;
 }
 
 /// This platform, spelled the way [DeviceInfo] and the mesh spell it.
@@ -171,8 +184,11 @@ Future<AppServices> startAppServices({
   final UndoJournal undo = UndoJournal();
 
   AgentRunner runner;
+  ToolRegistry? registeredTools;
+  bool runsAgentsHere = false;
   if (agentRunner != null) {
     runner = agentRunner;
+    runsAgentsHere = true;
   } else if (agentBackend != null ||
       agentTools != null ||
       _wiresRealAgents()) {
@@ -188,6 +204,8 @@ Future<AppServices> startAppServices({
             stateDir: await agentRevertStateDir(dataDir),
           ),
         );
+    registeredTools = tools;
+    runsAgentsHere = true;
     final TextGenerationBackend backend = agentBackend ?? OllamaBackend();
     runner = PlannedAgentRunner(
       planner: Planner(backend: backend, registry: tools),
@@ -297,6 +315,8 @@ Future<AppServices> startAppServices({
     agentService: agentService,
     dashboard: dashboard,
     bridge: bridge,
+    agentsRunHere: runsAgentsHere,
+    agentTools: registeredTools,
   );
 }
 

@@ -64,10 +64,18 @@
          gives both aliases the same icon. test/launcher_icons_test.dart
          pins all three, so a regeneration that does this fails the suite
          instead of shipping. -->
+    <!-- allowBackup stays true (Android's default) because ordinary settings
+         are worth restoring; the two rule files below exclude the state file
+         and the secure-store preferences, which are not. Both attributes are
+         required: fullBackupContent is what API < 31 reads, dataExtractionRules
+         is what API 31+ reads. -->
     <application
         android:label="Nexus"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher_light"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="true">
         <!-- The activity the app actually runs in. It deliberately carries no
              MAIN/LAUNCHER filter any more: the two launcher entries below are

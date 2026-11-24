@@ -13,6 +13,12 @@ dependencies:
 
   cupertino_icons: ^1.0.8
   cryptography: ^2.9.0
+  # Pinned exactly, not a range: the offline-pairing identity seed lives in the
+  # platform store (Keystore / Keychain / libsecret), so a major bump is a
+  # storage migration, not a patch. 10.3.4 has the namespace and
+  # algorithm-migration fixes; v11 requires compileSdk 37, which this build
+  # does not use.
+  flutter_secure_storage: 10.3.4
   qr_flutter: ^4.1.0
   path_provider: ^2.1.6
   mobile_scanner: ^7.4.0
