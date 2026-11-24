@@ -18,12 +18,20 @@ fail() {
 echo "== install =="
 adb install -r "$APK"
 
+# The app asks for the microphone on first start, and the system permission
+# dialog then sits on top of the launch: a second `am start` is delivered to
+# that dialog instead of a fresh activity, which is not a cold launch. Granting
+# them up front keeps the launch under test the app itself.
+for perm in android.permission.RECORD_AUDIO android.permission.POST_NOTIFICATIONS; do
+  adb shell pm grant "$PKG" "$perm" 2>/dev/null || true
+done
+
 echo "== cold launch 1 =="
 # The launcher alias is the exported entry point (the activity has no MAIN
 # filter on purpose), so it is what a person's tap runs.
 adb shell am start -W -n "$PKG/.IconLight"
 sleep 25
-PID=$(adb shell pidof "$PKG" | tr -d '\r')
+PID=$(adb shell pidof "$PKG" | tr -d '\r' || true)
 if [ -z "$PID" ]; then
   fail "the process is gone 25s after the first cold launch"
 fi
@@ -37,7 +45,7 @@ adb shell am force-stop "$PKG"
 sleep 2
 adb shell am start -W -n "$PKG/.IconLight"
 sleep 15
-PID=$(adb shell pidof "$PKG" | tr -d '\r')
+PID=$(adb shell pidof "$PKG" | tr -d '\r' || true)
 if [ -z "$PID" ]; then
   fail "the process is gone 15s after the second cold launch"
 fi
