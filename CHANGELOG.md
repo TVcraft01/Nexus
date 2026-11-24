@@ -33,6 +33,33 @@ sprint and earlier work is not listed. The format follows
   answers a question about a fact it really holds, and leaves every other
   question to the model — so a device question is untouched.
 
+### Added
+
+- **The pairing flow is tested the way a person uses it.** A new headless e2e
+  job runs the real desktop app under xvfb, mounts both pair screens side by
+  side and drives them: copy the first code, paste it on the other screen, take
+  the answer back, compare the six digits, confirm on both, then send a file
+  and check its SHA-256 on the receiver. A second job boots an Android emulator
+  with KVM, installs the debug APK, proves a cold launch (twice, so the secure
+  store survives a restart) and runs the same flow on the device. A failing e2e
+  test fails the build, and the release job now waits for both.
+- **Real two-instance transfer in the ordinary test suite.** Two mesh services
+  on loopback, paired through the no-network handshake, send a 256 KiB file over
+  a real socket and hash it on both ends. The negatives are real too: a receiver
+  holding a different key gets nothing written, a tampered frame is refused by
+  AES-GCM, and a connection that dies mid-frame does not take the link down.
+
+### Fixed
+
+- **The pair screen could be filled in but never submitted.** The submit
+  buttons read the text field when the page was built, and typing does not
+  rebuild the page, so "Use this code" and "Check answer" stayed disabled with
+  a code in the field. They now follow the field.
+- **The guest never showed its answer.** Entering the other device's code put
+  the page straight into the confirm card, so the QR2 and the six digits the
+  host needs were never on screen. The guest keeps its answer and the match
+  buttons under it; the host's confirm card is unchanged.
+
 ### Security
 
 - **The offline-pairing identity lives in the platform secret store, not in the
